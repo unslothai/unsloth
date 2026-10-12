@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -140,33 +142,8 @@ def contains_sensitive_path_component(path: str) -> bool:
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 
-# SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
-# thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
-# (fixed in 3.51.2, #10022). Gating only close() still deadlocks; opens must share the lock.
-# Reentrant: a GC finalizer can close a pooled connection inside a gated connect on this thread.
-_CONNECTION_GATE = threading.RLock()
-
-
-def _reset_connection_gate_after_fork() -> None:
-    global _CONNECTION_GATE
-    _CONNECTION_GATE = threading.RLock()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
-
-
-class _StudioDbConnection(sqlite3.Connection):
-    # A connection dropped without close() is finalized natively and bypasses this gate.
-    def close(self) -> None:
-        with _CONNECTION_GATE:
-            super().close()
-
-
-def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
-    with _CONNECTION_GATE:
-        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
 
 
 _SQLITE_IN_CHUNK_SIZE = 900
@@ -477,6 +454,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
+    if "working_folder" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
+    if "working_folder_identity" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -2131,6 +2113,8 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "workingFolder": data.get("working_folder") or None,
+        "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -2978,6 +2962,52 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         return _chat_project_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+def set_chat_project_working_folder(
+    id: str,
+    path: Optional[str],
+    identity: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    """The managed workspace is kept, so switching back finds its files."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                path or None,
+                f"{identity[0]}:{identity[1]}" if path and identity else None,
+                int(time.time() * 1000),
+                id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    path = (project or {}).get("workingFolder")
+    if not path or not is_owner_context():
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    identity = (project or {}).get("workingFolderIdentity")
+    if identity and identity != f"{st.st_dev}:{st.st_ino}":
+        return None
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:

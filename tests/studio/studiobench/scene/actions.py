@@ -1752,17 +1752,23 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
+    click_overran = False
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
-        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
-        # hit-tests to it") on a run that allowed only this action not to run.
-        closed = _close_open_menu(ctx)
-        return not_run(
-            f"the attachments button could not be clicked: {type(exc).__name__}"
-            + _left_menu_note(closed)
-        )
+        # Radix opens the menu on pointerdown, so the click can time out on the modal open after it
+        # took effect (that open grows with DOM size). The menu this attempt opened is the click's
+        # effect: carry on with it.
+        if _ev(ctx, _NEW_MENU_OPEN_JS) is True:
+            click_overran = True
+        else:
+            # Left open, a menu blocked the next action's New chat button (thread_reopen NOT RUN, "no
+            # point on the control hit-tests to it") on a run that allowed only this action not to run.
+            closed = _close_open_menu(ctx)
+            return not_run(
+                f"the attachments button could not be clicked: {type(exc).__name__}"
+                + _left_menu_note(closed)
+            )
     ctx.page.wait_for_timeout(200)
     try:
         with ctx.page.expect_file_chooser(timeout = 6000) as fc:
@@ -1805,6 +1811,8 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             "attachments_before": before,
             "attachments_after": after,
             "attachment_containers": containers,
+            # The click opened the menu but Playwright's bounded click timed out on the open.
+            "click_overran": click_overran,
         },
         timings = {"upload_ms": round(elapsed, 1)},
         reason = reason,

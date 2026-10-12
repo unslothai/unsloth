@@ -4,8 +4,13 @@
 import { AppPortalGate } from "@/components/app-readiness";
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownGlowContext,
+  dialogDropdownGlow,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 
 function AlertDialog({
@@ -51,6 +56,7 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  children,
   size = "default",
   overlayClassName,
   onOverlayClick,
@@ -61,6 +67,7 @@ function AlertDialogContent({
   /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
   onOverlayClick?: () => void;
 }) {
+  const glow = dialogDropdownGlow(className, useContext(DropdownGlowContext));
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
@@ -76,7 +83,11 @@ function AlertDialogContent({
           className,
         )}
         {...props}
-      />
+      >
+        <DropdownGlowContext.Provider value={glow}>
+          {children}
+        </DropdownGlowContext.Provider>
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   );
 }

@@ -3413,6 +3413,14 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
+class BrowserActionResultRequest(BaseModel):
+    """What the chat tab's browser did for one ``browser_action`` (``state.browser_actions``)."""
+
+    session_id: Optional[str] = None
+    action_id: str = Field(min_length = 1, max_length = 64)
+    result: dict[str, Any]
+
+
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
@@ -4383,7 +4391,9 @@ class DiffusionLoadRequest(BaseModel):
         "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
         "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
         "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
-        "the base repo then supplies only configs and tokenizers for these encoders.",
+        "the base repo then supplies only configs and tokenizers for these encoders. Unset on a local DiT "
+        "inside a ComfyUI models tree, the tree's text_encoders file that fits is used when exactly one is "
+        "best (UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS=0 turns that off).",
     )
     vae_file: Optional[str] = Field(
         None,
@@ -5238,7 +5248,10 @@ class DiffusionStatusResponse(BaseModel):
         "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
-    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    engine: Optional[str] = Field(
+        None,
+        description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)",
+    )
     native_mode: Optional[str] = Field(
         None,
         description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
@@ -5247,6 +5260,11 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    mlx_fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
+        "MLX was not requested or is in use)",
     )
     supports_lora: bool = Field(
         False,

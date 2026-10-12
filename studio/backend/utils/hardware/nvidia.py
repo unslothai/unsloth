@@ -123,8 +123,8 @@ def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     return sorted(visible_ordinals, key = visible_ordinals.__getitem__)
 
 
-def get_physical_gpu_count() -> Optional[int]:
-    """Return physical GPU count via nvidia-smi, or None on failure."""
+def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
+    """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
     try:
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "-L"],
@@ -137,7 +137,10 @@ def get_physical_gpu_count() -> Optional[int]:
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
-            return len(result.stdout.strip().splitlines())
+            lines = result.stdout.strip().splitlines()
+            if gpu_rows_only:
+                return sum(1 for line in lines if line.startswith("GPU "))
+            return len(lines)
         logger.warning(
             "nvidia-smi -L returned code %d; caller should fall back to torch",
             result.returncode,
@@ -390,6 +393,40 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     except OSError:
         return 0
     return len(entries)
+
+
+# Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
+_CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
+
+
+def get_checkpoint_quant_formats() -> list[str]:
+    """Prequantized checkpoint formats every NVIDIA card runs natively (Hub Recommended filter).
+    A load may land on any card, so the least capable one answers; an unreadable card counts as none."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    capabilities: list[tuple[int, int]] = []
+    for line in result.stdout.strip().splitlines():
+        major, _, minor = line.strip().partition(".")
+        if not (major.isdigit() and minor.isdigit()):
+            return []
+        capabilities.append((int(major), int(minor)))
+    if not capabilities:
+        return []
+    floor = min(capabilities)
+    return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
 
 
 def get_physical_gpu_inventory() -> dict[str, Any]:

@@ -42,6 +42,7 @@ from .mistral_format import (
     prepare_mistral_format_checkpoint,
 )
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
+from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -59,6 +60,7 @@ from .loader_utils import (
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
+    raise_if_fast_inference_under_fsdp2,
 )
 import os, contextlib, sys
 
@@ -121,6 +123,7 @@ from ._utils import (
     _requested_float32,
     _mark_requested_float32,
     _mark_forced_float32,
+    _ignore_block_swap_params_for_ddp,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -194,6 +197,36 @@ def _revision_for_resolved_repo(
         f"`{model_name}`, which does not have that revision.{remedy}"
     )
     return None
+
+
+def _record_modelscope_repo_id(model, repo_id, local_dir):
+    """A ModelScope load hands transformers the local snapshot, which becomes the model's name: PEFT copies it into adapter_config.json and the merge reads it as the base, so a 4bit snapshot refuses merged_16bit / GGUF and the adapter names a path on this machine only (#3726). Record the repo id, as a Hub load does."""
+    if repo_id is None or local_dir is None:
+        return
+    from transformers import PreTrainedModel
+
+    resolved = os.path.realpath(str(local_dir))
+    for module in model.modules():
+        if not isinstance(module, PreTrainedModel):
+            continue
+        for owner, attr in ((module, "name_or_path"), (module.config, "_name_or_path")):
+            value = getattr(owner, attr, None)
+            if isinstance(value, str) and value and os.path.realpath(value) == resolved:
+                setattr(owner, attr, repo_id)
+                # A non-PEFT GGUF export still converts the snapshot in place.
+                module._unsloth_modelscope_snapshot = str(local_dir)
+
+
+def _modelscope_snapshot_or_none(repo_id):
+    """ModelScope snapshot of an adapter's base, or None to load it by repo id from the Hugging Face Hub as before: the base need not be mirrored on ModelScope."""
+    from modelscope import snapshot_download
+    try:
+        return snapshot_download(repo_id)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{repo_id}` from ModelScope ({e}), loading it from Hugging Face."
+        )
+        return None
 
 
 def _revision_for_tokenizer_repo(
@@ -926,6 +959,7 @@ def _vllm_unavailable_error():
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
+    @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
@@ -1069,6 +1103,7 @@ class FastLanguageModel(FastLlamaModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         # bitsandbytes unusable (absent, or unstable on some AMD stacks). A capability check, so not gated on use_exact_model_name, which only suppresses repo-name remapping.
         if not ALLOW_BITSANDBYTES:
@@ -1176,8 +1211,11 @@ class FastLanguageModel(FastLlamaModel):
         # Only check the flags when no non-bitsandbytes quantization_config sets the precision.
         check_precision_flags = quantization_config is None or q_load_in_4bit or q_load_in_8bit
         modelscope_pending_download = None
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
+
+            modelscope_repo_id = model_name
             if check_precision_flags and _precision_flags_conflict(
                 load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
             ):
@@ -1186,6 +1224,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = snapshot_download(model_name, allow_file_pattern = ["*.json", "*.py"])
             else:
                 model_name = snapshot_download(model_name)
+            modelscope_dir = model_name
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -1384,6 +1423,21 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too; a precision conflict raises below before any weights are needed.
+            if (
+                USE_MODELSCOPE
+                and not os.path.exists(model_name)
+                and not (
+                    check_precision_flags
+                    and _precision_flags_conflict(
+                        load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+                    )
+                )
+            ):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -1590,6 +1644,7 @@ class FastLanguageModel(FastLlamaModel):
             *args,
             **kwargs,
         )
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
@@ -1727,6 +1782,8 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Loaded adapters skip get_peft_model.
+        _ignore_block_swap_params_for_ddp(model)
         # This path never sets UNSLOTH_FORCE_FLOAT32, so answer False rather than let the trainer read whatever a later load writes to the environment.
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
@@ -1740,6 +1797,7 @@ from ..kernels import (
 )
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
+from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
     AutoModelForCausalLM,
 )
@@ -1779,6 +1837,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
     @mistral_format_redirect
@@ -1958,6 +2017,7 @@ class FastModel(FastBaseModel):
                         )
                         fast_inference = False
                         break
+        raise_if_fast_inference_under_fsdp2(fast_inference)
 
         old_model_name = model_name
         fp8_mode = None
@@ -2028,9 +2088,11 @@ class FastModel(FastBaseModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        modelscope_repo_id = modelscope_dir = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
+            modelscope_repo_id = model_name
+            model_name = modelscope_dir = snapshot_download(model_name)
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -2079,11 +2141,15 @@ class FastModel(FastBaseModel):
                 device_map_planner_kwargs = device_map_planner_kwargs,
                 trust_remote_code = trust_remote_code,
                 revision = base_revision,
+                **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
+            # This early return skips the re-enable at the end of from_pretrained.
+            if not was_disabled:
+                enable_progress_bars()
             return _mark_requested_float32(model, user_float32), tokenizer
 
         try:
@@ -2201,7 +2267,22 @@ class FastModel(FastBaseModel):
             fast_inference = False
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
-        if is_diffusion_model_type(model_types):
+        # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
+        diffusion_config = model_config
+        if diffusion_config is None and peft_config is not None:
+            try:
+                diffusion_config = AutoConfig.from_pretrained(
+                    peft_config.base_model_name_or_path,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
+            except Exception:
+                diffusion_config = None
+        if (
+            is_diffusion_model_type(model_types)
+            or resolve_diffusion_profile(diffusion_config) is not None
+        ):
             return _dispatch_diffusion()
 
         lowered_model_name = model_name.lower()
@@ -2406,6 +2487,12 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # The adapter names its base by repo id, so fetch that from ModelScope too.
+            if USE_MODELSCOPE and not os.path.exists(model_name):
+                _snapshot = _modelscope_snapshot_or_none(model_name)
+                if _snapshot is not None:
+                    modelscope_repo_id, model_name = model_name, _snapshot
+                    modelscope_dir = _snapshot
             # After the -bf16 rule: the view path no longer carries the source's suffix.
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
             _cache_dir = kwargs.get("cache_dir", None)
@@ -2808,6 +2895,7 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
         _drop_text_only_key_mapping(model, _text_key_mapping)
+        _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
@@ -3004,6 +3092,8 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Loaded adapters skip get_peft_model.
+        _ignore_block_swap_params_for_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer

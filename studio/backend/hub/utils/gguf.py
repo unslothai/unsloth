@@ -80,7 +80,7 @@ _GGUF_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -108,16 +108,24 @@ _DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 # Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
+# <model>-dspark-<quant>.gguf drafters (prism-ml Bonsai, third-party DSpark GGUFs); a name going on past the quant (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) is the model.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
+    re.IGNORECASE,
+)
+
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, or by an exact parent dir for ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
+    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) and the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
@@ -128,8 +136,11 @@ def is_reclaimable_drafter_path(path: str) -> bool:
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        # <model>-dspark-<quant>.gguf: hidden from the menu as a companion, so it goes with the last variant too.
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
@@ -273,17 +284,37 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
             continue
         if quant in _FLOAT_PRECISION_QUANTS:
             # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
-            filename = next(
-                (
-                    name
-                    for name in by_quant.values()
-                    if (token := extract_quant_token(name))
-                    and token.upper() not in _FLOAT_PRECISION_QUANTS
-                ),
-                filename,
-            )
+            quantized = [
+                name
+                for name in by_quant.values()
+                if (token := extract_quant_token(name))
+                and token.upper() not in _FLOAT_PRECISION_QUANTS
+            ]
+            filename = _first_mainline_loadable(quantized) or filename
         return filename
-    return gguf_files[0]
+    return _first_mainline_loadable(gguf_files)
+
+
+def _first_mainline_loadable(names: list[str]) -> Optional[str]:
+    """First of *names*, skipping packs mainline llama.cpp cannot read while anything else is left."""
+    tokens = {name: (extract_quant_token(name) or "").upper() for name in names}
+
+    def _checkpoint(name: str) -> str:
+        return (gguf_checkpoint_family(name) or "").upper()
+
+    # A plain Q2_0 published beside the same checkpoint's grouped Q2_g64 / Q2_0_g64 is the fork's group-128 pack.
+    shadowed = {
+        (_checkpoint(name), f"{match.group(1)}_0")
+        for name, token in tokens.items()
+        if (match := _GROUPED_QUANT_RE.match(token))
+    }
+    loadable = [
+        name
+        for name in names
+        if not _FORK_ONLY_QUANT_RE.match(tokens[name])
+        and (_checkpoint(name), tokens[name]) not in shadowed
+    ]
+    return next(iter(loadable or names), None)
 
 
 def _gguf_stem(filename: str) -> str:
@@ -292,6 +323,10 @@ def _gguf_stem(filename: str) -> str:
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+# prism-ml's PQ2_0 / PTQ1_0 are ggml types only its llama.cpp fork defines; the bundled build rejects them (#11259).
+_FORK_ONLY_QUANT_RE = re.compile(r"PT?Q[0-9]", re.IGNORECASE)
+# Q2 only: prism-ml's group-128 Q2_0 is the plain pack a grouped sibling marks as fork-only.
+_GROUPED_QUANT_RE = re.compile(r"(Q2)(?:_0)?_G[0-9]+$", re.IGNORECASE)
 
 
 def _select_quant_match(text: str) -> Optional[re.Match]:

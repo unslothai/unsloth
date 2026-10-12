@@ -88,7 +88,7 @@ test("the fence branch no longer renders streamdown's Block", () => {
 
 test("a streaming open fence is highlighted rather than shown plain", () => {
   assert.ok(
-    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<StreamingFenceBlock/m
+    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return highlightCode \? \(\s*<StreamingFenceBlock/m
       .test(MARKDOWN_TEXT),
     "an open fence must leave the bare Block route",
   );
@@ -100,6 +100,27 @@ test("a streaming open fence is highlighted rather than shown plain", () => {
     "and it must render the tokens, not a plain shell: keeping the highlighting while it streams " +
       "is the difference between this and the change that was rejected",
   );
+});
+
+test("a fence in the thinking box is coloured off the main thread, while it grows only on screen", () => {
+  assert.match(readSrc("components/assistant-ui/code-highlight-context.ts"), /export const CodeHighlightModeContext = createContext<CodeHighlightMode>\("all"\);/);
+  assert.match(MARKDOWN_TEXT, /\{highlightCode \|\| highlightMode === "settled" \? \(\s*<FenceBlock[\s\S]{0,300}isIncomplete=\{highlightCode \? props\.isIncomplete : false\}/, "a closed fence in a trace takes the deferred, worker-routed block, never the growing fence's tokenizer");
+  assert.equal((MARKDOWN_TEXT.match(/\) : \(\s*<PlainFenceBlock/g) ?? []).length, 1, "only the ``` closed fence route keeps a plain twin");
+  assert.match(MARKDOWN_TEXT, /<StreamingFenceBlock\s*language=\{openFence\.language\}\s*source=\{openFence\.text\}\s*\/>\s*\) : \(\s*<LiveThinkingFence/, "a growing thinking fence takes the viewport-gated worker route");
+  const live = MARKDOWN_TEXT.slice(MARKDOWN_TEXT.indexOf("function LiveThinkingFence("), MARKDOWN_TEXT.indexOf("function FenceBlock("));
+  assert.match(live, /useThinkingCodeColour\(host, source, languageToken, settled\)/);
+  assert.match(live, /<FenceBody\s*isIncomplete=\{!settled\}/);
+  assert.equal(/useFenceTokens|code\.highlight|noteStreamingFence/.test(live), false, "no main-thread tokenizer for a growing thinking fence");
+  assert.match(live, /result === null \? \(\s*<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/, "plain until the worker answers");
+  assert.match(MARKDOWN_TEXT, /const STREAMDOWN_PLAIN_CODE_PLUGINS = \{ math, mermaid \}/);
+  assert.match(MARKDOWN_TEXT, /plugins=\{\s*highlightCode \? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS\s*\}/, "a fence nested in a list or a quote is plain too");
+  const start = MARKDOWN_TEXT.indexOf("function PlainFenceBlock(");
+  const plain = MARKDOWN_TEXT.slice(start, MARKDOWN_TEXT.indexOf("\n}\n", start));
+  assert.equal(/useFenceTokens|requestFullHighlight|code\.highlight|noteStreamingFence/.test(plain), false);
+  assert.match(plain, /<PlainFenceShell language=\{languageToken\} source=\{source\} \/>/);
+  assert.match(DEFER, /<code>\{plain \? shellLines\(source\) : shellBody\(source\)\}<\/code>/);
+  assert.match(DEFER, /if \(index > 0\) nodes\.push\("\\n"\);\s*if \(line !== ""\) nodes\.push\(line\);/, "one text node per line and per line break, so a streamed append rewrites only the growing line and a selection above it survives");
+  assert.match(DEFER, /data-unsloth-fence-deferred=\{plain \? undefined : "true"\}/, "a plain fence is never upgraded, so it does not carry the deferred marker");
 });
 
 test("a completed fence on a non-``` form keeps the bounded renderer", () => {
@@ -119,7 +140,13 @@ test("a completed fence on a non-``` form keeps the bounded renderer", () => {
     ),
     "and it must render the per-line body rather than Block, or the spans remount",
   );
-  // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
+  // In a thinking box the same forms, and a fence left open by Stop, keep their colour once settled.
+  assert.match(
+    branch,
+    /\) : \(\s*<LiveThinkingFence\s*language=\{settledFence\.language\}\s*settled\s*source=\{settledFence\.text\}/,
+    "a settled tilde, four-backtick, indented or stopped fence in a trace must not drop to the plain block",
+  );
+    // Not `FenceBlock`: that branch also owns the reach latch, the action bar and the mode switch.
   assert.ok(
     !/<FenceBlock[\s\S]{0,200}settledFence/.test(MARKDOWN_TEXT),
     "widening FenceBlock would add controls and artifact paths to blocks that do not have them",
@@ -236,7 +263,7 @@ test("a print colours the whole fence, and the window comes back afterwards", ()
     "synchronously, because there is no next paint before the print snapshot",
   );
   assert.ok(
-    /if \(printing\) \{\s*if \(current\.current === null\) return;/.test(DEFER),
+    /if \(printing \|\| findBarOpen\(\)\) \{\s*if \(current\.current === null && pinned\.current === null\) return;/.test(DEFER),
     "and the measurement has to honour it",
   );
 });
@@ -285,8 +312,9 @@ test("a fence source is highlighted once per revision, not twice", () => {
   );
 });
 
-const TABLE_CONTROLS =
-  '[data-streamdown="table-wrapper"] > div:first-child:not(:last-child)';
+const TABLE_CONTROLS = '[data-streamdown="table-wrapper"] > div';
+const POSITIONAL_ANCESTOR =
+  /:(?:first|last|only)-child[^{,]*?>\s*(?:\.relative|button)\b/;
 const TABLE_BUTTON =
   /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 10px;\s*color: var\(--color-chat-icon-fg\);/;
 
@@ -299,3 +327,19 @@ test("a table's toolbar buttons are drawn like the code block's", () => {
     css.includes(`${TABLE_CONTROLS} > .relative {\n\t\tdisplay: flex;`),
   );
 });
+
+test("no positional pseudo-class sits above .relative or button in a selector", () => {
+  const css = readSrc("index.css");
+  const rules = css.match(/[^{}]+\{/g) ?? [];
+  const offenders = rules.filter((rule) => POSITIONAL_ANCESTOR.test(rule));
+  assert.deepEqual(
+    offenders,
+    [],
+    "a :first-child or :last-child above a subject keys the invalidation set on that subject, so inserting before #root (every modal's focus guard) restyled every .relative and button in the app",
+  );
+  assert.ok(
+    css.includes('[data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {\n\t\tmargin-right:'),
+    "on the subject itself the same test only invalidates the controls",
+  );
+});
+

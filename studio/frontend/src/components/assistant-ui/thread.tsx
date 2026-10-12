@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
   normalizeQueuedPrompt,
@@ -20,11 +21,25 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import {
+  compactionNoticeMessageIds,
+  memoOnArrayByKey,
+} from "@/components/assistant-ui/message-derived";
 import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  highlightFenceSource,
+} from "@/components/assistant-ui/markdown-text";
+import { grammarWarmed } from "@/components/assistant-ui/code-fence-defer";
+import {
+  createGrammarPrewarm,
+  type GrammarPrewarm,
+} from "@/components/assistant-ui/grammar-prewarm";
+import { streamActive } from "@/components/assistant-ui/use-reasoning-highlight";
+import { scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import {
   MessageResponseDetailsSheet,
@@ -41,6 +56,7 @@ import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
+import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
@@ -222,6 +238,7 @@ import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   subscribeModelCatalog,
 } from "@/features/chat/provider-capabilities";
@@ -329,6 +346,7 @@ import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
+import { openFilePicker } from "@/lib/open-file-picker";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
@@ -338,6 +356,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -1302,7 +1321,12 @@ function handlePromptQueueRunState(
   if (run.paused) {
     return;
   }
-  if (run.waitingForTargetIdle) {
+  // An idle edge before an unsent prompt dispatches belongs to the cancelled response (steering
+  // race with the dispatch timer); index -1 is the normal wait for the current response.
+  if (
+    run.waitingForTargetIdle ||
+    (run.index >= 0 && !getActivePromptQueueItem(run)?.dispatched)
+  ) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
     const activeItem = run.items[run.index];
@@ -1840,6 +1864,8 @@ const ThreadMessage: FC = () => {
  * The walk stops at the first message the fork did not inherit, so it costs the inherited
  * count rather than the thread length.
  */
+const FORK_BOUNDARY_NONE: readonly string[] = [];
+
 const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   const inherited = useForkBoundaryStore((s) =>
     threadId === null
@@ -1847,7 +1873,9 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
       : s.boundaryByThreadId[threadId]?.messageIds,
   );
   const anchor = useAuiState(({ thread }) =>
-    forkBoundaryAnchor(thread.messages, inherited),
+    memoOnArrayByKey(thread.messages, inherited ?? FORK_BOUNDARY_NONE, () =>
+      forkBoundaryAnchor(thread.messages, inherited),
+    ),
   );
   useEffect(() => {
     setForkBoundaryAnchor(threadId, anchor);
@@ -1930,6 +1958,42 @@ const ForkContinuationRule: FC = () => {
   );
 };
 
+const PREWARM_INPUT_QUIET_MS = 1000;
+const PREWARM_INPUT_EVENTS = [
+  "scroll",
+  "wheel",
+  "pointerdown",
+  "keydown",
+  "touchmove",
+] as const;
+let grammarPrewarm: GrammarPrewarm | null = null;
+
+const startGrammarPrewarm = (): void => {
+  if (grammarPrewarm !== null) return;
+  let lastInputAt = Number.NEGATIVE_INFINITY;
+  const noteInput = () => {
+    lastInputAt = performance.now();
+  };
+  for (const type of PREWARM_INPUT_EVENTS) {
+    document.addEventListener(type, noteInput, { capture: true, passive: true });
+  }
+  grammarPrewarm = createGrammarPrewarm(
+    (code, language, late) => highlightFenceSource(code, language, late),
+    {
+      idle: scheduleQuietIdleTask,
+      wait: (callback, ms) => {
+        const timer = setTimeout(callback, ms);
+        return () => clearTimeout(timer);
+      },
+      quiet: () =>
+        !streamActive()
+        && performance.now() - lastInputAt >= PREWARM_INPUT_QUIET_MS,
+      skip: grammarWarmed,
+    },
+  );
+  grammarPrewarm.start();
+};
+
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
 // inline arrow changes identity each time, invalidating the memo that keeps the message array from
 // being rebuilt, and the bail-out below it would never get to run.
@@ -1942,11 +2006,17 @@ export const Thread: FC<{
   hideWelcome?: boolean;
   targetThreadId?: string;
 }> = memo(({ hideComposer, hideWelcome, targetThreadId }) => {
+  useEffect(() => {
+    startGrammarPrewarm();
+  }, []);
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
   // bottom while the user scrolls up (see the hook for the full explanation).
-  const { ref: viewportRef, context: autoScrollContext } =
-    useIntentAwareAutoScroll();
+  const {
+    ref: viewportRef,
+    markerRef,
+    context: autoScrollContext,
+  } = useIntentAwareAutoScroll();
 
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
@@ -1971,7 +2041,14 @@ export const Thread: FC<{
   // Viewport element is owned by the autoscroll hook; mirror it locally for
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
-  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const [viewportSlot, setViewportSlot] = useState<{
+    el: HTMLElement;
+    threadId: string;
+  } | null>(null);
+  const viewportEl =
+    viewportSlot !== null && viewportSlot.threadId === runtimeThreadId
+      ? viewportSlot.el
+      : null;
   // Same element in an identity-stable ref, so ProgressiveMessages can read the viewport without a
   // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
   // because the Compare panes each mount their own Thread.
@@ -1979,10 +2056,10 @@ export const Thread: FC<{
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
       viewportElRef.current = node;
-      setViewportEl(node);
+      setViewportSlot(node ? { el: node, threadId: runtimeThreadId } : null);
       viewportRef(node);
     },
-    [viewportRef],
+    [viewportRef, runtimeThreadId],
   );
 
   // plain-text copy skips styled data that consumes over 99% of long-thread copy time.
@@ -2045,6 +2122,7 @@ export const Thread: FC<{
       desiredSpacerPxRef.current = null;
       appliedSpacerPxRef.current = null;
       spacerElRef.current?.style.removeProperty("height");
+      autoScrollContext.notifyContentResized();
       return;
     }
     const desired = composerHeight + COMPOSER_SCROLL_GAP_PX;
@@ -2080,6 +2158,7 @@ export const Thread: FC<{
         autoScrollContext.detachFromBottom();
       }
     }
+    autoScrollContext.notifyContentResized();
   }, [composerHeight, hideComposer, autoScrollContext, aui, applySpacerPx, viewportEl]);
 
   // Drop deferred spacer excess once the user has scrolled far enough above
@@ -2159,11 +2238,97 @@ export const Thread: FC<{
     }
   };
 
+  const watchWidthSteps = useCallback(
+    (root: HTMLDivElement | null) =>
+      root ? observeThreadWidthSteps(root) : undefined,
+    [],
+  );
+
   return (
     <GeneratedImageOverlayProvider key={runtimeThreadId} threadId={threadId}>
       <PageDragContext.Provider value={pageDragging}>
+      <IntentAwareScrollProvider value={autoScrollContext}>
+        <ThreadPrimitive.Viewport
+          autoScroll={false}
+          scrollToBottomOnRunStart={false}
+          scrollToBottomOnInitialize={false}
+          scrollToBottomOnThreadSwitch={false}
+          ref={markerRef}
+          className="aui-thread-host hidden"
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          aria-hidden={true}
+        >
+          {viewportEl !== null &&
+            createPortal(
+              <>
+          {!hideWelcome && (
+            <AuiIf
+              condition={({ thread }) => thread.isEmpty && !thread.isLoading}
+            >
+              <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+            </AuiIf>
+          )}
+
+          {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+          the tail and mounts the rest over the following frames. Nothing unmounts and the
+          document converges to the tree this rendered before; consumers that cannot wait call
+          completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
+          reason: React's bail-out needs one shared element per row. See
+          progressive-mount-controller.ts. */}
+          <ProgressiveMessages
+            renderMessage={renderThreadMessage}
+            resetKey={runtimeThreadId}
+            viewportRef={viewportElRef}
+          />
+
+          {/* Bottom slack so the last message has room above the sticky
+          scroll-to-bottom button (and floating composer in single mode),
+          instead of butting against the footer. */}
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <div
+              ref={spacerRef}
+              className={cn(
+                "shrink-0",
+                hideComposer
+                  ? "h-16"
+                  : composerHeight == null
+                    ? "h-40"
+                    : undefined,
+              )}
+              aria-hidden={true}
+            />
+          </AuiIf>
+
+          <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
+            <ThreadPrimitive.ViewportFooter
+              className={cn(
+                "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
+                hideComposer
+                  ? "bottom-3"
+                  : footerBottomPx == null
+                    ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
+                    : undefined,
+              )}
+              style={
+                !hideComposer && footerBottomPx != null
+                  ? { bottom: footerBottomPx }
+                  : undefined
+              }
+            >
+              <ThreadScrollToBottom />
+            </ThreadPrimitive.ViewportFooter>
+          </AuiIf>
+              </>,
+              viewportEl,
+            )}
+        </ThreadPrimitive.Viewport>
+      </IntentAwareScrollProvider>
       <ThreadPrimitive.Root
-        className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+        ref={watchWidthSteps}
+        className="aui-root aui-thread-root relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden [contain:style]"
         style={{
           ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
@@ -2174,83 +2339,17 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {!hideComposer && <AutoReadAloud />}
         <IntentAwareScrollProvider value={autoScrollContext}>
-          <ThreadPrimitive.Viewport
+          <div
             ref={composedViewportRef}
-            autoScroll={false}
-            scrollToBottomOnRunStart={false}
-            scrollToBottomOnInitialize={false}
-            scrollToBottomOnThreadSwitch={false}
             className={cn(
               "aui-thread-viewport aui-stream-viewport relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-x-auto overflow-y-auto scroll-smooth px-5",
               hideComposer
                 ? "pt-4"
-                : // + the chat-model notice, which is an opaque absolute bar
-                  // directly under the header. 0px whenever it is not showing,
-                  // so every other surface keeps the padding it had.
-                  "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] pt-[var(--thread-header-offset)]",
+                : "[--thread-header-offset:calc(var(--studio-content-top-inset,0px)-var(--studio-chat-scroller-top,0px)+var(--studio-chat-header-height,48px))] mt-[var(--studio-chat-scroller-top,0px)] pt-[var(--thread-header-offset)]",
             )}
-          >
-            {!hideWelcome && (
-              <AuiIf
-                condition={({ thread }) => thread.isEmpty && !thread.isLoading}
-              >
-                <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
-              </AuiIf>
-            )}
-
-            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
-            the tail and mounts the rest over the following frames. Nothing unmounts and the
-            document converges to the tree this rendered before; consumers that cannot wait call
-            completeProgressiveMounts. It takes the propless slot #9042 introduced, for the same
-            reason: React's bail-out needs one shared element per row. See
-            progressive-mount-controller.ts. */}
-            <ProgressiveMessages
-              renderMessage={renderThreadMessage}
-              resetKey={runtimeThreadId}
-              viewportRef={viewportElRef}
-            />
-
-            {/* Bottom slack so the last message has room above the sticky
-            scroll-to-bottom button (and floating composer in single mode),
-            instead of butting against the footer. */}
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <div
-                ref={spacerRef}
-                className={cn(
-                  "shrink-0",
-                  hideComposer
-                    ? "h-16"
-                    : composerHeight == null
-                      ? "h-40"
-                      : undefined,
-                )}
-                aria-hidden={true}
-              />
-            </AuiIf>
-
-            <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
-              <ThreadPrimitive.ViewportFooter
-                className={cn(
-                  "aui-thread-viewport-footer pointer-events-none sticky z-20 flex w-full justify-center bg-transparent",
-                  // 150px (was 140px) to add a small gap above the composer
-                  hideComposer
-                    ? "bottom-3"
-                    : footerBottomPx == null
-                      ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
-                      : undefined,
-                )}
-                style={
-                  !hideComposer && footerBottomPx != null
-                    ? { bottom: footerBottomPx }
-                    : undefined
-                }
-              >
-                <ThreadScrollToBottom />
-              </ThreadPrimitive.ViewportFooter>
-            </AuiIf>
-          </ThreadPrimitive.Viewport>
-
+          />
           <GeneratedImageViewportOverlay
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
@@ -2564,7 +2663,8 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
+      {/* With a files panel showing (chat with files, or project sources), center the whole block. */}
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh] has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]">
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* Center the greeting (sloth + title) over the composer. */}
@@ -2606,6 +2706,8 @@ export const ProjectComposer: FC<{
         placeholder={placeholder}
         disableQueue
       />
+      {/* Its file cards open previews; the thread's mount is not on this page. */}
+      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -2794,7 +2896,7 @@ const Composer: FC<{
   const setMentionOpen = useCallback((open: boolean) => {
     mentionOpenRef.current = open;
   }, []);
-  const { inputProps, isComposing, isComposingRef } =
+  const { inputProps, isComposing, isComposingRef, imeSessionOpenRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
       skipEnterRef: mentionConsumesEnterRef,
@@ -3827,11 +3929,15 @@ const Composer: FC<{
   }, [draftKey, pasteDraftKey]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
-    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    justSentRef.current = armSentTextGuard(
+      texts,
+      draftKeyRef.current,
+      imeSessionOpenRef.current,
+    );
     // Here, not beside send(): handleSubmit returns early on the three queueing
     // paths, which empty the composer too.
     setIsWritingExpanded(false);
-  }, []);
+  }, [imeSessionOpenRef]);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -5425,14 +5531,6 @@ const Composer: FC<{
           <PendingAudioChip />
         </>
       ) : null}
-      {/* Keep indexing state subscribed while dictating, but hide its chips so
-          the waveform stays the composer's only status indicator. */}
-      <div className={isDictating ? "hidden" : "contents"}>
-        <ThreadDocumentsBar
-          threadId={referenceThreadId}
-          onIndexingChange={handleIndexingChange}
-        />
-      </div>
       {!isDictating ? <ComposerDraftPreview text={composerText} /> : null}
       {!isDictating ? <ToolStatusDisplay /> : null}
       <div
@@ -5465,6 +5563,7 @@ const Composer: FC<{
               ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
+              <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
               <ImagesToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {mcpEnabledForChat ? (
@@ -5616,6 +5715,13 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
       {youtubeOfferUrl && !isDictating && !disabled ? (
         // Keyed by URL: pasting a second link while the first is still fetching
         // remounts the prompt, so its cleanup aborts the request that is no
@@ -5948,6 +6054,7 @@ function useImeComposerInputHandlers({
     },
     isComposing,
     isComposingRef: composingRef,
+    imeSessionOpenRef,
   };
 }
 
@@ -6000,7 +6107,10 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const supportsPreserveThinking = useChatRuntimeStore(
@@ -6301,7 +6411,10 @@ const WebSearchToggle: FC = () => {
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
@@ -6523,6 +6636,30 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return pickerAcceptForTextBasenames(enabledAccept);
 }
 
+function usePickComposerAttachment(): () => void {
+  const aui = useAui();
+  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
+    const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
+    if (!activeCheckpoint || s.modelLoading) {
+      return true;
+    }
+    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
+    return Boolean(activeModel?.hasAudioInput);
+  });
+  return useCallback(() => {
+    const attachmentAccept = attachmentAcceptForPicker(
+      aui.composer().getState().attachmentAccept,
+      audioAttachmentsEnabled,
+    );
+    openFilePicker(attachmentAccept, (files) => {
+      for (const file of files) {
+        void aui.composer().addAttachment(file);
+      }
+    });
+  }, [aui, audioAttachmentsEnabled]);
+}
+
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
@@ -6552,15 +6689,6 @@ const ComposerToolsMenu: FC<{
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
-  const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
-    const activeCheckpoint = s.params.checkpoint;
-    // No model yet: offer audio too, since files attached now wait for the model loaded next.
-    if (!activeCheckpoint || s.modelLoading) {
-      return true;
-    }
-    const activeModel = s.models.find((m) => m.id === activeCheckpoint);
-    return Boolean(activeModel?.hasAudioInput);
-  });
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -6587,7 +6715,10 @@ const ComposerToolsMenu: FC<{
     externalSelection != null
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  const isKimiExternal = kimiSearchExcludesThinking(
+    selectedExternalProvider?.providerType,
+    externalSelection?.modelId,
+  );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
@@ -6636,37 +6767,7 @@ const ComposerToolsMenu: FC<{
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
   );
-  const pickAttachment = useCallback(() => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.hidden = true;
-
-    const attachmentAccept = attachmentAcceptForPicker(
-      aui.composer().getState().attachmentAccept,
-      audioAttachmentsEnabled,
-    );
-    if (attachmentAccept !== "*") {
-      input.accept = attachmentAccept;
-    }
-
-    document.body.appendChild(input);
-    input.onchange = (event) => {
-      const files = (event.target as HTMLInputElement).files;
-      if (files) {
-        for (const file of files) {
-          void aui.composer().addAttachment(file);
-        }
-      }
-      document.body.removeChild(input);
-    };
-    input.oncancel = () => {
-      if (!input.files || input.files.length === 0) {
-        document.body.removeChild(input);
-      }
-    };
-    input.click();
-  }, [aui, audioAttachmentsEnabled]);
+  const pickAttachment = usePickComposerAttachment();
   // Straight to the picker, skipping the "+" menu the item lives in. Off-route
   // the chat pane is hidden rather than unmounted, so the chords gate on it
   // being the visible tab; a window listener does not care about `inert`.
@@ -7073,8 +7174,13 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
+        {/* Browser use sits right under Chat with files, or leads this section without it. */}
+        {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
         {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          <Fragment key={id}>
+            {plusMenuNodes[id]}
+            {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
+          </Fragment>
         ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
@@ -7445,7 +7551,11 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span className="generating-glint text-sm text-muted-foreground">
+      Working...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -7496,15 +7606,21 @@ function useContinuation() {
   const partial = useAuiState(
     ({ message }) => readContinuationSource(message.content).partial,
   );
-  const reasoning = useAuiState(
-    ({ message }) => readContinuationSource(message.content).reasoning,
+  const reasoning = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? ""
+      : readContinuationSource(message.content).reasoning,
   );
   // Gemini signs answer and thought parts. A continuation runs from a sibling branch,
   // so both kinds of replay metadata travel with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
   );
-  const messageContent = useAuiState(({ message }) => message.content);
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? undefined
+      : message.content,
+  );
   const thoughtParts = useMemo(
     () => collectGeminiThoughtReplayParts(messageContent),
     [messageContent],
@@ -7915,7 +8031,11 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
-  const messageContent = useAuiState(({ message }) => message.content);
+  const messageContent = useAuiState(({ message }) =>
+    "status" in message && message.status?.type === "running"
+      ? null
+      : message.content,
+  );
   const metadataResearchRunId = useAuiState(({ message }) =>
     getResearchRunId(message.metadata),
   );
@@ -8033,7 +8153,7 @@ const AssistantMessage: FC = () => {
             <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
               <textarea
                 ref={textareaRef}
-                defaultValue={extractTaggedText(messageContent)}
+                defaultValue={extractTaggedText(messageContent ?? [])}
                 className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
                 autoFocus
                 onInput={adjustHeight}

@@ -25,6 +25,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.language.label",
     "settings.appearance.language.spellCheck",
     "settings.general.notifications.sectionTitle",
+    "settings.general.notifications.showUnslothUpdates",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
     "settings.general.notifications.showAudioCppUpdates",
@@ -126,6 +127,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.toolResultLimit",
     "settings.chat.autoScroll",
     "settings.chat.scrollToBottomButton",
     "settings.profile.greetingSloth",
@@ -138,6 +140,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.menu.title",
   ],
   browser: [
+    "browser.agentSettings.title",
+    "browser.agentSettings.enable",
+    "browser.agentSettings.history",
+    "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",
     "browser.openFilesSetting",
@@ -242,6 +248,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
     "settings.voice.readAloud.buttonLabel",
+    "settings.voice.readAloud.autoLabel",
     "settings.voice.readAloud.engineLabel",
     "settings.voice.readAloud.voiceLabel",
     "settings.voice.readAloud.speedLabel",
@@ -383,6 +390,7 @@ const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.sandbox.python",
   "settings.sandbox.terminal",
   "settings.apiKeys.mcp.title",
+  "settings.chat.toolResultLimit",
 ]);
 
 export function renderedSearchEntries(
@@ -421,6 +429,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
+  "settings.chat.toolResultLimit": "settings.chat.toolResultLimitKeywords",
   // match action verbs omitted from these descriptive labels.
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
