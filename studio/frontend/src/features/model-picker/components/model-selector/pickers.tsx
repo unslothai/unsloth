@@ -3058,8 +3058,7 @@ export function HubModelPicker({
   // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
   // left the parent rows and the "Fits on device" filter on the 0.97 default.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
-  // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
-  // whatever their size. Task pages keep their own formats.
+  // Natively runnable FP8 / NVFP4 checkpoints skip chat's GGUF-only and fit gates; task pages keep theirs.
   const quantFormatsKey = gpu.checkpointQuantFormats.join(",");
   const runsCheckpointQuant = useCallback(
     (r: { id: string; quantMethod?: string; isGguf?: boolean }) =>
@@ -3665,8 +3664,7 @@ export function HubModelPicker({
     },
     [deviceType, task],
   );
-  // A capable FP8 / NVFP4 checkpoint passes the runtime gate's quant-method check (vLLM loads
-  // compressed-tensors), never its pipeline check: an FP8 image model stays off the chat list.
+  // Waives only the quant-method check, never the pipeline one: an FP8 image model stays off chat.
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||

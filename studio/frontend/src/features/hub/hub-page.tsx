@@ -1004,8 +1004,7 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones; a typed
-        // search and every other format show all matches.
+        // Recommended curates browsing to logo'd or well-liked models; a typed search shows all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||

@@ -28,7 +28,6 @@ export function matchesFormat(
         ? "gguf"
         : "safetensors"
       : modelFormat;
-  // Recommended's FP8 / NVFP4 checkpoints need the repo id: see matchesRecommended.
   if (formatFilter === "gguf" || formatFilter === "recommended") {
     return normalized === "gguf";
   }
@@ -71,8 +70,7 @@ const OTHER_QUANT_METHOD = new Set([
   "bitsandbytes",
 ]);
 
-/** The prequantized checkpoint format ("fp8" / "nvfp4") a non-GGUF repo ships, from its name or
- *  quant config, or null. */
+/** "fp8" / "nvfp4" for a prequantized non-GGUF checkpoint, from its name or quant config. */
 export function checkpointQuantFormat(result: {
   id: string;
   isGguf: boolean;

@@ -2754,7 +2754,6 @@ def get_system_info(
         "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
-        # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
         "checkpoint_quant_formats": _checkpoint_quant_formats(),
     }
 

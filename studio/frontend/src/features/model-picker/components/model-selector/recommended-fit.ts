@@ -48,7 +48,6 @@ export function isRecommendableFormat(
   return isMac;
 }
 
-/** An FP8 / NVFP4 checkpoint (not a GGUF) this host's GPUs run natively. */
 export function isCapableCheckpointQuant(
   id: string,
   quantMethod: string | undefined,
