@@ -49,6 +49,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
+import { VideoGenerationApiDocs } from "./video-generation-api-docs";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { unloadResident } from "./unload-resident";
 import {
@@ -906,6 +907,8 @@ export function ApiMonitorPage(): ReactElement {
           </span>
         ) : null}
       </section>
+
+      <VideoGenerationApiDocs baseUrl={baseUrl} />
 
       {error || unloadError ? (
         <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
