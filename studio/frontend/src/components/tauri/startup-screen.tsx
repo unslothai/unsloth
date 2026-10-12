@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -428,6 +429,7 @@ function StartupSurface({ children }: { children: ReactNode }) {
  * the live tree; Z_LAYER.STARTUP_SCREEN clears the titlebar and floating panels.
  */
 export function ClosingScreen() {
+  useDocumentFlag("data-blocking-screen-open", true);
   return (
     // pointer-events-auto: Radix parks pointer-events:none on <body> while a modal is open, which
     // would make this overlay click-through onto the hidden dialog.

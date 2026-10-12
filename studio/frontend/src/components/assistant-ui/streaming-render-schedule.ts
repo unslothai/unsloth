@@ -854,6 +854,33 @@ export type IncrementalMarkdownRender = {
 };
 
 const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
+const LINK_REPAIR_MEMO_ENTRIES = 256;
+const LINK_REPAIR_MEMO_CHARACTERS = 4_194_304;
+const linkRepairMemo = new Map<string, boolean>();
+let linkRepairMemoCharacters = 0;
+
+function addsIncompleteLinkPlaceholder(source: string, after: string): boolean {
+  return (
+    after.split(INCOMPLETE_LINK_REPAIR).length >
+    source.split(INCOMPLETE_LINK_REPAIR).length
+  );
+}
+
+function rememberLinkRepair(source: string, value: boolean): boolean {
+  if (source.length > LINK_REPAIR_MEMO_CHARACTERS) return value;
+  linkRepairMemo.set(source, value);
+  linkRepairMemoCharacters += source.length;
+  while (
+    linkRepairMemo.size > LINK_REPAIR_MEMO_ENTRIES ||
+    linkRepairMemoCharacters > LINK_REPAIR_MEMO_CHARACTERS
+  ) {
+    const oldest = linkRepairMemo.keys().next();
+    if (oldest.done) break;
+    linkRepairMemo.delete(oldest.value);
+    linkRepairMemoCharacters -= oldest.value.length;
+  }
+  return value;
+}
 
 export function hasIncompleteLinkRepair(
   source: string,
@@ -861,10 +888,18 @@ export function hasIncompleteLinkRepair(
 ): boolean {
   // Only an unclosed `[` gets the placeholder, so bracket-free replies skip the remend pass.
   if (!source.includes("[")) return false;
-  const after = repaired ?? remend(source);
-  return (
-    after.split(INCOMPLETE_LINK_REPAIR).length >
-    source.split(INCOMPLETE_LINK_REPAIR).length
+  if (repaired !== undefined) {
+    return addsIncompleteLinkPlaceholder(source, repaired);
+  }
+  const remembered = linkRepairMemo.get(source);
+  if (remembered !== undefined) {
+    linkRepairMemo.delete(source);
+    linkRepairMemo.set(source, remembered);
+    return remembered;
+  }
+  return rememberLinkRepair(
+    source,
+    addsIncompleteLinkPlaceholder(source, remend(source)),
   );
 }
 
@@ -1422,17 +1457,43 @@ export class IncrementalMarkdownCache {
   }
 }
 
+type RehypePluginList = NonNullable<BlockProps["rehypePlugins"]>;
+
+const samePluginEntry = (
+  a: RehypePluginList[number],
+  b: RehypePluginList[number],
+): boolean =>
+  a === b
+  || (Array.isArray(a)
+    && Array.isArray(b)
+    && a.length === b.length
+    && a.every((value, index) => value === b[index]));
+
+const filteredPluginLists = new WeakMap<RehypePluginList, RehypePluginList>();
+let lastFilteredPluginList: RehypePluginList | null = null;
+
 export function withoutStreamdownAnimationPlugin(
   rehypePlugins: BlockProps["rehypePlugins"],
   animatePlugin: BlockProps["animatePlugin"],
 ): BlockProps["rehypePlugins"] {
   const animationPlugin = animatePlugin?.rehypePlugin;
-  if (!animationPlugin) {
+  if (!animationPlugin || !rehypePlugins) {
     return rehypePlugins;
   }
-
-  return rehypePlugins?.filter((plugin) => {
+  const known = filteredPluginLists.get(rehypePlugins);
+  if (known !== undefined) return known;
+  const filtered = rehypePlugins.filter((plugin) => {
     const pluginFunction = Array.isArray(plugin) ? plugin[0] : plugin;
     return pluginFunction !== animationPlugin;
   });
+  const previous = lastFilteredPluginList;
+  const stable =
+    previous !== null
+    && previous.length === filtered.length
+    && previous.every((plugin, index) => samePluginEntry(plugin, filtered[index]))
+      ? previous
+      : filtered;
+  filteredPluginLists.set(rehypePlugins, stable);
+  lastFilteredPluginList = stable;
+  return stable;
 }

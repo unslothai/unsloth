@@ -39,15 +39,17 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
   assert.doesNotMatch(thread, DOCK_ONE_SIDED);
 });
 
-// The UI scale does not touch the scrollbar gutter, so the inset must not scale either.
+// The gutter is a scrollbar, which the UI scale does not touch, so a scaled inset drifted the
+// composer off the message column. The thread keeps Chromium's thin standard scrollbar on
+// Windows too, so there is one gutter width everywhere.
 test("the overlays around the thread stop at its real scrollbar gutter", async () => {
   const css = await readSrcAsync("index.css");
-  for (const rule of [
-    ":root {\n\t--thread-scrollbar-gutter: 10px;",
-    ":root.client-windows {\n\t\t--thread-scrollbar-gutter: 8px;",
-  ]) {
-    assert.ok(css.includes(rule), rule);
-  }
+  assert.match(css, /@property --thread-scrollbar-gutter \{\s*syntax: "<length>";\s*inherits: false;\s*initial-value: 10px;/);
+  assert.ok(!css.includes("--thread-scrollbar-gutter: 8px;"));
+  assert.match(
+    css,
+    /:root\.client-windows \.aui-thread-viewport \{\s*scrollbar-width: thin;/,
+  );
   for (const file of [
     "features/chat/chat-page.tsx",
     "components/assistant-ui/thread.tsx",

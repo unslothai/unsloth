@@ -10,6 +10,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTheme } from "@/features/settings/stores/theme-store";
 import { createLoadingToastIcon } from "@/lib/toast";
+import { cornerInsetScope } from "@/lib/toast-offset";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
 // Sonner's setPointerCapture blocks text selection; swallow pointerdown on toast text only.
@@ -35,6 +36,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
     // display:contents adds no box; only carries the selection-fix handler.
     // biome-ignore lint/a11y/noStaticElementInteractions: capture-only guard, not interactive
     <div
+      ref={cornerInsetScope}
       style={{ display: "contents" }}
       onPointerDownCapture={handleToastPointerDownCapture}
     >

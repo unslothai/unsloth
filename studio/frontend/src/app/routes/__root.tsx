@@ -63,7 +63,6 @@ import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
@@ -90,7 +89,7 @@ import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
 import type { SettingsMenuAction } from "../app-menu-chords";
-import { useAppMenuActions } from "../use-app-menu-actions";
+import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -511,10 +510,11 @@ function RootLayout() {
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const openingFolder = useOpeningFolder();
   const desktopShellReady = useDesktopShellReady();
-  const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
-  const findMounted = useShortcutAvailable("findInPage", isTauri);
-  const previousChatMounted = useShortcutAvailable("previousChat", isTauri);
-  const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
+  // Menu items for web shortcuts are live exactly while a mounted handler would take them.
+  const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
+  const findMounted = useShortcutAvailable("findInPage", hasAppMenus);
+  const previousChatMounted = useShortcutAvailable("previousChat", hasAppMenus);
+  const nextChatMounted = useShortcutAvailable("nextChat", hasAppMenus);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
   const isOwner = useIsAccountOwner();

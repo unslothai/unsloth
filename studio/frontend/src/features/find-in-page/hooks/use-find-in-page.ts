@@ -232,20 +232,43 @@ export function useFindInPage(
       search(false, reindex());
     });
 
-    // No reveal: something moved under the reader, they did not ask to go anywhere.
+    let scrolledAt = Number.NEGATIVE_INFINITY;
+    let reindexBy = Number.POSITIVE_INFINITY;
+    const noteScroll = () => {
+      scrolledAt = performance.now();
+    };
+    const flush = () => {
+      const now = performance.now();
+      const wait = Math.min(
+        REINDEX_INTERVAL_MS - (now - scrolledAt),
+        reindexBy - now,
+      );
+      if (wait > 0) {
+        timerRef.current = setTimeout(flush, wait);
+        return;
+      }
+      timerRef.current = null;
+      if (!staleRef.current) return;
+      search(false, reindex());
+    };
+
+    // Mark the index stale and schedule one rebuild. No reveal: something moved under the reader,
+    // they did not ask to go anywhere.
     const invalidate = () => {
       staleRef.current = true;
       if (queryRef.current.length === 0) return;
       if (timerRef.current !== null) return;
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        if (!staleRef.current) return;
-        search(false, reindex());
-      }, REINDEX_INTERVAL_MS);
+      reindexBy = performance.now() + 4 * REINDEX_INTERVAL_MS;
+      timerRef.current = setTimeout(flush, REINDEX_INTERVAL_MS);
     };
 
     // Breakpoints hide columns without DOM mutations, so resize must invalidate too.
     window.addEventListener("resize", invalidate);
+    window.addEventListener("wheel", noteScroll, { capture: true, passive: true });
+    window.addEventListener("touchmove", noteScroll, {
+      capture: true,
+      passive: true,
+    });
 
     // Container queries change without a window resize, so observe the scope's size.
     let sized: ResizeObserver | null = null;
@@ -293,6 +316,8 @@ export function useFindInPage(
       live = false;
       cancelRevealPasses();
       window.removeEventListener("resize", invalidate);
+      window.removeEventListener("wheel", noteScroll, { capture: true });
+      window.removeEventListener("touchmove", noteScroll, { capture: true });
       sized?.disconnect();
       observer?.disconnect();
       if (timerRef.current !== null) {
@@ -325,12 +350,22 @@ export function useFindInPage(
 
   const step = useCallback(
     (delta: number) => {
-      const count = matchesRef.current.length;
+      const matches = matchesRef.current;
+      const count = matches.length;
       if (count === 0) return;
       activeRef.current = (activeRef.current + delta + count) % count;
+      const target = matches[activeRef.current];
+      if (staleRef.current) {
+        const range = rangeForMatch(indexRef.current, target);
+        if (!(range?.startContainer.isConnected && range.endContainer.isConnected)) {
+          activeStartRef.current = target.start;
+          search(true, reindex());
+          return;
+        }
+      }
       apply(true);
     },
-    [apply],
+    [apply, reindex, search],
   );
 
   const next = useCallback(() => step(1), [step]);

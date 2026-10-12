@@ -321,6 +321,8 @@ function createEnvironment(options: {
   const fontFaces: Array<{ family: string; source: string }> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
   let scrollRestoreCalls = 0;
+  let attributeObserver: ((records: { attributeName: string }[]) => void) | null = null;
+  let observingAttributes = false;
   const bodyTree = options.rootTree
     ? createElement({
         tag: "body",
@@ -366,6 +368,9 @@ function createEnvironment(options: {
     },
     removeAttribute: (name: string) => {
       htmlAttributes.delete(name);
+    },
+    get attributes() {
+      return [...htmlAttributes].map(([name, value]) => ({ name, value }));
     },
     appendChild(element: { innerHTML: string; removed: boolean }) {
       appended.push(element);
@@ -437,6 +442,11 @@ function createEnvironment(options: {
         setAttribute(name: string, value: string) {
           element.attributes[name] = value;
         },
+        toggleAttribute(name: string, force: boolean) {
+          if (force) element.attributes[name] = "";
+          else delete element.attributes[name];
+          return force;
+        },
         getAttribute(name: string) {
           return element.attributes[name] ?? null;
         },
@@ -481,6 +491,19 @@ function createEnvironment(options: {
       // Timer bookkeeping is outside this lifecycle test.
     },
     document,
+    MutationObserver: class {
+      constructor(callback: (records: { attributeName: string }[]) => void) {
+        attributeObserver = callback;
+      }
+      observe(target: unknown, options: { attributes: boolean }) {
+        assert.equal(target, documentElement);
+        assert.equal(options.attributes, true);
+        observingAttributes = true;
+      }
+      disconnect() {
+        observingAttributes = false;
+      }
+    },
     getComputedStyle: (element: StubElement) =>
       (element as unknown) === documentElement
         ? documentElement.style
@@ -528,6 +551,14 @@ function createEnvironment(options: {
     appended,
     htmlVariables: documentElement.style,
     htmlAttributes,
+    get observingAttributes() {
+      return observingAttributes;
+    },
+    changeRootAttribute(name: string, value: string | null) {
+      if (value === null) htmlAttributes.delete(name);
+      else htmlAttributes.set(name, value);
+      if (observingAttributes) attributeObserver?.([{ attributeName: name }]);
+    },
     get scrollRestoreCalls() {
       return scrollRestoreCalls;
     },
@@ -1158,6 +1189,48 @@ test("roots the copy in an html element so html-anchored rules still match", () 
     "data-palette": "classic",
     "data-contrast-adjust": "",
   });
+});
+
+test("gives the copy's root the live root's viewport gates, so width-gated rules match the same", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    htmlAttributes: { "data-palette": "classic" },
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    htmlAttributes: {
+      lang: "en",
+      "data-mq-min-width-40rem": "",
+      "data-mq-min-width-48rem": "",
+    },
+  });
+  assert.deepEqual(incoming.shell?.rootAttributes, {
+    "data-palette": "classic",
+    "data-mq-min-width-40rem": "",
+    "data-mq-min-width-48rem": "",
+  });
+  incoming.changeRootAttribute("data-mq-min-width-48rem", null);
+  incoming.changeRootAttribute("data-mq-min-width-64rem", "");
+  incoming.changeRootAttribute("data-palette", "changed");
+  assert.deepEqual(incoming.shell?.rootAttributes, {
+    "data-palette": "classic",
+    "data-mq-min-width-40rem": "",
+    "data-mq-min-width-64rem": "",
+  });
+  assert.equal(incoming.observingAttributes, true);
+  incoming.dispatch("unsloth:app-shell-ready");
+  incoming.runAnimationFrame();
+  incoming.runAnimationFrame();
+  assert.equal(incoming.observingAttributes, false);
+  incoming.changeRootAttribute("data-mq-min-width-40rem", null);
+  assert.equal(incoming.shell?.rootAttributes["data-mq-min-width-40rem"], "");
 });
 
 test("freezes the design tokens onto the copy's own root", () => {

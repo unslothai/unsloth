@@ -79,7 +79,7 @@ function User() {
             <button className="aui-branch-chevron-btn" aria-label="Previous">
               ‹
             </button>
-            <span className="font-mono tabular-nums">1/2</span>
+            <span className="aui-branch-picker-state font-mono tabular-nums">1/2</span>
             <button className="aui-branch-chevron-btn" aria-label="Next">
               ›
             </button>

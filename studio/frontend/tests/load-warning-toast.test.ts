@@ -31,6 +31,10 @@ function chatApi(body: Record<string, unknown>) {
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
       "./skill-load-event": { skillLoadCardEvent },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/features/auth": {
         authFetch: async () => ({
           status: 200,

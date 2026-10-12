@@ -28,7 +28,9 @@ const RE_ATTACH_THRESHOLD_PX = 24;
 const TOUCH_MOVE_THRESHOLD_PX = 4;
 // Summed, not per event, so 1px-per-event sources still detach.
 const UPWARD_DETACH_THRESHOLD_PX = 2;
-// Pin window; extends on every resize/mutation, settling this long after the last change.
+const SCROLL_KEY_WINDOW_MS = 500;
+// Window the viewport stays pinned through layout/content races. Extends on every resize/mutation,
+// so streaming keeps it pinned; settles this long after the last change.
 const FOLLOW_SETTLE_MS = 600;
 // Content can grow with no mutation or border-box resize (image decode, fonts, KaTeX), so a
 // quiet pinned frame re-checks layout on this timer.
@@ -44,8 +46,16 @@ type AutoScrollContextValue = {
   subscribe: (listener: () => void) => () => void;
   /** Detach as if scrolled up: composer growth must not let observer pins shove the chat up. */
   detachFromBottom: () => void;
-  /** Shift by content inserted above; called on every widening commit, zero included. */
-  adjustForContentInsertedAbove: (deltaPx: number) => void;
+  /**
+   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
+   * user keeps looking at the same thing. Progressive mounting (see
+   * progressive-mount-controller) is the only caller and calls on EVERY
+   * widening commit, zero included, since a zero correction still resyncs the
+   * intent bookkeeping below. A method rather than a scrollTop write at the
+   * inserting commit because this hook owns scrollTop.
+   */
+  adjustForContentInsertedAbove: (deltaPx: number) => boolean;
+  notifyContentResized: () => void;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -59,9 +69,8 @@ const noopContext: AutoScrollContextValue = {
   detachFromBottom: () => {
     /* no viewport mounted */
   },
-  adjustForContentInsertedAbove: () => {
-    /* no viewport mounted */
-  },
+  adjustForContentInsertedAbove: () => false,
+  notifyContentResized: () => undefined,
 };
 
 const AutoScrollContext = createContext<AutoScrollContextValue>(noopContext);
@@ -84,7 +93,8 @@ export function useScrollThreadToBottom(): ScrollToBottom {
   return useContext(AutoScrollContext).scrollToBottom;
 }
 
-export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
+/** See AutoScrollContextValue.adjustForContentInsertedAbove. */
+export function useAdjustForContentInsertedAbove(): (deltaPx: number) => boolean {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
 }
 
@@ -100,10 +110,15 @@ export function useIsThreadAtBottom(): boolean {
 
 export function useIntentAwareAutoScroll(): {
   ref: RefCallback<HTMLElement>;
+  markerRef: RefCallback<HTMLElement>;
   context: AutoScrollContextValue;
 } {
   const aui = useAui();
   const cleanupRef = useRef<(() => void) | null>(null);
+  const markerElRef = useRef<HTMLElement | null>(null);
+  const markerRef = useCallback<RefCallback<HTMLElement>>((node) => {
+    markerElRef.current = node;
+  }, []);
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
@@ -123,6 +138,7 @@ export function useIntentAwareAutoScroll(): {
   const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
     /* no viewport mounted */
   });
+  const tickRequestRef = useRef<() => void>(() => undefined);
 
   const getIsAtBottom = useCallback(() => isAtBottomRef.current, []);
 
@@ -154,6 +170,11 @@ export function useIntentAwareAutoScroll(): {
 
   const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
     adjustImplRef.current(deltaPx);
+    return userDetachedRef.current;
+  }, []);
+
+  const notifyContentResized = useCallback(() => {
+    tickRequestRef.current();
   }, []);
 
   const attach = useCallback(
@@ -167,6 +188,8 @@ export function useIntentAwareAutoScroll(): {
       let lastClientHeight = el.clientHeight;
       let upwardAccumulator = 0;
       let touchStartY = 0;
+      let scrollKeyAt = Number.NEGATIVE_INFINITY;
+      let pointerHeld = false;
 
       const distanceFromBottom = (): number => {
         if (el.scrollHeight <= el.clientHeight) {
@@ -175,11 +198,16 @@ export function useIntentAwareAutoScroll(): {
         return el.scrollHeight - el.scrollTop - el.clientHeight;
       };
       let lastDistanceFromBottom = distanceFromBottom();
+      let lastScrollHeight = el.scrollHeight;
 
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
 
-      // A gesture with nothing above must not detach, or auto-follow stays dead for the session.
+      const marker = (): HTMLElement => markerElRef.current ?? el;
+
+      // Room to scroll upward. Guards wheel/touch detach: a gesture on a viewport with nothing
+      // above can't express intent to leave the bottom and must not flip userDetachedRef, else
+      // later streaming skips extendFollow and auto-follow stays dead for the session.
       const canScrollUp = (): boolean => el.scrollTop > 0;
 
       // An inner scroller with room above consumes the upward delta, so it must not detach.
@@ -263,6 +291,7 @@ export function useIntentAwareAutoScroll(): {
       };
 
       let parked = false;
+      let pendingInitialPin = false;
 
       const detach = (): void => {
         parked = false;
@@ -283,6 +312,7 @@ export function useIntentAwareAutoScroll(): {
         if (ceiling === null || el.scrollHeight - el.clientHeight < ceiling) {
           return false;
         }
+        pendingInitialPin = false;
         el.scrollTo({ top: ceiling, behavior: "instant" });
         detach();
         parked = true;
@@ -294,6 +324,7 @@ export function useIntentAwareAutoScroll(): {
           rafId = requestAnimationFrame(tick);
         }
       };
+      tickRequestRef.current = requestTick;
 
       // A quiet pinned frame hands the window to this self-rearming timer. See SETTLE_CHECK_MS.
       const scheduleSettleCheck = (): void => {
@@ -302,6 +333,7 @@ export function useIntentAwareAutoScroll(): {
         }
         const remaining = followUntilRef.current - performance.now();
         if (remaining <= 0) {
+          requestTick();
           return;
         }
         settleTimer = window.setTimeout(
@@ -322,14 +354,24 @@ export function useIntentAwareAutoScroll(): {
         settleCheckDue = false;
         // Park first so a frame without an observer record can't overshoot.
         parkIfHeld();
+        if (pendingInitialPin && el.querySelector("[data-role]") !== null) {
+          pendingInitialPin = false;
+          if (el.scrollHeight > el.clientHeight) {
+            parked = false;
+            userDetachedRef.current = false;
+            extendFollow();
+          }
+        }
         const following =
           !userDetachedRef.current &&
           (settling || performance.now() < followUntilRef.current);
 
         if (following) {
+          marker().toggleAttribute("data-aui-following", true);
+          const scrollHeight = stabilize();
           const pinned = atBottomStrict();
-          if (!pinned && el.scrollHeight > el.clientHeight) {
-            el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+          if (!pinned && scrollHeight > el.clientHeight) {
+            el.scrollTo({ top: scrollHeight, behavior: "instant" });
           }
           setIsAtBottom(true);
           if (layoutChanged || !pinned) {
@@ -341,6 +383,7 @@ export function useIntentAwareAutoScroll(): {
           return;
         }
 
+        marker().toggleAttribute("data-aui-following", false);
         setIsAtBottom(atBottomStrict());
       };
 
@@ -349,6 +392,7 @@ export function useIntentAwareAutoScroll(): {
         userDetachedRef.current = false;
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
         if (el.scrollHeight > el.clientHeight) {
+          pendingInitialPin = false;
           el.scrollTo({ top: el.scrollHeight, behavior });
         }
         setIsAtBottom(true);
@@ -360,8 +404,19 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
-      // Only matters while DETACHED: when following, pinIfFollowing already lands on the same pixel.
-      // `behavior: "instant"` is required because the viewport has `scroll-smooth`.
+      // Content inserted above the viewport by a progressive-mount widening. THIS HOOK OWNS
+      // scrollTop; the progressive mount only reports the height it put above the fold, so the two
+      // never both write. While the user is FOLLOWING there is deliberately nothing to do: the
+      // MutationObserver below already requests the tick, which pins in the same frame before
+      // paint, and since widening only prepends, "pin to the bottom" and "shift by the
+      // height inserted above" are the same pixel. Correcting here too would double the forced
+      // layouts per frame and its scroll event could re-attach a user who deliberately detached
+      // within RE_ATTACH_THRESHOLD_PX of the bottom. While the user is DETACHED nothing else moves
+      // the viewport: extendFollow early-returns, stabilize only rebases its high-water mark, and
+      // pinIfFollowing returns without scrolling. So this is the only actor, and without it the
+      // page slides down under the reader every widening frame. `behavior: "instant"` is required:
+      // the viewport carries `scroll-smooth`, so an animated write would still be in flight at the
+      // next frame's write.
       adjustImplRef.current = (deltaPx: number) => {
         if (!userDetachedRef.current) {
           return;
@@ -373,6 +428,7 @@ export function useIntentAwareAutoScroll(): {
         // scroll event would otherwise read as a downward scroll that re-attaches the user.
         lastScrollTop = el.scrollTop;
         lastDistanceFromBottom = distanceFromBottom();
+        lastScrollHeight = el.scrollHeight;
       };
 
       const onWheel = (e: WheelEvent) => {
@@ -381,8 +437,38 @@ export function useIntentAwareAutoScroll(): {
           canScrollUp() &&
           !innerScrollWillConsumeUpward(e.target)
         ) {
+          pendingInitialPin = false;
           detach();
         }
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (
+          e.defaultPrevented ||
+          !(
+            e.key === "ArrowUp" ||
+            e.key === "PageUp" ||
+            e.key === "Home" ||
+            (e.key === " " && e.shiftKey)
+          )
+        ) {
+          return;
+        }
+        const target = e.target instanceof HTMLElement ? e.target : null;
+        if (
+          target?.isContentEditable ||
+          target?.closest("input, textarea, select")
+        ) {
+          return;
+        }
+        scrollKeyAt = performance.now();
+      };
+
+      const onPointerDown = () => {
+        pointerHeld = true;
+      };
+      const onPointerUp = () => {
+        pointerHeld = false;
       };
 
       const onTouchStart = (e: TouchEvent) => {
@@ -397,6 +483,7 @@ export function useIntentAwareAutoScroll(): {
           canScrollUp() &&
           !innerScrollWillConsumeUpward(e.target)
         ) {
+          pendingInitialPin = false;
           detach();
         }
       };
@@ -410,6 +497,7 @@ export function useIntentAwareAutoScroll(): {
 
         const delta = scrollTop - lastScrollTop;
         const distanceNow = distanceFromBottom();
+        const scrollHeight = el.scrollHeight;
 
         // Resizes can clamp scrollTop and fake direction; only deliberate scrolls flip intent.
         if (sizeChanged) {
@@ -427,9 +515,23 @@ export function useIntentAwareAutoScroll(): {
         } else if (delta < 0 && !userDetachedRef.current) {
           // Count distance-from-bottom growth, not scrollTop: anchoring moves scrollTop, distance stays put.
           const distanceDelta = distanceNow - lastDistanceFromBottom;
-          if (distanceDelta > 0) {
+          const keyed =
+            performance.now() - scrollKeyAt < SCROLL_KEY_WINDOW_MS;
+          // Leaving a pinned bottom in the same event the content changed, with no key or pointer
+          // behind it, is a clamp (something below shrank as a new row landed), not the user.
+          const clamped =
+            lastDistanceFromBottom <= AT_BOTTOM_THRESHOLD_PX &&
+            scrollHeight !== lastScrollHeight &&
+            !keyed &&
+            !pointerHeld;
+          if (
+            distanceDelta > 0 &&
+            !clamped &&
+            (keyed || scrollHeight >= lastScrollHeight)
+          ) {
             upwardAccumulator += distanceDelta;
             if (upwardAccumulator >= UPWARD_DETACH_THRESHOLD_PX) {
+              pendingInitialPin = false;
               detach();
               upwardAccumulator = 0;
             }
@@ -440,6 +542,7 @@ export function useIntentAwareAutoScroll(): {
         lastClientWidth = clientWidth;
         lastClientHeight = clientHeight;
         lastDistanceFromBottom = distanceNow;
+        lastScrollHeight = scrollHeight;
         requestTick();
       };
 
@@ -502,8 +605,20 @@ export function useIntentAwareAutoScroll(): {
         requestTick();
       };
 
+      const onMutation = (): void => {
+        if (el.ownerDocument.hidden) {
+          onLayoutChange();
+          return;
+        }
+        layoutChanged = true;
+        if (!parkIfHeld()) {
+          extendFollow();
+        }
+        requestTick();
+      };
+
       const resizeObserver = new ResizeObserver(onLayoutChange);
-      const mutationObserver = new MutationObserver(onLayoutChange);
+      const mutationObserver = new MutationObserver(onMutation);
       const onViewportResize = onLayoutChange;
 
       // Only a fresh attach pins: React re-runs the composed ref on unrelated renders for the same element.
@@ -514,6 +629,8 @@ export function useIntentAwareAutoScroll(): {
         extendFollow();
         if (el.scrollHeight > el.clientHeight) {
           el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+        } else {
+          pendingInitialPin = true;
         }
         setIsAtBottom(true);
       }
@@ -539,7 +656,15 @@ export function useIntentAwareAutoScroll(): {
       el.addEventListener("touchstart", onTouchStart, { passive: true });
       el.addEventListener("touchmove", onTouchMove, { passive: true });
       el.addEventListener("scroll", onScroll, { passive: true });
-      // visualViewport.resize is the only signal for iOS software-keyboard changes.
+      el.ownerDocument.addEventListener("keydown", onKeyDown, {
+        passive: true,
+      });
+      el.addEventListener("pointerdown", onPointerDown, { passive: true });
+      el.ownerDocument.addEventListener("pointerup", onPointerUp, true);
+      el.ownerDocument.addEventListener("pointercancel", onPointerUp, true);
+      // ResizeObserver covers window resizes. visualViewport.resize is the
+      // only signal for iOS software-keyboard changes, where the visual
+      // viewport shrinks without the element's clientHeight changing.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
       const unsubscribePreferences = useChatPreferencesStore.subscribe(
@@ -566,12 +691,17 @@ export function useIntentAwareAutoScroll(): {
           rafId = null;
         }
         clearSettleCheck();
+        marker().removeAttribute("data-aui-following");
         resizeObserver.disconnect();
         mutationObserver.disconnect();
         el.removeEventListener("wheel", onWheel);
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("scroll", onScroll);
+        el.ownerDocument.removeEventListener("keydown", onKeyDown);
+        el.removeEventListener("pointerdown", onPointerDown);
+        el.ownerDocument.removeEventListener("pointerup", onPointerUp, true);
+        el.ownerDocument.removeEventListener("pointercancel", onPointerUp, true);
         window.visualViewport?.removeEventListener("resize", onViewportResize);
         scrollImplRef.current = () => {
           /* no viewport mounted */
@@ -582,12 +712,13 @@ export function useIntentAwareAutoScroll(): {
         adjustImplRef.current = () => {
           /* no viewport mounted */
         };
+        tickRequestRef.current = () => undefined;
       };
     },
     [aui, setIsAtBottom],
   );
 
-  // Lifecycle pins ignore detach: "auto" glides on runStart, "instant" on load/switch.
+  // Thread lifecycle moments that always pin, regardless of detach state.
   const pinToBottom = useCallback((behavior: ScrollBehavior) => {
     userDetachedRef.current = false;
     scrollImplRef.current(behavior);
@@ -596,7 +727,7 @@ export function useIntentAwareAutoScroll(): {
   useAuiEvent("thread.runStart", () => {
     runStartedHereRef.current = true;
     runEndAtRef.current = Number.NEGATIVE_INFINITY;
-    pinToBottom("auto");
+    pinToBottom("instant");
   });
   useAuiEvent("thread.runEnd", () => {
     runEndAtRef.current = performance.now();
@@ -634,6 +765,7 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
+      notifyContentResized,
     }),
     [
       scrollToBottom,
@@ -641,8 +773,9 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
+      notifyContentResized,
     ],
   );
 
-  return { ref, context };
+  return { ref, markerRef, context };
 }

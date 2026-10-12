@@ -491,7 +491,7 @@ export function FloatingMonitor() {
   // Dragging paints `--chat-settings-width` and commits only on pointer up; follow the painted width.
   const [paintedSettingsWidth, setPaintedSettingsWidth] = useState(0);
   useEffect(() => {
-    if (!(isChatRoute && settingsPanelOpen)) {
+    if (!(isOpen && isChatRoute && settingsPanelOpen)) {
       setPaintedSettingsWidth(0);
       return;
     }
@@ -509,14 +509,14 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(panel);
     return () => observer.disconnect();
-  }, [isChatRoute, settingsPanelOpen, isMobile]);
+  }, [isOpen, isChatRoute, settingsPanelOpen, isMobile]);
 
   // The sidebar paints per frame and commits on release, so track painted width for docking.
   const [paintedSidebarWidth, setPaintedSidebarWidth] = useState(0);
   // The web shell's collapsed icon rail still holds a column when unpinned.
   const [sidebarHoldsRail, setSidebarHoldsRail] = useState(false);
   useEffect(() => {
-    const sidebar = document.querySelector('[data-slot="sidebar"]');
+    const sidebar = isOpen ? document.querySelector('[data-slot="sidebar"]') : null;
     if (!sidebar) {
       setPaintedSidebarWidth(0);
       setSidebarHoldsRail(false);
@@ -534,7 +534,7 @@ export function FloatingMonitor() {
     const observer = new ResizeObserver(measure);
     observer.observe(sidebar);
     return () => observer.disconnect();
-  }, [isMobile]);
+  }, [isOpen, isMobile]);
 
   // useIsMobile and the width stores do not notify on every resize, so subscribe directly.
   const viewportWidth = useSyncExternalStore(

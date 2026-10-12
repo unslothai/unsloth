@@ -5,10 +5,15 @@
 
 import { Popover as PopoverPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useContext } from "react";
 
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
+import {
+  type DropdownGlow,
+  DropdownGlowContext,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 
 function Popover({
@@ -29,13 +34,18 @@ function PopoverContent({
   sideOffset = 0,
   collisionPadding,
   container,
+  dropdownGlow,
+  children,
   ref,
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Content> & {
   container?: HTMLElement | null;
+  dropdownGlow?: DropdownGlow;
 }) {
   const snappedRef = useSnappedPaddingRef(ref);
-  // Inside a modal dialog the body scroll lock swallows wheel events; portal into the dialog.
+  const inheritedGlow = useContext(DropdownGlowContext);
+  // Inside a modal dialog the body scroll lock swallows wheel events on
+  // body-portaled content; portal into the dialog instead (like Select).
   const dialogContainer = useDialogPortalContainer();
   return (
     <PopoverPrimitive.Portal
@@ -44,6 +54,7 @@ function PopoverContent({
       <PopoverPrimitive.Content
         ref={snappedRef}
         data-slot="popover-content"
+        data-dropdown-glow={inheritedGlow ?? undefined}
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         sideOffset={sideOffset}
@@ -53,7 +64,11 @@ function PopoverContent({
           className,
         )}
         {...props}
-      />
+      >
+        <DropdownGlowContext.Provider value={dropdownGlow ?? inheritedGlow}>
+          {children}
+        </DropdownGlowContext.Provider>
+      </PopoverPrimitive.Content>
     </PopoverPrimitive.Portal>
   );
 }

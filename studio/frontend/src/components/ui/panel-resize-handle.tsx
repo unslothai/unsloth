@@ -13,48 +13,13 @@ import {
 } from "@/components/ui/tooltip"
 import { getClientPlatform } from "@/components/tauri/window-titlebar"
 import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
-import { Z_LAYER } from "@/lib/z-layers"
+import { acquireDragOverlay, releaseDragOverlay } from "@/components/ui/panel-drag-overlay"
 
 /** Pointer travel (px) below which a drag counts as a plain click. */
 const DRAG_SLOP = 4
 /** A compatibility click lands immediately after pointer-up. */
 const CLICK_COMPAT_WINDOW_MS = 300
 const RESIZE_STEP = 16
-
-// One fixed transparent overlay owns the drag cursor and hit testing. Inherited cursor,
-// user-select or pointer-events writes on <body> would restyle the whole document.
-const DRAG_OVERLAY_SLOT = "panel-resize-drag-overlay"
-/** Explicit ownership count, since a stuck overlay would swallow the whole UI. */
-let dragOverlayOwners = 0
-
-function acquireDragOverlay(): void {
-  dragOverlayOwners += 1
-  if (dragOverlayOwners > 1) return
-  const el = document.createElement("div")
-  el.setAttribute("data-slot", DRAG_OVERLAY_SLOT)
-  el.setAttribute("aria-hidden", "true")
-  const s = el.style
-  s.position = "fixed"
-  s.inset = "0"
-  // Top of the named scale: it replaces `!important` rules that blanked whole subtrees.
-  s.zIndex = String(Z_LAYER.DRAG_CURSOR_OVERLAY)
-  s.background = "transparent"
-  // Load-bearing: as the viewport's hit target it keeps hover and click off the content.
-  s.pointerEvents = "auto"
-  s.cursor = "col-resize"
-  s.userSelect = "none"
-  s.touchAction = "none"
-  document.body.appendChild(el)
-}
-
-function releaseDragOverlay(): void {
-  if (dragOverlayOwners === 0) return
-  dragOverlayOwners -= 1
-  if (dragOverlayOwners > 0) return
-  document
-    .querySelector(`[data-slot="${DRAG_OVERLAY_SLOT}"]`)
-    ?.remove()
-}
 
 type DragState = {
   startX: number
@@ -197,7 +162,6 @@ export function PanelResizeHandle({
     }
     rootTargetsRef.current = []
     targetRef.current?.removeAttribute("data-resizing")
-    document.documentElement.removeAttribute("data-panel-resizing")
     targetRef.current = null
     setDragging(false)
     if (overlayHeldRef.current) {
@@ -223,7 +187,6 @@ export function PanelResizeHandle({
     pendingRef.current = start
     rawRef.current = start
     targetRef.current?.setAttribute("data-resizing", "true")
-    document.documentElement.setAttribute("data-panel-resizing", "true")
     setDragging(true)
     overlayHeldRef.current = true
     acquireDragOverlay()
@@ -317,6 +280,9 @@ export function PanelResizeHandle({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={endDrag}
+          onLostPointerCapture={() => {
+            if (dragRef.current) endDrag()
+          }}
           onKeyDown={handleKeyDown}
           onClick={() => {
             // Switch and voice control dispatch a bare click with no pointer or key events.

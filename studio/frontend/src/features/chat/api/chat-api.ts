@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  forgetThreadReads,
+  inFlightThreadReads,
+  type InFlightThreadRead,
+} from "./thread-read-cache.ts";
 import { skillLoadCardEvent } from "./skill-load-event";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import {
+  abortError,
   combineAbortSignals,
   disposableTimeoutSignal,
 } from "@/features/hub/lib/abort-signals";
@@ -47,7 +53,10 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
-import { publishChatHistoryRevision } from "../utils/chat-history-revision";
+import {
+  CHAT_HISTORY_REVISION_KEY,
+  publishChatHistoryRevision,
+} from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -76,6 +85,7 @@ const THREAD_WRITE_TIMEOUT_MS = 30_000;
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
+  affected: readonly string[] | null,
   caller?: AbortSignal,
 ): Promise<Response> {
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
@@ -84,6 +94,7 @@ async function threadWriteFetch(
       return await authFetch(input, { ...init, signal: timeout.signal });
     } finally {
       timeout.dispose();
+      forgetThreadReads(affected);
     }
   }
   // Either reason ends the request. Linked by hand rather than with AbortSignal.any, which Safari only got in 17.4.
@@ -97,6 +108,7 @@ async function threadWriteFetch(
   } finally {
     caller.removeEventListener("abort", abort);
     timeout.dispose();
+    forgetThreadReads(affected);
   }
 }
 
@@ -157,6 +169,84 @@ export function notifyChatHistoryUpdated(
     // The event above is same-document; a storage write is what crosses.
     publishChatHistoryRevision(coalesce);
   }
+}
+
+export function subscribeChatHistoryUpdated(
+  listener: (detail: ChatHistoryUpdatedDetail) => void,
+): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onEvent = (event: Event) =>
+    listener((event as CustomEvent<ChatHistoryUpdatedDetail>).detail ?? {});
+  window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onEvent);
+  return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onEvent);
+}
+
+const THREAD_READ_JOIN_MS = 2_000;
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === CHAT_HISTORY_REVISION_KEY) forgetThreadReads(null);
+  });
+}
+
+async function readThreadRecord(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<ThreadRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    signal ? { signal } : undefined,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ThreadRecord>(response);
+}
+
+function shareThreadRead(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<ThreadRecord | null> {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  let shared = inFlightThreadReads.get(threadId);
+  const authEpoch = getAuthSessionEpoch();
+  if (
+    !shared
+    || shared.authEpoch !== authEpoch
+    || performance.now() - shared.startedAt > THREAD_READ_JOIN_MS
+  ) {
+    const controller = new AbortController();
+    const started: InFlightThreadRead = {
+      controller,
+      readers: 0,
+      startedAt: performance.now(),
+      authEpoch,
+      promise: readThreadRecord(threadId, controller.signal),
+    };
+    const forget = () => {
+      if (inFlightThreadReads.get(threadId) === started) {
+        inFlightThreadReads.delete(threadId);
+      }
+    };
+    started.promise.then(forget, forget);
+    inFlightThreadReads.set(threadId, started);
+    shared = started;
+  }
+  shared.readers += 1;
+  if (!signal) return shared.promise;
+  const joined = shared;
+  return new Promise<ThreadRecord | null>((resolve, reject) => {
+    const onAbort = () => {
+      joined.readers -= 1;
+      if (inFlightThreadReads.get(threadId) === joined) {
+        inFlightThreadReads.delete(threadId);
+      }
+      if (joined.readers === 0) joined.controller.abort(signal.reason);
+      reject(abortError(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    joined.promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 export function notifyChatProjectsUpdated(): void {
@@ -888,7 +978,12 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
-  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: {
+    bounded?: boolean;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    share?: boolean;
+  } = {},
 ): Promise<ThreadRecord | null> {
   // Bounded so a delete reconciliation cannot hang; `timeoutMs` and `signal` let callers end it sooner.
   const timeout =
@@ -901,12 +996,9 @@ export async function getChatThread(
       : null;
   const signal = combined?.signal ?? timeout?.signal ?? options.signal;
   try {
-    const response = await authFetch(
-      `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      signal ? { signal } : undefined,
-    );
-    if (response.status === 404) return null;
-    return parseJsonOrThrow<ThreadRecord>(response);
+    return options.share
+      ? await shareThreadRead(threadId, signal)
+      : await readThreadRecord(threadId, signal);
   } finally {
     combined?.dispose();
     timeout?.dispose();
@@ -933,11 +1025,15 @@ export class ChatThreadWriteError extends Error {
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await threadWriteFetch("/api/chat/threads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(thread),
-  });
+  const response = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(thread),
+    },
+    [thread.id],
+  );
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
@@ -993,6 +1089,7 @@ export async function updateChatThread(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    [threadId],
     options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
@@ -1012,14 +1109,19 @@ export async function forkChatThread(
    *  the chat is not generating. */
   args: { messageId?: string; newThreadId: string; createdAt: number },
 ): Promise<ForkChatThreadResult> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(args),
-    },
-  );
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      },
+    );
+  } finally {
+    forgetThreadReads([threadId, args.newThreadId]);
+  }
   const data = await parseJsonOrThrow<{
     thread: ThreadRecord;
     messages: MessageRecord[];
@@ -1049,11 +1151,15 @@ export async function deleteChatThreads(
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
   if (threadIds.length === 0) return [];
-  const response = await threadWriteFetch("/api/chat/threads", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
-  });
+  const response = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
+    },
+    threadIds,
+  );
   const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
   return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
@@ -1120,6 +1226,26 @@ export async function updateChatProject(
   return project;
 }
 
+/** A null lease reverts to Studio's folder; the user's folder is never moved or deleted. */
+export async function setChatProjectWorkingFolder(
+  projectId: string,
+  nativePathLease: string | null,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    nativePathLease
+      ? {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nativePathLease }),
+        }
+      : { method: "DELETE" },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
 /** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
@@ -1128,10 +1254,15 @@ export async function deleteChatProject(
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
-  const response = await authFetch(
-    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
-    { method: "DELETE" },
-  );
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+      { method: "DELETE" },
+    );
+  } finally {
+    forgetThreadReads(null);
+  }
   const data = await parseJsonOrThrow<
     ProjectRecord & { sandboxes_kept?: string[] }
   >(response);
@@ -1229,15 +1360,21 @@ export async function saveChatMessage(
   const editQuery = options.allowGenerationEdit
     ? "?allowGenerationEdit=true"
     : "";
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message),
-    },
-  );
-  // This status means a protected message or an id collision; only the header separates them.
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+      },
+    );
+  } finally {
+    forgetThreadReads([message.threadId]);
+  }
+  // Two failures share this status: a protected message, where the autosave must stop, and a
+  // thread-id collision, which the caller must see. Only the header separates them.
   if (
     response.status === 409 &&
     response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
@@ -1272,6 +1409,7 @@ export async function syncChatMessages(
         deletedMessageIds: options.deletedMessageIds ?? [],
       }),
     },
+    [threadId],
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning deletes messages, which other tabs must see immediately, so it does not coalesce.
@@ -1304,6 +1442,7 @@ export async function clearBackendChats(
         operationId: options.operationId,
       }),
     },
+    null,
   );
   const data = await parseJsonOrThrow<{
     deletedThreadIds?: string[];

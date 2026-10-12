@@ -52,6 +52,7 @@ import {
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
@@ -62,7 +63,7 @@ import { useIsCompact } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
-import { watchChatSettingsInset } from "@/lib/toast-offset";
+import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -167,11 +168,13 @@ export function ParamSlider({
   max,
   step,
   onChange,
-  displayValue,
+  onDraft,
+  format,
   info,
   valueSize,
   disabled,
   inline,
+  commitWhileDragging = false,
 }: {
   label: string;
   value: number;
@@ -179,12 +182,24 @@ export function ParamSlider({
   max: number;
   step: number;
   onChange: (v: number) => void;
-  displayValue?: string;
+  onDraft?: (value: number | null) => void;
+  format?: (value: number) => string | undefined;
   info?: ReactNode;
   valueSize?: number;
   disabled?: boolean;
   inline?: boolean;
+  commitWhileDragging?: boolean;
 }) {
+  const commit = (v: number) => onChange(snapToStep(v, step, min, max));
+  const { draft, sliderProps: draftProps } = useSliderDraft(
+    value,
+    commit,
+    onDraft,
+  );
+  const sliderProps = commitWhileDragging
+    ? { value: [value], onValueChange: ([v]: number[]) => commit(v) }
+    : draftProps;
+  const shown = draft ?? value;
   if (inline) {
     return (
       <div className="flex items-center gap-3">
@@ -198,18 +213,17 @@ export function ParamSlider({
           min={min}
           max={max}
           step={step}
-          value={[value]}
-          onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+          {...sliderProps}
           className="panel-slider min-w-0 flex-1"
           disabled={disabled}
         />
         <NumericValueInput
-          value={value}
+          value={shown}
           min={min}
           max={max}
           step={step}
           onChange={onChange}
-          displayValue={displayValue}
+          displayValue={format?.(shown)}
           ariaLabel={label}
           size={valueSize ?? 4}
           className="panel-number-input"
@@ -228,12 +242,12 @@ export function ParamSlider({
           {info && <InfoHint>{info}</InfoHint>}
         </div>
         <NumericValueInput
-          value={value}
+          value={shown}
           min={min}
           max={max}
           step={step}
           onChange={onChange}
-          displayValue={displayValue}
+          displayValue={format?.(shown)}
           ariaLabel={label}
           size={valueSize ?? 4}
           className="panel-number-input"
@@ -244,8 +258,7 @@ export function ParamSlider({
         min={min}
         max={max}
         step={step}
-        value={[value]}
-        onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+        {...sliderProps}
         className="panel-slider"
         disabled={disabled}
       />
@@ -397,11 +410,6 @@ function CollapsibleSection({
 interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
-  params: InferenceParams;
-  onParamsChange: (
-    params: InferenceParams,
-    options?: { minPChoiceEdited?: boolean },
-  ) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
   providerCapabilities?: ProviderCapabilities | null;
@@ -459,8 +467,6 @@ function specFallbackMessage({
 export function ChatSettingsPanel({
   open,
   onOpenChange,
-  params,
-  onParamsChange,
   modelConfig = null,
   isExternalModel = false,
   providerCapabilities = null,
@@ -470,6 +476,8 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const asideRef = useRef<HTMLElement>(null);
   const t = useT();
+  const params = useChatRuntimeStore((s) => s.params);
+  const setParams = useChatRuntimeStore((s) => s.setParams);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -499,7 +507,7 @@ export function ChatSettingsPanel({
   useEffect(() => {
     if (!open || isCompact) return;
     return watchChatSettingsInset(
-      document.documentElement,
+      cornerInsets,
       asideRef.current,
       settingsWidth * settingsScale,
       uiSpaceScale,
@@ -840,7 +848,7 @@ export function ChatSettingsPanel({
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
       const nextParams = {
-        ...params,
+        ...useChatRuntimeStore.getState().params,
         [key]: v,
         ...(key === "minP" ? { minPMode: "custom" as const } : {}),
       };
@@ -848,7 +856,7 @@ export function ChatSettingsPanel({
         ? getPresetSource(activePreset)
         : "modified";
       setActivePresetSource(nextSource);
-      onParamsChange(nextParams, {
+      setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
     };
@@ -872,14 +880,14 @@ export function ChatSettingsPanel({
       ? getPresetSource(activePreset)
       : "modified";
     setActivePresetSource(nextSource);
-    onParamsChange(nextParams);
+    setParams(nextParams);
   }, [
     activeExternalProvider,
     activePreset,
     activePresetBaseline,
     isExternalModel,
     maxTokensMax,
-    onParamsChange,
+    setParams,
     params,
     settingsHydrated,
     setActivePresetSource,
@@ -903,7 +911,7 @@ export function ChatSettingsPanel({
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange(applyPresetParamsWithinCurrentLimits(p), {
+      setParams(applyPresetParamsWithinCurrentLimits(p), {
         minPChoiceEdited: true,
       });
       if (p.loadConfig) {
@@ -965,7 +973,7 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange(
+        setParams(
           applyPresetParamsWithinCurrentLimits(fallbackPreset),
           { minPChoiceEdited: true },
         );
@@ -1004,7 +1012,7 @@ export function ChatSettingsPanel({
       ? getPresetSource(activePreset)
       : "modified";
     setActivePresetSource(nextSource);
-    onParamsChange(nextParams);
+    setParams(nextParams);
     setSystemPromptEditorOpen(false);
   }
 
@@ -1501,7 +1509,7 @@ export function ChatSettingsPanel({
                 max={1}
                 step={0.05}
                 onChange={set("topP")}
-                displayValue={params.topP === 1 ? "Off" : undefined}
+                format={(v) => (v === 1 ? "Off" : undefined)}
                 info="Nucleus sampling. Restricts choices to the smallest set of tokens whose cumulative probability reaches this threshold. 1.0 = off."
               />
             ) : null}
@@ -1513,7 +1521,7 @@ export function ChatSettingsPanel({
                 max={100}
                 step={1}
                 onChange={set("topK")}
-                displayValue={params.topK === 0 ? "Off" : undefined}
+                format={(v) => (v === 0 ? "Off" : undefined)}
                 info="Limits sampling to the K most likely tokens at each step. 0 = off."
               />
             ) : null}
@@ -1566,9 +1574,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.05}
                 onChange={set("repetitionPenalty")}
-                displayValue={
-                  params.repetitionPenalty === 1 ? "Off" : undefined
-                }
+                format={(v) => (v === 1 ? "Off" : undefined)}
                 info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
               />
             ) : null}
@@ -1580,9 +1586,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.1}
                 onChange={set("presencePenalty")}
-                    displayValue={
-                      params.presencePenalty === 0 ? "Off" : undefined
-                    }
+                format={(v) => (v === 0 ? "Off" : undefined)}
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
             ) : null}
@@ -1597,10 +1601,8 @@ export function ChatSettingsPanel({
               max={maxTokensMax}
               step={64}
               onChange={set("maxTokens")}
-              displayValue={
-                !isExternalModel && params.maxTokens >= maxTokensMax
-                  ? "Max"
-                  : undefined
+              format={(v) =>
+                !isExternalModel && v >= maxTokensMax ? "Max" : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
@@ -1916,9 +1918,7 @@ function MaxToolCallsSlider() {
       max={41}
       step={1}
       onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      displayValue={
-        sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
-      }
+      format={(v) => (v >= 41 ? "Max" : v === 0 ? "Off" : undefined)}
       info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
     />
   );
@@ -1931,13 +1931,6 @@ function ToolCallTimeoutSlider() {
   // Slider 1-31; 31 maps to 9999 ("Max")
   const sliderValue = timeout >= 9999 ? 31 : Math.min(Math.max(timeout, 1), 30);
 
-  const displayValue =
-    sliderValue >= 31
-      ? "Max"
-      : sliderValue === 1
-        ? "1 minute"
-        : `${sliderValue} minutes`;
-
   return (
     <ParamSlider
       label="Max Tool Call Duration"
@@ -1946,7 +1939,9 @@ function ToolCallTimeoutSlider() {
       max={31}
       step={1}
       onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
-      displayValue={displayValue}
+      format={(v) =>
+        v >= 31 ? "Max" : v === 1 ? "1 minute" : `${v} minutes`
+      }
       valueSize={10}
       info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses; the model continues with what completed."
     />

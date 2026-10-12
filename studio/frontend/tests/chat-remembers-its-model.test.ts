@@ -291,7 +291,7 @@ test("the conversation reserves the space the notice overlay takes", () => {
   );
   assert.match(
     thread,
-    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] pt-\[var\(--thread-header-offset\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
   const fade = slice(page, "chat-header-fade", '"');
   assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);

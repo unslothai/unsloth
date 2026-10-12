@@ -217,7 +217,9 @@ test("a read waits behind an open write", () => {
 
 test("the budget reads as a percentage and steps in tenths", () => {
   const row = vramBudgetRowSource();
-  assert.match(row, /displayValue=\{`\$\{percent\}%`\}/);
+  // Without the suffix, 97 sits between controls measured in layers and tokens
+  // and reads as neither.
+  assert.match(row, /format=\{\(v\) => `\$\{v\}%`\}/);
   assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
   const slider = pageSource.slice(
     pageSource.indexOf("function AdvancedGpuSlider"),

@@ -14,6 +14,7 @@ const AMBIGUOUS_BREAK_ITEM_RE = /^[ \t]*([*+-])[ \t]+[*\-_][*\-_ \t]*$/;
 const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
 // Parsing a long run is quadratic, so a runaway line is left alone.
 const MAX_AMBIGUOUS_LINE = 120;
+const FENCE_BLOCK_RE = /^ {0,3}(?:`{3,}|~{3,})/;
 
 type MarkdownNode = {
   readonly type: string;
@@ -97,7 +98,10 @@ export function stabilizeStreamingMarkdown(
 
   // Run what Streamdown runs, reading only the trailing block so cost does not grow with length.
   const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
-  const markerIndex = block === undefined ? -1 : ambiguousMarkerIndex(block);
+  const markerIndex =
+    block === undefined || FENCE_BLOCK_RE.test(block)
+      ? -1
+      : ambiguousMarkerIndex(block);
   if (
     block === undefined ||
     markerIndex < 0 ||

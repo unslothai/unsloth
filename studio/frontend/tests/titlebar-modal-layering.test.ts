@@ -21,10 +21,14 @@ const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
 const DIALOG_SURFACE_CLASSES =
   /<(?:DialogContent|AlertDialogContent|CommandDialog)\b(?:[^>]|=>)*?\bclassName="([^"]*)"/g;
 const WHOLE_WINDOW_CENTRE = /(?:^|\s)(?:max-sm:)?top-1\/2(?:\s|$)/;
-const DIRECT_VIEWPORT_BACKDROP_PATTERN =
-  /body:has\(> \[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
-const DESCENDANT_VIEWPORT_BACKDROP_PATTERN =
-  /body:has\(\[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
+const DOCUMENT_ROOT_HAS_PATTERN =
+  /(?:^|[\s,{}(>~+])(?:html|body|:root)(?:\[[^\]]*\]|\.[\w-]+|#[\w-]+)*:has\(/m;
+const TITLEBAR_BACKDROP_RULE_PATTERN =
+  /\[data-slot="window-titlebar"\]\[data-viewport-backdrop-open\]::after\s*\{\s*opacity:\s*1;\s*\}/;
+const TITLEBAR_BACKDROP_STORE_PATTERN =
+  /useSyncExternalStore\(\s*enabled \? subscribeViewportBackdrop : subscribeNever,/;
+const TITLEBAR_BACKDROP_ATTRIBUTE_PATTERN =
+  /data-slot="window-titlebar"\s+data-viewport-backdrop-open=\{backdropOpen \? "" : undefined\}/;
 const TOUR_VIEWPORT_BACKDROP_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
 
@@ -86,7 +90,25 @@ test("below-titlebar decoration is not trapped in the titlebar stacking context"
   assert.doesNotMatch(header, TOP_FULL_PATTERN);
 });
 
-// A top-* class at a call site makes twMerge drop the base's chrome-aware centre.
+test("the pinned sidebar edge is drawn with borders, not a box over the chat", () => {
+  const titlebar = readSrc("components/tauri/window-titlebar.tsx");
+  const start = titlebar.indexOf('data-slot="window-titlebar-decoration"');
+  const decoration = titlebar.slice(start, titlebar.indexOf("<header", start));
+  assert.doesNotMatch(
+    decoration,
+    /right-0[^"]*h-\[calc\(100dvh|h-\[calc\(100dvh[^"]*right-0/,
+    "a full-height box from the sidebar edge to the window edge covered the chat, so the compositor could not hit-test a wheel and every desktop scroll waited on the main thread",
+  );
+  assert.match(decoration, /pinned && "rounded-tl-\[12px\] border-l"/);
+  assert.match(
+    decoration,
+    /className="absolute top-\[12px\] h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] w-0 border-l border-sidebar-edge dark:border-transparent"\s*style=\{\{ left: cornerLeft \}\}/,
+    "the edge below the corner is a border on a zero-width box, so it snaps to device pixels like the corner",
+  );
+});
+
+// A top-* class at a call site makes twMerge drop the base's chrome-aware centre, so a plain
+// top-1/2 centres on the whole window and the titlebar covers the dialog's top.
 test("dialogs that set their own top still centre below the window chrome", () => {
   let checked = 0;
   for (const file of COMPONENTS) {
@@ -98,13 +120,16 @@ test("dialogs that set their own top still centre below the window chrome", () =
   assert.ok(checked > 10, `only ${checked} dialog surfaces matched`);
 });
 
-test("viewport titlebar effects stay mutation-scoped and cover custom modal chrome", async () => {
-  const [styles, tour] = await Promise.all([
+test("the titlebar dims for viewport backdrops without a :has() on the document root", async () => {
+  const [styles, titlebar, tour] = await Promise.all([
     readSrc("index.css"),
+    readSrc("components/tauri/window-titlebar.tsx"),
     readSrc("features/tour/components/guided-tour.tsx"),
   ]);
 
-  assert.match(styles, DIRECT_VIEWPORT_BACKDROP_PATTERN);
-  assert.doesNotMatch(styles, DESCENDANT_VIEWPORT_BACKDROP_PATTERN);
+  assert.doesNotMatch(styles.replace(/\/\*[\s\S]*?\*\//g, ""), DOCUMENT_ROOT_HAS_PATTERN);
+  assert.match(styles, TITLEBAR_BACKDROP_RULE_PATTERN);
+  assert.match(titlebar, TITLEBAR_BACKDROP_STORE_PATTERN);
+  assert.match(titlebar, TITLEBAR_BACKDROP_ATTRIBUTE_PATTERN);
   assert.match(tour, TOUR_VIEWPORT_BACKDROP_PATTERN);
 });

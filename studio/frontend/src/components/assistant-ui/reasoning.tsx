@@ -5,6 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { CodeHighlightModeContext } from "@/components/assistant-ui/code-highlight-context";
 import {
   MarkdownText,
   SearchImagesEnabledContext,
@@ -336,7 +337,9 @@ function ReasoningText({
 
 const ReasoningImpl: ReasoningMessagePartComponent = () => (
   <SearchImagesEnabledContext.Provider value={false}>
-    <MarkdownText />
+    <CodeHighlightModeContext.Provider value="settled">
+      <MarkdownText />
+    </CodeHighlightModeContext.Provider>
   </SearchImagesEnabledContext.Provider>
 );
 
@@ -457,6 +460,7 @@ function useReasoningTranscriptMode({
 function ReasoningBody({
   transcript,
   messageId,
+  roundStart,
   messageHasRenderableRenderHtmlTool,
   isStreaming,
   bounded = false,
@@ -465,6 +469,7 @@ function ReasoningBody({
 }: {
   transcript: ReturnType<typeof useReasoningTranscriptMode>;
   messageId: string;
+  roundStart: number;
   messageHasRenderableRenderHtmlTool: boolean;
   isStreaming: boolean;
   bounded?: boolean;
@@ -482,6 +487,7 @@ function ReasoningBody({
           key={messageId}
           initialAnchor={transcript.anchor}
           documents={transcript.documents}
+          indexKey={`${messageId}:${roundStart}`}
           messageId={messageId}
           messageHasRenderableRenderHtmlTool={
             messageHasRenderableRenderHtmlTool
@@ -657,6 +663,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
       <ReasoningBody
         transcript={transcript}
         messageId={messageId}
+        roundStart={startIndex}
         messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
         isStreaming={isStreaming}
         textClassName="pt-0"
@@ -880,6 +887,7 @@ const ReasoningGroupBlock = ({
           <ReasoningBody
             transcript={transcript}
             messageId={messageId}
+            roundStart={startIndex}
             messageHasRenderableRenderHtmlTool={
               messageHasRenderableRenderHtmlTool
             }

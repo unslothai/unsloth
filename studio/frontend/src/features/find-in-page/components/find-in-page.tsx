@@ -13,6 +13,7 @@ import {
   useShortcut,
   useShortcutAvailable,
 } from "@/features/settings";
+import { useDocumentFlag } from "@/lib/document-flag";
 import { Z_LAYER } from "@/lib/z-layers";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -287,7 +288,9 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     claims: () => !isFindScopeBackgrounded(),
   });
 
-  const foreground = useShortcutAvailable("findInPage", true);
+  // False while a modal is open.
+  const foreground = useShortcutAvailable("findInPage", open);
+  useDocumentFlag("data-find-bar-open", enabled && open && foreground);
 
   if (!enabled || !open) return null;
   // Hidden, not unmounted, under a modal so it returns as it was.

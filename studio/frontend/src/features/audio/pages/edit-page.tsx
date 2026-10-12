@@ -234,9 +234,10 @@ function EditInputs({
             min={deliveryRange.speed[0]}
             max={deliveryRange.speed[1]}
             step={deliveryRange.speed[2]}
-            displayValue={`${Number(delivery.speed.toFixed(2))}×`}
+            format={(v) => `${Number(v.toFixed(2))}×`}
             disabled={disabled}
             onChange={(speed) => setDelivery({ speed })}
+            commitWhileDragging
           />
           <ParamSlider
             label={EDIT_COPY.pitchLabel}
@@ -244,11 +245,10 @@ function EditInputs({
             min={0}
             max={deliveryRange.pitchSteps[1]}
             step={1}
-            displayValue={
-              delivery.pitchSteps > 0 ? `+${delivery.pitchSteps} steps` : "Off"
-            }
+            format={(v) => (v > 0 ? `+${v} steps` : "Off")}
             disabled={disabled}
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
+            commitWhileDragging
           />
           <p className="text-ui-11p5 leading-snug text-muted-foreground">
             {EDIT_COPY.pitchHint}

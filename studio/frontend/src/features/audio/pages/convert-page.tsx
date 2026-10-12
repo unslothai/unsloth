@@ -207,7 +207,7 @@ function ConvertInputs({
               max={24}
               step={1}
               disabled={disabled}
-              displayValue={`${convert.pitch > 0 ? "+" : ""}${convert.pitch} st`}
+              format={(v) => `${v > 0 ? "+" : ""}${v} st`}
               info={
                 pitchSupport.auto && convert.pitchAuto
                   ? "Semitones added after matching the target's pitch, e.g. +12 to sing an octave up."

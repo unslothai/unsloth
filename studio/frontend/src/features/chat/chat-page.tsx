@@ -46,6 +46,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { armPanelDrag } from "@/components/ui/panel-drag-overlay";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -83,6 +84,7 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { useDocumentFlag } from "@/lib/document-flag";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -363,6 +365,7 @@ const BrowserOverlaidContext = createContext(false);
 function BrowserOverlay(): ReactElement {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
+  useDocumentFlag("data-browser-overlay-open", true);
   useEffect(() => {
     const previous = document.activeElement;
     const id = window.setTimeout(() => {
@@ -866,6 +869,7 @@ const SingleContent = memo(function SingleContent({
     <>
       <ResizablePanelGroup
         orientation="horizontal"
+        disableCursor
         data-artifact-layout-animating={
           isArtifactLayoutAnimating ? "true" : "false"
         }
@@ -897,7 +901,7 @@ const SingleContent = memo(function SingleContent({
           <div
             data-expanded={chatDock === "expanded" ? "true" : "false"}
             className={cn(
-              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden",
+              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden [html[data-panel-resizing]_&]:pointer-events-auto",
               browserFullView &&
                 (chatDock === "minimized"
                   ? "chat-full-view-dock-minimized"
@@ -919,17 +923,26 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           // The library's double-click reset would shut the panel without closing the artifact.
           disableDoubleClick
+          disabled={!artifactLayoutActive || browserFullView}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
+            const drag = armPanelDrag(event.clientX);
             const unpin = pinBrowserPage(event.currentTarget);
             const release = () => {
               window.removeEventListener("pointerup", release);
               window.removeEventListener("pointercancel", release);
+              window.removeEventListener("pointermove", moved);
+              drag.release();
               unpin();
               rememberArtifactPanelWidth();
             };
+            const moved = (move: PointerEvent) => {
+              if (move.buttons === 0) release();
+              else drag.move(move.clientX);
+            };
             window.addEventListener("pointerup", release);
             window.addEventListener("pointercancel", release);
+            window.addEventListener("pointermove", moved);
           }}
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(
@@ -2713,8 +2726,9 @@ export function ChatPage({
       lastNonCompareViewRef.current = { ...search };
     }
   }, [search]);
-  const inferenceParams = useChatRuntimeStore((state) => state.params);
-  const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const inferenceCheckpoint = useChatRuntimeStore(
+    (state) => state.params.checkpoint,
+  );
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
@@ -2870,7 +2884,7 @@ export function ChatPage({
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
-    if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
+    if (!connectionsEnabled && isExternalModelId(inferenceCheckpoint)) {
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -2882,7 +2896,7 @@ export function ChatPage({
   }, [
     clearCheckpoint,
     connectionsEnabled,
-    inferenceParams.checkpoint,
+    inferenceCheckpoint,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
@@ -2911,8 +2925,8 @@ export function ChatPage({
     [],
   );
   const isExternalModel = useMemo(
-    () => isExternalModelId(inferenceParams.checkpoint),
-    [inferenceParams.checkpoint],
+    () => isExternalModelId(inferenceCheckpoint),
+    [inferenceCheckpoint],
   );
   const contextWindowKnown = hasKnownContextWindow({
     loadedContextLength,
@@ -2931,13 +2945,13 @@ export function ChatPage({
     (s) => s.loadedIsDiffusion,
   );
   const activeModelIsLora = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
+    const checkpoint = inferenceCheckpoint;
     if (!checkpoint || isExternalModel) return false;
     const model = modelsFromStore.find((entry) => entry.id === checkpoint);
     if (model) return model.isLora;
     const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
     return lora?.exportType === "lora";
-  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
+  }, [inferenceCheckpoint, isExternalModel, modelsFromStore, lorasFromStore]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -2945,17 +2959,17 @@ export function ChatPage({
     (s) => s.supportsReasoningOff,
   );
   const activeExternalProvider = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     return (
       externalProvidersForChat.find((p) => p.id === selection.providerId) ??
       null
     );
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+  }, [externalProvidersForChat, inferenceCheckpoint]);
   const activeExternalProviderType =
     activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -2980,14 +2994,14 @@ export function ChatPage({
     };
   }, [
     externalProvidersForChat,
-    inferenceParams.checkpoint,
+    inferenceCheckpoint,
     reasoningEnabled,
     reasoningStyle,
     reasoningEffort,
     supportsReasoningOff,
   ]);
   useEffect(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -3006,7 +3020,7 @@ export function ChatPage({
     const effortLevels = reasoningCaps.reasoningEffortLevels;
     // Resolve with the pin: without it a resync put the provider default over the pinned level.
     const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
-      ? pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels)
+      ? pinnedReasoningEffort(inferenceCheckpoint, effortLevels)
       : null;
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
@@ -3123,17 +3137,21 @@ export function ChatPage({
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
     });
-    // Rerun on hydration: this clamps the stored pills, so it must apply after them.
-  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
-  // Another tab can change the pin, and the effect above reads it without subscribing.
+    // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
+    // model, and hydration refreshes what it reads, so it has to be applied last.
+  }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
+  // Another tab can change the active model's pin (the pin store listens for the storage event),
+  // and the normalization above reads the pin through a getState helper without subscribing, so
+  // the composer kept the old level until a switch. Only the effort here: the pills and the rest
+  // of that block are not this one's to rerun.
   const activePinnedEffort = useModelReasoningEffortStore(
-    (state) => state.effortByModel[inferenceParams.checkpoint],
+    (state) => state.effortByModel[inferenceCheckpoint],
   );
   const appliedPinnedEffort = useRef(activePinnedEffort);
   useEffect(() => {
     if (appliedPinnedEffort.current === activePinnedEffort) return;
     appliedPinnedEffort.current = activePinnedEffort;
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -3149,13 +3167,14 @@ export function ChatPage({
       },
     );
     reconcilePinnedReasoningEffort({
-      checkpoint: inferenceParams.checkpoint,
+      checkpoint: inferenceCheckpoint,
       caps,
       providerType: provider?.providerType,
       apiType: provider?.apiType,
     });
-  }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
-  // A late catalog refreshes only the stored reasoning fields, never the selection defaults.
+  }, [activePinnedEffort, externalProvidersForChat, inferenceCheckpoint]);
+  // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
+  // never the selection defaults above, so a chosen effort and the pills survive the refresh.
   const modelCatalogChange = useSyncExternalStore(
     subscribeModelCatalog,
     modelCatalogVersion,
@@ -3164,7 +3183,7 @@ export function ChatPage({
   useEffect(() => {
     if (appliedCatalogChange.current === modelCatalogChange) return;
     appliedCatalogChange.current = modelCatalogChange;
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
     const provider = enabled
@@ -3185,15 +3204,15 @@ export function ChatPage({
     );
     // After the levels: a pin applies only while the catalog calls it legal.
     reconcilePinnedReasoningEffort({
-      checkpoint: inferenceParams.checkpoint,
+      checkpoint: inferenceCheckpoint,
       caps,
       providerType: provider?.providerType,
       apiType: provider?.apiType,
     });
-  }, [modelCatalogChange, inferenceParams.checkpoint]);
+  }, [modelCatalogChange, inferenceCheckpoint]);
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
-  }, [inferenceParams.checkpoint, isExternalModel]);
+    return Boolean(inferenceCheckpoint) && !isExternalModel;
+  }, [inferenceCheckpoint, isExternalModel]);
 
   useEffect(() => {
     let canceled = false;
@@ -3394,7 +3413,7 @@ export function ChatPage({
     useBrowserStore.getState().closeChatPages();
   }, [shownChatKey]);
 
-  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const hasActiveModel = Boolean(inferenceCheckpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =
     useState<PendingHubAutoLoad | null>(null);
@@ -3942,7 +3961,7 @@ export function ChatPage({
   );
   const handleReloadActiveModel = useCallback(
     (config: PerModelConfig) => {
-      const checkpoint = inferenceParams.checkpoint;
+      const checkpoint = inferenceCheckpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
       const activeLoadId = runtime.activeLoadId;
@@ -3971,7 +3990,7 @@ export function ChatPage({
       });
     },
     [
-      inferenceParams.checkpoint,
+      inferenceCheckpoint,
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
@@ -4101,7 +4120,7 @@ export function ChatPage({
 
   const fastModeSupported = providerSupportsFastMode(
     activeExternalProviderType,
-    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+    parseExternalModelId(inferenceCheckpoint)?.modelId ?? null,
   );
   useShortcut(
     "toggleFastMode",
@@ -4537,12 +4556,13 @@ export function ChatPage({
                 loraModels={loraModels}
                 externalModels={externalModels}
                 externalConnections={externalConnections}
-                value={inferenceParams.checkpoint}
-                // Resident, not merely picked: an image or video load evicts the chat model.
+                value={inferenceCheckpoint}
+                // Resident, not merely picked: an image or video load evicts the chat model and leaves this
+                // selection behind, so the tick stayed on a released model.
                 loaded={chatModelLoaded({
-                  checkpoint: inferenceParams.checkpoint,
+                  checkpoint: inferenceCheckpoint,
                   isExternalModel: isExternalModelId(
-                    inferenceParams.checkpoint,
+                    inferenceCheckpoint,
                   ),
                   residentCheckpoint,
                 })}
@@ -4748,7 +4768,7 @@ export function ChatPage({
         {view.mode === "single" && (
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
-            checkpoint={inferenceParams.checkpoint}
+            checkpoint={inferenceCheckpoint}
             activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
@@ -4836,12 +4856,10 @@ export function ChatPage({
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}
-        params={inferenceParams}
-        onParamsChange={setInferenceParams}
         modelConfig={
           view.mode !== "compare" && activeModelConfig && !modelLoading ? (
             <SidebarModelConfig
-              modelId={inferenceParams.checkpoint}
+              modelId={inferenceCheckpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
               isLora={activeModelIsLora}

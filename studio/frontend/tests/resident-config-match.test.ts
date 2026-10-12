@@ -1747,7 +1747,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*params\.checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
   assert.match(

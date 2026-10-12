@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
@@ -1146,8 +1147,12 @@ export function replayUnconfirmedThreadSettings(): void {
       body: JSON.stringify(body),
       signal: timeout.signal,
     })
-      .finally(() => clearTimeout(timer))
-      // authFetch resolves for 404 and 5xx too, so check res.ok.
+      .finally(() => {
+        clearTimeout(timer);
+        forgetThreadReads([threadId]);
+      })
+      // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
+      // missing-row case this exists for is exactly the one that 404s.
       .then((res) => {
         // Only forget this exact body: a newer one may have been stored meanwhile.
         if (res.ok) forgetReplayedThreadSettings(threadId, body);
@@ -1214,7 +1219,9 @@ function sendThreadScopedSettingsBeacon(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     keepalive: true,
-  }).catch(() => undefined);
+  })
+    .finally(() => forgetThreadReads([threadId]))
+    .catch(() => undefined);
 }
 
 // One chain per thread: writes replace settings_json, so they must be ordered.

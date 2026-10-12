@@ -142,7 +142,7 @@ test("the sidebar list measures its scroll rail", async () => {
   assert.deepEqual(railWidthDecls, []);
   assert.match(
     INDEX,
-    /:root\.client-windows \*,\s*:root\.client-windows \*:hover \{\s*scrollbar-width: auto;/,
+    /:root\.client-windows \* \{\s*scrollbar-width: auto;/,
   );
   assert.equal(
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),

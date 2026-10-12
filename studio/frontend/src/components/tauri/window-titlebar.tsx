@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  getViewportBackdropOpen,
+  subscribeViewportBackdrop,
+} from "@/components/tauri/viewport-backdrop";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
@@ -20,9 +24,18 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
+
+function subscribeNever(): () => void {
+  return () => undefined;
+}
+
+function backdropClosed(): boolean {
+  return false;
+}
 
 type WindowResizeDirection =
   | "East"
@@ -282,6 +295,11 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
+  const backdropOpen = useSyncExternalStore(
+    enabled ? subscribeViewportBackdrop : subscribeNever,
+    enabled ? getViewportBackdropOpen : backdropClosed,
+    backdropClosed,
+  );
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -448,15 +466,22 @@ export function WindowTitlebar({
               style={{ left: cornerLeft }}
             />
           )}
-          {/* One border snaps to device pixels; dark hides it since any border there reads as a seam. */}
+          {/* Borders for edge and corner: they snap to device pixels where a 1px box blurs. Pinned, they
+              are also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). Dark
+              hides them: any visible border there is lighter than both surfaces and reads as a white seam. */}
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",
-              pinned &&
-                "h-[calc(100dvh-var(--studio-custom-titlebar-height))] rounded-tl-[12px] border-l",
+              pinned && "rounded-tl-[12px] border-l",
             )}
             style={{ left: pinned ? cornerLeft : 0 }}
           />
+          {pinned && (
+            <div
+              className="absolute top-[12px] h-[calc(100dvh-var(--studio-custom-titlebar-height)-12px)] w-0 border-l border-sidebar-edge dark:border-transparent"
+              style={{ left: cornerLeft }}
+            />
+          )}
         </div>
       )}
       <header
@@ -466,6 +491,7 @@ export function WindowTitlebar({
         )}
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
+        data-viewport-backdrop-open={backdropOpen ? "" : undefined}
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (

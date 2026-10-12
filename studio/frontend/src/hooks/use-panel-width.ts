@@ -67,6 +67,7 @@ export function createPanelWidthStore({
   let effectiveWidth = clamp(storedWidth);
   let effectiveMax = maxWidth();
   const listeners = new Set<() => void>();
+  let unsubscribeScale: (() => void) | undefined;
 
   let lastStored = storedWidth;
 
@@ -86,6 +87,12 @@ export function createPanelWidthStore({
     listeners.forEach((cb) => cb());
   }
 
+  function onStorage(event: StorageEvent) {
+    if (event.key !== key && event.key !== null) return;
+    storedWidth = load();
+    recompute();
+  }
+
   function subscribe(cb: () => void) {
     // With no subscribers there is no resize listener, so the cache may be stale; refresh first.
     recompute();
@@ -93,22 +100,19 @@ export function createPanelWidthStore({
     if (typeof window === "undefined") {
       return () => listeners.delete(cb);
     }
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === key || e.key === null) {
-        storedWidth = load();
-        effectiveWidth = clamp(storedWidth);
-        effectiveMax = maxWidth();
-        cb();
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("resize", recompute);
-    const unsubscribeScale = subscribeLayoutScale(recompute);
+    if (listeners.size === 1) {
+      window.addEventListener("storage", onStorage);
+      window.addEventListener("resize", recompute);
+      unsubscribeScale = subscribeLayoutScale(recompute);
+    }
     return () => {
       listeners.delete(cb);
-      unsubscribeScale();
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("resize", recompute);
+      if (listeners.size === 0) {
+        unsubscribeScale?.();
+        unsubscribeScale = undefined;
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener("resize", recompute);
+      }
     };
   }
 

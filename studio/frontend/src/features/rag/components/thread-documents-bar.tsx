@@ -64,6 +64,7 @@ import {
   isPastedTextFile,
   isTextAttachment,
   isThreadIncognito,
+  subscribeChatHistoryUpdated,
 } from "@/features/chat";
 import {
   useNativeAttachmentTargetKey,
@@ -183,8 +184,8 @@ function useThreadProjectId(
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [resolved, setResolved] = useState<{
     threadId: string;
-    trigger: string | null;
     projectId: string | null;
+    editedAt: number;
   } | null>(null);
 
   useEffect(() => {
@@ -192,27 +193,48 @@ function useThreadProjectId(
       return;
     }
     let cancelled = false;
+    let announced = false;
+    const record = (projectId: string | null, editedAt: number) =>
+      setResolved((previous) =>
+        previous?.threadId === threadId
+        && (previous.editedAt > editedAt
+          || (previous.editedAt === editedAt
+            && previous.projectId === projectId))
+          ? previous
+          : { threadId, projectId, editedAt },
+      );
+    const unsubscribe = subscribeChatHistoryUpdated(({ thread }) => {
+      if (!thread || thread.id !== threadId) return;
+      announced = true;
+      record(thread.projectId ?? null, thread.modifiedAt ?? 0);
+    });
     void (async () => {
-      // A failed read is not proof of no project; retry, then leave it unresolved.
+      // A failed read is not proof of no project, and recording one would file
+      // the next attachment into the chat. Retry, then leave it unresolved:
+      // nothing re-runs this until the chat changes or its row is announced.
       for (let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt += 1) {
         try {
           const thread = await getStoredChatThread(threadId);
-          if (cancelled) return;
-          // No row yet: initialize() does not await the write, so use the composer's project.
-          const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
-          setResolved({ threadId, trigger: activeProjectId, projectId });
+          if (cancelled || announced) return;
+          // No row yet: initialize() does not await the write, so the composer's
+          // project is the answer that row is about to record.
+          const projectId = thread
+            ? (thread.projectId ?? null)
+            : useChatRuntimeStore.getState().activeProjectId;
+          record(projectId, thread?.modifiedAt ?? 0);
           return;
         } catch {
-          if (cancelled) return;
+          if (cancelled || announced) return;
           await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-          if (cancelled) return;
+          if (cancelled || announced) return;
         }
       }
     })();
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, [threadId, activeProjectId]);
+  }, [threadId]);
 
   if (!threadId) {
     return activeProjectId;
@@ -220,9 +242,7 @@ function useThreadProjectId(
   if (isThreadIncognito(threadId)) {
     return null;
   }
-  return resolved?.threadId === threadId && resolved.trigger === activeProjectId
-    ? resolved.projectId
-    : undefined;
+  return resolved?.threadId === threadId ? resolved.projectId : undefined;
 }
 
 function isRagIndexable(file: File): boolean {

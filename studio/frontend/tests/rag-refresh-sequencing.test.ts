@@ -620,7 +620,12 @@ test("a failed project lookup leaves the scope unresolved", () => {
   );
   assert.doesNotMatch(
     THREAD_DOCUMENTS_BAR,
-    /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
+    /record\(null, 0\)|setResolved\(\{ threadId, projectId: null/,
+  );
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /\} catch \{\s*if \(cancelled \|\| announced\) return;\s*await new Promise/,
+    "a failed read records nothing and retries",
   );
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);
   assert.match(THREAD_DOCUMENTS_BAR, /uploading \|\| projectUploading \|\| projectUnresolved/);
