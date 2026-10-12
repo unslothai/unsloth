@@ -8561,13 +8561,7 @@ def _ssm_kernel_install_disabled() -> bool:
 
 
 def _ensure_ssm_kernels() -> None:
-    """causal-conv1d and mamba-ssm prebuilt wheels for the installed torch, at setup.
-
-    The same wheel-only install `unsloth install-kernels` and the SSM runtime run, so a
-    Mamba / hybrid model does not wait on a download at load time. Never builds from source
-    and never changes torch; a cell with no published wheel is skipped, and a resident build
-    that no longer loads is removed, as flash-attn's resync does.
-    """
+    """causal-conv1d and mamba-ssm prebuilt wheels at setup, via the wheel-only install_kernel."""
     if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
         return
     # Bounded on every platform, and a probe that cannot launch skips this optional step.
@@ -8578,9 +8572,8 @@ def _ensure_ssm_kernels() -> None:
     if env is None:
         return
 
-    # A new runner per call: install_kernel caches its GPU and Triton probes per runner, and a
-    # repair that moved torch can move Triton with it. Import probes are bounded so a wedged
-    # driver cannot hang setup; the installs themselves are not.
+    # A new runner per call resets install_kernel's per-runner GPU / Triton cache after a torch
+    # repair; it bounds import probes, not installs.
     def run(cmd, *args, **kwargs):
         if list(cmd[:2]) == [sys.executable, "-c"]:
             kwargs.setdefault("timeout", _FLASH_ATTN_IMPORT_PROBE_TIMEOUT)
@@ -8609,8 +8602,7 @@ def _ensure_ssm_kernels() -> None:
         status = 0
         buffer = io.StringIO()
         if _uv_is_offline():
-            # No lookup and no install, whose pip fallback would ignore UV_OFFLINE; a resident
-            # build that no longer loads is still removed below.
+            # install_wheel's pip fallback ignores UV_OFFLINE; stale removal below still runs.
             if not installed:
                 _note(
                     f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online"

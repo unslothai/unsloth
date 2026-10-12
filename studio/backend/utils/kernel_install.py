@@ -330,8 +330,7 @@ def install_kernel(
     exists: Callable[[str], bool | None] = url_exists,
     install_without_gpu: bool = False,
 ) -> int:
-    # install_without_gpu: setup may run where the GPU is not visible yet (an image build), so
-    # only a visible pre-Ampere GPU skips; no GPU at all still installs.
+    # install_without_gpu (setup): no visible GPU yet, e.g. an image build, still installs.
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
     if name in _GPU_GATED and url is not None:
