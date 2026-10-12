@@ -181,6 +181,32 @@ def test_the_torch_probe_is_bounded_everywhere_and_a_launch_failure_skips_the_st
     assert kernel.call_count == 0
 
 
+def test_an_uninstall_that_cannot_launch_warns_instead_of_aborting():
+    host = _Host(installed = DISTS.values())
+    with mock.patch.object(ips, "_uninstall_distribution", side_effect = OSError("no fork")):
+        steps = []
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(ips, "_uv_is_offline", return_value = True),
+            mock.patch.object(ips, "probe_torch_wheel_env", return_value = ENV),
+            mock.patch.object(ips, "_installed_distribution_version", side_effect = host.version),
+            mock.patch.object(ips.subprocess, "run", side_effect = host.run),
+            mock.patch.object(ips, "_count_install_action"),
+            mock.patch.object(ips, "_note"),
+            mock.patch.object(
+                ips, "_step", side_effect = lambda label, value, *_: steps.append(value)
+            ),
+        ):
+            ips._ensure_ssm_kernels()
+    assert steps == [
+        "causal_conv1d does not load with this torch and could not be removed; "
+        "uninstall causal-conv1d manually",
+        "mamba_ssm does not load with this torch and could not be removed; "
+        "uninstall mamba-ssm manually",
+    ]
+
+
 def test_a_failure_warns_and_the_next_kernel_still_runs():
     host = _Host()
     install = _installer(host)

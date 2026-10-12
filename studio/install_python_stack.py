@@ -8629,7 +8629,11 @@ def _ensure_ssm_kernels() -> None:
             _count_install_action()
         if _installed_distribution_version(distribution) is not None and loads(check) is False:
             _count_install_action()
-            if _uninstall_distribution(distribution):
+            try:
+                removed = _uninstall_distribution(distribution)
+            except OSError:
+                removed = False
+            if removed:
                 _step("warning", f"{name} does not load with this torch; removed it", _cyan)
             else:
                 _step(
