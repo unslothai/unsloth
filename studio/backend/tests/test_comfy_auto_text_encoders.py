@@ -15,6 +15,7 @@ import pytest
 torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 transformers = pytest.importorskip("transformers")
+pytest.importorskip("accelerate")  # the strict fit builds the encoder under init_empty_weights
 
 import core.inference.diffusion_comfy_components as C  # noqa: E402
 
@@ -106,8 +107,12 @@ def test_text_encoder_folders_of_the_dits_own_layout(tmp_path):
     assert [str(p) for p in comfy_text_encoder_files(deep)] == [te, legacy]
 
 
-def test_a_dit_folder_listed_by_extra_model_paths_finds_its_tree(tmp_path):
+def test_a_dit_folder_listed_by_extra_model_paths_finds_its_tree(tmp_path, monkeypatch):
+    import hub.storage.scan_folders as scan_folders
     from hub.utils.comfy_models import comfy_text_encoder_files
+
+    # macOS tmp lives under the denied /private/var; the denylist is not what this test checks.
+    monkeypatch.setattr(scan_folders, "is_denied_system_path", lambda path: False)
 
     models = _comfy_tree(tmp_path)
     te = _encoder_file(models / "text_encoders" / "qwen_3_4b.safetensors")
