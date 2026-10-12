@@ -631,7 +631,10 @@ async def generate_video(
         validate_video_request_shape(fam, request.width, request.height, request.num_frames)
         h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
+            fam,
+            h3_task,
+            has_keyframes = bool(request.first_frame or request.last_frame),
+            has_last_frame = bool(request.last_frame),
         )
         # the engine is only knowable up front where the pick decides it, as an h3 gguf does
         kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
