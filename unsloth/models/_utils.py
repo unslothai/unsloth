@@ -7257,8 +7257,7 @@ def _merged_torchao_config_for_peft_qat(model):
             embedding = None
         embeddings.update(_merged_name(fqn) for fqn, m in model.named_modules() if m is embedding)
 
-    # transformers 5 applies a module entry (and "_default") to a Linear's bias as well, so key weights there;
-    # 4.x and torchao < 0.15 only look up module names.
+    # transformers 5 also applies module and "_default" entries to a Linear bias; 4.x reads module names only.
     weight_keys = Version(importlib_version("transformers")) >= Version("5.0.0") and Version(
         importlib_version("torchao")
     ) >= Version("0.15.0")

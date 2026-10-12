@@ -121,8 +121,7 @@ def test_peft_qat_multi_config_uses_merged_module_names(modules_to_save):
 
 
 def test_peft_qat_default_config_keys_every_linear_weight():
-    # int8-int4 shape: an Embedding entry plus a default for Linears. transformers 5 would apply a
-    # module or "_default" entry to a Linear's bias, so each weight gets its own key there.
+    # int8-int4 shape: an Embedding entry plus a default for Linears.
     from torchao.quantization import IntxWeightOnlyConfig
     from torchao.quantization.granularity import PerAxis
 
