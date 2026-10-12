@@ -108,3 +108,29 @@ def test_unsloth_cpu_threads_wins_over_the_default_and_the_quota(monkeypatch, va
     _host(monkeypatch, limit = 4)
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", value)
     assert bk._default_threads() == expected
+
+
+_TOPOLOGIES = {
+    # M1 Pro: 8 Performance + 2 Efficiency.
+    "m1pro": {"hw.nperflevels": 2, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 8,
+              "hw.perflevel1.name": "Efficiency", "hw.perflevel1.physicalcpu": 2, "hw.physicalcpu": 10},
+    # M5 Max (ggml-org/llama.cpp#29782): 6 Super + 12 Performance, no efficiency tier.
+    "m5max": {"hw.nperflevels": 2, "hw.perflevel0.name": "Super", "hw.perflevel0.physicalcpu": 6,
+              "hw.perflevel1.name": "Performance", "hw.perflevel1.physicalcpu": 12, "hw.physicalcpu": 18},
+    # Virtual M1 runner: one tier.
+    "vm": {"hw.nperflevels": 1, "hw.perflevel0.name": "Performance", "hw.perflevel0.physicalcpu": 3,
+           "hw.physicalcpu": 3},
+    # No perflevel sysctls (older macOS / Intel).
+    "intel": {"hw.physicalcpu": 6},
+    # Levels without names: only level 0 is known to be fast.
+    "unnamed": {"hw.nperflevels": 2, "hw.perflevel0.physicalcpu": 4, "hw.perflevel1.physicalcpu": 6,
+                "hw.physicalcpu": 10},
+}
+
+
+@pytest.mark.parametrize("topology, expected", [("m1pro", 8), ("m5max", 18), ("vm", 3), ("intel", 6), ("unnamed", 4)])
+def test_apple_cores_count_every_tier_but_efficiency(monkeypatch, topology, expected):
+    table = _TOPOLOGIES[topology]
+    monkeypatch.setattr(bk.sys, "platform", "darwin")
+    monkeypatch.setattr(bk, "_sysctl", lambda name, as_str = False: table.get(name))
+    assert bk._apple_performance_cores() == expected
