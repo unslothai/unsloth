@@ -207,7 +207,6 @@ export function installPageAgent(): PageAgent {
     }
     const tag = el.tagName.toLowerCase();
     if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value);
-    // An image button is named by its alt text, as assistive technology reads it.
     if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"));
     if (tag === "input" || tag === "textarea") {
       const hint = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("name");

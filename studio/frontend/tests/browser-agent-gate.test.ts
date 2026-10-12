@@ -139,7 +139,6 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
   const quantity = element({ role: "textbox", tag: "input", type: "number", name: "Quantity", formAction: "https://shop.example/c" });
   assert.equal(gateElement("submit", { ...quantity, submitter: "Buy now" }, page, open, NONE).kind, "ask");
   assert.equal(gateElement("submit", { ...search, submitter: "Search" }, page, open, NONE).kind, "allow");
-  // A card-expiry dropdown is checked like its text field would be (the executor's extra gate).
   const expiry = element({ role: "combobox", tag: "select", name: "Month", autocomplete: "cc-exp-month" });
   assert.equal(gateElement("type", expiry, page, open, NONE).kind, "block");
   // The executor's name for Delete pressed outside a text field.
