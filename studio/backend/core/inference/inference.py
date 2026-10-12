@@ -84,6 +84,25 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
+def _load_offloading_when_too_big(load, **kwargs):
+    """Retry a single-GPU load the card cannot hold with offload_layers = "auto", which keeps large token tables (and decoder layers if needed) in host RAM, as training does (#13388). Loads that fit never take the retry."""
+    try:
+        return load(**kwargs)
+    except ValueError as e:
+        text = str(e)
+        spilled = "does not fit in GPU memory" in text or text.startswith(
+            "Some modules are dispatched on the CPU or the disk"
+        )
+        if not spilled or kwargs.get("device_map") != "sequential" or not torch.cuda.is_available():
+            raise
+    logger.info("Model does not fit in GPU memory; retrying with offload_layers='auto'")
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    return load(offload_layers = "auto", **kwargs)
+
+
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
     if hf_token is False:
         return False
@@ -896,7 +915,8 @@ class InferenceBackend:
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
             if config.is_vision:
-                model, processor = FastVisionModel.from_pretrained(
+                model, processor = _load_offloading_when_too_big(
+                    FastVisionModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -945,7 +965,8 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                model, tokenizer = FastLanguageModel.from_pretrained(
+                model, tokenizer = _load_offloading_when_too_big(
+                    FastLanguageModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,

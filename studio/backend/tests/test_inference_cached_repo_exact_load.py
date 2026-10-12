@@ -309,15 +309,27 @@ def test_load_model_hands_the_verdict_to_both_loaders():
         lambda v: any(isinstance(n, ast.Name) and n.id in verdicts for n in ast.walk(v))
     )
 
+    def loader(node):
+        # Direct `FastX.from_pretrained(...)`, or the same bound method handed to the offload retry.
+        if not isinstance(node, ast.Call):
+            return None
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "_load_offloading_when_too_big" and node.args:
+            func = node.args[0]
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "from_pretrained"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in ("FastLanguageModel", "FastVisionModel")
+        ):
+            return func.value.id
+        return None
+
     def receives(kwarg):
         return {
-            node.func.value.id
+            loader(node)
             for node in ast.walk(load_model)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "from_pretrained"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in ("FastLanguageModel", "FastVisionModel")
+            if loader(node)
             and any(
                 kw.arg == kwarg and isinstance(kw.value, ast.Name) and kw.value.id in derived
                 for kw in node.keywords
