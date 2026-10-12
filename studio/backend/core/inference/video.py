@@ -2687,7 +2687,6 @@ class VideoBackend:
         # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
         if not family_override:
             from .video_families import unsupported_video_checkpoint_reason
-
             reason = unsupported_video_checkpoint_reason(display_repo_id, repo_id, gguf_filename)
             if reason:
                 raise ValueError(reason)

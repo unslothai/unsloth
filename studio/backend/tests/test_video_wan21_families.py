@@ -297,7 +297,6 @@ def test_comfy_folder_lists_wan21_t2v_files(tmp_path):
 )
 def test_wan_gguf_listing_task(hints, video):
     from hub.services.models.catalog_classification import _VIDEO_GEN_TASK, _arch_to_task
-
     assert (_arch_to_task("wan", hints) == _VIDEO_GEN_TASK) is video
 
 
@@ -342,7 +341,6 @@ def test_load_validation_refuses_with_the_named_reason():
 def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
     # The repo id alone resolves a T2V family; the picked file must still be judged.
     from core.inference.video import VideoBackend
-
     assert vf.detect_video_family(repo) is not None
     with pytest.raises(ValueError, match = reason):
         VideoBackend().validate_load_request(repo, **kwargs)
@@ -370,7 +368,6 @@ def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
 )
 def test_load_validation_accepts_wan21_t2v(repo, kwargs, family):
     from core.inference.video import VideoBackend
-
     assert VideoBackend().validate_load_request(repo, **kwargs).name == family
 
 
@@ -384,7 +381,6 @@ def test_non_diffusers_upstream_repo_stays_untrusted():
 
 def test_vae_untiled_tables_cover_wan21():
     from core.inference import video_vae_untiled as vu
-
     for fam in ("wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         assert vu._BYTES_PER_LATENT_PIXEL[fam] == vu._BYTES_PER_LATENT_PIXEL["wan2.2-t2v-a14b"]
         assert vu._OUTPUT_SCALE[fam] == (8, 4)

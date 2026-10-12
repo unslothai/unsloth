@@ -376,9 +376,7 @@ def _offer_loose_checkpoint(path: Path) -> bool:
                 family, frozenset()
             ):
                 family = named.name
-            return _single_file_loadable(
-                None, detect_video_family("", override = family), path.name
-            )
+            return _single_file_loadable(None, detect_video_family("", override = family), path.name)
         return _single_file_loadable(detect_family("", override = info.family), None, path.name)
     return _single_file_loadable(
         detect_family(path.name), detect_video_family(path.name), path.name
