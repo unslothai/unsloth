@@ -1234,6 +1234,39 @@ def test_a_concurrent_unload_waits_for_the_active_teardown(env):
     assert runtime.freed == 1
 
 
+def test_a_cancelled_load_keeps_its_repos_draining_until_the_worker_is_joined(env, monkeypatch):
+    import core.inference.diffusion_engine_router as router
+    from hub.services.models import deletion
+
+    backend, runtime, _calls = env
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: backend)
+    gate = threading.Event()
+    started = threading.Event()
+    real_build = runtime.build
+
+    def _slow_build(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real_build(*a, **k)
+
+    runtime.build = _slow_build
+    backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+    assert started.wait(5)
+    unloader = threading.Thread(target = backend.unload)
+    unloader.start()
+    deadline = time.time() + 5
+    while not backend._unloading and time.time() < deadline:
+        time.sleep(0.01)
+    try:
+        assert backend.loading_repo_ids() == ()
+        assert REPO in backend.draining_repo_ids()
+        assert "still releasing" in (deletion._diffusion_blocks_delete(REPO) or "")
+    finally:
+        gate.set()
+        unloader.join(5)
+    assert backend.draining_repo_ids() == ()
+
+
 def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     import huggingface_hub
     from huggingface_hub import constants

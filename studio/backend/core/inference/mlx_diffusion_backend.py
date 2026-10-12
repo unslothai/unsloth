@@ -609,6 +609,8 @@ class MlxDiffusionBackend:
         self._unloading = 0
         self._teardown_lock = threading.Lock()
         self._free_pending = False
+        # Repos a cancelled load may still be reading until its worker is joined; see draining_repo_ids().
+        self._draining_repos: dict[int, tuple[str, ...]] = {}
         self.last_timings: dict[str, Any] = {}
 
     def _rt(self) -> Any:
@@ -925,6 +927,12 @@ class MlxDiffusionBackend:
                 return ()
             return tuple(dict.fromkeys((loading.repo_id, loading.base_repo)))
 
+    def draining_repo_ids(self) -> tuple[str, ...]:
+        """Repos a cancelled load is still reading until unload() has joined its worker, for the cache-deletion guards
+        only (``loading_repo_ids()`` reads as ownership elsewhere)."""
+        with self._lock:
+            return tuple(dict.fromkeys(r for repos in self._draining_repos.values() for r in repos))
+
     def loaded_repo_ids(self) -> tuple[str, ...]:
         with self._lock:
             state = self._state
@@ -1163,9 +1171,13 @@ class MlxDiffusionBackend:
                 self._free_pending = True
             self._state = None
             self._load_token += 1
-            self._loading = None
             # Left visible until joined: a concurrent unload must wait for the same worker.
             worker = self._load_thread
+            if self._loading is not None and worker is not None:
+                self._draining_repos[id(worker)] = tuple(
+                    dict.fromkeys(r for r in (self._loading.repo_id, self._loading.base_repo) if r)
+                )
+            self._loading = None
             # Held until the join and free below: a load started meanwhile would build beside the superseded one.
             self._unloading += 1
         try:
@@ -1181,6 +1193,8 @@ class MlxDiffusionBackend:
                 with self._lock:
                     if self._load_thread is worker:
                         self._load_thread = None
+                    if worker is not None:
+                        self._draining_repos.pop(id(worker), None)
                     free, self._free_pending = self._free_pending, False
                 if free and self._runtime is not None:
                     self._runtime.free()
