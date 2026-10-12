@@ -8605,6 +8605,10 @@ def _ensure_ssm_kernels() -> None:
         if installed and loads(check):
             _note(f"{name} already installed and loads.")
             continue
+        # UV_OFFLINE: no lookup and no install, whose pip fallback would ignore it.
+        if _uv_is_offline():
+            _note(f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online")
+            continue
         buffer = io.StringIO()
         try:
             with contextlib.redirect_stdout(buffer):

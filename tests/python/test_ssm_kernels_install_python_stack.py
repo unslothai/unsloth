@@ -61,12 +61,14 @@ def _run(
     no_torch = False,
     macos = False,
     disabled = False,
+    offline = False,
 ):
     steps, notes = [], []
     with (
         mock.patch.object(ips, "NO_TORCH", no_torch),
         mock.patch.object(ips, "IS_MACOS", macos),
         mock.patch.object(ips, "IS_WINDOWS", False),
+        mock.patch.object(ips, "_uv_is_offline", return_value = offline),
         mock.patch.object(ips, "probe_torch_wheel_env", return_value = env) as probe,
         mock.patch.object(ips, "install_kernel", side_effect = install_kernel) as kernel,
         mock.patch.object(ips, "_installed_distribution_version", side_effect = host.version),
@@ -139,6 +141,16 @@ def test_a_resident_build_that_no_longer_loads_is_removed_when_nothing_replaces_
     assert r.steps == [
         "causal_conv1d does not load with this torch; removed it",
         "mamba_ssm does not load with this torch; removed it",
+    ]
+
+
+def test_offline_mode_neither_looks_up_nor_installs_but_keeps_what_loads():
+    host = _Host(installed = ["causal-conv1d"], loading = ["causal-conv1d"])
+    r = _run(host, _installer(host), offline = True)
+    assert r.kernel.call_count == 0 and r.uninstall.call_count == 0
+    assert r.notes == [
+        "causal_conv1d already installed and loads.",
+        "mamba_ssm not installed: UV_OFFLINE is set; run `unsloth install-kernels` online",
     ]
 
 
