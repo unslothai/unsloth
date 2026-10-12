@@ -50,8 +50,12 @@ export const BUDGET = {
   // The long-chat render work (#13255: deferred fences and reasoning rows) adds 33.3 KB raw / 13.1 KB
   // transfer to the eager chat chunk (6,477.1 -> 6,510.4 KB raw, 1,942.6 -> 1,955.7 KB transfer at
   // 160cb41fe, one machine and build); raised by that so main's margin stays where it was.
-  transferBytes: 2_005_000,
-  rawBytes: 6_681_000,
+  // Browser use (#13372) adds 7.8 KB raw / 2.7 KB transfer (6,513.6 -> 6,521.4 KB raw, 1,956.6 ->
+  // 1,959.3 KB transfer at 7703901ea^1 -> 7703901ea, one machine and build): the agent store its
+  // download rules and the chat adapter read on the first screen. Its composer toggle loads on use,
+  // which recovers 0.3 KB transfer; the rest is raised by that so main's margin stays where it was.
+  transferBytes: 2_007_800,
+  rawBytes: 6_689_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
