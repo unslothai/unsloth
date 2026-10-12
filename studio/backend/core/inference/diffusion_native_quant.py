@@ -16,6 +16,12 @@ NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
 NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
 NATIVE_INT8_ROT_ENV = "UNSLOTH_NATIVE_INT8_ROT"
+# Apple Silicon: weight-only int8 through aten ``_weight_int8pack_mm`` (a Metal kernel that widens the int8 codes
+# in-kernel and accumulates in fp32), instead of dequantising the whole weight on every forward. ``0`` keeps the
+# dequantise path.
+NATIVE_MPS_INT8PACK_ENV = "UNSLOTH_DIFFUSION_MPS_INT8PACK"
+# The Metal kernel asserts N % 32 == 0 and K % 32 == 0.
+_INT8PACK_ALIGN = 32
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
@@ -29,6 +35,26 @@ def int8_act_requested() -> bool:
 def int8_act_disabled() -> bool:
     import os
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "0"
+
+
+def mps_int8pack_disabled() -> bool:
+    import os
+    return os.environ.get(NATIVE_MPS_INT8PACK_ENV, "").strip().lower() in ("0", "off", "false", "no")
+
+
+def snap_scale_up(scale: Any, dtype: Any) -> Any:
+    """``scale`` (fp32) rounded to ``dtype``, one ulp up wherever rounding went down, returned as fp32.
+
+    The Metal int8 kernel takes the per-row scale in the activation dtype. Quantising against a scale already exact
+    in that dtype keeps the kernel faithful to the stored codes; rounding an fp32 scale at call time instead would put
+    a fixed gain error (up to 2**-9 in bf16) on every output row. Rounding up never clips a code."""
+    import torch
+
+    # On CPU: per-row scales are tiny, and nextafter is not implemented on every backend.
+    host = scale.detach().to("cpu", torch.float32)
+    cast = host.to(dtype)
+    up = torch.nextafter(cast, torch.full_like(cast, float("inf")))
+    return torch.where(cast.float() < host, up, cast).float().to(scale.device)
 
 
 def int8_rotation_group() -> int:
@@ -90,11 +116,13 @@ def native_linear_class():
             rot_group: int = 0,
             codes: Any = None,
             scale: Any = None,
+            scale_dtype: Any = None,
         ):
             """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
             scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
             With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
-            not activations go int8."""
+            not activations go int8. ``scale_dtype``: quantise int8 against per-row scales exact in that dtype
+            (``snap_scale_up``), so the Apple Silicon kernel takes them without a rounding error."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -144,6 +172,8 @@ def native_linear_class():
                         )
                         self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
                     scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
+                    if scheme == NATIVE_INT8 and scale_dtype is not None:
+                        scale = snap_scale_up(scale, scale_dtype)
                     if scheme == NATIVE_INT8:
                         wq = (w / scale).round_().clamp_(-127, 127).to(torch.int8)
                     else:
@@ -157,6 +187,8 @@ def native_linear_class():
             self.bias = linear.bias
             # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
+            # (dtype, device) -> the per-row scale in that dtype, or None when the cast is not exact.
+            self._int8pack_scales: dict = {}
 
         def _stored_weight(self, dtype: Any) -> Any:
             wq = (
@@ -232,7 +264,50 @@ def native_linear_class():
                 )
             return out.reshape(*x.shape[:-1], self.out_features)
 
+        def _int8pack_scale(self, dtype: Any, device: Any) -> Any:
+            """The per-row scale cast to ``dtype``, only when that cast is exact (checked once per layer, dtype and
+            device); else None and the layer keeps the dequantise path (e.g. checkpoint codes whose fp32 scales bf16
+            cannot hold)."""
+            key = (dtype, str(device))
+            if key not in self._int8pack_scales:
+                scale = self.weight_scale.view(torch.float32)
+                cast = scale.to(dtype)
+                exact = bool(torch.equal(cast.float(), scale))
+                self._int8pack_scales[key] = cast.contiguous() if exact else None
+            return self._int8pack_scales[key]
+
+        def _int8pack_ok(self, x: Any) -> bool:
+            return (
+                x.device.type == "mps"
+                and self.scheme == NATIVE_INT8
+                and not self.act_int8
+                and not self.rot_group
+                and x.dtype in (torch.bfloat16, torch.float16, torch.float32)
+                and self.in_features % _INT8PACK_ALIGN == 0
+                and self.out_features % _INT8PACK_ALIGN == 0
+                and x.numel() > 0
+                and hasattr(torch, "_weight_int8pack_mm")
+                and not mps_int8pack_disabled()
+            )
+
+        def _forward_int8pack(self, x: Any) -> Any:
+            """``x @ (codes * scale).T`` through the int8 kernel, or None to take the dequantise path."""
+            scale = self._int8pack_scale(x.dtype, x.device)
+            if scale is None:
+                return None
+            x2 = x.reshape(-1, self.in_features)
+            if not x2.is_contiguous():
+                x2 = x2.contiguous()
+            out = torch._weight_int8pack_mm(x2, self.weight_q, scale)
+            if self.bias is not None:
+                out = out + self.bias.to(out.dtype)
+            return out.reshape(*x.shape[:-1], self.out_features)
+
         def forward(self, x: Any) -> Any:
+            if self._int8pack_ok(x):
+                out = self._forward_int8pack(x)
+                if out is not None:
+                    return out
             if self.rot_group:
                 x = self._rotate(x)
             if (
@@ -271,6 +346,7 @@ def apply_native_weight_quant(
     filter_fn: Callable[[Any, str], bool],
     act_int8: bool,
     logger: Any = None,
+    scale_dtype: Any = None,
 ) -> int:
     """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped. One layer
     at a time; a failure part-way leaves a partial conversion the caller must refuse."""
@@ -283,7 +359,15 @@ def apply_native_weight_quant(
         parent_name, _, leaf = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
         setattr(
-            parent, leaf, cls(getattr(parent, leaf), scheme, act_int8 = act_int8, rot_group = rot_group)
+            parent,
+            leaf,
+            cls(
+                getattr(parent, leaf),
+                scheme,
+                act_int8 = act_int8,
+                rot_group = rot_group,
+                scale_dtype = scale_dtype if scheme == NATIVE_INT8 and not act_int8 else None,
+            ),
         )
     if logger is not None:
         logger.info(
@@ -334,6 +418,16 @@ def native_quant_reason(module: Any, scheme: str) -> str:
             f"W8A8: {scheme} weights and activations through torch._int_mm"
             + (f" with a g{rot} ConvRot rotation" if rot else "")
             + " (torchao-free; plain buffers, so the offload hooks can move it)"
+        )
+    if (
+        layer is not None
+        and getattr(layer, "scheme", None) == NATIVE_INT8
+        and getattr(getattr(layer, "weight_q", None), "device", None) is not None
+        and layer.weight_q.device.type == "mps"
+    ):
+        return (
+            f"weight-only: {scheme} weights through the Apple Silicon int8 kernel "
+            "(torchao-free; half the weight memory)"
         )
     return (
         f"weight-only: {scheme} weights, bf16 compute "

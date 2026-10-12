@@ -1033,10 +1033,23 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
 NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
 
 
+def _mps_bf16(target: Any) -> bool:
+    if getattr(target, "device", None) != "mps":
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
 def native_quant_host(target: Any) -> bool:
     """Whether ``target`` is a bf16 GPU whose torchao path is closed for a platform reason: a ROCm torch
-    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``) or the
-    Windows-ROCm torchao stub. False on every NVIDIA, MPS, XPU and CPU host, which keep the torchao path."""
+    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``), the
+    Windows-ROCm torchao stub, or Apple Silicon MPS (no ``_int_mm`` and no fp8; int8 weight-only runs on the
+    Metal ``_weight_int8pack_mm`` kernel). False on every NVIDIA, XPU and CPU host, which keep the torchao path."""
+    if _mps_bf16(target):
+        return True
     if getattr(target, "device", None) != "cuda":
         return False
     if not (torch_is_rocm() or is_stubbed("torchao")):
@@ -1078,12 +1091,18 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
+    # MPS has no float8 storage: int8 weight-only only.
+    if _mps_bf16(target) and scheme != TQ_INT8:
+        return None
     if _family_denied(family, scheme):
         return None
     return scheme
 
 
 def native_int8_act(target: Any) -> bool:
+    # MPS has no int8 x int8 GEMM (no ``_int_mm``): W8A8 would only add the activation quant.
+    if _mps_bf16(target):
+        return False
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
@@ -1939,7 +1958,8 @@ def quantize_transformer(
     """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
-        if act_int8 is None:
+        mps = _mps_bf16(target)
+        if act_int8 is None or mps:
             act_int8 = native_int8_act(target)
         return _quantize_native(
             pipe,
@@ -1948,6 +1968,7 @@ def quantize_transformer(
             min_features = min_features,
             act_int8 = bool(act_int8) and native == TQ_INT8,
             logger = logger,
+            scale_dtype = getattr(target, "dtype", None) if mps else None,
         )
     scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
@@ -2015,7 +2036,14 @@ def quantize_transformer(
 
 
 def _quantize_native(
-    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
+    pipe: Any,
+    scheme: str,
+    *,
+    family: Optional[str],
+    min_features: int,
+    act_int8: bool,
+    logger: Any,
+    scale_dtype: Any = None,
 ) -> Optional[str]:
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
@@ -2030,7 +2058,12 @@ def _quantize_native(
             require_bf16 = True,
         )
         if not apply_native_weight_quant(
-            transformer, scheme, filter_fn = filter_fn, act_int8 = act_int8, logger = logger
+            transformer,
+            scheme,
+            filter_fn = filter_fn,
+            act_int8 = act_int8,
+            logger = logger,
+            scale_dtype = scale_dtype,
         ):
             return None
         try:
