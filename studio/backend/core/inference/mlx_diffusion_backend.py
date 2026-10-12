@@ -360,7 +360,9 @@ def _holds_base_components(snapshot: str) -> bool:
     root = Path(snapshot)
     if not all((root / sub).is_dir() for sub in _LINKED_SUBDIRS):
         return False
-    if not all((root / "tokenizer" / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")):
+    if not all(
+        (root / "tokenizer" / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")
+    ):
         return False
     for sub in ("text_encoder", "vae"):
         folder = root / sub
