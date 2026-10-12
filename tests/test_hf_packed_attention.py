@@ -1013,8 +1013,10 @@ def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypa
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
     hpa._ORIG_SDPA[0] = None
-    original = ALL_ATTENTION_FUNCTIONS["sdpa"]
-    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", original)
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    # transformers' own entry: an earlier test can leave the installed wrapper in the mapping.
+    monkeypatch.setitem(ALL_ATTENTION_FUNCTIONS, "sdpa", sdpa_attention_forward)
     assert hpa.enable_hf_packed_attention()
     torch.manual_seed(0)
     config = transformers.Gemma4TextConfig(
