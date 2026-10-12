@@ -32,18 +32,16 @@ for _up in _iso.parents:
 # Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
 # as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
 # and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
-# training took >330 s there against ~50 s alone. setdefault keeps an explicit setting.
+# training took >330 s there against ~50 s alone. An explicit thread setting is kept.
+# Loaded by path: tests/_shared is put on sys.path only below.
 import os as _os  # noqa: E402
 
-_workers = int(_os.environ.get("PYTEST_XDIST_WORKER_COUNT") or 0)
-if _workers > 1:
-    try:
-        _cpus = len(_os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        _cpus = _os.cpu_count() or 1
-    _share = str(max(1, _cpus // _workers))
-    for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        _os.environ.setdefault(_var, _share)
+_share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
+if _share_path.is_file():
+    _spec = _ilu.spec_from_file_location("xdist_cpu_share", _share_path)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _mod.apply(_os.environ)
 
 # --- shared test helpers on sys.path -----------------------------------------------
 # tests/_shared holds no package marker and pytest only puts a *test file's* own
