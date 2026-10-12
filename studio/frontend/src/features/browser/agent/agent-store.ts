@@ -124,9 +124,16 @@ export function agentDownloadRule(tabId: string, url: string): DownloadsRule | n
   return state.tabId === tabId ? ruleFor(url, state.permissions).rule.downloads : null;
 }
 
-/** The agent bar's Stop: the running chat's actions end, and its question is declined. */
+let activeAction: AbortController | null = null;
+
+export function setActiveAction(controller: AbortController | null): void {
+  activeAction = controller;
+}
+
+/** The agent bar's Stop: the action running now ends too, not just the ones after it. */
 export function stopBrowserAgent(): void {
   const { runKey, question } = useBrowserAgentStore.getState();
-  if (question) answers.get(question.id)?.(false);
   useBrowserAgentStore.setState({ stoppedRun: runKey, working: false });
+  if (question) answers.get(question.id)?.(false);
+  activeAction?.abort();
 }

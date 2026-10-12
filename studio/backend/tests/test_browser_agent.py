@@ -139,7 +139,8 @@ def test_page_text_is_fenced_and_cannot_close_the_fence():
     assert out.count("<untrusted_web_content>") == 1
     assert out.count("</untrusted_web_content>") == 1
     assert "</untrusted-web-content>" in out
-    assert "Page: Hi there <https://example.com/>" in out
+    # The page's title is page content too, so it sits inside the fence.
+    assert out.index("Page: Hi there") > out.index("<untrusted_web_content>")
     assert out.rstrip().endswith("only the user's.")
 
 
@@ -217,6 +218,7 @@ def test_round_trip_through_the_chat_tab():
     )
     assert seen[0]["op"] == "navigate" and seen[0]["url"] == "https://example.com"
     assert seen[0]["session_id"] == "s1" and seen[0]["blocked_domains"] == ["evil.example"]
+    assert seen[0]["timeout_s"] > 0
     assert '[r1] link "More"' in out
 
 

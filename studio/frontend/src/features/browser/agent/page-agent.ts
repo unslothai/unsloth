@@ -69,6 +69,9 @@ export function installPageAgent(): void {
     "spinbutton",
     "treeitem",
   ]);
+  // Mirrors gate.ts, which can't be imported here (this function ships as source).
+  const SECRET = /\b(current-password|new-password|one-time-code|cc-[a-z-]+)\b/i;
+  const SECRET_NAME = /\b(password|passcode|card ?number|cvc|cvv|security code|ssn|social security)\b/i;
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "number", "password", ""]);
 
   const refs = new WeakMap<Element, number>();
@@ -195,7 +198,14 @@ export function installPageAgent(): void {
     if (tag === "input" || tag === "textarea") {
       const field = el as HTMLInputElement;
       if (role === "checkbox" || role === "radio") parts.push(field.checked ? "checked" : "unchecked");
-      else if (role === "password") parts.push(field.value ? "filled" : "empty");
+      // The same fields the panel never types into: what the user filled in stays theirs.
+      else if (
+        role === "password" ||
+        SECRET.test(el.getAttribute("autocomplete") ?? "") ||
+        (field.value && SECRET_NAME.test(nameOf(el)))
+      ) {
+        parts.push(field.value ? "filled" : "empty");
+      }
       else if (role !== "button" && role !== "file-input" && field.value) parts.push(`value=${quoted(clean(field.value, 60))}`);
     } else if (tag === "select") {
       const select = el as HTMLSelectElement;
@@ -343,10 +353,15 @@ export function installPageAgent(): void {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const hits: string[] = [];
     const links: string[] = [];
+    // The snapshot's rules too, so hidden text can't reach the model through a search instead.
     const visible = (el: Element) => {
+      if (el.closest("[aria-hidden=true], [hidden]") || !sized(el.getBoundingClientRect())) return false;
       const check = (el as Element & { checkVisibility?: (options?: object) => boolean }).checkVisibility;
       if (check) return check.call(el, { checkOpacity: true, checkVisibilityCSS: true });
-      return sized(el.getBoundingClientRect());
+      for (let node: Element | null = el; node; node = node.parentElement) {
+        if (hidden(node, getComputedStyle(node))) return false;
+      }
+      return true;
     };
     const all = Array.from(document.querySelectorAll("body *")).slice(0, 30000);
     for (const el of all) {
@@ -388,9 +403,18 @@ export function installPageAgent(): void {
     const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
     const tag = el.tagName.toLowerCase();
     const type = (field.type || "").toLowerCase();
-    const submits =
-      Boolean(form) &&
-      ((tag === "button" && (type === "submit" || !el.getAttribute("type"))) || (tag === "input" && (type === "submit" || type === "image")));
+    const isSubmitter = (node: Element) => {
+      const kind = (node.getAttribute("type") ?? "").toLowerCase();
+      return node.tagName === "BUTTON" ? kind === "" || kind === "submit" : node.tagName === "INPUT" && (kind === "submit" || kind === "image");
+    };
+    const submits = Boolean(form) && isSubmitter(el);
+    // What actually submits: this button, or for Enter in a field the form's default button.
+    // Its formaction/formmethod override the form's, as browsers and the proxied frame honor.
+    const submitter = submits ? el : Array.from(form?.elements ?? []).find(isSubmitter);
+    const method = submitter?.getAttribute("formmethod") || form?.getAttribute("method") || "get";
+    const action = submitter?.hasAttribute("formaction")
+      ? new URL(submitter.getAttribute("formaction") ?? "", document.baseURI).href
+      : form?.action || pageUrl().href;
     const info = {
       role: roleOf(el) ?? (anchor ? "link" : "element"),
       name: nameOf(el) || nameOf(anchor ?? el),
@@ -398,8 +422,8 @@ export function installPageAgent(): void {
       type,
       href: anchor?.href ?? "",
       autocomplete: (el.getAttribute("autocomplete") ?? "").toLowerCase(),
-      formMethod: (form?.method || "get").toLowerCase(),
-      formAction: form ? form.action || pageUrl().href : "",
+      formMethod: form ? method.toLowerCase() : "get",
+      formAction: form ? action : "",
       formHasPassword: Boolean(form?.querySelector("input[type=password]")),
       submits,
     };
@@ -590,6 +614,11 @@ export function installPageAgent(): void {
   };
 
   const run = (command: Record<string, unknown>): Record<string, unknown> => {
+    // Each page numbers its refs from where the panel says, so a ref kept from the last page
+    // misses rather than landing on whatever has that number here.
+    if (nextRef === 1 && typeof command.base === "number" && Number.isSafeInteger(command.base) && command.base > 0) {
+      nextRef = command.base;
+    }
     try {
       const ref = typeof command.ref === "string" ? command.ref : "";
       switch (command.op) {

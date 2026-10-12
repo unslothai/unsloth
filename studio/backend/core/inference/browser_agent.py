@@ -409,15 +409,17 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
             text[:_MAX_MODEL_CHARS]
             + "\n... (cut here: use browser_find, browser_scroll or a snapshot ref to see more)"
         )
-    lines = []
-    if note:
-        lines.append(note)
+    # The title and note come from the page too (a selected option's words), so everything but
+    # this tool's own framing goes inside the fence.
+    page = []
     if url:
-        lines.append(f"Page: {_fenced(title) + ' ' if title else ''}<{_fenced(url)}>")
+        page.append(f"Page: {title + ' ' if title else ''}<{url}>")
+    if note:
+        page.append(note)
     if text:
-        lines.append(f"<{_FENCE}>\n{_fenced(text)}\n</{_FENCE}>")
-        lines.append(_UNTRUSTED_NOTE)
-    body = "\n".join(lines) or "Done."
+        page.append(text)
+    joined = "\n".join(page)
+    body = f"<{_FENCE}>\n{_fenced(joined)}\n</{_FENCE}>\n{_UNTRUSTED_NOTE}" if page else "Done."
     if name == BROWSER_SCREENSHOT:
         return _with_screenshot(body, result.get("image"))
     return body
@@ -476,6 +478,11 @@ def execute_browser_tool(
         return "Error: the website access policy could not be read, so the browser stays closed."
     action_id = new_action_id()
     slot = begin_browser_action(action_id, session_id, current_account_id())
+    wait = (
+        _ACTION_TIMEOUT_S
+        if timeout is None
+        else max(_MIN_ACTION_TIMEOUT_S, min(float(timeout), _ACTION_TIMEOUT_S))
+    )
     output_callback(
         {
             "browser_action": {
@@ -485,13 +492,11 @@ def execute_browser_tool(
                 # The tab keeps clicks and form posts to the same limits a navigation is held to.
                 "allowed_domains": list(policy["allowedDomains"]),
                 "blocked_domains": list(policy["blockedDomains"]),
+                # The tab drops a question still open when this side stops waiting, so a late
+                # Allow can't run an action nobody is waiting for.
+                "timeout_s": wait,
             }
         }
-    )
-    wait = (
-        _ACTION_TIMEOUT_S
-        if timeout is None
-        else max(_MIN_ACTION_TIMEOUT_S, min(float(timeout), _ACTION_TIMEOUT_S))
     )
     outcome, result = wait_browser_action(slot, action_id, cancel_event, wait)
     if outcome == "cancelled":

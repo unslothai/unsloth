@@ -13,7 +13,7 @@ import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
-import { askUser, useBrowserAgentStore } from "./agent-store";
+import { askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 
@@ -31,6 +31,8 @@ export type BrowserAction = {
   fullPage?: boolean;
   query?: string;
   limit?: number;
+  /** How long the server waits for this answer. */
+  timeoutS?: number;
   policy: SitePolicy;
 };
 
@@ -70,6 +72,7 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
     limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
+    timeoutS: typeof raw.timeout_s === "number" && raw.timeout_s > 0 ? Math.min(raw.timeout_s, 3600) : undefined,
     policy: { allowedDomains: strings(raw.allowed_domains), blockedDomains: strings(raw.blocked_domains) },
   };
 }
@@ -77,6 +80,8 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
 // Sites approved or reached this session, and the links on the page the agent last read.
 const knownHosts = new Set<string>();
 let pageLinks = new Set<string>();
+
+const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
 let queue: Promise<void> = Promise.resolve();
 // A replayed stream frame must not click twice.
@@ -87,26 +92,48 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
   if (seen.has(action.id)) return queue;
   seen.add(action.id);
   const next = queue.then(async () => {
+    // Ends with the chat run, with Stop, or when the server stops waiting: a question still open
+    // then must not be answerable, or a late Allow would act for nobody.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    context.signal?.addEventListener("abort", abort, { once: true });
+    if (context.signal?.aborted) abort();
+    const deadline = action.timeoutS ? setTimeout(abort, Math.max(1, action.timeoutS - 2) * 1000) : null;
+    setActiveAction(controller);
     let result: Result;
     try {
-      result = await perform(action, context);
+      result = await perform(action, { ...context, signal: controller.signal });
     } catch (error) {
       result = { ok: false, error: error instanceof Error ? error.message : String(error) };
     } finally {
+      if (deadline) clearTimeout(deadline);
+      context.signal?.removeEventListener("abort", abort);
+      setActiveAction(null);
       useBrowserAgentStore.setState({ working: false });
     }
-    await postResult(action, result).catch(() => undefined);
+    if (useBrowserAgentStore.getState().stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
+    await postResult(action, result);
   });
   queue = next.catch(() => undefined);
   return next;
 }
 
+/** Retried: a lost answer leaves the tool waiting for its whole timeout. */
 async function postResult(action: BrowserAction, result: Result): Promise<void> {
-  await authFetch("/api/inference/browser-action-result", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action_id: action.id, session_id: action.sessionId, result }),
-  });
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const response = await authFetch("/api/inference/browser-action-result", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_id: action.id, session_id: action.sessionId, result }),
+      });
+      // 404: the server already gave up on this action; nothing to deliver.
+      if (response.ok || (response.status >= 400 && response.status < 500)) return;
+    } catch {
+      // Network or auth refresh: try again.
+    }
+    await sleep(500 * 2 ** attempt);
+  }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -175,25 +202,34 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
   };
 }
 
+// Where each newly installed page starts its refs (page-agent.ts `base`): r1, r1001, r2001...
+let nextBase = 1;
+const REF_STRIDE = 1000;
+
 /** One command in the tab's page, installing the agent there first if this page lacks it. */
-async function pageCall(tab: BrowserTab, op: Record<string, unknown>): Promise<AgentAnswer> {
+async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Promise<AgentAnswer> {
   const native = useNativeBrowser.getState().enabled;
   const started = Date.now();
+  const fresh = () => {
+    const base = nextBase;
+    nextBase = nextBase > 90 * REF_STRIDE ? 1 : nextBase + REF_STRIDE;
+    return { ...command, base };
+  };
   while (true) {
     let reply: { installed: boolean; result: unknown } | null = null;
     if (native) {
       if (hasNativeView(tab.id)) {
-        const call = (code?: string) =>
+        const call = (op: Record<string, unknown>, code?: string) =>
           callNative<{ installed: boolean; result: unknown }>("browser_view_agent", {
             tabId: tab.id,
             command: { op, ...(code ? { code } : {}) },
           }).catch(() => null);
-        reply = await call();
-        if (reply && !reply.installed) reply = await call(pageAgentSource());
+        reply = await call(command);
+        if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
       }
     } else {
-      reply = await requestFrameAgent(tab.id, op);
-      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, op, pageAgentSource());
+      reply = await requestFrameAgent(tab.id, command);
+      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
     }
     const answer = reply?.installed ? checkedAnswer(reply.result) : null;
     if (answer) return answer;
@@ -301,7 +337,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     knownHosts.add(hostOfUrl(url));
     const tab = await open(url, signal);
     if (!tab) return { ok: false, error: "the browser tab closed." };
-    return observeLoaded(tab);
+    return arrive(tab, url, action, context);
   }
 
   if (action.op === "history") return readHistory(action, signal);
@@ -320,7 +356,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     else if (action.op === "forward") store.goForward(tab.id);
     else store.reload(tab.id);
     const loaded = await waitForLoad(tab.id, signal);
-    return loaded ? observeLoaded(loaded) : { ok: false, error: "the browser tab closed." };
+    return loaded ? arrive(loaded, before, action, context) : { ok: false, error: "the browser tab closed." };
   }
 
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
@@ -350,13 +386,25 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "click" || action.op === "select" || action.op === "type") {
     gates.push(gateElement(action.op, info, before, action.policy, permissions()));
   }
+  // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
+  const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
+  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, before, action.policy, permissions()));
   // Enter in a field sends its form, so it is held to what a submit button would be.
-  const submits = (action.op === "type" && action.submit) || (action.op === "press" && action.key === "Enter");
-  if (submits && info.formAction) gates.push(gateElement("submit", info, before, action.policy, permissions()));
+  const submits =
+    (action.op === "type" && action.submit) ||
+    (action.op === "press" && action.key === "Enter" && TEXT_ROLES.has(info.role)) ||
+    (action.op === "click" && info.submits);
+  if (submits && info.formAction) {
+    if (action.op !== "click") gates.push(gateElement("submit", info, before, action.policy, permissions()));
+    // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
+    if (hostOfUrl(info.formAction) !== hostOfUrl(before)) gates.push(gateNavigation(info.formAction, navigationContext(action, context)));
+  }
   for (const gate of gates) {
     const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
   }
+  if (signal?.aborted) return { ok: false, error: STOPPED };
+  if (submits && info.formAction) knownHosts.add(hostOfUrl(info.formAction));
 
   let note: string | undefined;
   if (action.op === "click") {
@@ -369,7 +417,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       knownHosts.add(hostOfUrl(clicked.navigate));
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
-      return loaded ? observeLoaded(loaded) : { ok: false, error: "the browser tab closed." };
+      return loaded ? arrive(loaded, clicked.navigate, action, context) : { ok: false, error: "the browser tab closed." };
     }
     note = clicked.note;
   } else if (action.op === "type") {
@@ -390,13 +438,32 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   const after = await settle(ready.id, before, signal);
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
-  if (now && now !== before) {
-    const blocked = navigationBlocks(now, action.policy, permissions());
-    if (blocked) return { ok: false, error: `The page went to ${hostOfUrl(now)}, but ${blocked}. Go back.` };
-    knownHosts.add(hostOfUrl(now));
-    return observeLoaded(after, note);
-  }
+  if (now && now !== before) return arrive(after, before, action, context, note);
   return observe(after, note);
+}
+
+/** Where a navigation ended up, checked before the model reads it: a redirect or a script can land
+ *  on a blocked site, or on a new one the user never approved. */
+async function arrive(
+  tab: BrowserTab,
+  requested: string,
+  action: BrowserAction,
+  context: ActionContext,
+  note?: string,
+): Promise<Result> {
+  const url = tabUrl(tab);
+  const host = hostOfUrl(url);
+  if (url) {
+    const blocked = navigationBlocks(url, action.policy, permissions());
+    if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
+    if (host && host !== hostOfUrl(requested) && !knownHosts.has(host)) {
+      const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
+      const refused = await pass(gate, context.signal);
+      if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
+    }
+    if (host) knownHosts.add(host);
+  }
+  return observeLoaded(tab, note);
 }
 
 async function observeLoaded(tab: BrowserTab, note?: string): Promise<Result> {
