@@ -26,6 +26,12 @@ def _register_extensions():
 c._register_extensions = _register_extensions
 """
 
+# The generic tests must not trip the Blackwell + old-xformers guard, which disables xformers on purpose.
+_PAST_VERSION_GUARD = """
+import xformers
+xformers.__version__ = "0.0.35"
+"""
+
 _IMPORT_UNSLOTH = """
 import unsloth.models._utils as u
 print("XFORMERS_IS_NONE", u.xformers is None)
@@ -46,10 +52,13 @@ def _run(code):
 
 
 def test_broken_xformers_is_reported():
-    out = _run(_BREAK_XFORMERS + _IMPORT_UNSLOTH)
+    import xformers._cpp_lib as c
+
+    out = _run(_PAST_VERSION_GUARD + _BREAK_XFORMERS + _IMPORT_UNSLOTH)
     assert "XFORMERS_IS_NONE True" in out
     assert "xformers is installed but cannot load with torch" in out
-    assert "(it was built for " in out
+    # No build metadata (xformers already failed its own load here) means no version to name.
+    assert ("(it was built for " in out) is (c._build_metadata is not None)
     assert "unsloth install-kernels xformers" in out
 
 
@@ -72,6 +81,6 @@ def test_working_xformers_prints_nothing():
 
     if c._cpp_library_load_exception is not None:
         pytest.skip("installed xformers does not load here")
-    out = _run(_IMPORT_UNSLOTH)
+    out = _run(_PAST_VERSION_GUARD + _IMPORT_UNSLOTH)
     assert "XFORMERS_IS_NONE False" in out
     assert "xformers is installed but cannot load" not in out
