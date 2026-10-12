@@ -64,9 +64,9 @@ test("the chat renderer's rehypePlugins pipeline carries the allowedTags merge i
     "PRECONDITION: the chat renderer relies on the allowedTags sanitizer",
   );
   assert.ok(
-    /const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport\(STREAMDOWN_ALLOWED_TAGS\);/.test(
+    /withDataImageSupport\(STREAMDOWN_ALLOWED_TAGS,/.test(
       MARKDOWN_TEXT,
-    ) && MARKDOWN_TEXT.includes("rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}"),
+    ) && MARKDOWN_TEXT.includes("rehypePlugins={rehypePlugins}"),
     "the passed pipeline must be derived from the defaults AND carry the allowedTags merge",
   );
 });
@@ -146,13 +146,13 @@ test("the rule is armed by nothing except that attribute", () => {
     "the code-block flicker rule is still there",
   );
 
-  // Two gated copies of `auto`, one per population. A third, ungated one would turn the flag
-  // into decoration.
+  // Two gated copies of `auto`, one per population, plus the engine-gated one on windowed code
+  // bodies. An ungated one would turn the flag into decoration.
   const declarations = INDEX_CSS.split("content-visibility: auto;").length - 1;
   assert.equal(
     declarations,
-    2,
-    "exactly two `content-visibility: auto` declarations in the whole stylesheet",
+    4,
+    "exactly four `content-visibility: auto` declarations in the whole stylesheet",
   );
   const gateAt = INDEX_CSS.indexOf(`html[${MATH_BLOCK_CONTAINMENT_ATTRIBUTE}=`);
   assert.ok(gateAt >= 0, "PRECONDITION: the gate is present");
@@ -234,8 +234,8 @@ test("a print turns the containment off, for both populations", () => {
   // still there to override. Without this the block above could be defending nothing.
   assert.equal(
     INDEX_CSS.split("content-visibility: auto;").length - 1,
-    2,
-    "PRECONDITION: the two gated declarations this print block exists to switch off",
+    4,
+    "PRECONDITION: the gated declarations this print block and the two engine-gated ones switch off",
   );
 });
 

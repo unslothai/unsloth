@@ -13,7 +13,12 @@ export function canMergeConversationExport(format: string): boolean {
 }
 
 export function exportFormatIncludesSiblings(format: string): boolean {
-  return format !== "jsonl-raw" && format !== "jsonl-messages";
+  return (
+    format !== "jsonl-raw" &&
+    format !== "jsonl-messages" &&
+    format !== "sharegpt" &&
+    format !== "markdown"
+  );
 }
 
 const OPENAI_MESSAGE_ROLES = new Set([

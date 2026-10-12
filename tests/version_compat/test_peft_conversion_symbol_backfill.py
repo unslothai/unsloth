@@ -69,6 +69,28 @@ def test_the_missing_names_are_added(fake_modules):
             assert hasattr(fake_modules[name], symbol), f"{name}.{symbol}"
 
 
+def test_the_transformers_package_keeps_no_stub(fake_modules):
+    """The donor stub must not reach the package either.
+
+    `import transformers.conversion_mapping as m` resolves through the package attribute,
+    not sys.modules, so a stub attached there outlives the real module going back into
+    sys.modules and answers every later conversion lookup with None.
+    """
+    parent = types.ModuleType("transformers")
+    saved = sys.modules.get("transformers")
+    sys.modules["transformers"] = parent
+    try:
+        F._backfill_missing_conversion_symbols()
+    finally:
+        if saved is None:
+            sys.modules.pop("transformers", None)
+        else:
+            sys.modules["transformers"] = saved
+    for name in F._PEFT_CONVERSION_SYMBOLS:
+        attached = vars(parent).get(name.rpartition(".")[2])
+        assert attached is None, f"{name}: {getattr(attached, '__file__', attached)}"
+
+
 def test_the_real_module_is_not_replaced(fake_modules):
     before = {n: m for n, m in fake_modules.items()}
     F._backfill_missing_conversion_symbols()
@@ -984,6 +1006,22 @@ def test_the_moe_snapshot_matches_the_installed_transformers():
     live = {k: v for k, v in real.items() if v in ("mixtral", "qwen2_moe")}
     missing = {k: v for k, v in live.items() if F._PEFT_MOE_CONVERSION_PATTERNS.get(k) != v}
     assert not missing, f"fused MoE model types missing from the snapshot: {sorted(missing)}"
+
+
+def test_the_snapshot_covers_the_types_unsloth_registers_itself():
+    """Unsloth adds its own model types to the live map at runtime, so whether the comparison
+    above sees them depends on which tests ran first in the worker. Checked here directly, so
+    a registration the snapshot does not know about fails every time, not only in some orders.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "unsloth" / "models" / "longcat_lsa.py"
+    ).read_text(encoding = "utf-8")
+    assert 'LONGCAT_LSA_MODEL_TYPE = "longcat_flash_lsa"' in source
+    assert 'table.setdefault(LONGCAT_LSA_MODEL_TYPE, table["longcat_flash"])' in source
+    assert (
+        F._PEFT_MOE_CONVERSION_PATTERNS["longcat_flash_lsa"]
+        == (F._PEFT_MOE_CONVERSION_PATTERNS["longcat_flash"])
+    )
 
 
 def test_an_unrelated_string_dictionary_is_not_installed_as_the_map(fake_modules):

@@ -287,9 +287,10 @@ test("the request drops a seed the loaded model cannot use", () => {
   // A pin set on a GGUF outlives a switch to transformers, where the panel hides the
   // field: without this the user would keep sending a seed they can no longer see.
   assert.match(adapter, /!modelReadsSamplingSeed\(/);
-  // The same summary the body already reads isGguf from for context_overflow, so
-  // "is this a GGUF" cannot be answered two ways inside one request.
-  assert.match(adapter, /activeModel\?\.isGguf === true/);
+  // The same summary chat-settings-sheet passes when it decides whether to show the field,
+  // so the panel cannot offer a seed the body drops. Not the compaction gate: that one asks
+  // isServedByLlamaCpp, which answers for llama.cpp alone, and MLX reads a seed too.
+  assert.match(adapter, /modelReadsSamplingSeed\(activeModel\)/);
 });
 
 test("the seed belongs to the chat, not the installation", () => {
@@ -339,7 +340,10 @@ type _EveryFlagTheSeedGateReadsIsRequired = Assert<
     : false
 >;
 
+const everyFlagTheSeedGateReads: _EveryFlagTheSeedGateReadsIsRequired = true;
+
 test("a models[] row states every flag the seed gate reads", () => {
+  assert.equal(everyFlagTheSeedGateReads, true);
   const row: ChatModelRow = {
     id: "m",
     name: "m",

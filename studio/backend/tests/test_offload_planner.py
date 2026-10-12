@@ -987,6 +987,44 @@ def test_a_single_file_gguf_is_still_read():
     assert len(layout.blocks) == 64
 
 
+def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
+    """tensor_bytes includes every tensor while token_embd_bytes is embedding-only."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    path = tmp_path / "embd.gguf"
+    writer = GGUFWriter(str(path), "llama")
+    for key, value in _shard_fields().items():
+        if key.startswith("llama.") and isinstance(value, int):
+            writer.add_uint32(key, 1 if key == "llama.block_count" else value)
+    writer.add_tensor("output_norm.weight", np.zeros(16, dtype = np.float32))
+    writer.add_tensor("token_embd.weight", np.zeros(1024, dtype = np.float32))
+    writer.add_tensor("per_layer_token_embd.weight", np.zeros(4096, dtype = np.float32))
+    writer.add_tensor("blk.0.attn_q.weight", np.zeros(256, dtype = np.float32))
+    writer.add_tensor("blk.1.attn_q.weight", np.zeros(64, dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    layout = layout_from_gguf(str(path))
+    assert layout.complete
+    assert layout.tensor_bytes == 4 * (16 + 1024 + 4096 + 256 + 64)
+    assert layout.token_embd_bytes == 4 * (1024 + 4096)
+
+
+def test_token_embd_norm_is_not_an_input_embedding():
+    """token_embd_norm follows the repeating layers rather than the input layer."""
+    tensors = _shard_tensors(range(64)) + [
+        _StubTensor("token_embd.weight", 400 * MIB),
+        _StubTensor("token_embd_norm.weight", 4 * MIB),
+        _StubTensor("output.weight", 400 * MIB),
+    ]
+    layout = _layout_from_reader(_StubReader(_shard_fields(), tensors))
+    assert layout.token_embd_bytes == 400 * MIB
+    assert layout.other_resident_bytes == 4 * MIB
+
+
 def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     """GGUFReader memmaps the ONE path it is given, but llama.cpp reads
     split.count off the first shard and loads every sibling

@@ -113,6 +113,18 @@ from utils.models.model_config import (
 import utils.models.model_config as mc
 
 
+def fail_download(*_args, **_kwargs):
+    raise AssertionError("should reuse the cached GGUF instead of downloading")
+
+
+def boom(*a, **k):
+    raise OSError("network down")
+
+
+def boom_list(*a, **k):
+    raise OSError("offline")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -228,6 +240,8 @@ class TestGgufVariantFileResolution:
         assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
 
     def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
+        from utils.models.model_config import list_gguf_variants
+
         siblings = [
             _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
             _types.SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
@@ -317,9 +331,6 @@ class TestGgufVariantFileResolution:
         ):
             return [_types.SimpleNamespace(path = path, size = 4) for path in paths if path]
 
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
-
         with (
             patch(
                 "huggingface_hub.list_repo_files",
@@ -377,9 +388,6 @@ class TestGgufVariantFileResolution:
             seen_repos.append(repo_id)
             return str(snap / filename) if repo_id == canonical_repo else None
 
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
-
         with (
             patch("huggingface_hub.list_repo_files", fake_list_repo_files),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
@@ -431,9 +439,6 @@ class TestGgufVariantFileResolution:
             token = None,
         ):
             return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p]
-
-        def fail_download(*_args, **_kwargs):
-            raise AssertionError("should reuse the cached GGUF instead of downloading")
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf"]),
@@ -762,6 +767,8 @@ class TestResolveRepoIdCasing:
 
 class TestListGgufVariantsOffline:
     def test_offline_env_short_circuits_api(self, hf_cache, clean_offline_env, monkeypatch):
+        from utils.models.model_config import list_gguf_variants
+
         _build_cache(hf_cache, "unsloth/a", {"a-UD-Q4_K_XL.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -777,6 +784,8 @@ class TestListGgufVariantsOffline:
     def test_offline_cache_miss_does_not_call_api(
         self, hf_cache, clean_offline_env, monkeypatch, offline_variable
     ):
+        from utils.models.model_config import list_gguf_variants
+
         monkeypatch.setenv(offline_variable, "yes")
 
         def boom(*_args, **_kwargs):
@@ -789,10 +798,9 @@ class TestListGgufVariantsOffline:
         assert has_vision is False
 
     def test_api_exception_falls_back_to_cache(self, hf_cache, clean_offline_env):
-        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
+        from utils.models.model_config import list_gguf_variants
 
-        def boom(*a, **k):
-            raise OSError("network down")
+        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
         with patch("huggingface_hub.model_info", boom):
             variants, _has = list_gguf_variants("unsloth/a")
@@ -800,15 +808,15 @@ class TestListGgufVariantsOffline:
         assert variants[0].quant == "Q4_K_M"
 
     def test_api_exception_with_no_cache_reraises(self, hf_cache, clean_offline_env):
-        def boom(*a, **k):
-            raise OSError("network down")
-
+        from utils.models.model_config import list_gguf_variants
         with patch("huggingface_hub.model_info", boom):
             with pytest.raises(OSError, match = "network down"):
                 list_gguf_variants("unsloth/never-cached")
 
     def test_online_path_unaffected(self, hf_cache, clean_offline_env):
         # When the API succeeds, cache is not consulted.
+        from utils.models.model_config import list_gguf_variants
+
         api_payload = _siblings({"a-UD-Q4_K_XL.gguf": 5, "a-Q2_K.gguf": 3})
 
         def hf_info(*a, **k):
@@ -1066,6 +1074,8 @@ class TestSharedHubModelInfo:
 
     def test_variant_listing_shares_its_sized_read(self, hub):
         """A GGUF listing asks for sizes, and the probes after it read the same response."""
+        from utils.models.model_config import list_gguf_variants
+
         hub.siblings = ("a-Q4_K_M.gguf",)
 
         with shared_hub_model_info():
@@ -1129,10 +1139,11 @@ class TestSharedHubModelInfo:
 
     def test_the_config_route_opens_the_shared_read_and_the_pin(self, hub, monkeypatch):
         """The endpoint is what establishes both request scopes, not the helpers below it."""
+        import utils.utils as uu
+
         import asyncio
 
         import routes.models as models_route
-        import utils.utils as uu
 
         pinned_inside: list = []
 
@@ -1445,6 +1456,8 @@ class TestAllProxyIsHonoured:
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
 
     def test_all_proxy_alone_resolves(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
         from utils.utils import hf_proxy_configured, hf_proxy_for_endpoint
 
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
@@ -1492,9 +1505,9 @@ class TestAllProxyIsHonoured:
 
     def test_probe_opens_through_all_proxy(self, monkeypatch):
         """The HEAD probe must be issued through the proxy, not attempted directly."""
-        import urllib.request
-
         from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
+        import urllib.request
 
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         seen = {}
@@ -1525,9 +1538,9 @@ class TestAllProxyIsHonoured:
         assert seen["proxies"] == {"https": "http://proxy.internal:3128"}
 
     def test_probe_forces_direct_opener_when_no_proxy_bypasses(self, monkeypatch):
-        import urllib.request
-
         from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
+        import urllib.request
 
         monkeypatch.setenv("HF_ENDPOINT", "https://10.23.4.5")
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
@@ -1617,15 +1630,17 @@ class TestSlowLinkIsNotOffline:
         pass
 
     def _probe_raising(self, monkeypatch, exc):
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
 
         monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(exc))
-        from utils.transformers_version import hf_endpoint_unreachable
 
         return hf_endpoint_unreachable
 
     def test_timeout_with_tcp_egress_is_reachable(self, monkeypatch):
         import urllib.error
+        import urllib.request
 
         probe = self._probe_raising(monkeypatch, urllib.error.URLError(TimeoutError("slow")))
         monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: True)
@@ -1633,6 +1648,7 @@ class TestSlowLinkIsNotOffline:
 
     def test_timeout_without_tcp_egress_is_offline(self, monkeypatch):
         import urllib.error
+        import urllib.request
 
         probe = self._probe_raising(monkeypatch, urllib.error.URLError(TimeoutError("dead")))
         monkeypatch.setattr("utils.utils.hf_tcp_reachable", lambda *a, **k: False)
@@ -1664,9 +1680,8 @@ class TestConcurrentGuardsHoldTheirOwnReference:
     def test_second_guard_engages_and_offline_survives_first_exit(
         self, monkeypatch, clean_offline_env
     ):
-        import threading
-
         import core.inference.llama_cpp as lc
+        import threading
 
         monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
 
@@ -1714,9 +1729,8 @@ class TestConcurrentGuardsHoldTheirOwnReference:
         self, monkeypatch, clean_offline_env
     ):
         """A guard that starts just before another sets the env must retain its window."""
-        import threading
-
         import core.inference.llama_cpp as lc
+        import threading
         import utils.utils as uu
 
         monkeypatch.setattr(lc, "_hf_unreachable", lambda: True)
@@ -1780,8 +1794,9 @@ class TestSpawnEnvironmentDoesNotInheritScopedOffline:
     def test_explicit_subprocess_environment_uses_pre_guard_values(
         self, monkeypatch, clean_offline_env, tmp_path
     ):
-        from utils.hf_cache_settings import HuggingFaceCachePaths
         from utils.utils import force_hf_offline
+
+        from utils.hf_cache_settings import HuggingFaceCachePaths
 
         paths = HuggingFaceCachePaths(tmp_path, tmp_path / "hub", tmp_path / "xet", "studio")
         with force_hf_offline():
@@ -1818,6 +1833,8 @@ class TestSpawnWindowKeepsTheParentOffline:
 
     def test_env_offline_still_true_inside_the_spawn_window(self, monkeypatch, clean_offline_env):
         from utils.hf_cache_settings import child_environment_for_spawn
+        from utils.utils import force_hf_offline
+
         from utils.transformers_version import _env_offline
         from utils.utils import force_hf_offline, hf_env_offline
 
@@ -1836,10 +1853,10 @@ class TestSpawnWindowKeepsTheParentOffline:
     ):
         """Guard on one thread, spawn window on a second, raw metadata read on a third.
         No request may leave the process."""
-        import threading
-
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
+        import threading
+        import utils.transformers_version as tv
 
         from utils import transformers_version as tv
 
@@ -1891,6 +1908,7 @@ class TestProxyTimeoutIsNotExcused:
         pass
 
     def _probe_timing_out(self, monkeypatch):
+        from utils.transformers_version import hf_endpoint_unreachable
         import urllib.error
         import urllib.request
 
@@ -1899,7 +1917,6 @@ class TestProxyTimeoutIsNotExcused:
             "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError(TimeoutError("slow"))),
         )
-        from utils.transformers_version import hf_endpoint_unreachable
 
         return hf_endpoint_unreachable
 
@@ -1939,18 +1956,18 @@ class TestEndpointNormalisation:
         assert hf_endpoint_url() == "https://huggingface.co"
 
     def test_probe_uses_the_same_normalised_url(self, monkeypatch):
-        seen: list = []
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
+
+        seen: list = []
 
         def _capture(req, *a, **k):
             seen.append(req.full_url)
             raise urllib.error.URLError("stop")
 
-        import urllib.error
-
         monkeypatch.setenv("HF_ENDPOINT", "   ")
         monkeypatch.setattr(urllib.request, "urlopen", _capture)
-        from utils.transformers_version import hf_endpoint_unreachable
 
         hf_endpoint_unreachable(timeout = 1)
         assert seen and seen[0].startswith("https://huggingface.co"), seen
@@ -1966,13 +1983,14 @@ class TestIpv6Endpoint:
         # Mock the resolver rather than trusting the runner's: an ISP or captive
         # portal that hijacks NXDOMAIN resolves .invalid and would fail this test on
         # a perfectly good build. Also saves a real 2s lookup per run.
+
+        from utils.utils import dns_host_dead
         import socket as _socket
 
         def _nxdomain(*a, **k):
             raise _socket.gaierror(-2, "Name or service not known")
 
         monkeypatch.setattr(_socket, "getaddrinfo", _nxdomain)
-        from utils.utils import dns_host_dead
 
         assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
@@ -1982,9 +2000,8 @@ class TestCallWithDeadline:
     multiplies any nominal cap by the address count."""
 
     def test_a_stalled_call_raises_rather_than_waiting(self):
-        import time as _time
-
         from utils.utils import call_with_deadline
+        import time as _time
 
         started = _time.monotonic()
         with pytest.raises(TimeoutError):
@@ -1998,9 +2015,8 @@ class TestCallWithDeadline:
     def test_slow_but_finished_work_is_not_cut_off(self):
         """The bound is the deadline given, not a shorter internal one: a first download on
         a slow link must not be killed for being slow."""
-        import time as _time
-
         from utils.utils import call_with_deadline
+        import time as _time
 
         def _slow():
             _time.sleep(1.4)
@@ -2013,9 +2029,9 @@ class TestCallWithDeadline:
     def test_the_caller_s_log_context_follows_the_work(self):
         """Context is per-thread: without the copy, logging inside the call loses the
         request fields it carries when the same code runs inline."""
-        import contextvars
-
         from utils.utils import call_with_deadline
+
+        import contextvars
 
         request_id = contextvars.ContextVar("request_id")
         request_id.set("abc-123")
@@ -2071,19 +2087,21 @@ class TestGatewayErrorsAreNotConnectionFailures:
         pass
 
     def _probe_with(self, monkeypatch, exc):
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
 
         def _urlopen(*a, **k):
             raise exc
 
         monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
-        from utils.transformers_version import hf_endpoint_unreachable
 
         return hf_endpoint_unreachable
 
     @pytest.mark.parametrize("code", [502, 503, 504])
     def test_strict_mode_treats_gateway_error_as_reachable(self, monkeypatch, code):
         import urllib.error
+        import urllib.request
 
         exc = urllib.error.HTTPError("u", code, "err", {}, None)
         probe = self._probe_with(monkeypatch, exc)
@@ -2094,6 +2112,7 @@ class TestGatewayErrorsAreNotConnectionFailures:
     @pytest.mark.parametrize("code", [401, 403, 404, 429])
     def test_other_http_errors_always_reachable(self, monkeypatch, code):
         import urllib.error
+        import urllib.request
 
         exc = urllib.error.HTTPError("u", code, "err", {}, None)
         probe = self._probe_with(monkeypatch, exc)
@@ -2171,6 +2190,9 @@ class TestHfUnreachableProbe:
         assert hf_unreachable() is False
 
     def test_reset_forces_reprobe(self, monkeypatch, clean_offline_env):
+        from utils.utils import hf_unreachable
+        from utils.utils import reset_hf_reachability_cache
+
         from utils.utils import hf_unreachable, reset_hf_reachability_cache
 
         calls: list = []
@@ -2187,10 +2209,9 @@ class TestHfUnreachableProbe:
         assert uu._HF_REACHABILITY_TTL_S <= 10.0
 
     def test_verdict_expires_so_a_disconnect_is_noticed(self, monkeypatch, clean_offline_env):
-        import time as _time
-
-        import utils.utils as uu
         from utils.utils import hf_unreachable
+        import time as _time
+        import utils.utils as uu
 
         monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 0.2)
         verdict = {"value": False}
@@ -2239,9 +2260,6 @@ class TestDownloadMmprojOfflineCacheFallback:
         )
         backend = LlamaCppBackend()
 
-        def boom_list(*a, **k):
-            raise OSError("offline")
-
         def fake_download(
             repo_id,
             filename,
@@ -2276,9 +2294,6 @@ class TestDownloadMmprojOfflineCacheFallback:
         )
         backend = LlamaCppBackend()
 
-        def boom_list(*a, **k):
-            raise OSError("offline")
-
         captured = {}
 
         def fake_download(
@@ -2310,9 +2325,6 @@ class TestDownloadMmprojOfflineCacheFallback:
             {"text-Q4_K_M.gguf": 1},
         )
         backend = LlamaCppBackend()
-
-        def boom_list(*a, **k):
-            raise OSError("offline")
 
         with patch("huggingface_hub.list_repo_files", boom_list):
             out = backend._download_mmproj(
@@ -2404,6 +2416,8 @@ class TestListLocalGgufVariantsSubdir:
         assert Path(out).name == "model-BF16-00001-of-00002.gguf"
 
     def test_lone_split_symlink_uses_colocated_target_shards(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
         from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
 
         target_dir = tmp_path / "external" / "BF16"
@@ -2507,9 +2521,6 @@ class TestListGgufVariantsPermanentErrors:
 
         _build_cache(hf_cache, "u/transient-gguf", {"foo-Q4_K_M.gguf": 1})
 
-        def boom(*a, **k):
-            raise OSError("network down")
-
         with patch("huggingface_hub.model_info", boom):
             variants, _ = list_gguf_variants("u/transient-gguf")
         assert any(v.quant == "Q4_K_M" for v in variants)
@@ -2550,6 +2561,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
     def test_default_timeout_unchanged_when_dns_up(self, monkeypatch):
         import socket as _socket
+
         from core.inference.llama_cpp import _probe_dns_dead
 
         prev = _socket.getdefaulttimeout()
@@ -2591,12 +2603,13 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         probe hanging on the same lookup.
         """
         import socket as _socket
+        import threading
+
         from core.inference.llama_cpp import _probe_dns_dead
 
         # Patch getaddrinfo, which is what the probe calls; patching gethostbyname made
         # this pass vacuously off the real NXDOMAIN for .invalid.
         def wedged(*a, **k):
-            import threading
             threading.Event().wait()
 
         monkeypatch.setattr(_socket, "getaddrinfo", wedged)
@@ -2604,9 +2617,9 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
     def test_slow_but_resolving_dns_is_not_dead(self, monkeypatch):
         """The case the deadline used to misread: an answer that arrives after it."""
+        from utils.utils import dns_host_dead
         import socket as _socket
         import time as _time
-        from utils.utils import dns_host_dead
 
         def slow(*a, **k):
             _time.sleep(0.3)
@@ -2617,8 +2630,8 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
     def test_nxdomain_is_still_dead(self, monkeypatch):
         """The reported bug's shortcut must keep working: a real resolver error."""
-        import socket as _socket
         from utils.utils import dns_host_dead
+        import socket as _socket
 
         def nxdomain(*a, **k):
             raise _socket.gaierror("Name or service not known")
@@ -2734,32 +2747,36 @@ class TestProxyDetectionWithoutRequests:
         monkeypatch.setattr(builtins, "__import__", _fail)
 
     def test_env_proxy_still_found_without_requests(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
         self._without_requests(monkeypatch)
-        from utils.utils import hf_proxy_for_endpoint
 
         assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
 
     def test_all_proxy_still_found_without_requests(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         self._without_requests(monkeypatch)
-        from utils.utils import hf_proxy_for_endpoint
 
         assert hf_proxy_for_endpoint("https://huggingface.co") == "http://proxy.internal:3128"
 
     def test_no_proxy_still_bypasses_without_requests(self, monkeypatch):
+        from utils.utils import hf_proxy_for_endpoint
+
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
         monkeypatch.setenv("NO_PROXY", "huggingface.co")
         self._without_requests(monkeypatch)
-        from utils.utils import hf_proxy_for_endpoint
 
         assert hf_proxy_for_endpoint("https://huggingface.co") is None
 
     def test_dns_shortcut_stands_down_without_requests(self, monkeypatch):
+        from utils.utils import hf_dns_dead
+
         monkeypatch.setenv("ALL_PROXY", "http://proxy.internal:3128")
         monkeypatch.setenv("HF_ENDPOINT", "https://does-not-resolve.invalid")
         self._without_requests(monkeypatch)
-        from utils.utils import hf_dns_dead
 
         assert hf_dns_dead(timeout = 1.0) is False
 
@@ -2782,6 +2799,8 @@ class TestSocksProxyIsNotEgressEvidence:
         assert hf_proxy_usable_by_urllib(None) is True
 
     def test_socks_proxy_reports_reachable(self, monkeypatch):
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
 
         monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
@@ -2791,7 +2810,6 @@ class TestSocksProxyIsNotEgressEvidence:
             raise AssertionError("must not attempt urlopen through a socks proxy")
 
         monkeypatch.setattr(urllib.request, "urlopen", _boom)
-        from utils.transformers_version import hf_endpoint_unreachable
 
         assert hf_endpoint_unreachable(1) is False
 
@@ -2806,6 +2824,8 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
     @pytest.mark.parametrize("exc", [ValueError("bad url"), TypeError("bad port"), MemoryError()])
     def test_non_socket_exception_is_inconclusive(self, monkeypatch, exc):
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
@@ -2814,13 +2834,13 @@ class TestProbeFailsOpenOnNonNetworkErrors:
             "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(exc),
         )
-        from utils.transformers_version import hf_endpoint_unreachable
 
         assert hf_endpoint_unreachable(1) is False
 
     def test_client_side_urlerror_is_inconclusive(self, monkeypatch):
         """urllib reports client-side problems as URLError with a plain string reason
         ("no host given", "unknown url type"). That is not an answer about egress."""
+        from utils.transformers_version import hf_endpoint_unreachable
         import urllib.error
         import urllib.request
 
@@ -2830,14 +2850,15 @@ class TestProbeFailsOpenOnNonNetworkErrors:
             "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("no host given")),
         )
-        from utils.transformers_version import hf_endpoint_unreachable
 
         assert hf_endpoint_unreachable(1) is False
 
     def test_socket_reason_urlerror_is_still_offline(self, monkeypatch):
-        import socket
+        from utils.transformers_version import hf_endpoint_unreachable
         import urllib.error
         import urllib.request
+
+        import socket
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
         monkeypatch.setattr(
@@ -2847,11 +2868,12 @@ class TestProbeFailsOpenOnNonNetworkErrors:
                 urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
             ),
         )
-        from utils.transformers_version import hf_endpoint_unreachable
 
         assert hf_endpoint_unreachable(1) is True
 
     def test_socket_error_is_still_offline(self, monkeypatch):
+        from utils.transformers_version import hf_endpoint_unreachable
+        import urllib.error
         import urllib.request
 
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
@@ -2860,7 +2882,6 @@ class TestProbeFailsOpenOnNonNetworkErrors:
             "urlopen",
             lambda *a, **k: (_ for _ in ()).throw(OSError("network unreachable")),
         )
-        from utils.transformers_version import hf_endpoint_unreachable
 
         assert hf_endpoint_unreachable(1) is True
 
@@ -2876,6 +2897,7 @@ class TestExplicitBaseEnvIsAlsoScrubbed:
 
     def test_explicit_base_loses_scoped_offline(self, monkeypatch, tmp_path):
         from utils.utils import force_hf_offline
+
         from utils.hf_cache_settings import get_hf_cache_paths
         from utils.native_path_leases import child_env_without_native_path_secret
 
@@ -2890,6 +2912,7 @@ class TestExplicitBaseEnvIsAlsoScrubbed:
 
     def test_user_set_offline_still_reaches_the_child(self, monkeypatch):
         from utils.utils import force_hf_offline
+
         from utils.hf_cache_settings import get_hf_cache_paths
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -2906,13 +2929,13 @@ class TestHttpsProxyDefaultPort:
         pass
 
     def test_https_proxy_defaults_to_443(self, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.internal")
         from utils.utils import hf_connect_target
+        monkeypatch.setenv("HTTPS_PROXY", "https://proxy.internal")
         assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 443]
 
     def test_http_proxy_defaults_to_80(self, monkeypatch):
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal")
         from utils.utils import hf_connect_target
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal")
         assert list(hf_connect_target("https://huggingface.co")) == ["proxy.internal", 80]
 
 
@@ -2968,8 +2991,8 @@ class TestMetadataReadsUseTheHubProxy:
             srv.shutdown()
 
     def _clear_caches(self, monkeypatch):
+        import urllib.error
         import urllib.request
-
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_config_json_cache", {})
@@ -2980,6 +3003,7 @@ class TestMetadataReadsUseTheHubProxy:
 
     def test_all_proxy_is_ignored_by_the_default_opener(self, monkeypatch):
         """Guards the premise: urllib alone would never use this proxy."""
+        import urllib.error
         import urllib.request
 
         monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:3128")
@@ -3082,22 +3106,23 @@ class TestSlowProxyDoesNotForceOffline:
         reset_hf_reachability_cache()
 
     def test_shared_guard_passes_both_ambiguity_flags_off(self, monkeypatch):
+        from utils.utils import hf_unreachable
+        import utils.transformers_version as tv
+
         seen = {}
 
         def _probe(timeout, **kwargs):
             seen.update(kwargs)
             return False
 
-        import utils.transformers_version as tv
-
         monkeypatch.setattr(tv, "hf_endpoint_unreachable", _probe)
-        from utils.utils import hf_unreachable
 
         assert hf_unreachable(timeout = 1) is False
         assert seen == {"gateway_errors_offline": False, "proxy_timeouts_offline": False}
 
     def test_slow_proxy_reads_reachable_not_offline(self, monkeypatch):
         """End to end through the real classifier: a clean timeout behind a proxy."""
+        from utils.utils import hf_unreachable
         import utils.transformers_version as tv
 
         monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
@@ -3115,8 +3140,6 @@ class TestSlowProxyDoesNotForceOffline:
         monkeypatch.setattr(tv, "_hf_proxy_opener", lambda _url: _SlowOpener())
         # Sanity: the same input IS offline with the flag on, so the flag is what moves it.
         assert tv.hf_endpoint_unreachable(1, proxy_timeouts_offline = True) is True
-
-        from utils.utils import hf_unreachable
 
         assert hf_unreachable(timeout = 1) is False
 
@@ -3273,6 +3296,7 @@ class TestModelConfigPredicateHonoursTheWindow:
     is back to the user's values, so an env-only predicate would fire that 15s request."""
 
     def test_predicate_is_true_inside_the_spawn_window(self, monkeypatch):
+        from utils.utils import force_hf_offline
         import threading
 
         from utils.models.model_config import _env_offline
@@ -3309,9 +3333,9 @@ class TestModelConfigPredicateHonoursTheWindow:
         """The stall this prevents: _detect_audio_from_tokenizer's own requests.get is the
         call the gate protects, so drive that function rather than a caller that could
         return earlier for unrelated reasons."""
+        from utils.utils import force_hf_offline
         import threading
 
-        import utils.models.model_config as mc
         from utils.utils import force_hf_offline, hf_environment_restored_for_spawn
 
         for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
@@ -3361,7 +3385,6 @@ class TestLocalModelWithRemoteBaseIsGuarded:
     base can still be a hub repo, and resolving the config dereferences that base."""
 
     def test_helper_engages_for_a_remote_target(self, monkeypatch):
-        import utils.models.model_config as mc
         import core.inference.llama_cpp as llama_cpp
 
         opened = []
@@ -3379,8 +3402,6 @@ class TestLocalModelWithRemoteBaseIsGuarded:
     def test_helper_is_a_noop_when_the_guard_is_unavailable(self, monkeypatch):
         """Worker contexts may not be able to import the route-side guard."""
         import builtins
-
-        import utils.models.model_config as mc
 
         real_import = builtins.__import__
 
@@ -3624,7 +3645,6 @@ class TestHungProbeHonoursFailOpenBehindAProxy:
 
     def test_it_stays_bounded(self, monkeypatch, clean_proxy_env):
         import time as _time
-
         import utils.transformers_version as tv
 
         monkeypatch.setenv("HF_ENDPOINT", "https://hub.example.test")
@@ -3650,11 +3670,11 @@ class TestGuardsShareOneDnsLookup:
         """The case that accumulates: DNS answers past its deadline, so the shortcut is
         inconclusive and the probe decides. That probe memoises, so the siblings reuse it."""
         from core.inference.llama_cpp import _hf_unreachable
+        import utils.transformers_version as tv
 
         dns = []
         probe = []
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
-        import utils.transformers_version as tv
 
         monkeypatch.setattr(
             tv, "hf_endpoint_unreachable", lambda *a, **k: (probe.append(1), True)[1]
@@ -3668,11 +3688,11 @@ class TestGuardsShareOneDnsLookup:
 
     def test_a_reachable_verdict_is_reused_too(self, monkeypatch, clean_offline_env):
         from core.inference.llama_cpp import _hf_unreachable
+        import utils.transformers_version as tv
 
         dns = []
         probe = []
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: (dns.append(1), False)[1])
-        import utils.transformers_version as tv
 
         monkeypatch.setattr(
             tv, "hf_endpoint_unreachable", lambda *a, **k: (probe.append(1), False)[1]
@@ -3688,10 +3708,10 @@ class TestGuardsShareOneDnsLookup:
     ):
         """A dead lookup fails fast, so caching it would only delay recovery by the TTL."""
         from core.inference.llama_cpp import _hf_unreachable
+        import utils.transformers_version as tv
 
         state = {"dead": True}
         monkeypatch.setattr("utils.utils.hf_dns_dead", lambda *a, **k: state["dead"])
-        import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "hf_endpoint_unreachable", lambda *a, **k: False)
 
@@ -3741,8 +3761,8 @@ class TestPinnedReachability:
         """UNSLOTH_OFFLINE_PROBE turns off the TCP probe, not DNS, so the shortcut is the
         only detector left and the pin must not answer for it. A link that drops after the
         guard admitting the request has to be seen by the guards that follow."""
-        import utils.utils as uu
         from core.inference.llama_cpp import _hf_unreachable
+        import utils.utils as uu
 
         monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
         lookups = []
@@ -3792,8 +3812,9 @@ class TestPinnedReachability:
     def test_the_guard_the_route_opens_reads_the_pinned_verdict(self, probe, monkeypatch):
         """The wrapper the handler actually goes through, not only ``hf_unreachable``: it
         answers from the memo directly, so that path has to pin like every other."""
-        import core.inference.llama_cpp as llama_cpp
         import utils.utils as uu
+
+        import core.inference.llama_cpp as llama_cpp
 
         monkeypatch.setattr(uu, "_HF_REACHABILITY_TTL_S", 60.0)
         monkeypatch.setattr(uu, "hf_dns_dead", lambda *_a, **_k: False, raising = False)
@@ -3834,7 +3855,6 @@ class TestPinnedReachability:
         Module-global state would hand A request B's pin, and A would report B's verdict.
         """
         import threading
-
         import utils.transformers_version as tv
         import utils.utils as uu
 

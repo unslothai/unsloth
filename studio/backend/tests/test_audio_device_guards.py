@@ -48,6 +48,18 @@ def test_only_a_native_audio_model_counts_as_a_cpu_audio_load():
     assert not ri._native_audio_cpu_load(_audio(), _request(None))
 
 
+def test_an_auto_gguf_audio_load_on_a_cpu_only_runtime_counts_as_cpu(monkeypatch):
+    from core.inference import audio_cpp_server
+
+    gguf_tts = _audio(audio_type = "audiocpp_tts")
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    assert ri._native_audio_cpu_load(gguf_tts, _request("auto"))
+    # Only the GGUF runtime's own backend decides this; other native audio still needs "cpu".
+    assert not ri._native_audio_cpu_load(_audio(), _request("auto"))
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert not ri._native_audio_cpu_load(gguf_tts, _request("auto"))
+
+
 def test_a_chat_model_cannot_skip_the_guards_by_sending_audio_device():
     """audio_device is documented as ignored off the audio path. If it were not
     gated here, any load could set it and walk past the training guard."""
@@ -151,6 +163,72 @@ def test_a_model_loaded_before_this_existed_is_read_as_gpu():
     """No recorded key means the load predates the option, which placed on GPU."""
     assert ri._resident_audio_placement_matches(_backend(audio_cpu = None), _request("auto"))
     assert not ri._resident_audio_placement_matches(_backend(audio_cpu = None), _request("cpu"))
+
+
+def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeypatch):
+    """Auto on a CPU-only runtime lands in CPU RAM: the orchestrator must record that, and a repeat
+    Auto load must neither reload it nor take the GPU from a running Images/Video pipeline."""
+    import inspect
+
+    from core.inference import audio_cpp_server, orchestrator
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    resident = _backend(audio_cpu = True, audio_type = "audiocpp_tts")
+    assert ri._resident_audio_placement_matches(resident, _request("auto"))
+    assert ri._resident_audio_holds_no_gpu(resident)
+    assert "audio_load_runs_on_cpu(_audio_type, audio_device)" in inspect.getsource(orchestrator)
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert not ri._resident_audio_placement_matches(resident, _request("auto"))
+
+
+def test_an_auto_load_on_a_cpu_only_runtime_reaches_the_worker_as_cpu(monkeypatch):
+    """The worker hides the accelerators and no card is sized only for an explicit CPU load, so the
+    orchestrator must turn Auto into CPU when the runtime can only run there."""
+    import threading
+
+    from core.inference import audio_cpp_server
+    from core.inference import orchestrator as orch_mod
+
+    seen = {}
+
+    class _StopAfterSelection(threading.Event):
+        def is_set(self):
+            return "selection" in seen
+
+    def _gpu_selection(*args, **kwargs):
+        seen["selection"] = "gpu"
+        return [0], {"selection_mode": "auto"}
+
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", _gpu_selection)
+    orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch.loading_models = set()
+    config = types.SimpleNamespace(
+        identifier = "unsloth/Kokoro-82M-GGUF",
+        audio_type = "audiocpp_tts",
+        audio_cpp = object(),
+        gguf_variant = None,
+    )
+
+    def _load():
+        seen.clear()
+        orig = orch_mod.audio_device_forces_cpu
+
+        def _forces(value):
+            if "selection" not in seen and orig(value):
+                seen["selection"] = "cpu"
+            return orig(value)
+
+        monkeypatch.setattr(orch_mod, "audio_device_forces_cpu", _forces)
+        assert (
+            orch.load_model(config, audio_device = "auto", load_cancel_event = _StopAfterSelection())
+            is False
+        )
+        return seen["selection"]
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    assert _load() == "cpu"
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert _load() == "gpu"
 
 
 def test_a_non_audio_model_keeps_the_shortcut():
@@ -272,16 +350,21 @@ def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
     during-load release is the third, handed to load_model as a callback so it
     fires once the previous worker is gone rather than before it."""
     src = _inference_source()
-    assert src.count("await asyncio.to_thread(release, CHAT)") == 2
-    assert src.count("(lambda: release(CHAT)) if not chat_load_needs_gpu else None") == 1
+    assert src.count("await asyncio.to_thread(_release_chat_for_zero_vram_primary)") == 2
+    assert (
+        src.count(
+            "_release_chat_for_zero_vram_primary if replacing and not chat_load_needs_gpu else None"
+        )
+        == 1
+    )
 
 
 def test_the_release_is_gated_on_the_same_flag_as_the_409():
     """Two `if not` sites plus the callback's own inline gate, which spells the
     flag the same way."""
     src = _inference_source()
-    assert src.count("if not chat_load_needs_gpu:") == 2
-    assert src.count("if not chat_load_needs_gpu else None") == 1
+    assert src.count("if replacing and not chat_load_needs_gpu:") == 2
+    assert src.count("if replacing and not chat_load_needs_gpu else None") == 1
 
 
 def test_every_http_device_field_pins_the_three_canonical_values():
@@ -365,7 +448,7 @@ def test_the_stale_chat_claim_is_dropped_before_the_load_not_only_after():
 
     src = inspect.getsource(ri._load_model_impl)
     before_load = src[: src.index("backend.load_model,")]
-    assert before_load.count("release, CHAT") >= 1
+    assert before_load.count("_release_chat_for_zero_vram_primary") >= 1
 
 
 def test_the_gguf_audio_codec_follows_the_servers_own_placement():

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from datasets import Dataset
 
 torch = pytest.importorskip("torch")
 
@@ -208,3 +209,52 @@ def test_token_stays_absent_when_not_provided(monkeypatch):
     assert len(load_calls) == 1
     assert "token" not in load_calls[0]
     assert probe_calls == []
+
+
+def _load_texts(
+    monkeypatch,
+    train_texts,
+    formatted = None,
+):
+    errors: list[str] = []
+    monkeypatch.setattr(
+        trainer_mod,
+        "load_dataset",
+        lambda **kwargs: Dataset.from_dict({"text": list(train_texts)}),
+    )
+    if formatted is not None:
+        monkeypatch.setattr(
+            trainer_mod,
+            "format_and_template_dataset",
+            lambda dataset, **kwargs: {
+                "dataset": formatted(dataset),
+                "detected_format": "test",
+                "success": True,
+            },
+        )
+    monkeypatch.setattr(
+        sys.modules["datasets"], "get_dataset_split_names", lambda **kwargs: ["train"]
+    )
+    trainer = _trainer()
+    trainer._update_progress = lambda **kwargs: errors.append(kwargs.get("error"))
+    return trainer.load_and_format_dataset("org/data", dataset_streaming = False), errors
+
+
+def test_empty_loaded_split_fails_before_format_detection(monkeypatch):
+    result, errors = _load_texts(monkeypatch, [])
+    assert result is None
+    assert "The training dataset has no rows. Add at least one example" in errors[-1]
+
+
+def test_formatting_that_drops_every_row_fails_clearly(monkeypatch):
+    result, errors = _load_texts(monkeypatch, ["a"], formatted = lambda ds: ds.select([]))
+    assert result is None
+    assert "has no rows after formatting" in errors[-1]
+
+
+@pytest.mark.parametrize("texts", [["hello"], ["", "hello"], ["   ", "\n"]])
+def test_non_empty_train_split_is_left_to_the_trainer(monkeypatch, texts):
+    result, errors = _load_texts(monkeypatch, texts, formatted = lambda ds: ds)
+    assert result is not None
+    assert result[0]["dataset"]["text"] == texts
+    assert not any(errors)

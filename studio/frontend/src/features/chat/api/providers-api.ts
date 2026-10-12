@@ -4,6 +4,8 @@
 import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
+import type { CustomReasoningConfig } from "../custom-reasoning";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -34,7 +36,11 @@ export interface ProviderRegistryEntry {
   model_ids_editable?: boolean;
 }
 
+export type ProviderApiType = "chat_completions" | "responses";
+export type ConnectionApiType = ProviderApiType | "systemone";
+
 export interface ProviderConfig {
+  api_type?: ConnectionApiType;
   id: string;
   provider_type: string;
   display_name: string;
@@ -48,6 +54,7 @@ export interface ProviderConfig {
   models?: string[];
   available_models?: string[];
   max_output_tokens?: number | null;
+  reasoning_config?: CustomReasoningConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +66,28 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /** Only Ollama's /api/tags reports these; absent is not the same as none. */
+  capabilities?: string[] | null;
+}
+
+export interface ProviderModelReasoningInfo {
+  supported_efforts?: string[] | null;
+  mandatory?: boolean | null;
+  default_effort?: string | null;
+  default_enabled?: boolean | null;
+}
+
+export interface ProviderModelCapabilityInfo {
+  id: string;
+  input_modalities?: string[] | null;
+  reasoning?: ProviderModelReasoningInfo | null;
+  max_output_tokens?: number | null;
+  supported_parameters?: string[] | null;
+}
+
+export interface ModelCatalogResponse {
+  fetched_at: number;
+  providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
 export interface ProviderTestResult {
@@ -125,7 +154,6 @@ async function importProviderPublicKey(
 }
 
 const ENVELOPE_VERSION = "v1";
-/** Pins an envelope to this protocol and version; the backend checks the same bytes. */
 const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
 const AES_KEY_BYTES = 32;
 const NONCE_BYTES = 12;
@@ -136,10 +164,7 @@ function randomBinaryString(byteLength: number): string {
   return String.fromCharCode(...bytes);
 }
 
-/**
- * Produce `v1.<wrapped AES key>.<nonce>.<ciphertext||tag>`, each part base64. RSA-OAEP wraps
- * only the 32-byte content key: encrypting the API key itself would cap it at 190 bytes.
- */
+/** RSA-OAEP wraps only the 32-byte content key: wrapping the API key itself caps it at 190 bytes. */
 export async function encryptProviderApiKey(
   plaintextApiKey: string,
   forceRefresh = false,
@@ -150,8 +175,7 @@ export async function encryptProviderApiKey(
 
   const cipher = forge.cipher.createCipher("AES-GCM", aesKey);
   cipher.start({ iv: nonce, additionalData: ENVELOPE_AAD, tagLength: 128 });
-  // forge ciphers take bytes, so a non-ASCII key would otherwise lose all but the low byte
-  // of each UTF-16 code unit.
+  // forge ciphers take bytes: without encodeUtf8 a non-ASCII key loses all but each low byte.
   cipher.update(forge.util.createBuffer(forge.util.encodeUtf8(plaintextApiKey)));
   if (!cipher.finish()) {
     throw new Error("Failed to encrypt API key.");
@@ -173,7 +197,9 @@ export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
   // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
   // studio-tools capability the composer gates on. An older backend ignores the parameter and
   // returns the visible entries, so the capability reads as unknown and the pills stay closed.
-  const response = await authFetch("/api/providers/registry?include_hidden=true");
+  const response = await authFetch(
+    "/api/providers/registry?include_hidden=true&include_oauth=true",
+  );
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 
@@ -186,9 +212,11 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
+  reasoningConfig?: CustomReasoningConfig | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -199,11 +227,15 @@ export async function createProviderConfig(payload: {
         provider_type: payload.providerType,
         display_name: payload.displayName,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -231,10 +263,12 @@ export async function updateProviderConfig(
   payload: {
     displayName?: string;
     baseUrl?: string | null;
+    apiType?: ConnectionApiType;
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
     maxOutputTokens?: number | null;
+    reasoningConfig?: CustomReasoningConfig | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -246,6 +280,7 @@ export async function updateProviderConfig(
       body: JSON.stringify({
         ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
         ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
         ...(payload.models === undefined ? {} : { models: payload.models }),
         ...(payload.availableModels === undefined
@@ -254,6 +289,9 @@ export async function updateProviderConfig(
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
@@ -304,6 +342,7 @@ export async function testProviderConnection(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -316,6 +355,7 @@ export async function testProviderConnection(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         model_id: payload.modelId ?? null,
       }),
     });
@@ -329,6 +369,7 @@ export async function listProviderModels(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {
@@ -340,9 +381,38 @@ export async function listProviderModels(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
+  });
+}
+
+export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
+  const response = await authFetch("/api/providers/model-catalog");
+  return parseJsonOrThrow<ModelCatalogResponse>(response);
+}
+
+export async function listProviderModelCapabilities(payload: {
+  providerType: string;
+  providerId?: string | null;
+  apiKey: string;
+  baseUrl?: string | null;
+  apiType?: ProviderApiType;
+}): Promise<ProviderModelCapabilityInfo[]> {
+  return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/model-capabilities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+        provider_id: payload.providerId ?? null,
+        encrypted_api_key: encryptedApiKey,
+        base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+      }),
+    });
+    return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);
   });
 }
 

@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 
 import {
   aggregateUsableFreeVramGb,
+  resolveFreeGpuCapacityGb,
   resolveMemoryCapacityGb,
 } from "../src/hooks/gpu-vram.ts";
 
@@ -445,12 +446,128 @@ test("two views of one host pool are not counted as two pools", () => {
   assert.ok(folded < asDedicated / 1.5);
 });
 
-test("the panel measures pool pressure against the pool", () => {
+// The free-capacity rule the panel applies, run rather than read back as text. The
+// first version of this pinned the branch's exact spelling with a bounded gap between
+// two anchors, and #10627 broke it by rewriting the branch to return a record: the rule
+// it asserts survived the rewrite intact and got stricter, but the text did not, so the
+// test failed a change it should have passed. The rule now lives in gpu-vram.ts, which
+// this runner can import, so the panel's part is one call and the rule is measured.
+const APU_POOL = {
+  devices: [
+    {
+      index: 0,
+      indexKind: "physical",
+      // The BIOS-carved window: 48 GiB visible to the GPU on a 96 GiB machine.
+      memoryTotalGb: 48,
+      memoryFreeGb: 44,
+      memoryFreeKnown: true,
+      sharedMemory: false,
+      unifiedMemory: true,
+    },
+  ],
+  budgetFraction: 0.97,
+  unifiedMemory: true,
+  unifiedPoolReportedAsGpuMemory: false,
+  // 64 GiB free on the host, less the loader's 2 GiB headroom.
+  usableSystemRamGb: 62,
+  systemRamReserveDeficitGb: 0,
+  systemRamAvailableKnown: true,
+};
+
+const PANEL_FREE_CAPACITY_CALL =
+  /resolveFreeGpuCapacityGb\(\{[\s\S]*?\n\s*\}\)/;
+const PANEL_UNIFIED_FLAG = /unifiedMemory:\s*hasUnifiedMemory/;
+const PANEL_APPLE_FLAG =
+  /unifiedPoolReportedAsGpuMemory:\s*isAppleUnifiedMemory/;
+// The panel's own name for the host reading carries no meaning, so only the fact
+// that it reaches the rule is pinned.
+const PANEL_HOST_VIEW = /usableSystemRamGb:\s*\w/;
+
+/** The carved window on its own, which is what this pool must NOT be measured by. */
+function carvedWindowGb(): number {
+  return aggregateUsableFreeVramGb(APU_POOL.devices, APU_POOL.budgetFraction);
+}
+
+test("a non-Apple unified pool is measured against the host, not the window", () => {
+  const carved = carvedWindowGb();
+  const pooled = resolveFreeGpuCapacityGb(APU_POOL);
+  assert.ok(
+    carved < 60,
+    `the carved window must be the smaller figure, or this proves nothing; got ${carved}`,
+  );
+  assert.equal(
+    pooled.gb,
+    62,
+    "a non-Apple unified pool's free capacity must be the host view; the " +
+      "carved window cannot answer a whole-load question",
+  );
+  assert.equal(pooled.known, true);
+  // And the 60 GiB load the window refused now fits the figure it is measured
+  // against.
+  assert.ok(pooled.gb > 60, `the pool must hold the load; got ${pooled.gb}`);
+});
+
+test("an unread host RAM figure is reported unread, not replaced by the window", () => {
+  const unread = resolveFreeGpuCapacityGb({
+    ...APU_POOL,
+    systemRamAvailableKnown: false,
+    usableSystemRamGb: 0,
+  });
+  assert.equal(
+    unread.known,
+    false,
+    "with no host reading the panel has no free figure for this pool and must " +
+      "say so; answering with the carved window is the same double count in " +
+      "friendlier clothes",
+  );
+  assert.notEqual(
+    unread.gb,
+    carvedWindowGb(),
+    "the carved window must not stand in for the missing host reading",
+  );
+});
+
+test("Apple and discrete hosts still answer from their own free VRAM", () => {
+  // Apple's GPU figure already IS the pool, so it stays on the ordinary path,
+  // and a discrete card never reaches the unified branch at all.
+  const apple = resolveFreeGpuCapacityGb({
+    ...APU_POOL,
+    unifiedPoolReportedAsGpuMemory: true,
+  });
+  const discrete = resolveFreeGpuCapacityGb({
+    ...APU_POOL,
+    unifiedMemory: false,
+    unifiedPoolReportedAsGpuMemory: false,
+  });
+  assert.equal(apple.gb, carvedWindowGb());
+  assert.equal(discrete.gb, carvedWindowGb());
+  assert.equal(apple.known, true);
+});
+
+test("the panel hands the free-capacity rule its own inputs", () => {
+  // One line of the panel is still unreachable from here: which flags it passes.
+  // The rule itself is exercised above, so this only has to pin the wiring.
   const source = readFileSync(PANEL, "utf8");
+  const call = source.match(PANEL_FREE_CAPACITY_CALL);
+  assert.ok(
+    call,
+    "the panel no longer resolves free capacity through the shared rule",
+  );
   assert.match(
-    source,
-    /hasUnifiedMemory && !isAppleUnifiedMemory[\s\S]{0,160}?Math\.max\(\s*freeVram,\s*memoryUsableSystemRamGb\s*\)/,
-    "a non-Apple unified pool's free capacity must fall back to the host view; " +
-      "the carved window cannot answer a whole-load question",
+    call[0],
+    PANEL_UNIFIED_FLAG,
+    "the free-capacity call must take the general unified-memory signal",
+  );
+  assert.match(
+    call[0],
+    PANEL_APPLE_FLAG,
+    "only Apple's GPU figure is the whole pool; passing the general signal " +
+      "here would measure a ROCm APU against its carved window again",
+  );
+  assert.match(
+    call[0],
+    PANEL_HOST_VIEW,
+    "the host view must reach the rule, or the unified branch has nothing to " +
+      "answer with",
   );
 });

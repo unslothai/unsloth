@@ -21,15 +21,81 @@ const PAGES = [
   ["video", "features/video/video-page.tsx", "getVideoStatus", "unloadVideoModel"],
 ] as const;
 
+/** The argument list of `const NAME = useCallback(...)`, parentheses balanced. */
+function callbackBody(source: string, name: string): string {
+  const declaration = `const ${name} = useCallback`;
+  const at = source.indexOf(declaration);
+  assert.ok(at >= 0, `${name} is not declared as a useCallback`);
+  const start = source.indexOf("(", at + declaration.length);
+  let depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "(") depth += 1;
+    else if (source[i] === ")") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start + 1, i);
+    }
+  }
+  assert.fail(`${name}'s callback never closes`);
+}
+
 for (const [name, path, read, unload] of PAGES) {
   test(`the ${name} page lets only the newest status read write`, () => {
     const page = readSrc(path);
     assert.match(page, /const statusTicket = useRef\(0\);/);
-    assert.match(
-      page,
-      /if \(ticket === statusTicket\.current\) setStatus\(next\);/,
-      "a superseded read must not write",
+    // Read the GUARD, not the one line that spelled it. #10788 rewrote this as an early
+    // return, which admits exactly the same reads, and the exact-text form went red over a
+    // refactor that changed nothing. Both spellings are checked against the callback's own
+    // body, so a guard that lives somewhere else in the file cannot stand in for it.
+    const body = callbackBody(page, "setStatusIfNewest");
+    const write = body.indexOf("setStatus(");
+    assert.notEqual(write, -1, "setStatusIfNewest no longer writes the status");
+    const held = /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body);
+    // The stale branch's return must be BARE. `return setStatus(next);` also reads as an
+    // early return and also precedes the normal write, while writing the superseded
+    // status out of the return expression itself.
+    const early = /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\s*(?:[;}]|\r?\n)/.exec(
+      body,
     );
+    const guard = held ?? early;
+    assert.ok(guard, "a superseded read must not write");
+    // Ordering, not just presence. Either spelling can be present while the write happens
+    // FIRST, and `setStatus(next); if (ticket !== statusTicket.current) return;` has already
+    // published the superseded status by the time it returns, which is the whole bug.
+    assert.ok(
+      guard.index < write,
+      "the ticket guard must come before the status write, not after it",
+    );
+    // And there is only the one write. Guarding the first while a second sits unguarded
+    // after it leaves every stale response overwriting the status, which is the same bug
+    // with an extra line in front of it.
+    assert.equal(
+      (body.match(/setStatus\(/g) ?? []).length,
+      1,
+      "setStatusIfNewest must write the status exactly once, under the ticket guard",
+    );
+    // Ordering says the write comes after the early return. It does not say the write is
+    // still REACHED: `if (ticket !== current) { return; setStatus(next); }` returns first
+    // and satisfies every rule above while never publishing anything. So when the stale
+    // branch has a block of its own, the write has to live past the end of it. The
+    // `ticket === current` spelling needs no such rule, since its regex ties the write to
+    // the guard directly.
+    if (early && !held && /\{/.test(early[0])) {
+      const open = body.indexOf("{", early.index);
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < body.length; i += 1) {
+        if (body[i] === "{") depth += 1;
+        else if (body[i] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            close = i;
+            break;
+          }
+        }
+      }
+      assert.notEqual(close, -1, "the stale branch never closes");
+      assert.ok(write > close, "the status write is stranded inside the stale branch");
+    }
     // Every writer goes through it, so none can be the one that slips past.
     assert.doesNotMatch(
       page,

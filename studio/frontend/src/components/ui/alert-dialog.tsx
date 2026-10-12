@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AppPortalGate } from "@/components/app-readiness";
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownGlowContext,
+  dialogDropdownGlow,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 
 function AlertDialog({
@@ -25,7 +31,9 @@ function AlertDialogPortal({
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
   return (
-    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+    <AppPortalGate>
+      <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+    </AppPortalGate>
   );
 }
 
@@ -36,6 +44,7 @@ function AlertDialogOverlay({
   return (
     <AlertDialogPrimitive.Overlay
       data-slot="alert-dialog-overlay"
+      data-viewport-backdrop={true}
       className={cn(
         "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-[2px] fixed inset-0 z-50",
         className,
@@ -47,29 +56,38 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  children,
   size = "default",
   overlayClassName,
+  onOverlayClick,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm";
   overlayClassName?: string;
+  /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
+  onOverlayClick?: () => void;
 }) {
+  const glow = dialogDropdownGlow(className, useContext(DropdownGlowContext));
   return (
     <AlertDialogPortal>
-      <AlertDialogOverlay className={overlayClassName} />
+      <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
           // Same short-viewport guard as DialogContent: scroll rather than clip the actions off screen.
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 bg-background ring-foreground/5 max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] gap-6 overflow-y-auto rounded-4xl p-6 ring-1 duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-md group/alert-dialog-content fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 outline-none",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 bg-background ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] gap-6 overflow-y-auto scroll-rounded rounded-4xl p-6 ring-1 duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-md group/alert-dialog-content fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 outline-none",
           // Confirms stay centered cards on phones rather than going full screen, but take the
           // width available instead of a fixed 20rem. Important: the data-[size] rules outrank a plain max-w.
           "max-sm:max-w-[calc(100%-2rem)]!",
           className,
         )}
         {...props}
-      />
+      >
+        <DropdownGlowContext.Provider value={glow}>
+          {children}
+        </DropdownGlowContext.Provider>
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   );
 }

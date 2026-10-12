@@ -122,11 +122,12 @@ test("the scope-change effect takes a ticket on the way out", () => {
 });
 
 // A superseded failure describes a scope no longer shown, and a host without the
-// vector extension 503s every one of these: no toast per composer opened.
+// vector extension 503s every one of these: no toast per composer opened. The desktop-update
+// guard may sit between the two, but nothing that reports may come before the supersession check.
 test("a failure is only reported for the request still being awaited", () => {
   assert.match(
     USE_RAG_DOCUMENTS,
-    /if \(refreshSeq\.current !== requestId\) return true;\s*if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
+    /if \(refreshSeq\.current !== requestId\) return true;(?:(?!toast\.error)[\s\S]){0,400}?if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
   );
 });
 
@@ -719,7 +720,12 @@ test("a failed project lookup leaves the scope unresolved", () => {
   // Nothing records a null project on the failure path any more.
   assert.doesNotMatch(
     THREAD_DOCUMENTS_BAR,
-    /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
+    /record\(null, 0\)|setResolved\(\{ threadId, projectId: null/,
+  );
+  assert.match(
+    THREAD_DOCUMENTS_BAR,
+    /\} catch \{\s*if \(cancelled \|\| announced\) return;\s*await new Promise/,
+    "a failed read records nothing and retries",
   );
   // And unresolved still disables the attach controls.
   assert.match(THREAD_DOCUMENTS_BAR, /const projectUnresolved = threadProjectId === undefined;/);

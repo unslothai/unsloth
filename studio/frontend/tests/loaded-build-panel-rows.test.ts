@@ -27,10 +27,10 @@ test("the Memory recipe row renders on an offload with no memory mode", () => {
 
 test("sd.cpp attention is not reported as Native SDPA", () => {
   // Its attention is chosen by native flags, not by the diffusers/PyTorch dispatcher.
-  const attention = source.slice(
-    source.indexOf('label="Attention"'),
-    source.indexOf('label="Attention"') + 700,
-  );
+  // The Recipe popover has its own Attention row; this one is the panel's BuildRow.
+  const start = source.search(/<BuildRow\s+label="Attention"/);
+  assert.ok(start >= 0, "the Loaded-build panel must keep its Attention row");
+  const attention = source.slice(start, start + 700);
   assert.ok(
     attention.includes("isNativeEngineStatus(status)"),
     "the fallback must distinguish the native engine before naming SDPA",

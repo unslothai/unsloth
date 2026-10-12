@@ -28,6 +28,23 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
+# _load plants stand-ins for these, and the rest of the suite shares the interpreter: a later
+# `import unsloth_zoo.compiler` in the same xdist worker would pick up a peft_utils with no
+# get_lora_layer_modules and fail with "cannot import name ... (unknown location)".
+_STUBBED_ZOO_MODULES = ("unsloth_zoo.peft_utils", "unsloth_zoo.device_map_planner")
+
+
+@pytest.fixture(autouse = True)
+def _restore_stubbed_zoo_modules():
+    saved = {name: sys.modules.get(name) for name in _STUBBED_ZOO_MODULES}
+    yield
+    for name, module in saved.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+
 class _FakeCuda:
     def __init__(
         self,
@@ -197,7 +214,7 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     """`text_only = True` loads a VLM's standalone decoder, so Gemma 3 builds
-    Gemma3ForCausalLM (`model.layers.0`). The planner only gets `model_name`, rebuilds the
+    Gemma3ForCausalLM (`model.layers.0`). Given only `model_name`, the planner rebuilds the
     repo's multimodal config and plans Gemma3ForConditionalGeneration
     (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
     decoder weight matches a key of that map, and transformers raises
@@ -231,9 +248,11 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
                 assignments[target.id] = assignments.get(target.id, "") + ast.unparse(node.value)
     for call in _resolve_calls(vision):
         passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
-        assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
+        assert "planner_config" in passed, f"vision.py:{call.lineno} plans the full VLM"
+        planned = passed["planner_config"] + assignments.get(passed["planner_config"], "")
+        assert "text_only_decoder" in planned, f"vision.py:{call.lineno}"
+        assert "skip_reason" in passed, f"vision.py:{call.lineno}"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
-        assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
         # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
@@ -320,9 +339,9 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
     """torchrun/DDP/FSDP already put one whole model per rank; splitting a model across the
     cards on top of that puts every rank on every card, which OOMs rather than fits.
 
-    prepare_device_map() in loader.py converts the string to a rank-local dict first, but
-    only when the load is quantized, so a 16-bit distributed run still arrives here holding
-    "unsloth". Hence the gate lives here too.
+    prepare_device_map() in loader.py converts the string to a rank-local dict first, at
+    every precision since #3459. The gate still lives here too: loader.py is not the only
+    caller, and a rank-local dict is not a string, so the two never disagree.
     """
     ns = _load(
         distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
@@ -850,13 +869,15 @@ def test_a_caller_supplied_config_declines_planning():
     raise AssertionError("vision.py plans without vetoing a caller-supplied config")
 
 
-def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
-    """`FastLanguageModel` accepts `offload_embedding`, but the optimized architectures
-    take a path that has never had the parameter, so the request went nowhere in silence.
-    The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
-    source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
-    assert "does not support it" in source
-    assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
+def test_the_optimized_path_honours_offload_embedding():
+    """`FastLanguageModel` accepts `offload_embedding`, and the optimized architectures used to
+    drop it in silence. Now the loader forwards it and FastLlamaModel applies the same offload as
+    FastModel, through the shared helper."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "does not support it" not in loader
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    assert 'kwargs.pop("offload_embedding", False)' in llama
+    assert "offload_input_embedding(model)" in llama
 
 
 def test_the_auto_mode_is_recognised_by_value_everywhere():
@@ -984,3 +1005,411 @@ def test_an_auto_class_still_plans():
     idx = vision.index("an explicit model class has no auto mapping")
     guard = vision[vision.rindex("if (", 0, idx) : idx]
     assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"
+
+
+LOADER = os.path.join(MODELS, "loader.py")
+_QUANT_NAMES = ("is_quantized", "load_in_4bit", "load_in_8bit", "load_in_fp8")
+
+
+def _prepare_device_map_guards():
+    """Every `prepare_device_map()` call in loader.py, with the `if` tests enclosing it."""
+    source = open(LOADER, encoding = "utf-8").read()
+    tree = ast.parse(source)
+    found = []
+
+    def walk(node, guards):
+        for child in ast.iter_child_nodes(node):
+            if (
+                isinstance(child, ast.Call)
+                and getattr(child.func, "id", None) == "prepare_device_map"
+            ):
+                found.append((child.lineno, list(guards)))
+            if isinstance(child, ast.If):
+                walk_body(child.body, guards + [ast.unparse(child.test)])
+                walk_body(child.orelse, guards)
+            else:
+                walk(child, guards)
+
+    def walk_body(body, guards):
+        for stmt in body:
+            walk(stmt, guards)
+
+    walk_body(tree.body, [])
+    return found
+
+
+def test_every_rank_of_a_16bit_distributed_launch_still_gets_its_own_device():
+    """A distributed load must be pinned to the rank's card whatever its precision.
+
+    `prepare_device_map()` rewrites the string device_map into `{"": "cuda:<local_rank>"}`.
+    Gating that on the load being quantized left a 16-bit `accelerate launch` holding a
+    string, which `resolve_unsloth_device_map` turns into "sequential" -- and sequential
+    dispatch fills cuda:0 first, on every rank. Measured on 2 GPUs before the gate came
+    off: rank 0 and rank 1 both reported `param_devices=['cuda:0']` with 4245 MiB on card
+    0 and 0 MiB on card 1, for both FastLanguageModel and FastVisionModel. That is
+    unsloth#3459's "100% GPU utilisation, 0 VRAM, then it suddenly loads": the ranks are
+    queueing for one card.
+
+    Static, because the failure needs two real GPUs and a launcher. Re-adding a
+    quantization term to the guard turns this red.
+    """
+    calls = _prepare_device_map_guards()
+    assert calls, "loader.py no longer pins a distributed rank to its own device"
+    for lineno, guards in calls:
+        for guard in guards:
+            offending = [name for name in _QUANT_NAMES if name in guard]
+            assert not offending, (
+                f"loader.py:{lineno}: prepare_device_map() is gated on {offending} "
+                f"({guard!r}), so a 16-bit distributed load keeps a string device_map "
+                f"and every rank dispatches onto cuda:0"
+            )
+
+
+# --- The rank a distributed launch is pinned to, and the placements it may pin ---
+
+
+class _FakeDistributed:
+    """torch.distributed as a rank sees it. `rank` is the GLOBAL rank, as get_rank() returns."""
+
+    def __init__(
+        self,
+        rank = None,
+        world_size = None,
+    ):
+        self._rank = rank
+        self._world_size = world_size
+
+    def is_available(self):
+        return True
+
+    def is_initialized(self):
+        return self._rank is not None
+
+    def get_rank(self):
+        return self._rank
+
+    def get_world_size(self):
+        return self._world_size
+
+
+class _FakeAccelerator(_FakeCuda):
+    def __init__(self, count):
+        super().__init__(count)
+        self.pinned = []
+
+    def set_device(self, index):
+        if index >= self._count:
+            raise RuntimeError(f"CUDA error: invalid device ordinal ({index} of {self._count})")
+        self.pinned.append(index)
+
+
+_DISTRIBUTED_NAMES = (
+    "_get_env_int",
+    "_infer_distributed_ranks",
+    "_visible_device_count",
+    "_infer_local_rank",
+    "is_distributed",
+    "prepare_device_map",
+    "is_automatic_device_map",
+    "requested_device_map",
+)
+_DISTRIBUTED_CONSTANTS = (
+    "LOCAL_RANK_KEYS",
+    "WORLD_SIZE_KEYS",
+    "LOCAL_RANK_ONLY_KEYS",
+    "UNSLOTH_DEVICE_MAP",
+    "UNSLOTH_BALANCED_DEVICE_MAP",
+    "DEFAULT_DEVICE_MAP",
+    "TRANSFORMERS_PLACEMENT_STRATEGIES",
+    "AUTOMATIC_DEVICE_MAPS",
+)
+
+
+def _load_distributed(
+    monkeypatch,
+    *,
+    device_type = "cuda",
+    devices = 8,
+    rank = None,
+    world_size = None,
+    env = None,
+):
+    """The placement helpers over a fabricated launcher environment and accelerator."""
+    for key in ("LOCAL_RANK", "RANK", "WORLD_SIZE"):
+        monkeypatch.delenv(key, raising = False)
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+
+    accelerator = _FakeAccelerator(devices)
+    torch_stub = types.SimpleNamespace(
+        distributed = _FakeDistributed(rank, world_size),
+        cuda = accelerator,
+        xpu = accelerator,
+        npu = accelerator,
+    )
+    ns = {"os": os, "torch": torch_stub, "DEVICE_TYPE_TORCH": device_type}
+    for node in ast.parse(_SRC).body:
+        if isinstance(node, ast.FunctionDef) and node.name in _DISTRIBUTED_NAMES:
+            exec(ast.get_source_segment(_SRC, node), ns)
+        elif isinstance(node, ast.ClassDef) and node.name == "_DefaultDeviceMap":
+            exec(ast.get_source_segment(_SRC, node), ns)
+        elif (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) in _DISTRIBUTED_CONSTANTS
+        ):
+            exec(ast.get_source_segment(_SRC, node), ns)
+    return ns, accelerator
+
+
+def _pinned_device_map(ns):
+    device_map, is_dist = ns["prepare_device_map"]()
+    return device_map, is_dist
+
+
+def test_the_second_node_of_a_multi_node_job_pins_to_its_own_card():
+    """Global rank 8 of a 2 x 8 job is local rank 0, not card 8.
+
+    `torch.distributed.get_rank()` is documented as "a unique identifier assigned to each
+    process within a distributed process group ... 0 to world_size" -- global, across nodes.
+    Using it as a device index made every rank on the second node ask for cuda:8 on a host
+    with eight cards; `set_device` raises "invalid device ordinal", the except swallows it,
+    and the load then fails on the returned map. torchrun's LOCAL_RANK is the node-local one.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, accelerator = _load_distributed(
+            monkeypatch,
+            devices = 8,
+            rank = 8,
+            world_size = 16,
+            env = {"LOCAL_RANK": "0", "RANK": "8", "WORLD_SIZE": "16"},
+        )
+        device_map, is_dist = _pinned_device_map(ns)
+        assert is_dist
+        assert device_map == {"": "cuda:0"}, device_map
+        assert accelerator.pinned == [0], accelerator.pinned
+    finally:
+        monkeypatch.undo()
+
+
+def test_a_launcher_that_sets_no_local_rank_still_names_a_card_that_exists():
+    """No LOCAL_RANK: the global rank is folded onto the visible cards rather than overflowing."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, accelerator = _load_distributed(
+            monkeypatch,
+            devices = 8,
+            rank = 9,
+            world_size = 16,
+        )
+        device_map, is_dist = _pinned_device_map(ns)
+        assert is_dist
+        assert device_map == {"": "cuda:1"}, device_map
+        assert accelerator.pinned == [1], accelerator.pinned
+    finally:
+        monkeypatch.undo()
+
+
+def test_a_per_rank_cuda_visible_devices_pins_to_the_one_card_it_can_see():
+    """LOCAL_RANK=3 with a single visible card is card 0 -- cuda:3 does not exist here."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, accelerator = _load_distributed(
+            monkeypatch,
+            devices = 1,
+            rank = 3,
+            world_size = 4,
+            env = {"LOCAL_RANK": "3", "RANK": "3", "WORLD_SIZE": "4"},
+        )
+        device_map, _ = _pinned_device_map(ns)
+        assert device_map == {"": "cuda:0"}, device_map
+        assert accelerator.pinned == [0], accelerator.pinned
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.parametrize("local_rank", [0, 1])
+def test_a_single_node_launch_keeps_the_rank_it_already_had(local_rank):
+    """The case the PR exists for must not move: one node, one card per rank."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, accelerator = _load_distributed(
+            monkeypatch,
+            devices = 2,
+            rank = local_rank,
+            world_size = 2,
+            env = {"LOCAL_RANK": str(local_rank), "RANK": str(local_rank), "WORLD_SIZE": "2"},
+        )
+        device_map, is_dist = _pinned_device_map(ns)
+        assert is_dist
+        assert device_map == {"": f"cuda:{local_rank}"}
+        assert accelerator.pinned == [local_rank]
+    finally:
+        monkeypatch.undo()
+
+
+def test_a_single_process_run_is_never_pinned():
+    """No launcher, no distribution: one GPU and CPU-only runs keep their own placement."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, accelerator = _load_distributed(monkeypatch, devices = 1)
+        assert _pinned_device_map(ns) == (None, False)
+        assert accelerator.pinned == []
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.parametrize(
+    "device_map",
+    ["auto", "balanced", "balanced_low_0", "sequential", "unsloth", "unsloth_balanced", "cuda"],
+)
+def test_an_unchosen_placement_is_the_one_a_rank_may_pin(device_map):
+    """Every strategy name spreads one model over all the cards, which is the #3459 failure
+    on every rank. A bare "cuda" names the type and leaves the index to us."""
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, _ = _load_distributed(monkeypatch)
+        is_automatic = ns.get("is_automatic_device_map")
+        assert is_automatic is not None, "loader_utils.py has no is_automatic_device_map"
+        assert is_automatic(device_map) is True, device_map
+        assert is_automatic(ns["DEFAULT_DEVICE_MAP"]) is True
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.parametrize(
+    "device_map", ["cpu", "cuda:2", "mps", "xpu:1", "meta", {"": "cpu"}, {"": 0}, 0, None]
+)
+def test_a_device_the_caller_named_survives_a_distributed_launch(device_map):
+    """`device_map = "cpu"` or `"cuda:2"` is a placement someone chose, and transformers
+    reads it as one: `from_pretrained` turns every string outside
+    ["auto", "balanced", "balanced_low_0", "sequential"] into `{"": torch.device(value)}`.
+    Replacing it with the rank's card loads the model on hardware the caller deliberately
+    avoided -- an unexpected GPU, or an OOM on a card they were keeping free.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        ns, _ = _load_distributed(monkeypatch)
+        is_automatic = ns.get("is_automatic_device_map")
+        assert is_automatic is not None, "loader_utils.py has no is_automatic_device_map"
+        assert is_automatic(device_map) is False, device_map
+    finally:
+        monkeypatch.undo()
+
+
+def test_the_loader_pins_on_the_placement_being_unchosen_not_on_it_being_a_string():
+    """The guard at both `prepare_device_map()` call sites, read off loader.py.
+
+    `isinstance(device_map, str)` is true of "cpu" and "cuda:2" as well, so it was the
+    broadened condition that clobbered them.
+    """
+    calls = _prepare_device_map_guards()
+    assert calls, "loader.py no longer pins a distributed rank to its own device"
+    for lineno, guards in calls:
+        assert any("is_automatic_device_map(device_map)" in guard for guard in guards), (
+            f"loader.py:{lineno}: prepare_device_map() is guarded by {guards}, which does not "
+            f"distinguish a placement nobody chose from a device the caller named"
+        )
+        for guard in guards:
+            assert "isinstance(device_map, str)" not in guard, (
+                f"loader.py:{lineno}: an explicit device_map='cpu' is a str too, so this guard "
+                f"moves the load onto the rank's GPU"
+            )
+
+
+# ------------------------------------------------- a model one card holds stays on one card
+
+
+class _SizedPlan(_Plan):
+    def __init__(
+        self,
+        total_gib,
+        budget_gib = 14.4,
+        headroom_gib = 0.5,
+        devices = (0, 1),
+        transient_gib = 0.0,
+        reserve_gib = 0.0,
+    ):
+        super().__init__({"model.layers.0": devices[0], "lm_head": devices[-1]})
+        self.raw_budgets = {d: int(budget_gib * 2**30) for d in devices}
+        self.total_weight_bytes = int(total_gib * 2**30)
+        self.headroom_bytes = int(headroom_gib * 2**30)
+        self.load_transient_by_device = {devices[-1]: int(transient_gib * 2**30)}
+        self.activation_reserve_by_device = {d: int(reserve_gib * 2**30) for d in devices}
+
+
+@pytest.mark.parametrize("total_gib", [1.2, 6.2, 9.7])  # Qwen3-0.6B, DeepSeek-OCR, Gemma 3n fp32
+def test_a_model_that_fits_one_card_is_not_split(total_gib, capsys):
+    ns = _load(planner = lambda name, **kw: _SizedPlan(total_gib))
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == {"": 0}
+    assert "fits on cuda:0" in capsys.readouterr().out
+
+
+def test_the_single_card_is_one_the_caller_allowed():
+    """max_memory {2, 3} withholds cuda:0 and cuda:1."""
+    seen = {}
+
+    def planner(name, max_memory, **kw):
+        seen["devices"] = sorted(max_memory)
+        return _SizedPlan(1.2, devices = sorted(max_memory))
+
+    ns = _load(devices = 4, planner = planner)
+    device_map = ns["resolve_unsloth_device_map"](
+        "unsloth", "m", planner_kwargs = {"max_memory": {3: "14GiB", 2: "14GiB"}}
+    )
+    assert seen["devices"] == [2, 3]
+    assert device_map == {"": 2}
+
+
+@pytest.mark.parametrize(
+    "total_gib, transient_gib, single",
+    [
+        (11.0, 0.0, True),  # 11.5 of 14.4 GiB: just under the 80% line
+        (11.2, 0.0, False),
+        (10.0, 1.5, False),  # the load transient counts too
+    ],
+)
+def test_the_single_card_line_is_a_fifth_of_the_card_free(total_gib, transient_gib, single):
+    plan = _SizedPlan(total_gib, transient_gib = transient_gib)
+    ns = _load(planner = lambda name, **kw: plan)
+    expected = {"": 0} if single else plan.device_map
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == expected
+
+
+def test_a_plan_without_sizes_is_used_as_before():
+    """An older unsloth_zoo whose plan carries no sizes keeps its split."""
+    plan = _Plan({"model.layers.0": 0, "lm_head": 1})
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
+
+
+def test_a_model_too_big_for_one_card_is_still_planned():
+    plan = _SizedPlan(13.0)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
+
+
+def test_balanced_still_splits_a_small_model():
+    plan = _SizedPlan(1.2)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == plan.device_map
+
+
+@pytest.mark.parametrize(
+    "planner_kwargs, single",
+    [
+        (None, True),  # an auto-derived reserve stays the planner's business
+        ({"activation_reserve_bytes": 4 * 2**30}, True),
+        ({"activation_reserve_bytes": 6 * 2**30}, False),
+    ],
+)
+def test_a_reserve_the_caller_passed_is_kept_on_the_single_card(planner_kwargs, single):
+    plan = _SizedPlan(
+        9.7,
+        reserve_gib = 6.0
+        if planner_kwargs is None
+        else planner_kwargs["activation_reserve_bytes"] / 2**30,
+    )
+    ns = _load(planner = lambda name, **kw: plan)
+    got = ns["resolve_unsloth_device_map"]("unsloth", "m", planner_kwargs = planner_kwargs)
+    assert got == ({"": 0} if single else plan.device_map)

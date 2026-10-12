@@ -12,6 +12,15 @@ import warnings
 
 import pytest
 
+
+def _shared_setup_1():
+    unsloth = _import_mlx_unsloth()
+    import mlx.core as mx
+
+    events = []
+    return events, mx, unsloth
+
+
 _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 
@@ -159,6 +168,16 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     assert dict_args._unsloth_mlx_max_seq_length_explicit is True
 
 
+def test_mlx_training_arguments_accept_the_cuda_loraplus_name():
+    """loraplus_lr_ratio (the CUDA name) should drive MLX's lora_plus_ratio."""
+    unsloth = _import_mlx_unsloth()
+
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = 16.0).lora_plus_ratio == 16.0
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = None).lora_plus_ratio == 0.0
+    both = unsloth.UnslothTrainingArguments(lora_plus_ratio = 8.0, loraplus_lr_ratio = 16.0)
+    assert both.lora_plus_ratio == 8.0
+
+
 def test_mlx_training_arguments_preserve_explicit_positive_warmup_steps():
     """Explicit warmup_steps should take precedence over warmup_ratio."""
     unsloth = _import_mlx_unsloth()
@@ -215,10 +234,7 @@ def _stub_generation_streams(monkeypatch, *names):
 @pytest.mark.parametrize("shape", ["core", "metal"])
 def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape):
     """MLX does not pin a dropped output array, so drain before clearing."""
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     monkeypatch.setattr(
         mx,
         "synchronize",
@@ -250,10 +266,7 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
 
 
 def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     monkeypatch.setattr(
         mx,
         "synchronize",
@@ -268,10 +281,7 @@ def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
 
 
 def test_mlx_clear_gpu_memory_is_a_noop_without_cache_clearing(monkeypatch):
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     monkeypatch.setattr(mx, "synchronize", lambda *a, **k: events.append("synchronize"))
     monkeypatch.delattr(mx, "clear_cache", raising = False)
     monkeypatch.setattr(mx, "metal", type("Metal", (), {})(), raising = False)
@@ -298,10 +308,7 @@ def _recording_synchronize(
 
 def test_mlx_clear_gpu_memory_still_clears_when_a_stream_cannot_be_drained(monkeypatch):
     """empty_cache() routes here from finally arms, and a foreign stream raises."""
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     _recording_synchronize(monkeypatch, mx, events, failing = ("mlx_lm.generate",))
     _stub_generation_streams(monkeypatch, "mlx_lm.generate")
 
@@ -312,10 +319,7 @@ def test_mlx_clear_gpu_memory_still_clears_when_a_stream_cannot_be_drained(monke
 
 def test_mlx_clear_gpu_memory_drains_a_shared_stream_once(monkeypatch):
     """mlx-vlm 0.6.x defines the stream once and re-exports it from every candidate."""
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     _recording_synchronize(monkeypatch, mx, events)
     shared = types.SimpleNamespace(generation_stream = "shared")
     for name in _GENERATION_STREAM_MODULES:
@@ -330,10 +334,7 @@ def test_mlx_clear_gpu_memory_drains_a_shared_stream_once(monkeypatch):
 
 
 def test_mlx_clear_gpu_memory_drains_the_speculative_stream(monkeypatch):
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     _recording_synchronize(monkeypatch, mx, events)
     _stub_generation_streams(monkeypatch, "mlx_vlm.speculative.common")
 
@@ -347,10 +348,7 @@ def test_mlx_clear_gpu_memory_drains_the_speculative_stream(monkeypatch):
 
 
 def test_mlx_clear_gpu_memory_still_clears_without_synchronize(monkeypatch):
-    unsloth = _import_mlx_unsloth()
-    import mlx.core as mx
-
-    events = []
+    events, mx, unsloth = _shared_setup_1()
     monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
     monkeypatch.delattr(mx, "synchronize", raising = False)
     _stub_generation_streams(monkeypatch, "mlx_lm.generate")
@@ -469,7 +467,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
-    assert args.optim == "adamw"
+    assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321

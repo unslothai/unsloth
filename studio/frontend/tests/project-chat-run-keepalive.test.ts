@@ -410,11 +410,11 @@ test("compare lists its threads once before it waits on any run", () => {
   assert.equal(localWaits.length, 1, "LoRA Compare waits only on local runs");
   const gates =
     page.match(
-      /if \(anyRunning && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,
+      /if \(\(?anyRunning(?: \|\| comparing\))? && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,
     ) ?? [];
   assert.equal(gates.length, 2, "both variants must exempt their first list");
   assert.equal(
-    (page.match(/\}, \[pairId, anyRunning\]\);/g) ?? []).length,
+    (page.match(/\}, \[pairId, anyRunning(?:, comparing)?\]\);/g) ?? []).length,
     2,
     "the settle edge is what re-lists; without it a fresh pair never learns its ids",
   );

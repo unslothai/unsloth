@@ -176,6 +176,28 @@ export function createReasoningDurationTracker(
     finishGroup() {
       finishGroupAt(now());
     },
+    /** Preserve the original thought's duration. Open thoughts keep timing and ignore server
+     *  summaries of just the new tail; closed thoughts reopen only if their text grows. */
+    seedThought({
+      duration,
+      open,
+      textLength,
+    }: {
+      duration: number | undefined;
+      open: boolean;
+      textLength: number;
+    }) {
+      const known = asDuration(duration);
+      if (known !== undefined) {
+        setDuration(0, known);
+      }
+      reasoningLength[0] = textLength;
+      groupCount = 1;
+      if (open) {
+        startedAt[0] = now() - (known ?? 0) * 1000;
+        activeIndex = 0;
+      }
+    },
     recordServerDuration(reasoningMs: unknown): boolean {
       if (
         typeof reasoningMs !== "number" ||

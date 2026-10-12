@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "repo": "ROCm/FLM_Q4NX_Converter",
+  "converters": {
+    "q4nx": {
+      "commit": "dd0993cc0801c6ef98fbd57d64b8895c0730517f",
+      "archive_sha256": "08e610e638e0bed5b07b22c97c8127b7ebea6d191f42428a5f11ca5a7e773e79",
+      "archive_size": 41472
+    },
+    "q4k": {
+      "commit": "d1d5232d0b82871bf5265e990fa2d26cdad22327",
+      "archive_sha256": "eddec67fa3a2d8441b403d490b2ff83278b1aac17b6e5887951fd15b06af7d4b",
+      "archive_size": 49414
+    }
+  },
+  "q4k_architectures": ["qwen35", "qwen35moe"]
+}

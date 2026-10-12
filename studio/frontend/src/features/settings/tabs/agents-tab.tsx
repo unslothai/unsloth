@@ -46,13 +46,11 @@ import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
   buildAgentShellCommands,
@@ -60,6 +58,17 @@ import {
   normalizeHost,
   quoteShellArg,
 } from "../components/agent-command";
+import {
+  AgentIcon,
+  CommandBlock,
+  useCopyButton,
+} from "../components/agent-command-block";
+import {
+  type AgentDetails,
+  SUPPORTED_AGENTS,
+  UNSLOTH_START_DOCS_URL,
+  detailsFor,
+} from "../components/coding-agent-list";
 import { SettingsSection } from "../components/settings-section";
 import {
   isChatGenerativeHubModel,
@@ -71,7 +80,7 @@ import {
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
 
-const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
+const DOCS_URL = UNSLOTH_START_DOCS_URL;
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
 const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
@@ -95,116 +104,12 @@ function canUseLocalAgentDetection(base: string): boolean {
   return isTauri && isLoopbackBase(base);
 }
 
-// bind feedback to the copied text so command changes cannot retain a stale tick.
-function useCopyButton(text: string) {
-  const textVersion = useMemo(() => Symbol(text), [text]);
-  const [copiedVersion, setCopiedVersion] = useState<symbol | null>(null);
-  const timeoutRef = useRef<number | null>(null);
-  const currentVersionRef = useRef(textVersion);
-
-  useEffect(() => {
-    currentVersionRef.current = textVersion;
-    return () => {
-      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    };
-  }, [textVersion]);
-
-  const copy = async () => {
-    const requestedText = text;
-    const requestedVersion = textVersion;
-    if (!(await copyToClipboard(requestedText))) return;
-    if (currentVersionRef.current !== requestedVersion) return;
-    setCopiedVersion(requestedVersion);
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    timeoutRef.current = window.setTimeout(() => {
-      setCopiedVersion(null);
-      timeoutRef.current = null;
-    }, 1600);
-  };
-
-  const reset = () => {
-    if (timeoutRef.current !== null) {
-      window.clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    setCopiedVersion(null);
-  };
-
-  return { copied: copiedVersion === textVersion, copy, reset };
-}
-
-type AgentDetails = {
-  id: string;
-  name: string;
-  docsUrl: string;
-  logo?: string;
-  icon?: string;
-  darkIcon?: string;
-  color?: string;
-  mark?: string;
-};
-
 type ParsedModel = {
   repo: string;
   variant: string | null;
 };
 
-// Names are untranslated, so `settings.agents.intro` lists them all to keep them searchable.
-const SUPPORTED_AGENTS: AgentDetails[] = [
-  {
-    id: "claude",
-    name: "Claude Code",
-    docsUrl: "https://unsloth.ai/docs/basics/claude-code",
-    logo: "anthropic",
-  },
-  {
-    id: "codex",
-    name: "OpenAI Codex",
-    docsUrl: "https://unsloth.ai/docs/basics/codex",
-    logo: "openai",
-  },
-  {
-    id: "hermes",
-    name: "Hermes Agent",
-    docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
-    // hermes.png is the desktop app icon from NousResearch/hermes-agent (apps/desktop/assets/icon.png)
-    icon: "hermes.png",
-  },
-  {
-    id: "openclaw",
-    name: "OpenClaw",
-    docsUrl: "https://unsloth.ai/docs/integrations/openclaw",
-    icon: "openclaw.svg",
-  },
-  {
-    id: "opencode",
-    name: "OpenCode",
-    docsUrl: "https://unsloth.ai/docs/integrations/opencode",
-    icon: "opencode-light.svg",
-    darkIcon: "opencode-dark.svg",
-  },
-  {
-    id: "dsh",
-    name: "DeepSeek Harness",
-    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
-    logo: "deepseek",
-  },
-];
-
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
-
-function detailsFor(agentId: string): AgentDetails {
-  return (
-    SUPPORTED_AGENTS.find((agent) => agent.id === agentId) ?? {
-      id: agentId,
-      name: agentId,
-      docsUrl: DOCS_URL,
-      color: "#64748B",
-      mark: agentId.slice(0, 2),
-    }
-  );
-}
 
 function splitModelVariant(model: string): ParsedModel {
   const value = model.trim();
@@ -308,10 +213,9 @@ function discoverGgufModels(
     models.push(model);
   };
   for (const model of items) {
-    // /api/models/list reports the backend's raw identifier, which for a native
-    // grant is the host path that status deliberately withholds. The resident
-    // model reaches the picker through status instead, so drop path-shaped ids
-    // rather than leak one into the list and into the copied command.
+    // /api/models/list reports the backend's raw identifier, which for a native grant is
+    // the host path status deliberately withholds. The resident model reaches the picker
+    // through status instead, so drop path-shaped ids rather than leak one into the command.
     if (!model.is_gguf || looksLikePath(model.id)) {
       continue;
     }
@@ -330,17 +234,14 @@ function discoverGgufModels(
   return { models, variants };
 }
 
-// Scanned local GGUFs (./models, LM Studio, custom folders) that the caches above
-// miss. The id is the load id, i.e. the on-disk path for anything outside the active
-// cache, so label the row by repo id when there is one but keep the path to load by.
-// model_format is only set by the scanners that compute it: _scan_hf_cache leaves it
-// unset, so a custom scan folder holding an HF cache layout would vanish from the
-// picker on an exclusive check. Treat unset as unknown and fall back to the name.
+// Scanned local GGUFs (./models, LM Studio, custom folders) the caches above miss. The id is
+// the load id, i.e. the on-disk path outside the active cache, so label by repo id when there
+// is one but keep the path to load by. model_format is set only by the scanners that compute
+// it (_scan_hf_cache leaves it unset), so treat unset as unknown and fall back to the name.
 function isLocalGguf(model: LocalModelInfo): boolean {
-  // The scanners set this only for a directory holding a primary, non-mmproj GGUF
-  // and no other weights, so an unset format means "not GGUF", not "unknown". Do not
-  // guess from the name: a safetensors folder called Foo-GGUF would load the
-  // transformers backend and then fail the GGUF-only agents.
+  // The scanners set this only for a directory holding a primary, non-mmproj GGUF and no other
+  // weights, so an unset format means "not GGUF", not "unknown". Do not guess from the name: a
+  // safetensors folder called Foo-GGUF would load transformers and then fail the GGUF-only agents.
   return (model.model_format ?? "").toLowerCase() === "gguf";
 }
 
@@ -349,9 +250,8 @@ function localGgufEntries(
 ): { id: string; label: string }[] {
   const entries: { id: string; label: string }[] = [];
   for (const model of models) {
-    // partial marks an interrupted sharded download: variant discovery would treat
-    // the shards it has as complete and build a command that fails on load. The
-    // cached repo row still offers it, and _repo_gguf_load_id withholds the path.
+    // partial marks an interrupted sharded download: variant discovery would treat the shards it
+    // has as complete and build a command that fails on load. The cached repo row still offers it.
     if (model.partial || !(model.id && isLocalGguf(model))) {
       continue;
     }
@@ -406,62 +306,6 @@ function activeGgufSelection(
     variant: status.gguf_variant ?? active.variant,
     named: true,
   };
-}
-
-/** Official provider or agent logo when available, else a monogram tile. */
-function AgentIcon({
-  logo,
-  icon,
-  darkIcon,
-  color,
-  mark,
-}: {
-  logo?: string;
-  icon?: string;
-  darkIcon?: string;
-  color?: string;
-  mark?: string;
-}) {
-  if (logo) {
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
-      </span>
-    );
-  }
-  if (icon) {
-    const iconSrc = `${import.meta.env.BASE_URL}agent-logos/${icon}`;
-    const darkIconSrc = darkIcon
-      ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
-      : null;
-    return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <img
-          src={iconSrc}
-          alt=""
-          aria-hidden={true}
-          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
-        />
-        {darkIconSrc ? (
-          <img
-            src={darkIconSrc}
-            alt=""
-            aria-hidden={true}
-            className="hidden size-5 object-contain dark:block"
-          />
-        ) : null}
-      </span>
-    );
-  }
-  return (
-    <span
-      aria-hidden={true}
-      style={{ backgroundColor: color }}
-      className="flex size-5 shrink-0 items-center justify-center rounded font-heading text-ui-10 font-semibold text-white"
-    >
-      {mark}
-    </span>
-  );
 }
 
 // Flag tokens are literal; only the descriptions are localized.
@@ -520,7 +364,7 @@ function CopyableCode({
     <div className="relative min-w-0">
       <code
         className={cn(
-          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-white/[0.05]",
+          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
       >
@@ -531,36 +375,6 @@ function CopyableCode({
         onClick={onCopy}
         aria-label={copyLabel}
         className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <HugeiconsIcon
-          icon={copied ? Tick02Icon : Copy01Icon}
-          className={cn("size-3.5", copied && "text-control-accent")}
-          strokeWidth={2}
-        />
-      </button>
-      <output className="sr-only" aria-live="polite">
-        {copied ? t("settings.agents.copied") : ""}
-      </output>
-    </div>
-  );
-}
-
-function CommandBlock({ command }: { command: string }) {
-  const t = useT();
-  const { copied, copy } = useCopyButton(command);
-
-  return (
-    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-white/[0.04]">
-      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
-        <code className="font-mono whitespace-pre">{command}</code>
-      </pre>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={
-          copied ? t("settings.agents.copied") : t("settings.agents.copy")
-        }
-        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
@@ -651,7 +465,7 @@ export function AgentsTab() {
     keepUnsupportedTags: false,
     enabled: online,
   });
-  // Seed a remote command from the client platform; the shell picker below can
+  // Seed a remote command from the client platform; the page's shell selector can
   // override it for SSH, WSL, containers, or any other paste destination.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
@@ -659,11 +473,10 @@ export function AgentsTab() {
     return p.startsWith("win") || p.includes("windows");
   });
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL
-  // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
-  // lands). The command then runs wherever that CLI is: a loopback base is this Unsloth's
-  // own host, so deviceType decides, and it reports wsl where the browser would claim
-  // Windows. For any other base the client platform is only the initial guess.
+  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL the CLI
+  // cannot reach, so use the backend URL from /api/health (getApiBase until it lands). A loopback
+  // base is this Unsloth's own host, so deviceType decides and reports wsl where the browser would
+  // claim Windows. For any other base the client platform is only the initial guess.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const inferredCommandOs: ExampleOs = (
     isLoopbackBase(studioBase)
@@ -706,7 +519,6 @@ export function AgentsTab() {
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
-  // Display names for scanned models, keyed by the path that identifies them.
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
   // The model /api/inference/status reports as resident, so the command attaches to it
   // rather than remapping to another cached copy.
@@ -812,10 +624,9 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  // A GGUF outside the active cache does not resolve by repo id, so name its
-  // snapshot path; `unsloth start` now also matches a path by the basename
-  // /v1/models advertises for it. The resident model is exempt: it already
-  // loaded by id, and cached-gguf keeps the largest copy across caches, whose
+  // A GGUF outside the active cache does not resolve by repo id, so name its snapshot path;
+  // `unsloth start` also matches a path by the basename /v1/models advertises. The resident model
+  // is exempt: it loaded by id, and cached-gguf keeps the largest copy across caches, whose
   // snapshot could switch cache or quant under it.
   const selectedModelIsActive =
     activeStatusModel != null &&
@@ -986,7 +797,6 @@ export function AgentsTab() {
         }));
       })
       .catch(() => {
-        // The example model keeps the builder useful if discovery fails.
       });
     return () => {
       cancelled = true;
@@ -1042,10 +852,9 @@ export function AgentsTab() {
     });
   }, []);
 
-  // The resident GGUF went away (unloaded, or replaced by a transformer model).
-  // Following it means letting go too, or the command would name a stale model and
-  // switch the shared server back. A native-grant label is not even loadable, so it
-  // leaves the list entirely. An explicit pick still wins.
+  // The resident GGUF went away (unloaded, or replaced by a transformer model). Following it means
+  // letting go too, or the command would name a stale model and switch the shared server back. A
+  // native-grant label is not even loadable, so it leaves the list entirely. An explicit pick wins.
   const dropActiveModel = useCallback(
     (attachOnly: string | null, wasActive: string | null) => {
       if (attachOnly) {
@@ -1096,10 +905,9 @@ export function AgentsTab() {
     ],
   );
 
-  // Another client, or a load that finishes after this tab opens, can change what
-  // is resident on a shared server. Keep tracking it rather than pinning the model
-  // seen at mount, or the command would name a stale one and switch the server
-  // back, unloading it for every attached session. An explicit pick still wins.
+  // Another client, or a load finishing after this tab opens, can change what is resident on a
+  // shared server. Keep tracking it rather than pinning the model seen at mount, or the command
+  // would switch the server back, unloading it for every attached session. An explicit pick wins.
   useEffect(() => {
     let cancelled = false;
     const sync = () => {
@@ -1133,11 +941,9 @@ export function AgentsTab() {
     if (!(restored && discoveredKeys && statusSettled)) return;
     const active = activeModelRef.current;
     restoredModel.current = null;
-    // modelKey both sides: discovery folds repo-id case, so an exact match
-    // would retire a valid pick just for a different spelling.
-    // A path is never in discoveredKeys (the catalog drops path ids and a scan
-    // root may not cover it), but `unsloth start --model <path>` is valid, so
-    // absence there is not evidence.
+    // modelKey both sides: discovery folds repo-id case, so an exact match would retire a valid pick
+    // for a different spelling. A path is never in discoveredKeys (the catalog drops path ids and a
+    // scan root may not cover it), but `unsloth start --model <path>` is valid, so absence is not evidence.
     if (
       looksLikePath(restored) ||
       isHuggingFaceRepo(restored) ||
@@ -1150,9 +956,8 @@ export function AgentsTab() {
     modelSelectionChanged.current = false;
     chosenVariant.current = null;
     setStoredModel(null, null);
-    // adopt straight away rather than parking on the example model: the next
-    // poll is STATUS_POLL_MS away, and a command copied meanwhile would switch
-    // a shared server off whatever is loaded.
+    // adopt straight away rather than parking on the example model: the next poll is STATUS_POLL_MS
+    // away, and a command copied meanwhile would switch a shared server off whatever is loaded.
     if (active) {
       adoptActiveModel(active);
       return;
@@ -1164,9 +969,8 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
 
-    // A scanned directory is not repo-shaped but still has a path to enumerate, and
-    // after discovery that path IS the identity. Only a standalone .gguf file, which
-    // is one quant by definition, is genuinely variantless.
+    // A scanned directory is not repo-shaped but still has a path to enumerate, and after discovery
+    // that path IS the identity. Only a standalone .gguf file is genuinely variantless.
     const localDir =
       cachedLoadId ??
       (looksLikePath(selectedModel) &&
@@ -1174,9 +978,8 @@ export function AgentsTab() {
         ? selectedModel
         : null);
     if (!(isHuggingFaceRepo(selectedModel) || localDir)) {
-      // A loose .gguf is one quant already. Status can record a quant parsed from its
-      // filename, and restoring that would add --gguf-variant, which a bare file path
-      // cannot resolve, so it stays null here.
+      // A loose .gguf is one quant already. Status can record a quant parsed from its filename, and
+      // restoring that would add --gguf-variant, which a bare file path cannot resolve.
       const standaloneFile = selectedModel.toLowerCase().endsWith(".gguf");
       queueMicrotask(() => {
         if (cancelled) {
@@ -1207,9 +1010,8 @@ export function AgentsTab() {
         }
         // Clear a prior failure once a later request (e.g. after adding a token) succeeds.
         setVariantsFailed(false);
-        // Drop partial quants: an interrupted split download still lists a quant, and
-        // naming it builds a command that resolves the shards it has and then fails on
-        // the missing ones.
+        // Drop partial quants: an interrupted split download still lists a quant, and naming it builds
+        // a command that resolves the shards it has and then fails on the missing ones.
         const uniqueVariants = Array.from(
           new Map(
             info.variants
@@ -1221,12 +1023,9 @@ export function AgentsTab() {
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
-        // Authoritative for this repo: drop a remembered quant it no longer
-        // offers, or adoptActiveModel re-imposes it on the next poll.
-        // Stop adoptActiveModel re-imposing a quant this repo will not serve.
-        // In-memory only: `partial` here means "still downloading", and an
-        // offline reply lists just the cache, so neither is grounds to delete
-        // the user's saved quant. Dropping the ref re-runs this next mount.
+        // Authoritative for this repo: drop a remembered quant it no longer offers, or adoptActiveModel
+        // re-imposes it on the next poll. In-memory only: `partial` here means "still downloading", and
+        // an offline reply lists just the cache, so neither is grounds to delete the user's saved quant.
         const remembered = rememberedVariant(selectedModel);
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
@@ -1280,18 +1079,31 @@ export function AgentsTab() {
   // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-8">
+    <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.agents.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.agents.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.agents.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.agents.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("settings.agents.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.agents.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.agents.description")}
-          className="text-xs text-muted-foreground leading-relaxed"
+          className="text-xs text-muted-foreground"
         >
           {t("settings.agents.description")}
         </p>
@@ -1301,20 +1113,63 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        {/* The chip is the docs entry point, so no separate link is needed.
-            No aria-label: it would replace the visible "unsloth start" as the
+        {/* No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
         <a
           href={DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
           title={t("settings.agents.readDocs")}
-          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.08]"
+          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
         >
           unsloth start
         </a>{" "}
         {t("settings.agents.intro")}
       </p>
+
+      {/* Shared track + pill selector. The legend is sr-only: the two shell
+          names already say what the control picks. */}
+      <fieldset className="flex min-w-0">
+        <legend className="sr-only">
+          {t("settings.agents.commandShell")}
+        </legend>
+        <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("unix");
+              setStoredOs("unix");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "unix"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "unix"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osUnix")}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCommandOsOverride("windows");
+              setStoredOs("windows");
+              resetCopied();
+            }}
+            aria-pressed={commandOs === "windows"}
+            className={cn(
+              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              commandOs === "windows"
+                ? "hub-tab-toggle-pill text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t("settings.apiKeys.osWindows")}
+          </button>
+        </div>
+      </fieldset>
 
       <section
         aria-label={t("settings.agents.commandBuilder")}
@@ -1429,7 +1284,7 @@ export function AgentsTab() {
                     aria-label={t("settings.agents.model")}
                     aria-expanded={modelPickerOpen}
                     title={selectedModel}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                   >
                     <span className="min-w-0 truncate font-mono text-xs">
                       {labelFor(selectedModel)}
@@ -1509,10 +1364,10 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex h-5 items-center">
+              <div className="flex h-5 min-w-0 items-center">
                 <span
                   data-settings-label={t("settings.agents.quantization")}
-                  className="text-xs font-medium text-foreground"
+                  className="truncate text-xs font-medium text-foreground"
                 >
                   {t("settings.agents.quantization")}
                 </span>
@@ -1552,7 +1407,7 @@ export function AgentsTab() {
                     )}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start" className="min-w-[16rem]">
+                <SelectContent align="start" className="min-w-[min(calc(16rem*var(--ui-space-scale,1)),calc(100vw-32px))]">
                   {variants.map((variant) => {
                     // Size only: the recommended/downloaded tags wrapped every
                     // row onto two lines and made the list hard to scan.
@@ -1593,50 +1448,9 @@ export function AgentsTab() {
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            <fieldset className="flex min-w-0 items-center gap-0.5">
-              <legend className="sr-only">
-                {t("settings.agents.generatedCommand")}
-              </legend>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("unix");
-                  setStoredOs("unix");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "unix"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "unix"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osUnix")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCommandOsOverride("windows");
-                  setStoredOs("windows");
-                  resetCopied();
-                }}
-                aria-pressed={commandOs === "windows"}
-                className={cn(
-                  "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  commandOs === "windows"
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("settings.apiKeys.osWindows")}
-              </button>
-            </fieldset>
-          </div>
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.automaticSettingsNote")}
           </p>

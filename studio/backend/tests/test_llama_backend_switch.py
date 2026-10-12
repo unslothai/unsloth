@@ -94,6 +94,25 @@ def _write_install(dir_: Path, **marker_fields) -> str:
     return str(binary)
 
 
+def _write_vulkan_install(
+    *args,
+    asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+    backend = "vulkan",
+    backend_request = "auto",
+    install_kind = "linux-vulkan",
+    **kwargs,
+):
+    """_write_install for the stock linux vulkan build."""
+    return _write_install(
+        *args,
+        asset = asset,
+        backend = backend,
+        backend_request = backend_request,
+        install_kind = install_kind,
+        **kwargs,
+    )
+
+
 @pytest.fixture(autouse = True)
 def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
@@ -209,13 +228,7 @@ def test_applying_a_migration_re_applies_auto_and_stays_an_update(monkeypatch, t
     def _on_start(cmd, kwargs):
         seen["cmd"] = cmd
         seen["env"] = kwargs.get("env") or {}
-        _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
-            backend_request = "auto",
-        )
+        _write_vulkan_install(install_dir)
 
     _patch_installer(monkeypatch, on_start = _on_start)
 
@@ -253,13 +266,7 @@ def test_a_migration_that_lands_on_its_target_reports_the_new_backend(monkeypatc
     _drifted(monkeypatch)
     _patch_installer(
         monkeypatch,
-        on_start = lambda cmd, kwargs: _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
-            backend_request = "auto",
-        ),
+        on_start = lambda cmd, kwargs: _write_vulkan_install(install_dir),
     )
 
     assert upd.start_update()["started"] is True
@@ -292,13 +299,7 @@ def test_a_switch_names_the_backend_and_keeps_the_installed_release(monkeypatch,
     def _on_start(cmd, kwargs):
         seen["cmd"] = cmd
         seen["env"] = kwargs.get("env") or {}
-        _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
-            backend_request = "vulkan",
-        )
+        _write_vulkan_install(install_dir, backend_request = "vulkan")
 
     _patch_installer(monkeypatch, on_start = _on_start)
 
@@ -420,13 +421,11 @@ def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
     install_dir = _install(monkeypatch, tmp_path)
 
     def _on_start(cmd, kwargs):
-        _write_install(
+        _write_vulkan_install(
             install_dir,
             release_tag = "b9596",
             published_repo = "ggml-org/llama.cpp",
             asset = "llama-b9596-bin-ubuntu-vulkan-arm64.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
             backend_request = "vulkan",
         )
 
@@ -732,6 +731,24 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
     assert by_backend["auto"]["download_size_bytes"] == 1234
     assert by_backend["rocm"]["available"] is False
     assert "sycl" not in by_backend
+
+
+def test_status_skips_the_resolver_when_update_checks_disabled(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+
+    def _no_resolve(*args, **kwargs):
+        raise AssertionError("resolved backends despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _no_resolve)
+    monkeypatch.setattr(upd, "latest_release_assets", _no_resolve)
+
+    status = upd.get_backend_status(force_refresh = True)
+
+    assert status["supported"] is False
+    assert status["reason"] == "update_checks_disabled"
+    assert status["backend"] == "cuda"
+    assert status["options"] == []
 
 
 def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, tmp_path):
@@ -1145,13 +1162,7 @@ def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypat
 
     def _on_start(cmd, kwargs):
         seen["cmd"] = cmd
-        _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
-            backend_request = "auto",
-        )
+        _write_vulkan_install(install_dir)
 
     _patch_installer(monkeypatch, on_start = _on_start)
 
@@ -1200,13 +1211,7 @@ def test_applying_a_migration_replays_an_arch_only_the_bundle_names(monkeypatch,
     assert upd.get_update_status()["backend_migration_available"] is True
 
     def _on_start(cmd, kwargs):
-        _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
-            install_kind = "linux-vulkan",
-            backend = "vulkan",
-            backend_request = "auto",
-        )
+        _write_vulkan_install(install_dir)
 
     _patch_installer(monkeypatch, on_start = _on_start)
 

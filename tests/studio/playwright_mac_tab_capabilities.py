@@ -66,6 +66,7 @@ from _playwright_robust import (  # noqa: E402
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -125,6 +126,7 @@ PROBE_PATHS = (LIVENESS_PATH, HEALTH_PATH)
 TABS = [
     ("/chat", "projects", "Chat"),
     ("/hub", "hub", "Hub"),
+    ("/library", "library", "Library"),
     ("/images", "images", "Images"),
     ("/studio", "train", "Train"),
     ("/video", "video", "Video"),
@@ -148,7 +150,12 @@ _SIGNED_OUT_PATHS = ("/login", "/change-password")
 # once more. test_inline_row_ids_match_the_frontends_default_pinned_set holds this tuple to
 # the store's pinned set, in both directions, so neither a pin nor an unpin can leave an
 # assertion here silently observing nothing.
-INLINE_ROW_IDS = ("hub", "projects", "images", "video", "train")
+INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
+# Pinned rows that stand down while something else on screen does their job, keyed to that something. Since #12016 the
+# Projects section shows as soon as projects have loaded, empty or not, and the Projects row yields to it
+# (projectsSectionShowing in app-sidebar.tsx). So on a fresh install the row is absent by design and the section is
+# what proves the sidebar came up. Neither of them rendering is still a failure.
+ROW_STAND_INS = {"projects": '[data-sidebar-section="projects"]'}
 # The row every pending-state assertion below is pinned to.
 GATED_ROW_ID = "train"
 # Intercept pattern for the browser's health reads.
@@ -701,8 +708,14 @@ _ROW_STATE_JS = """(ids) => {
 
 
 def row_states(page, ids = INLINE_ROW_IDS) -> dict:
-    """DOM state of each nav row by test id; None for a row that is not rendered."""
-    return page.evaluate(_ROW_STATE_JS, list(ids)) or {}
+    """DOM state of each nav row by test id; None for a row that is not rendered.
+
+    Through robust_evaluate: the password rotation navigates the app on its own, which can
+    abort the post-login goto and leave a navigation in flight when the first sample is read
+    ("Execution context was destroyed"). That settles on its own and is not a page that
+    cannot be read; a page that stays unreadable still raises.
+    """
+    return robust_evaluate(page, _ROW_STATE_JS, list(ids)) or {}
 
 
 def sample_natural_warm_window(page) -> None:
@@ -867,6 +880,19 @@ def assert_row_never_greyed_while_unmeasured(page) -> None:
     assert_pending_state_on_forced_verdict(page)
 
 
+def stand_in_shown(page, row_id: str) -> bool:
+    """Whether the element a pinned row yields to is on screen, for a row that has one.
+
+    Visible, not merely mounted: on the collapsed icon rail the Projects section stays in the DOM
+    hidden by CSS, and that is exactly when its row has to come back.
+    """
+    selector = ROW_STAND_INS.get(row_id)
+    if selector is None:
+        return False
+    stand_in = page.locator(selector)
+    return stand_in.count() > 0 and stand_in.first.is_visible()
+
+
 def drive_tabs(page) -> None:
     for route, row_id, name in TABS:
         step(f"open {name} ({route})")
@@ -900,6 +926,7 @@ def drive_tabs(page) -> None:
         # up at all and keeps the per-route detail in the log.
         try:
             _rows_seen.update(rid for rid, got in row_states(page).items() if got)
+            _rows_seen.update(rid for rid in ROW_STAND_INS if stand_in_shown(page, rid))
         except Exception as exc:
             info(f"{name}: could not read the sidebar rows ({exc!r})")
 
@@ -912,6 +939,10 @@ def drive_tabs(page) -> None:
                 page.wait_for_timeout(1000)
             elif row.count() > 0:
                 info(f"{name}: nav row present but disabled (measured verdict)")
+            elif stand_in_shown(page, row_id):
+                info(
+                    f"{name}: nav row {row_id} stands down while its section shows; reached by route instead"
+                )
             elif row_id in INLINE_ROW_IDS:
                 # Not an info line: this row is pinned inline by default, so its absence means the sidebar did not
                 # render and this tab checked nothing.

@@ -95,7 +95,7 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
 
     # Two engines resident at once doubles VRAM for the whole keep-alive window, but the
     # release follows the load: a 409 must not cost the user the engine they were using.
-    assert order == ["load:mtmd", "unload:transformers", "unload:gguf"]
+    assert order == ["load:mtmd", "unload:transformers", "unload:gguf", "unload:audiocpp"]
 
 
 def test_load_still_succeeds_when_another_engine_refuses_to_release(monkeypatch):

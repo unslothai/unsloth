@@ -276,7 +276,9 @@ class TestItDoesNotAssertTheLaunchOutcome:
 
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
         warn = src.find("could not enumerate any GPU")
-        restore = src.find("gpu_indices = sorted(gpu_ids)")
+        # The pick is restored in the picker's own order now, not sorted, so the
+        # anchor is the assignment rather than the sort that used to spell it.
+        restore = src.find("gpu_indices = _picked_order")
         assert warn != -1 and restore != -1
         assert warn < restore, "if the pin moved above the warning, re-derive this guard"
 

@@ -278,7 +278,9 @@ class TestMemoization:
         cannot be added without either invalidating or failing this.
 
         The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
-        makes a function an installer rather than a probe.
+        makes a function an installer rather than a probe. The one exemption builds into a
+        scratch --target and installs nothing; `TestScratchPrefetch` runs it to prove that,
+        rather than trusting how its source reads.
         """
         tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
         installers = {}
@@ -292,12 +294,13 @@ class TestMemoization:
             }
             if called & {"_build_pip_cmd", "_build_uv_cmd"}:
                 installers[node.name] = called
-        assert set(installers) == {"pip_install", "pip_install_try"}, (
+        assert SCRATCH_PREFETCHERS <= set(installers), "an exempted prefetcher no longer builds"
+        assert set(installers) - SCRATCH_PREFETCHERS == {"_pip_install_once", "pip_install_try"}, (
             f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
             "the torch classification too, or it will answer for the build it replaced"
         )
-        for name, called in installers.items():
-            assert "_invalidate_torch_runtime_probe" in called, (
+        for name in set(installers) - SCRATCH_PREFETCHERS:
+            assert "_invalidate_torch_runtime_probe" in installers[name], (
                 f"{name}() installs packages without dropping the memoized torch " "classification"
             )
 
@@ -307,6 +310,56 @@ class TestMemoization:
             stack_mod._invalidate_torch_runtime_probe()
             stack_mod._probe_torch_runtime()
         assert mock_run.call_count == 2
+
+
+# Builds a command without dropping the torch classification, which is only safe because it
+# installs nothing into the environment. TestScratchPrefetch runs each one to hold it to that.
+SCRATCH_PREFETCHERS = {"_prefetch_diffusers_main"}
+
+
+class TestScratchPrefetch:
+    """#11635's prefetch warms uv's cache by building into a throwaway --target. Run it with the
+    subprocess stubbed and read the command it actually issues: exactly one --target, naming a
+    directory it made under the temp root, and removed afterwards."""
+
+    @pytest.mark.parametrize("git", [True, False], ids = ["from-git", "from-archive"])
+    def test_the_prefetch_builds_only_into_a_scratch_target(self, git, tmp_path):
+        req_root = tmp_path / "requirements"
+        req_root.mkdir()
+        (req_root / "diffusers-main.txt").write_text(
+            "diffusers @ git+https://github.com/huggingface/diffusers@abc\n", encoding = "utf-8"
+        )
+        commands = []
+
+        def run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout = "")
+
+        with (
+            patch.object(stack_mod, "REQ_ROOT", req_root),
+            patch.object(stack_mod, "_diffusers_main_requested", return_value = True),
+            patch.object(stack_mod, "_diffusers_main_needs_dependency_pass", return_value = True),
+            patch.object(stack_mod, "_startup_repair_failed", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
+            patch.object(stack_mod, "_has_working_git", return_value = git),
+            patch.object(
+                stack_mod, "_diffusers_main_archive", return_value = "https://example/d.tar.gz"
+            ),
+            patch.object(stack_mod, "_pinned_cmd_and_env", side_effect = lambda cmd: (cmd, None)),
+            patch.object(stack_mod.subprocess, "run", side_effect = run),
+        ):
+            assert stack_mod._prefetch_diffusers_main() == 0
+
+        assert len(commands) == 1, commands
+        cmd = commands[0]
+        targets = [
+            i for i, arg in enumerate(cmd) if arg == "--target" or arg.startswith("--target=")
+        ]
+        assert len(targets) == 1 and cmd[targets[0]] == "--target", cmd
+        target = Path(cmd[targets[0] + 1])
+        assert target.parent == Path(stack_mod.tempfile.gettempdir()), target
+        assert target.name.startswith(stack_mod._PREFETCH_SCRATCH_PREFIX), target
+        assert not target.exists(), "the scratch target was left behind"
 
 
 class TestConsumersShareTheProbe:

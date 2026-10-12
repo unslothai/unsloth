@@ -87,11 +87,11 @@ test("residency remains a cache mutation safety input", () => {
     "utf8",
   );
 
-  assert.match(hubPage, /getInferenceStatus\(\)/);
+  assert.match(hubPage, /getInferenceStatus\(\s*undefined,/);
   assert.match(hubPage, /adoptResidentModelStatus\(/);
   assert.match(
     hubPage,
-    /Promise\.all\(\[getInferenceStatus\(\), readIdleUnloadArmed\(\)\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
+    /Promise\.all\(\[\s*getInferenceStatus\([\s\S]*?\),\s*readIdleUnloadArmed\(\),\s*\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
   );
   assert.match(
     hubPage,
@@ -197,7 +197,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);
   assert.match(
     modelInspector,
-    /const mediaPage = studioPageForTask\([\s\S]*?taskForMediaPick\(model\.pipelineTag, model\.task\)/,
+    /const mediaTask = taskForMediaPick\(model\.pipelineTag, model\.task\);\s*const mediaPage = studioPageForTask\(mediaTask \?\? undefined\);/,
   );
   assert.match(
     hubPage,
@@ -205,7 +205,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     hubPage,
-    /to: `\/\$\{mediaPage\}`,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
+    /to: `\/\$\{mediaPage\}`,[\s\S]*?mediaPage === "audio"[\s\S]*?audioPickSearch\(selectedModel\.hubRepoId,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
   );
   assert.match(
     hubPage,
@@ -260,7 +260,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
     modelInspector,
-    /\? \(selection: HubModelRunSelection\) => onRun\(selection, mediaPage\)/,
+    /\? \(selection: HubModelRunSelection\) =>\s*onRun\(selection, audioPage \? "audio" : mediaPage\)/,
   );
   assert.match(
     ggufCard,
