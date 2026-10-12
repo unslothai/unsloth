@@ -168,13 +168,15 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
-@pytest.mark.parametrize(("window", "output"), [(32768, "8192"), (131072, "32000")])
+@pytest.mark.parametrize(
+    ("window", "output"), [(32768, "8192"), (65536, "16384"), (98304, None), (131072, None)]
+)
 def test_claude_local_env_leaves_room_to_compact_a_small_window(window, output):
     # claude's 32k default output reserve made a 32k window compact every turn until it aborted.
     local_env = start._claude_local_env(
         BASE, "sk-unsloth-test", {**MODEL, "context_length": window}
     )
-    assert local_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == output
+    assert local_env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == output
     assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in start._claude_local_env(
         BASE, "sk-unsloth-test", {"id": MODEL["id"]}
     )

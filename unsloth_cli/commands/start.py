@@ -132,6 +132,7 @@ _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -3058,8 +3059,10 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
-        # claude sets aside min(max output, 20k) plus 13k of the window before compacting; with its 32k default output a 32k window leaves nothing, so it compacts every turn until it aborts.
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(opencode_output_limit(int(window)))
+        # claude sets aside min(max output, 20k) plus 13k of the window before compacting; with its 32k default output a 32k window leaves nothing, so it compacts every turn until it aborts. Above 20k the cap buys no room, so larger windows keep claude's own.
+        output = opencode_output_limit(int(window))
+        if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
     if extra_body:
         env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
