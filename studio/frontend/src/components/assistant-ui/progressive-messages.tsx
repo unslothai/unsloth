@@ -4,12 +4,7 @@
 // Widen-only mount window glue; see progressive-mount-controller.ts. One shared propless slot
 // element lets React skip unchanged rows; a components object would re-render every row.
 
-import {
-  AuiProvider,
-  MessageByIndexProvider,
-  useAui,
-  useAuiState,
-} from "@assistant-ui/react";
+import { AuiProvider, useAui, useAuiState } from "@assistant-ui/react";
 import {
   type FC,
   type ReactElement,
@@ -25,6 +20,7 @@ import {
 } from "react";
 
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
+import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
   type AnchorSample,
   type MountWindow,

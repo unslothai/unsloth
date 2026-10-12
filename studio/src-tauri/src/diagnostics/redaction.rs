@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -18,10 +18,16 @@ pub(crate) fn redact_text(text: &str, report: &mut RedactionReport) -> String {
     out = replace_regex(url_credentials_re(), &out, "$1<redacted>@", report);
     out = replace_regex(url_query_value_re(), &out, "$1=<redacted>", report);
     out = replace_regex(url_fragment_re(), &out, "$1#<redacted>", report);
-    out = replace_regex(auth_header_re(), &out, "$1: <redacted>", report);
-    out = replace_regex(cookie_re(), &out, "$1: <redacted>", report);
-    out = replace_regex(token_re(), &out, "<redacted token>", report);
-    out = replace_regex(env_secret_re(), &out, "$1=<redacted>", report);
+    out = replace_regex(auth_scheme_re(), &out, "$1<redacted>", report);
+    out = replace_with(secret_kv_re(), &out, redact_kv, report);
+    out = replace_with(weak_secret_kv_re(), &out, redact_weak_kv, report);
+    out = replace_with(auth_value_re(), &out, redact_auth_value, report);
+    out = replace_with(secret_flag_re(), &out, redact_kv, report);
+    out = replace_with(bearer_re(), &out, redact_bearer, report);
+    out = replace_with(cookie_re(), &out, redact_cookie, report);
+    out = replace_regex(sk_key_re(), &out, "$1<redacted token>", report);
+    out = replace_regex(token_re(), &out, "$1<redacted token>", report);
+    out = replace_with(env_secret_re(), &out, redact_env, report);
     out = replace_regex(
         native_path_lease_re(),
         &out,
@@ -50,6 +56,131 @@ fn replace_regex(
     } else {
         input.to_string()
     }
+}
+
+// replace_regex whose closure may decline a match; only real changes are counted.
+fn replace_with(
+    regex: &'static Regex,
+    input: &str,
+    redact: fn(&Captures) -> Option<String>,
+    report: &mut RedactionReport,
+) -> String {
+    let mut count = 0;
+    let out = regex.replace_all(input, |caps: &Captures| match redact(caps) {
+        Some(replacement) => {
+            count += 1;
+            replacement
+        }
+        None => caps[0].to_string(),
+    });
+    report.replacements += count;
+    out.into_owned()
+}
+
+const REDACTED: &str = "<redacted>";
+const AUTH_SCHEMES: [&str; 6] = ["bearer", "basic", "digest", "token", "apikey", "negotiate"];
+
+fn redact_kv(caps: &Captures) -> Option<String> {
+    let whole = caps.get(0)?;
+    let value = ["ev2", "ev", "dv", "sv", "uv"]
+        .iter()
+        .find_map(|name| caps.name(name))?;
+    let key = caps["key"].to_ascii_lowercase();
+    let numeric_is_secret = key.starts_with("pass") || key.ends_with("secret");
+    if value.as_str().bytes().all(|b| b.is_ascii_digit()) && !numeric_is_secret {
+        return None;
+    }
+    let (scheme, rest) = value
+        .as_str()
+        .split_once(' ')
+        .unwrap_or((value.as_str(), ""));
+    let masked = if key.ends_with("authorization")
+        && AUTH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+    {
+        let rest = rest.trim_start();
+        if rest.is_empty() || rest == REDACTED {
+            return None;
+        }
+        format!("{scheme} {REDACTED}")
+    } else {
+        REDACTED.to_string()
+    };
+    let text = whole.as_str();
+    let start = whole.start();
+    Some(format!(
+        "{}{masked}{}",
+        &text[..value.start() - start],
+        &text[value.end() - start..]
+    ))
+}
+
+// Bare token keys also name tokenizer settings ("eos_token": "</s>"): need a credential-shaped value.
+fn redact_weak_kv(caps: &Captures) -> Option<String> {
+    let value = ["ev2", "ev", "dv", "sv", "uv"]
+        .iter()
+        .find_map(|name| caps.name(name))?;
+    if value.as_str().starts_with('[') || !looks_like_credential(value.as_str()) {
+        return None;
+    }
+    redact_kv(caps)
+}
+
+// Catch-all for scheme-less, short or numeric Authorization values the rules above skip.
+fn redact_auth_value(caps: &Captures) -> Option<String> {
+    let value = &caps[2];
+    if is_sentinel(value) || AUTH_SCHEMES.contains(&value.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    Some(format!("{}{REDACTED}", &caps[1]))
+}
+
+fn redact_env(caps: &Captures) -> Option<String> {
+    if is_sentinel(&caps[2]) {
+        return None;
+    }
+    Some(format!("{}={REDACTED}", &caps[1]))
+}
+
+// An earlier rule's sentinel plus at most one trailing delimiter; anything else is a real value.
+fn is_sentinel(value: &str) -> bool {
+    let value = match value.chars().last() {
+        Some(c) if c.is_whitespace() || "\"'\\,}];&".contains(c) => {
+            &value[..value.len() - c.len_utf8()]
+        }
+        _ => value,
+    };
+    matches!(
+        value.trim_start_matches(['"', '\'']),
+        "<redacted>" | "<redacted token>" | "<redacted private key>"
+    )
+}
+
+// A quoted cookie value ends at its own quote so later fields survive; unquoted runs to EOL.
+fn redact_cookie(caps: &Captures) -> Option<String> {
+    let quote = ["eq", "dq", "sq"]
+        .iter()
+        .find_map(|name| caps.name(name))
+        .map_or("", |m| m.as_str());
+    Some(format!("{}{quote}{REDACTED}{quote}", &caps[1]))
+}
+
+fn redact_bearer(caps: &Captures) -> Option<String> {
+    let credential = &caps[2];
+    if !looks_like_credential(credential) {
+        return None;
+    }
+    Some(format!("{}{REDACTED}", &caps[1]))
+}
+
+// Spares prose such as "Bearer credentials were not accepted".
+fn looks_like_credential(value: &str) -> bool {
+    if value.len() < 8 || value.starts_with('<') {
+        return false;
+    }
+    value.len() >= 20
+        || value
+            .bytes()
+            .any(|b| b.is_ascii_digit() || b"._-+/=~".contains(&b))
 }
 
 fn replace_known_paths(input: &str, report: &mut RedactionReport) -> String {
@@ -122,25 +253,86 @@ fn url_fragment_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)(https?://[^\s`#]+)#[^\s`]+").unwrap())
 }
 
-fn auth_header_re() -> &'static Regex {
+// "token" alone is absent so max_tokens and eos_token survive; mirrors studio/backend/utils/log_redaction.py.
+const SECRET_KEYS: &str = r"proxy-authorization|authorization|x-api-key|api[-_]?key|apikey|(?:hf|access|refresh|auth|bearer|id|session|wandb|hub)[-_]?token|aws_session_token|client[-_]?secret|aws_secret_access_key|secret[-_]?access[-_]?key|secret[-_]?key|private[-_]?key|password|passwd|secret";
+
+// See redact_weak_kv.
+const WEAK_SECRET_KEYS: &str = r"(?:[A-Za-z0-9]+[-_]?)?token|credentials?";
+
+// "plain", 'single', \"escaped\" (a dict inside a server-*.log JSON line) and \\\"twice\\\";
+// an escaped shape ends only at a quote with its own backslash count.
+const SECRET_VALUE: &str = r#"(?:\\\\\\"(?P<ev2>(?:[^"\\\r\n]|\\{4,}"|\\+[^"\\\r\n])+)(?:\\\\\\")?|\\"(?P<ev>(?:[^"\\\r\n]|\\{2,}"|\\+[^"\\\r\n])+)(?:\\")?|"(?P<dv>(?:[^"\\\r\n]|\\.)+)"?|'(?P<sv>(?:[^'\\\r\n]|\\.)+)'?|(?P<uv>[^"'\\\s,;}\]<>]{6,}))"#;
+
+// The leading class stands in for a lookbehind (regex has none), so OPENAI_API_KEY matches.
+fn kv_re(keys: &str) -> Regex {
+    Regex::new(&format!(
+        r#"(?i)(?:^|[^A-Za-z0-9]|\\[nrt])(?P<key>{keys})\b(?:\\*["'])?[ \t]*[:=][ \t]*{SECRET_VALUE}"#
+    ))
+    .unwrap()
+}
+
+fn secret_kv_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(authorization|proxy-authorization)\s*[:=]\s*(bearer|basic)?\s*[A-Za-z0-9._~+/=-]+").unwrap())
+    RE.get_or_init(|| kv_re(SECRET_KEYS))
+}
+
+fn weak_secret_kv_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| kv_re(WEAK_SECRET_KEYS))
+}
+
+fn secret_flag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)(?:^|\s|\\[nrt])--(?P<key>{SECRET_KEYS})[ \t]+{}",
+            // A flag names its whole argv word, at any length; a following flag is not its value.
+            SECRET_VALUE.replace(
+                r#"(?P<uv>[^"'\\\s,;}\]<>]{6,})"#,
+                r#"(?P<uv>[^-"'\\\s][^"'\\\s]*)"#
+            )
+        ))
+        .unwrap()
+    })
+}
+
+fn auth_scheme_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?(?:bearer|basic|digest|token|apikey|negotiate)[ \t]+)[^\s"'\\,}\]<]+"#).unwrap())
+}
+
+fn auth_value_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?)(<redacted(?: token| private key)?>(?:[\s"'\\,}\]]|$)|[^\s"'\\,}\]\[{(]+)"#).unwrap())
+}
+
+fn bearer_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)bearer[ \t]+)([^\s"'\\,}\]<]+)"#).unwrap())
 }
 
 fn cookie_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(cookie|set-cookie)\s*[:=]\s*[^\r\n]+").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:set-)?cookie(?:\\*["'])?[ \t]*[:=][ \t]*)(?:(?P<eq>\\")(?:[^"\\\r\n]|\\{2,}"|\\+[^"\\\r\n])+\\"|(?P<dq>")(?:[^"\\\r\n]|\\.)+"|(?P<sq>')(?:[^'\\\r\n]|\\.)+'|(?:[^\r\n\\]|\\[^rnt])+)"#).unwrap()
+    })
+}
+
+// Not after a hyphen, so a name like checkpoint-sk-9f8a... is left alone.
+fn sk_key_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(^|[^A-Za-z0-9-]|\\[nrt])sk-[A-Za-z0-9_-]{20,}").unwrap())
 }
 
 fn token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(hf_(?:oauth_)?[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"(\\[nrt]|\b)(?:hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{16,})|github_pat_[A-Za-z0-9_]{20,}|(?:gh[pousr]_|gsk_|xai-|glpat-|xox[abprs]-|ya29\.)[A-Za-z0-9_.-]{16,}|AIza[0-9A-Za-z_-]{30,}|(?:AKIA|ASIA)[0-9A-Z]{16}\b|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})").unwrap())
 }
 
 fn env_secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*[^\s;&]+").unwrap()
+        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|(?:"(?:[^"\\\r\n]|\\.)*"?|'[^'\r\n]*'?)[^\s;&]*|[^\s;&"'][^\s;&]*)"#).unwrap()
     })
 }
 
@@ -268,5 +460,300 @@ mod tests {
         assert!(redacted.contains("MONKEY=banana"));
         assert!(redacted.contains("KEYBOARD=present"));
         assert!(redacted.contains("API_KEY=<redacted>"));
+    }
+
+    #[test]
+    fn redacts_credentials_in_every_shape_a_log_carries() {
+        // (input, secret that must not survive, text that must)
+        // Vendor-prefixed fakes are split with concat! so secret scanners don't flag them.
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "key sk-unsloth-0123456789abcdef0123456789abcdef ok",
+                "0123456789abcdef",
+                "key <redacted token> ok",
+            ),
+            (
+                "sk-proj-AbCdEf0123456789_AbCdEf0123456789",
+                "AbCdEf0123456789",
+                "",
+            ),
+            (
+                concat!("sk-ant", "-api03-AbCdEf0123456789AbCdEf0123"),
+                "AbCdEf0123456789",
+                "",
+            ),
+            (
+                "key_sk-unsloth-0123456789abcdef0123456789abcdef",
+                "0123456789abcdef",
+                "",
+            ),
+            (
+                "token-gho_AbCdEf0123456789AbCdEf0123",
+                "AbCdEf0123456789",
+                "",
+            ),
+            (
+                concat!(
+                    "gsk",
+                    "_AbCdEf0123456789AbCdEf xai",
+                    "-AbCdEf0123456789AbCdEf"
+                ),
+                "AbCdEf0123456789",
+                "",
+            ),
+            (
+                concat!(
+                    "glpat",
+                    "-AbCdEf0123456789AbCd xoxb",
+                    "-1234567890-AbCdEf012345"
+                ),
+                "AbCdEf",
+                "",
+            ),
+            (
+                concat!(
+                    "AIza",
+                    "SyAbCdEf0123456789AbCdEf0123456789 AKIA",
+                    "ABCDEF0123456789"
+                ),
+                "AbCdEf0123456789",
+                "",
+            ),
+            ("hf_oauth_AbCdEf.0123~456789AbCdEf0123", "456789AbCdEf", ""),
+            (
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.c2lnbmF0dXJlc2lnbmF0dXJl",
+                "c2lnbmF0dXJl",
+                "",
+            ),
+            (
+                r#"{"Authorization": "Bearer opaque0123456789"}"#,
+                "opaque0123456789",
+                r#"{"Authorization": "Bearer <redacted>"}"#,
+            ),
+            (
+                "Authorization: Token opaque0123456789",
+                "opaque0123456789",
+                "Authorization: Token <redacted>",
+            ),
+            (
+                r#"{"Authorization": ["Bearer opaque0123456789"]}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                "retrying with Bearer opaque0123456789",
+                "opaque0123456789",
+                "",
+            ),
+            (
+                "X-Api-Key: opaque0123456789",
+                "opaque0123456789",
+                "X-Api-Key: <redacted>",
+            ),
+            ("api-key: opaque0123456789", "opaque0123456789", ""),
+            ("x-goog-api-key: opaque0123456789", "opaque0123456789", ""),
+            (
+                r#"{"refresh_token":"opaque0123456789","token_type":"bearer"}"#,
+                "opaque0123456789",
+                r#""token_type":"bearer""#,
+            ),
+            (
+                r#"{"apiKey": "opaque0123456789", 'password': 'opaque0123456789'}"#,
+                "opaque0123456789",
+                r#""apiKey": "<redacted>""#,
+            ),
+            (
+                r#"{"openai_api_key": "opaque0123456789", "OPENAI_API_KEY": "opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                r#"{"hf_token": "opaque0123456789", "wandb_token": "opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                r#"{"aws_secret_access_key": "opaque0123456789", "private_key": "opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                r#"{"client_secret": "opaque0123456789", "db_password": "opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                r#"{"password": "ab\"opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                "password='correct horse battery staple'",
+                "horse battery",
+                "password='<redacted>'",
+            ),
+            (
+                "api_key: opaque0123456789",
+                "opaque0123456789",
+                "api_key: <redacted>",
+            ),
+            (
+                "unsloth studio --api-key opaque0123456789 --port 8888",
+                "opaque0123456789",
+                "--port 8888",
+            ),
+            (
+                r#"{"set-cookie": "session=opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+            (
+                r#"{"event": "h {\"Authorization\": \"Bearer opaque0123456789\"}"}"#,
+                "opaque0123456789",
+                r#"\"Authorization\": \"Bearer <redacted>\"}"#,
+            ),
+            (
+                r#"{"event": "r {\"access_token\": \"opaque0123456789\", \"n\": 1}"}"#,
+                "opaque0123456789",
+                r#"\"access_token\": \"<redacted>\", \"n\": 1}"#,
+            ),
+            (
+                r#"{"event": "body='{\\\"access_token\\\": \\\"opaque0123456789\\\"}'"}"#,
+                "opaque0123456789",
+                r#"\\\"access_token\\\": \\\"<redacted>\\\"}'"#,
+            ),
+            // A quote inside the value is escaped one level deeper than the delimiters.
+            (
+                r#"{"event": "body {\"password\": \"ab\\\"opaque0123456789\", \"n\": 1}"}"#,
+                "opaque0123456789",
+                r#"\"password\": \"<redacted>\", \"n\": 1}"#,
+            ),
+            (
+                r#"{"event": "body='{\\\"password\\\": \\\"ab\\\\\\\"opaque0123456789\\\"}'"}"#,
+                "opaque0123456789",
+                r#"\\\"password\\\": \\\"<redacted>\\\"}'"#,
+            ),
+            (
+                r#"{"apiToken": "opaque0123456789", "cf_tunnel_token": "opaque0123456789"}"#,
+                "opaque0123456789",
+                r#""apiToken": "<redacted>""#,
+            ),
+            ("DATABASE_PASSWORD=<hunter2secret>", "hunter2secret", ""),
+            ("DATABASE_PASSWORD=<redacted-but-real>", "but-real", ""),
+            (r#"ACCESS_KEY="don't-share-this""#, "share-this", ""),
+            (r#"ACCESS_KEY="quoted"opaque0123456789"#, "opaque", ""),
+            (r#"ACCESS_KEY="opaque\"still secret""#, "secret", ""),
+            ("serve --password abcde --port 8888", "abcde", "--port 8888"),
+            (
+                r#"headers={"Cookie": "session=opaque0123456789", "error": "CUDA OOM"}"#,
+                "opaque0123456789",
+                r#""Cookie": "<redacted>", "error": "CUDA OOM"}"#,
+            ),
+            (
+                r#"{"event": "h {\"cookie\": \"s=opaque0123456789\", \"n\": 1}"}"#,
+                "opaque0123456789",
+                r#"\"cookie\": \"<redacted>\", \"n\": 1}"#,
+            ),
+            (
+                "serve --password abcdef,opaque0123 --port 1",
+                "opaque0123",
+                "--port 1",
+            ),
+            ("DATABASE_PASSWORD=<redacted>x", "<redacted>x", ""),
+            (r#"{"password":"bearer"}"#, "bearer", ""),
+            ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
+            (
+                r#"{"Authorization": "123456789"}"#,
+                "123456789",
+                r#""Authorization": "<redacted>""#,
+            ),
+            (
+                r#"{"token": "opaque0123456789", "credentials": "opaque0123456789"}"#,
+                "opaque0123456789",
+                "",
+            ),
+        ];
+        // By index: printing a fixture secret trips CodeQL's cleartext-logging rule.
+        for (i, (input, secret, kept)) in cases.iter().enumerate() {
+            let mut report = RedactionReport::default();
+            let redacted = redact_text(input, &mut report);
+            assert!(
+                !redacted.contains(secret),
+                "case {i}: secret survived redaction"
+            );
+            assert!(
+                redacted.contains(kept),
+                "case {i}: expected {kept:?} to survive"
+            );
+            assert!(report.replacements > 0, "case {i}: nothing was redacted");
+        }
+    }
+
+    #[test]
+    fn credential_rules_leave_ordinary_log_text_alone() {
+        let input = concat!(
+            "pip install scikit-learn (sk-learn) and a bare sk- in prose\n",
+            "saved checkpoint-sk-9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c\n",
+            "the payload starts with eyJ but is not a token\n",
+            "Authorization header missing; n_tokens=4096\n",
+            "Bearer credentials were not accepted\n",
+            "{\"token_type\":\"bearer\",\"max_tokens\": 4096,\"eos_token\": \"</s>\"}\n",
+            "{\"secret_sauce_path\": \"/x\", \"password_required\": true, \"api_key_count\": 2}\n",
+            "{\"event\": \"loaded {\\\"pad_token\\\": \\\"<pad>\\\"}\"}\n",
+            "{\"unk_token\": \"[UNK]\", \"eos_token\": \"<|im_end|>\", \"next_token\": \"Assistant\"}\n",
+            "{\"num_tokens\": 512, \"token_count\": 12, \"tokenizer\": \"fast\", \"credentials\": null}\n",
+            "sha256:9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a\n",
+        );
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(input, &mut report);
+        assert_eq!(redacted, input);
+        assert_eq!(report.replacements, 0);
+    }
+
+    #[test]
+    fn an_escaped_newline_counts_as_a_boundary() {
+        for body in [
+            r"api_key: opaque0123456789",
+            r"Authorization: Basic opaque0123456789",
+            r"hf_opaque0123456789abcd",
+            r"sk-unsloth-opaque0123456789abcdef0123",
+            r"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.opaque0123456789",
+            r"Cookie: s=opaque0123456789",
+            r"--api-key opaque0123456789",
+            r"Bearer opaque0123456789",
+        ] {
+            for sep in [r"\n", r"\r\n", r"\t"] {
+                let input = format!(r#"{{"event": "dump:{sep}{body}{sep}next line"}}"#);
+                let redacted = redact_text(&input, &mut RedactionReport::default());
+                assert!(!redacted.contains("opaque"), "secret survived after {sep}");
+                assert!(
+                    redacted.contains(&format!("{sep}next line")),
+                    "lost the line after {sep}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bare_scheme_never_swallows_the_next_line() {
+        let mut report = RedactionReport::default();
+        let redacted = redact_text("Authorization: Bearer\nnextline stays\n", &mut report);
+        assert!(redacted.contains("nextline stays"), "{redacted}");
+    }
+
+    #[test]
+    fn already_redacted_values_are_not_counted_twice() {
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(
+            "OPENAI_API_KEY=sk-proj-AbCdEf0123456789_AbCdEf0123456789\n",
+            &mut report,
+        );
+        assert_eq!(redacted, "OPENAI_API_KEY=<redacted>\n");
+        assert_eq!(report.replacements, 1);
+
+        let mut report = RedactionReport::default();
+        let redacted = redact_text("MY_KEY=ghp_AbCdEf0123456789AbCdEf0123 next\n", &mut report);
+        assert_eq!(redacted, "MY_KEY=<redacted token> next\n");
+        assert_eq!(report.replacements, 1);
     }
 }

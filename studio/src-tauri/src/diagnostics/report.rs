@@ -567,12 +567,21 @@ fn read_tail(path: &Path, max_lines: usize, max_bytes: usize) -> Result<TailRead
     let size = metadata.len();
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let start = size.saturating_sub(max_bytes as u64);
-    file.seek(SeekFrom::Start(start))
+    // Read from one byte early so a cut that lands on a line start keeps that line.
+    let read_from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(read_from))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64)
+    file.take(max_bytes as u64 + (start - read_from))
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    if start > 0 {
+        // Drop the partial first line: a value cut from its key escapes the key-based redactor.
+        match bytes.iter().position(|&b| b == b'\n') {
+            Some(newline) => drop(bytes.drain(..=newline)),
+            None => bytes.clear(),
+        }
+    }
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     let mut truncated = start > 0;
     if truncated {
@@ -933,7 +942,25 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    /// `read_tail` on a FIFO would wedge the report thread; run on a deadline so a regression fails.
+    #[test]
+    fn a_byte_cut_tail_never_starts_mid_line() {
+        let path = std::env::temp_dir().join(format!("unsloth-cut-tail-{}", std::process::id()));
+        // Cut after the key: the bare value must not survive.
+        fs::write(&path, "{\"password\": \"opaque0123456789\"}\nkept line\n").unwrap();
+        let tail = read_tail(&path, 10, 29).unwrap();
+        assert!(!tail.text.contains("opaque"), "{}", tail.text);
+        assert!(tail.text.contains("kept line"), "{}", tail.text);
+
+        fs::write(&path, "first\nsecond\n").unwrap();
+        let tail = read_tail(&path, 10, 7).unwrap();
+        assert!(tail.text.contains("second"), "{}", tail.text);
+        let _ = fs::remove_file(path);
+    }
+
+    /// The worst of the three. `read_tail` runs on the blocking pool behind the
+    /// support-report command, so reaching a FIFO does not skip a log, it wedges the
+    /// thread and the report never returns. On a deadline, because a regression here
+    /// hangs the suite rather than failing it.
     #[cfg(unix)]
     #[test]
     fn a_fifo_named_like_a_log_cannot_wedge_the_report() {

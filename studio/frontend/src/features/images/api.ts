@@ -308,6 +308,8 @@ export interface DiffusionDownloadPlan {
     repo_id: string;
     files: string[];
     bytes: number;
+    /** Size of each file counted in `bytes`. Absent on an older backend. */
+    file_bytes?: Record<string, number>;
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;

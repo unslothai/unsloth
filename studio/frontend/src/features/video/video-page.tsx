@@ -2664,7 +2664,10 @@ function VideoGenerator({
         // The shared envelope's half of the incompatible-pairing check; video has no live path here.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          const entries = diffusionStagingEntries(plan.entries, repoId, {
+            ...opts,
+            checkpointBytes: plan.checkpoint_bytes,
+          });
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
           pendingStagedLoad.current = {
             repoId,

@@ -17,6 +17,7 @@ export type ContextUsageBarInput = {
   total?: number | null;
   cached?: number;
   cacheWrites?: number;
+  compactionCount?: number;
   promptTokens?: number;
   completionTokens?: number;
   // MLX keeps generating past the window, so it needs different advice than llama.cpp.

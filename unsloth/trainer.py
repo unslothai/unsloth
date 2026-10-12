@@ -1191,7 +1191,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
+            # make_q_galore_param_groups selects on param.dim() == 2, and FSDP1 hands us 1-D
             # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
             # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
             # quietly become ordinary 8-bit AdamW. Say so instead.
