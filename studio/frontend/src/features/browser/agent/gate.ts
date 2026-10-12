@@ -6,9 +6,15 @@
  *  talk the model into anything, so the rules hold whatever the model says it wants. */
 
 import type { ElementInfo } from "./page-agent";
+import { type AgentPermissions, patternMatches, ruleFor } from "./permissions";
 
 /** `prompt` is for the model; `ask`, `host` and `name` let the panel say it in the reader's language. */
-export type Question = { ask: "open" | "signIn" | "submit" | "click"; host: string; name: string; detail: string };
+export type Question = {
+  ask: "open" | "signIn" | "submit" | "click" | "history";
+  host: string;
+  name: string;
+  detail: string;
+};
 
 export type Gate = { kind: "allow" } | ({ kind: "ask"; prompt: string } & Question) | { kind: "block"; reason: string };
 
@@ -40,8 +46,22 @@ export function policyBlocks(url: string, policy: SitePolicy): string | null {
   return null;
 }
 
+/** The website policy, then the user's Agent permissions: why the agent may not be on `url`, or null. */
+export function navigationBlocks(url: string, policy: SitePolicy, permissions: AgentPermissions): string | null {
+  const blocked = policyBlocks(url, policy);
+  if (blocked) return blocked;
+  const { rule, site } = ruleFor(url, permissions);
+  if (rule.browsing !== "block") return null;
+  return site
+    ? `the user blocked ${site} in the agent's site permissions`
+    : "the user only lets the agent open the sites they allowed in Settings";
+}
+
 export type NavigationContext = {
   policy: SitePolicy;
+  permissions: AgentPermissions;
+  /** The page the agent is on: moving within a site needs no new OK. */
+  currentUrl: string;
   knownHosts: ReadonlySet<string>;
   /** Links on the page the agent last read: following one carries nothing the model made up. */
   pageLinks: ReadonlySet<string>;
@@ -68,11 +88,18 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return { kind: "block", reason: "only http and https pages can be opened" };
   }
-  const blocked = policyBlocks(url, context.policy);
+  const blocked = navigationBlocks(url, context.policy, context.permissions);
   if (blocked) return { kind: "block", reason: blocked };
   const host = hostOfUrl(url);
+  const ask: Gate = { kind: "ask", ask: "open", host, name: "", prompt: `Open ${host}?`, detail: parsed.href };
+  const { rule, site } = ruleFor(url, context.permissions);
+  if (rule.browsing === "allow") return ALLOW;
+  if (site) {
+    const here = hostOfUrl(context.currentUrl);
+    return here && patternMatches(site, here) ? ALLOW : ask;
+  }
   if (context.knownHosts.has(host) || context.pageLinks.has(parsed.href) || mentioned(host, context.userText)) return ALLOW;
-  return { kind: "ask", ask: "open", host, name: "", prompt: `Open ${host}?`, detail: parsed.href };
+  return ask;
 }
 
 // Fields whose contents are the user's to type: the agent never fills them.
@@ -88,7 +115,13 @@ const CONSEQUENTIAL_LINK = /\b(buy|purchase|order now|checkout|check out|pay|don
 export type ElementAction = "click" | "type" | "select" | "submit";
 
 /** `submit`: the action will submit the element's form (a submit button, or Enter in a field). */
-export function gateElement(action: ElementAction, info: ElementInfo, pageUrl: string, policy: SitePolicy): Gate {
+export function gateElement(
+  action: ElementAction,
+  info: ElementInfo,
+  pageUrl: string,
+  policy: SitePolicy,
+  permissions: AgentPermissions,
+): Gate {
   const host = hostOfUrl(pageUrl) || "this site";
   if (info.role === "file-input" || info.type === "file") {
     return { kind: "block", reason: "uploading files is not something the browser agent can do; ask the user to do it" };
@@ -106,9 +139,10 @@ export function gateElement(action: ElementAction, info: ElementInfo, pageUrl: s
   }
   const submits = action === "submit" || (action === "click" && info.submits);
   if (submits && info.formAction) {
-    const blocked = policyBlocks(info.formAction, policy);
+    const blocked = navigationBlocks(info.formAction, policy, permissions);
     if (blocked) return { kind: "block", reason: blocked };
   }
+  if (ruleFor(pageUrl, permissions).rule.actions === "allow") return ALLOW;
   if (submits && info.formHasPassword) {
     return { kind: "ask", ask: "signIn", host, name: "", prompt: `Sign in on ${host}?`, detail: describe(info) };
   }

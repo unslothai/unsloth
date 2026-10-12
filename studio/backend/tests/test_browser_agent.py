@@ -108,6 +108,23 @@ def test_type_select_scroll_and_keys():
         _request("browser_type", {"ref": "r3", "text": "x" * 9000})
 
 
+def test_history_search_is_bounded_and_fenced():
+    assert _request("browser_history", {"query": " gguf ", "limit": 500}) == {
+        "op": "history",
+        "query": "gguf",
+        "limit": 50,
+    }
+    assert _request("browser_history", {})["limit"] == 20
+    with pytest.raises(ValueError):
+        _request("browser_history", {"limit": "lots"})
+    out = browser_agent.format_result(
+        "browser_history",
+        {"ok": True, "text": "2026-10-11 09:00  Qwen3  https://huggingface.co/Qwen"},
+        None,
+    )
+    assert "<untrusted_web_content>" in out and "huggingface.co" in out
+
+
 def test_page_text_is_fenced_and_cannot_close_the_fence():
     out = browser_agent.format_result(
         "browser_snapshot",

@@ -201,6 +201,24 @@ BROWSER_SCREENSHOT_TOOL = {
     },
 }
 
+BROWSER_HISTORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browser_history",
+        "description": (
+            "Search the pages the user visited in the browser panel, newest first, by words in "
+            "the title or address. The user may be asked first, or may not allow it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words to match; empty for the latest."},
+                "limit": {"type": "integer", "description": "At most this many, up to 50."},
+            },
+        },
+    },
+}
+
 BROWSER_TOOLS = [
     BROWSER_NAVIGATE_TOOL,
     BROWSER_SNAPSHOT_TOOL,
@@ -211,6 +229,7 @@ BROWSER_TOOLS = [
     BROWSER_SCROLL_TOOL,
     BROWSER_PRESS_KEY_TOOL,
     BROWSER_SCREENSHOT_TOOL,
+    BROWSER_HISTORY_TOOL,
 ]
 
 BROWSER_TOOL_NAMES = frozenset(tool["function"]["name"] for tool in BROWSER_TOOLS)
@@ -340,6 +359,16 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
         return {"op": "press", "key": key}
     if name == BROWSER_SCREENSHOT:
         return {"op": "screenshot"}
+    if name == "browser_history":
+        try:
+            limit = int(arguments.get("limit") or 20)
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a whole number.")
+        return {
+            "op": "history",
+            "query": str(arguments.get("query") or "").strip()[:200],
+            "limit": max(1, min(limit, 50)),
+        }
     raise ValueError(f"unknown browser tool {name}.")
 
 

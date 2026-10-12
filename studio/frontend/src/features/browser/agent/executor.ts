@@ -7,13 +7,14 @@
 import { authFetch } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
 import { screenshotPage } from "../capture";
+import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, nativeAction } from "../native-view";
 import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
 import { askUser, useBrowserAgentStore } from "./agent-store";
-import { type Gate, type SitePolicy, gateElement, gateNavigation, hostOfUrl, policyBlocks } from "./gate";
+import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 
 export type BrowserAction = {
@@ -29,6 +30,7 @@ export type BrowserAction = {
   key?: string;
   fullPage?: boolean;
   query?: string;
+  limit?: number;
   policy: SitePolicy;
 };
 
@@ -67,6 +69,7 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     key: str(raw.key, 32),
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
+    limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
     policy: { allowedDomains: strings(raw.allowed_domains), blockedDomains: strings(raw.blocked_domains) },
   };
 }
@@ -221,8 +224,15 @@ async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askUser({ ask, host, name, detail }, signal);
+  const allowed = await askInPanel({ ask, host, name, detail }, signal);
   return allowed ? null : `The user declined: ${gate.prompt.replace(/\?$/, "")}. Do something else, or ask them.`;
+}
+
+/** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
+function askInPanel(question: Question, signal?: AbortSignal): Promise<boolean> {
+  const store = useBrowserStore.getState();
+  if (!store.open) store.openPanel();
+  return askUser(question, signal);
 }
 
 async function observe(tab: BrowserTab, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
@@ -262,8 +272,18 @@ async function open(url: string, signal?: AbortSignal): Promise<BrowserTab | nul
   return waitForLoad(tabId, signal);
 }
 
+const permissions = () => useBrowserAgentStore.getState().permissions;
+
 function navigationContext(action: BrowserAction, context: ActionContext) {
-  return { policy: action.policy, knownHosts, pageLinks, userText: context.userText };
+  const tab = agentTab();
+  return {
+    policy: action.policy,
+    permissions: permissions(),
+    currentUrl: tab ? tabUrl(tab) : "",
+    knownHosts,
+    pageLinks,
+    userText: context.userText,
+  };
 }
 
 async function perform(action: BrowserAction, context: ActionContext): Promise<Result> {
@@ -283,6 +303,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (!tab) return { ok: false, error: "the browser tab closed." };
     return observeLoaded(tab);
   }
+
+  if (action.op === "history") return readHistory(action, signal);
 
   const tab = agentTab();
   if (!tab) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
@@ -326,11 +348,11 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "select" || action.op === "type") {
-    gates.push(gateElement(action.op, info, before, action.policy));
+    gates.push(gateElement(action.op, info, before, action.policy, permissions()));
   }
   // Enter in a field sends its form, so it is held to what a submit button would be.
   const submits = (action.op === "type" && action.submit) || (action.op === "press" && action.key === "Enter");
-  if (submits && info.formAction) gates.push(gateElement("submit", info, before, action.policy));
+  if (submits && info.formAction) gates.push(gateElement("submit", info, before, action.policy, permissions()));
   for (const gate of gates) {
     const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
@@ -342,7 +364,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
       // A link: opened in this tab, under the same rules as any other address.
-      const blocked = policyBlocks(clicked.navigate, action.policy);
+      const blocked = navigationBlocks(clicked.navigate, action.policy, permissions());
       if (blocked) return { ok: false, error: `Not done: ${blocked}.` };
       knownHosts.add(hostOfUrl(clicked.navigate));
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
@@ -369,7 +391,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
   if (now && now !== before) {
-    const blocked = policyBlocks(now, action.policy);
+    const blocked = navigationBlocks(now, action.policy, permissions());
     if (blocked) return { ok: false, error: `The page went to ${hostOfUrl(now)}, but ${blocked}. Go back.` };
     knownHosts.add(hostOfUrl(now));
     return observeLoaded(after, note);
@@ -404,4 +426,28 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
     reader.readAsDataURL(blob);
   });
   return { ok: true, url: tabUrl(tab), title: tab.title, image };
+}
+
+const HISTORY_LIMIT = 50;
+
+/** The browser_history tool: the user's visits, by their Settings choice (never, ask, allow). */
+async function readHistory(action: BrowserAction, signal?: AbortSignal): Promise<Result> {
+  const access = useBrowserAgentStore.getState().historyAccess;
+  if (access === "never") return { ok: false, error: "The user doesn't let the agent read their browsing history." };
+  if (access === "ask") {
+    const query = action.query ?? "";
+    const allowed = await askInPanel({ ask: "history", host: "", name: query, detail: query }, signal);
+    if (!allowed) return { ok: false, error: "The user declined to share their browsing history. Do something else, or ask them." };
+  }
+  const terms = (action.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const limit = Math.min(Math.max(action.limit ?? 20, 1), HISTORY_LIMIT);
+  const visits = useBrowserHistoryStore
+    .getState()
+    .history.filter((visit) => {
+      const haystack = `${visit.title} ${visit.url}`.toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    })
+    .slice(0, limit);
+  const lines = visits.map((visit) => `${new Date(visit.visitedAt).toISOString().slice(0, 16).replace("T", " ")}  ${visit.title || "(untitled)"}  ${visit.url}`);
+  return { ok: true, text: lines.length ? lines.join("\n") : "No pages in the browsing history match." };
 }

@@ -21,6 +21,7 @@ export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([
   "browser_scroll",
   "browser_press_key",
   "browser_screenshot",
+  "browser_history",
 ]);
 
 /**
