@@ -16,6 +16,7 @@ import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
+import { useGpuInfo } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -429,24 +430,26 @@ function ModelSelectorContent({
     !task && npuStatus?.supported === true
       ? { status: npuStatus, onStatusChange: setNpuStatus }
       : undefined;
+  // Converted (OpenVINO) only on an Intel GPU; elsewhere those rows stay under On Device.
+  const showConverted = useGpuInfo().backend === "xpu";
   // Connected sits in the section toggle, shown only with external providers.
-  const hubSectionTabs = useMemo(
-    () =>
-      hasExternal
-        ? [
-            ...HUB_SECTION_TABS,
-            {
-              value: "connected",
-              label: "Connected",
-              icon: (
-                <HugeiconsIcon icon={CloudIcon} className="size-3.5 shrink-0" />
-              ),
-            },
-          ]
-        : HUB_SECTION_TABS,
-    [hasExternal],
-
-  );
+  const hubSectionTabs = useMemo(() => {
+    const tabs = showConverted
+      ? HUB_SECTION_TABS
+      : HUB_SECTION_TABS.filter((tab) => tab.value !== "converted");
+    return hasExternal
+      ? [
+          ...tabs,
+          {
+            value: "connected",
+            label: "Connected",
+            icon: (
+              <HugeiconsIcon icon={CloudIcon} className="size-3.5 shrink-0" />
+            ),
+          },
+        ]
+      : tabs;
+  }, [hasExternal, showConverted]);
   const wantsConnectedDefault = Boolean(
     value && externalModels.some((model) => model.id === value),
   );
@@ -459,7 +462,10 @@ function ModelSelectorContent({
   );
   // Connected is only valid while external providers exist; fall back otherwise.
   const effectiveHubSection: HubSection =
-    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
+    (hubSection === "connected" && !hasExternal) ||
+    (hubSection === "converted" && !showConverted)
+      ? "recommended"
+      : hubSection;
 
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,

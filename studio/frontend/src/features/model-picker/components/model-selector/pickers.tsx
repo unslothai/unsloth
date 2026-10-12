@@ -8071,13 +8071,8 @@ export function HubModelPicker({
                 {(!showHfSection && section === "converted") ? (
                   <>
                     {(() => {
-                      const convertedModels = [...visibleCachedGguf, ...visibleCachedModelRows].filter(c => 
-                        c.repo_id.toLowerCase().includes("int4") || 
-                        c.repo_id.toLowerCase().includes("int8") || 
-                        c.repo_id.toLowerCase().includes("ov_") || 
-                        c.repo_id.toLowerCase().includes("openvino") ||
-                        c.repo_id.toLowerCase().includes("-ov")
-                      );
+                      // An OpenVINO IR is never a GGUF; and not a bare "int4", which GPTQ/AWQ repos say too.
+                      const convertedModels = visibleCachedModelRows.filter((c) => isOpenVinoId(c.repo_id));
                       // Intel-recommended INT variants first.
                       convertedModels.sort((a, b) => Number(intelIntRecs.has(b.repo_id)) - Number(intelIntRecs.has(a.repo_id)));
                       if (convertedModels.length === 0) {
@@ -8087,11 +8082,7 @@ export function HubModelPicker({
                           </div>
                         );
                       }
-                      return convertedModels.map(c => 
-                        visibleCachedGguf.includes(c as any)
-                          ? renderDownloadedGgufRow(c as any) 
-                          : renderDownloadedModelRow(c as any)
-                      );
+                      return convertedModels.map((c) => renderDownloadedModelRow(c));
                     })()}
                   </>
                 ) : null}
