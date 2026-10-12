@@ -68,9 +68,8 @@ function RuleSelect({
   );
 }
 
-// Wide enough for "Requires approval"; a narrow dialog scrolls the table sideways instead of cutting it.
-const GRID =
-  "grid min-w-[calc(42rem*var(--ui-space-scale,1))] grid-cols-[minmax(calc(8rem*var(--ui-space-scale,1)),1.2fr)_repeat(3,minmax(calc(10.5rem*var(--ui-space-scale,1)),1fr))_2rem] items-center gap-2";
+// Each choice carries its own heading and wraps to the next line rather than cutting its label, at any text size.
+const CHOICES = "grid grid-cols-[repeat(auto-fit,minmax(calc(11.5rem*var(--ui-space-scale,1)),1fr))] gap-x-2 gap-y-2";
 
 function PermissionsTable() {
   const t = useT();
@@ -98,37 +97,41 @@ function PermissionsTable() {
   };
 
   const row = (name: string, rule: SiteRule, site: string | null) => (
-    <div key={site ?? "default"} className={`${GRID} py-1.5`}>
-      <span className="truncate text-sm text-foreground" title={name}>
-        {name}
-      </span>
-      {columns.map(([column, title]) => (
-        <RuleSelect
-          key={column}
-          column={column}
-          value={rule[column]}
-          isDefault={site === null}
-          label={`${title}: ${name}`}
-          onChange={(value) =>
-            site === null
-              ? setDefaultRule({ [column]: value } as Partial<SiteRule>)
-              : setSiteRule(site, { ...rule, [column]: value } as SiteRule)
-          }
-        />
-      ))}
-      {site === null ? (
-        <span />
-      ) : (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8"
-          aria-label={t("browser.agentSettings.removeSite", { site })}
-          onClick={() => setSiteRule(site, null)}
-        >
-          <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4" />
-        </Button>
-      )}
+    <div key={site ?? "default"} className="flex flex-col gap-1.5 border-b border-border/60 py-2.5 last:border-b-0">
+      <div className="flex min-h-8 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={name}>
+          {name}
+        </span>
+        {site === null ? null : (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label={t("browser.agentSettings.removeSite", { site })}
+            onClick={() => setSiteRule(site, null)}
+          >
+            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4" />
+          </Button>
+        )}
+      </div>
+      <div className={CHOICES}>
+        {columns.map(([column, title]) => (
+          <div key={column} className="flex min-w-0 flex-col gap-1">
+            <span className="text-xs text-muted-foreground">{title}</span>
+            <RuleSelect
+              column={column}
+              value={rule[column]}
+              isDefault={site === null}
+              label={`${title}: ${name}`}
+              onChange={(value) =>
+                site === null
+                  ? setDefaultRule({ [column]: value } as Partial<SiteRule>)
+                  : setSiteRule(site, { ...rule, [column]: value } as SiteRule)
+              }
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 
@@ -143,14 +146,7 @@ function PermissionsTable() {
         </Button>
       }
     >
-      <div className="mt-2 flex flex-col overflow-x-auto rounded-lg border border-border/80 px-3 py-1">
-        <div className={`${GRID} border-b border-border/60 py-2 text-xs text-muted-foreground`}>
-          <span>{t("browser.agentSettings.site")}</span>
-          {columns.map(([column, title]) => (
-            <span key={column}>{title}</span>
-          ))}
-          <span />
-        </div>
+      <div className="mt-2 flex flex-col rounded-lg border border-border/80 px-3 py-1">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
         {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
         {draft !== null ? (
