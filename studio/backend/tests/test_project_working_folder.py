@@ -198,13 +198,13 @@ def test_attachment_copies_are_git_ignored_in_the_users_folder(env, monkeypatch)
     assert (copies / ".gitignore").read_text() == "mine\n"
 
 
-def test_windows_cmd_isolated_runs_on_host_cmd_for_the_users_folder(env, monkeypatch):
+def test_windows_cmd_isolated_keeps_cmd_in_auto_for_the_users_folder(env, monkeypatch):
     from core.inference import os_sandbox
 
     seen = []
 
     def stop(plan, **kw):
-        seen.append((plan.requested_mode, kw.get("user_folder")))
+        seen.append((plan.argv[0], plan.requested_mode, kw.get("user_folder")))
         raise os_sandbox.SandboxUnavailableError("stop here")
 
     monkeypatch.setattr(env.tools, "_terminal_profile", lambda keep_host = False: "cmd_isolated")
@@ -213,8 +213,26 @@ def test_windows_cmd_isolated_runs_on_host_cmd_for_the_users_folder(env, monkeyp
     env.tools.execute_tool("terminal", {"command": "dir"}, session_id = "project-p1")
     _use_repo(env)
     env.tools.execute_tool("terminal", {"command": "dir"}, session_id = "project-p1")
-    # Managed: isolated cmd forces Required. Chosen folder: host cmd in Auto, the syntax the model was told.
-    assert seen == [("required", False), ("auto", True)]
+    # Managed: isolated cmd forces Required. Chosen folder: the same cmd.exe in Auto, run with software safeguards.
+    assert seen == [("cmd.exe", "required", False), ("cmd.exe", "auto", True)]
+
+
+def test_a_linked_attachment_directory_is_never_written_through(env, monkeypatch, tmp_path):
+    from core import chat_originals
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (env.repo / env.tools._ATTACHMENTS_DIR).symlink_to(outside, target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    originals = env.repo.parent / "originals"
+    originals.mkdir()
+    (originals / ("a" * 64)).write_bytes(b"data")
+    monkeypatch.setattr(chat_originals, "originals_dir", lambda: originals)
+    _use_repo(env)
+    env.tools.materialize_sandbox_attachments("project-p1", [("a" * 64, "notes.txt")])
+    assert list(outside.iterdir()) == []
 
 
 def test_project_delete_never_touches_the_users_folder(env):

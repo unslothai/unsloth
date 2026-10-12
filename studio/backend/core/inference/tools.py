@@ -21591,13 +21591,20 @@ def materialize_sandbox_attachments(
 
 
 def _git_ignore_dir(directory: str) -> None:
-    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent."""
+    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent.
+    Never through a link: the directory is opened no-follow and the file created relative to it."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(
-            os.path.join(directory, ".gitignore"),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o644,
-        )
+        if _DIR_FD_WRITES:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                fd = os.open(".gitignore", flags, 0o644, dir_fd = dir_fd)
+            finally:
+                os.close(dir_fd)
+        else:
+            if os.path.islink(directory) or not os.path.isdir(directory):
+                return
+            fd = os.open(os.path.join(directory, ".gitignore"), flags, 0o644)
     except OSError:
         return
     with os.fdopen(fd, "w", encoding = "utf-8") as f:
@@ -22905,15 +22912,12 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. A chosen project folder in Auto runs
-    # with software safeguards (_prepare_tool_launch), and cmd_isolated would force Required instead.
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. A chosen project folder in Auto keeps
+    # that cmd (the syntax the request advertised) but runs it with software safeguards (_prepare_tool_launch).
     chosen_folder = tool_execution_mode == "auto" and _is_user_project_folder(
         session_id, _project_workdir_for(session_id) or ""
     )
     profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
-    if chosen_folder and profile == "cmd_isolated":
-        # Still cmd, which is what the request advertised to the model, but on the host.
-        profile = "cmd_fallback"
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -22998,7 +23002,12 @@ def _bash_exec(
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
-        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
+        if (
+            profile == "cmd_isolated"
+            and requested_mode == "auto"
+            and not host_reach_approved
+            and not chosen_folder
+        ):
             # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
             # isolation drops out between the profile check and the launch.
             requested_mode = "required"
