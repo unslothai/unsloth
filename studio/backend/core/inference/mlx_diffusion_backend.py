@@ -138,6 +138,8 @@ def _chip_name() -> str:
             ["sysctl", "-n", "machdep.cpu.brand_string"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         return (out.stdout or "").strip()

@@ -3413,6 +3413,14 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
+class BrowserActionResultRequest(BaseModel):
+    """What the chat tab's browser did for one ``browser_action`` (``state.browser_actions``)."""
+
+    session_id: Optional[str] = None
+    action_id: str = Field(min_length = 1, max_length = 64)
+    result: dict[str, Any]
+
+
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
@@ -5121,11 +5129,6 @@ class DiffusionDownloadPlanEntry(BaseModel):
     )
     bytes: int = Field(
         0, description = "Declared size of the files still missing from cache, 0 when unknown"
-    )
-    file_bytes: Dict[str, int] = Field(
-        default_factory = dict,
-        description = "Declared size of each file counted in ``bytes``. Empty from a planner that "
-        "does not break it down; the download panel then shows one bar.",
     )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
