@@ -18201,7 +18201,7 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
         context_length_fitted = None,
         supports_reasoning = model.reasoning,
         reasoning_style = "enable_thinking",
-        supports_tools = model.tools,
+        supports_tools = True,
     )
 
 
@@ -18220,38 +18220,6 @@ async def _unload_npu_before_local_load(*, include_openvino: bool = True) -> Non
         await asyncio.to_thread(npu.unload)
 
 
-async def _vacate_seat_for_managed_load(
-    request: LoadRequest,
-    *,
-    current_request_counted: bool,
-    on_reload_confirmed,
-    unload_peer,
-    target: str,
-) -> None:
-    """Free the primary seat for a sidecar model (NPU, OpenVINO): every other local model leaves."""
-    from core.inference.llama_keepwarm import note_model_unloaded
-
-    if on_reload_confirmed is not None:
-        on_reload_confirmed(cancel = True)
-        if request.force_cancel_active:
-            await _wait_for_model_switch_idle(
-                current_request_counted = current_request_counted,
-                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-            )
-    _set_preview_resident(None)
-    await _unload_llama_before_standard_load(get_llama_cpp_backend())
-    await unload_peer()
-    backend = _peek_inference_backend()
-    if backend is not None and backend.active_model_name:
-        logger.info(
-            f"Unloading Unsloth model '{backend.active_model_name}' before loading {target}"
-        )
-        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
-    # Nothing to reload once idle: this model is not the one the idle stash names.
-    note_model_unloaded()
-    await asyncio.to_thread(release_chat_gpu_claim)
-
-
 async def _load_npu_model(
     request: LoadRequest,
     *,
@@ -18266,6 +18234,7 @@ async def _load_npu_model(
         get_npu_backend,
         model_id_from_path,
     )
+    from core.inference.llama_keepwarm import note_model_unloaded
 
     if account_access.managed_account():
         raise HTTPException(
@@ -18296,13 +18265,25 @@ async def _load_npu_model(
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
-    await _vacate_seat_for_managed_load(
-        request,
-        current_request_counted = current_request_counted,
-        on_reload_confirmed = on_reload_confirmed,
-        unload_peer = _unload_openvino_before_local_load,
-        target = "on the NPU",
-    )
+    if on_reload_confirmed is not None:
+        on_reload_confirmed(cancel = True)
+        if request.force_cancel_active:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+    _set_preview_resident(None)
+    await _unload_llama_before_standard_load(get_llama_cpp_backend())
+    await _unload_openvino_before_local_load()
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
+        logger.info(
+            f"Unloading Unsloth model '{backend.active_model_name}' before loading on the NPU"
+        )
+        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
+    # Nothing to reload once idle: this model is not the one the idle stash names.
+    note_model_unloaded()
+    await asyncio.to_thread(release_chat_gpu_claim)
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     try:
@@ -18361,6 +18342,7 @@ async def _load_openvino_model(
         OpenVinoLoadCancelled,
         get_openvino_backend,
     )
+    from core.inference.llama_keepwarm import note_model_unloaded
 
     if account_access.managed_account():
         raise HTTPException(
@@ -18379,13 +18361,24 @@ async def _load_openvino_model(
     ):
         account_access.join_resident("chat")
         return _openvino_load_response(resident, "already_loaded")
-    await _vacate_seat_for_managed_load(
-        request,
-        current_request_counted = current_request_counted,
-        on_reload_confirmed = on_reload_confirmed,
-        unload_peer = functools.partial(_unload_npu_before_local_load, include_openvino = False),
-        target = "OpenVINO",
-    )
+    if on_reload_confirmed is not None:
+        on_reload_confirmed(cancel = True)
+        if request.force_cancel_active:
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+    _set_preview_resident(None)
+    await _unload_llama_before_standard_load(get_llama_cpp_backend())
+    await _unload_npu_before_local_load(include_openvino = False)
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
+        logger.info(
+            f"Unloading Unsloth model '{backend.active_model_name}' before loading OpenVINO"
+        )
+        await asyncio.to_thread(backend.unload_model, backend.active_model_name)
+    note_model_unloaded()
+    await asyncio.to_thread(release_chat_gpu_claim)
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     try:
