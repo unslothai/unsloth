@@ -38341,6 +38341,8 @@ class LlamaCppBackend:
                 compaction_headroom_ratio = compaction_headroom_ratio,
                 thread_id = thread_id,
                 tools_withheld = tools_withheld,
+                # The caller's reasoning limit holds for the whole answer, as the respawn keeps it.
+                thinking_budget_tokens = thinking_budget_tokens,
                 _allow_respawn_retry = _allow_respawn_retry,
                 **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 preempt_policy = preempt_policy,
