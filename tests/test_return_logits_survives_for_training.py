@@ -28,6 +28,16 @@ class _Namespace(dict):
         return getattr(builtins, name, None)
 
 
+class _StrictNamespace(dict):
+    # for_training has no optional globals: a helper it gained and the stubs below lack must
+    # fail as a NameError naming it, not as "'NoneType' object is not callable" (#13374).
+    def __missing__(self, name):
+        try:
+            return getattr(builtins, name)
+        except AttributeError:
+            raise NameError(f"for_training uses {name!r}: stub it below") from None
+
+
 def _torch_or_stub():
     """The fakes here are not nn.Modules, so without torch the lifted code takes its non-Module path."""
     try:
@@ -141,10 +151,12 @@ def _fast_llama_for_training():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "for_training")
     fn.decorator_list = []
-    namespace = _Namespace(
+    namespace = _StrictNamespace(
         os = os,
-        resolve_training_gradient_checkpointing = lambda model, flag: False,
-        arm_gradient_checkpointing = lambda model: None,
+        # for_training's helpers since #13374: one walk returns (checkpointing modules, apply).
+        switch_training_mode = lambda model, training, defer = False: ([], lambda: None),
+        resolve_training_gradient_checkpointing = lambda model, flag, checkpointing = None: False,
+        arm_gradient_checkpointing = lambda model, checkpointing = None: False,
         set_module_gradient_checkpointing = lambda module, flag: None,
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
