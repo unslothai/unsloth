@@ -2919,7 +2919,10 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
     # Opt-in, asked once per generation rather than per chunk. Off, nothing below is built:
     # no closure holds the backend, no controller is looked up on the token path, and the
     # `/slots` round trip further down is unreachable.
-    if not preemption_enabled():
+    if not preemption_enabled() or not _openai_llama_preemption_will_apply(
+        llama_backend, _openai_llama_admission_budget(llama_backend)
+    ):
+        # And with the accounting off nothing is armed, so there is nothing to sweep for.
         return _openai_llama_inert_residency_observer()
     # GET /slots is an HTTP round trip and the token callback fires every 32 tokens, so it
     # is read on a TTL: far shorter than filling a cache, far longer than a report.
@@ -3406,6 +3409,12 @@ def _openai_llama_preemption_arm(
     # read here and nothing more: no controller is looked up or created, nothing is
     # configured, and no participant is registered.
     if not preemption_enabled():
+        return None
+    # The gate raw holders and direct holders take too: with admission or its KV accounting
+    # off every lease is free, so a chat armed here would be ledgered at nothing and chosen.
+    if not _openai_llama_preemption_will_apply(
+        llama_backend, _openai_llama_admission_budget(llama_backend)
+    ):
         return None
     if reservation is None or signal is None:
         return None

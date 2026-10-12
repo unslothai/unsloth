@@ -110,7 +110,15 @@ class TestTheRouteReports:
         """
         controller = _controller()
         monkeypatch.setattr(inference_route, "get_preemption_controller", lambda key: controller)
-        backend = type("B", (), {"base_url": "http://tool.test"})()
+        backend = type(
+            "B",
+            (),
+            {
+                "base_url": "http://tool.test",
+                "_kv_cache_unified": True,
+                "_kv_cache_context_total": 16384,
+            },
+        )()
         _refresh, _observe, note_state = inference_route._openai_llama_residency_observer(
             llama_backend = backend, completion_id = "chat"
         )
