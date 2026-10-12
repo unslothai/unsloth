@@ -497,6 +497,14 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.spec_draft_model !== undefined && {
+        loadedSpecDraftModel: status.spec_draft_model ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftModel === prevState.loadedSpecDraftModel) && {
+          specDraftModel: status.spec_draft_model ?? null,
+        }),
+      }),
+    ...(seedLoadParams &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||

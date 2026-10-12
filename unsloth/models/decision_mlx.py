@@ -12,6 +12,7 @@ __all__ = [
 import copy
 import dataclasses
 import functools
+import inspect
 import importlib.util
 import json
 import random
@@ -56,9 +57,37 @@ from unsloth._decision_common import (
 )
 
 
+def _row_images(row: dict) -> list:
+    # A row's "images": PIL images, data URLs, or the {"bytes": ..., "path": ...} an undecoded image column holds.
+    images = _parsed(row.get("images"))
+    if images is None:
+        return []
+    found = []
+    for image in images if isinstance(images, (list, tuple)) else [images]:
+        if isinstance(image, dict) and set(image) <= {"bytes", "path"}:
+            import io
+
+            from PIL import Image
+
+            data = image.get("bytes")
+            # A nullable image column holds an empty struct where a row has no image.
+            try:
+                image = (
+                    Image.open(io.BytesIO(data) if data is not None else image["path"])
+                    if data is not None or image.get("path")
+                    else None
+                )
+            except Image.DecompressionBombError as exc:
+                # Not an OSError: without this one oversized image aborts the whole dataset.
+                raise ValueError(str(exc)) from None
+        if image is not None:
+            found.append(image)
+    return found
+
+
 def _decision_clef_items(rows, options: Callable, encode: Callable, validate, report, skip) -> list:
     # One item per row. `options(question)` names a question's options in the head's order and
-    # `encode(state, questions)` returns the backend's tokenized fields, raising when they do not fit.
+    # `encode(state, questions, images)` returns the backend's tokenized fields, raising when they do not fit.
     items = []
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
@@ -92,8 +121,8 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
         if not kept:
             continue
         try:
-            encoded = encode(state, kept)
-        except (TypeError, ValueError) as exc:
+            encoded = encode(state, kept, _row_images(row))
+        except (TypeError, ValueError, OSError) as exc:
             for name in kept:
                 skip(index, f"does not fit: {exc}", name)
             continue
@@ -413,12 +442,26 @@ def _decision_pad_token_id(tokenizer) -> int:
     return getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
 
 
+def _clef_item(zoo, pipeline, state, questions, max_length, images):
+    if not images:
+        return zoo.clef_training_item(pipeline, state, questions, max_length)
+    if "images" not in inspect.signature(zoo.clef_training_item).parameters:
+        # Left to fail as a row that does not fit, a dataset would train without its image rows.
+        raise ImportError(
+            "Unsloth: images in decision rows need a newer unsloth-zoo. "
+            "Upgrade with `pip install -U unsloth-zoo`."
+        )
+    return zoo.clef_training_item(pipeline, state, questions, max_length, images)
+
+
 def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> list:
     zoo = _decision_zoo()
     return _decision_clef_items(
         rows,
         functools.partial(zoo.clef_option_keys, pipeline),
-        lambda state, questions: zoo.clef_training_item(pipeline, state, questions, max_len),
+        lambda state, questions, images: _clef_item(
+            zoo, pipeline, state, questions, max_len, images
+        ),
         validate,
         report,
         skip,
@@ -821,8 +864,15 @@ class FastDecisionModel:
     split_holdout = staticmethod(_decision_holdout)
 
     @staticmethod
-    def predict(model, tokenizer, state, questions: dict) -> dict:
+    def predict(
+        model,
+        tokenizer,
+        state,
+        questions: dict,
+        images = None,
+    ) -> dict:
         """Answers one Decision API request: {name: answer} at the calibrated temperatures.
+        `images` (as in a row: PIL images, data URLs, or bytes / path dicts) are read by a Clef whose base model has a vision tower.
         Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
         "answer" (the option, True / False for noul, the level number for score) and
         "probabilities" over every option."""
@@ -833,16 +883,19 @@ class FastDecisionModel:
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+        images = _row_images({"images": images})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
             # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
             max_length = max(int(config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN)
-            item = zoo.clef_training_item(pipeline, state, questions, max_length)
+            item = _clef_item(zoo, pipeline, state, questions, max_length, images)
             logits = zoo.clef_logits(model, [item])[0]
             keys = [zoo.clef_option_keys(pipeline, q) for q in questions.values()]
             kinds = [QUESTION_TYPES.index(q["type"]) for q in questions.values()]
         else:
+            if images:
+                raise DecisionDataError("Laya reads text only; images need a Clef model.")
             common, max_len = _laya().common, int(config.get("max_len", 512))
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
             items, keys = [], []

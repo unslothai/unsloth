@@ -35,6 +35,7 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.message_content import content_to_text, named_turn
+from core.inference.model_ids import is_deepseek_ocr
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -542,6 +543,14 @@ def _prompt_already_has_bos(tokenizer, prompt):
     while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
         ids = ids[0]
     return bool(len(ids)) and ids[0] == bos_token_id
+
+
+_MISSING = object()
+
+
+class _OcrNeedsImageError(ValueError):
+    public = True
+    openai_param = "messages"
 
 
 def _without_image_parts(messages) -> list[dict]:
@@ -1221,6 +1230,7 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        deduplicate_tool_calls: bool = True,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1308,6 +1318,7 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
@@ -1416,6 +1427,12 @@ class InferenceBackend:
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
+
+        if is_deepseek_ocr(model_info.get("model")):
+            yield from self._generate_deepseek_ocr_response(
+                messages, image, images, max_new_tokens, cancel_event, _adapter_state, stop
+            )
+            return
 
         if is_vision and (image or images):
             # Verify the stored processor can handle images; FastVisionModel may
@@ -1606,6 +1623,77 @@ class InferenceBackend:
             add_special_tokens = add_special_tokens,
             stop = stop,
         )
+
+    def _generate_deepseek_ocr_response(
+        self,
+        messages,
+        image,
+        images,
+        max_new_tokens,
+        cancel_event,
+        _adapter_state,
+        stop = None,
+    ) -> Generator[str, None, None]:
+        """DeepSeek-OCR ships no processor or chat template: its own infer() tiles the image."""
+        import tempfile
+
+        from core.inference.chat_template_helpers import last_user_text
+
+        self.last_generation_stats = None
+        picture = image if image is not None else next(iter(images or ()), None)
+        if picture is None:
+            raise _OcrNeedsImageError(
+                "DeepSeek-OCR reads text from an image: attach one to your message."
+            )
+        model_info = self.models[self.active_model_name]
+        tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        prompt = "<image>\n" + (last_user_text(messages) or "Free OCR.")
+        infer = model_info["model"].infer
+        # infer() hardcodes max_new_tokens=8192 and no stopping criteria: bound the generate() it calls.
+        owner = infer.__self__
+        previous = owner.__dict__.get("generate", _MISSING)
+        generate = owner.generate
+        stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+
+        def bounded_generate(*args, **kwargs):
+            if max_new_tokens:
+                kwargs["max_new_tokens"] = min(
+                    kwargs.get("max_new_tokens", max_new_tokens), max_new_tokens
+                )
+            if stopping_criteria is not None:
+                kwargs["stopping_criteria"] = stopping_criteria
+            return generate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp, self._generation_lock:
+            path = str(Path(tmp) / "image.png")
+            picture.convert("RGB").save(path)
+            self._apply_adapter_state(_adapter_state)
+            owner.generate = bounded_generate
+            try:
+                # Gundam preset from each model card: 640 px tiles for v1, 768 for OCR-2.
+                text = infer(
+                    getattr(tokenizer, "tokenizer", tokenizer),
+                    prompt = prompt,
+                    image_file = path,
+                    output_path = tmp,
+                    base_size = 1024,
+                    image_size = 640
+                    if "DeepseekOCRForCausalLM" in model_info["model"].config.architectures
+                    else 768,
+                    crop_mode = True,
+                    save_results = False,
+                    eval_mode = True,
+                )
+            finally:
+                if previous is _MISSING:
+                    del owner.generate
+                else:
+                    owner.generate = previous
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        yield text
 
     def _generate_vision_response(
         self,
@@ -2962,7 +3050,7 @@ class InferenceBackend:
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
@@ -2995,7 +3083,7 @@ class InferenceBackend:
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
-            logger.info(f"Manual template result: {manual_prompt[:200]}...")
+            logger.debug(f"Manual template result: {manual_prompt[:200]}...")
         else:
             logger.info("Using generic chat formatting for base model")
             manual_prompt = self._format_generic_template(manual_messages, {})

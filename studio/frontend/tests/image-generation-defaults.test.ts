@@ -191,6 +191,25 @@ test("every Qwen-Image-Layered spelling the backend accepts gets its 20 / 2.5 re
   }
 });
 
+test("every Qwen-Image-2.1 spelling gets Turbo's 8 / 1 recipe when it names Turbo, and the base keeps 25", () => {
+  for (const id of [
+    "Qwen/Qwen-Image-2.1-Turbo",
+    "/models/qwen-image-21-turbo",
+    "/models/qwen_image_21_turbo",
+    "/models/qwen-image-21_turbo",
+    "/models/qwenimage21-turbo",
+    "/models/qwenimage21_turbo",
+    "/models/qwenimage21turbo",
+    "/models/qwenimage21turbo-Q4_K_M.gguf",
+    "/models/qwen_image_2.1_turbo_Q4_K_M.gguf",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 8, guidance: 1 }, id);
+  }
+  for (const id of ["Qwen/Qwen-Image-2.1", "/models/qwen_image_21", "/models/qwenimage21", "/models/qwen_image_2.1.gguf"]) {
+    assert.deepEqual(defaultsFor(id), { steps: 25, guidance: 1 }, id);
+  }
+});
+
 test("a community single file picked by path takes its family recipe once loaded (#11391)", () => {
   const pick = defaultsFor(defaultsKeyFor("/models/checkpoints/RealVisXL_V4.0.safetensors", null));
   const resident = residentDefaultsKey(

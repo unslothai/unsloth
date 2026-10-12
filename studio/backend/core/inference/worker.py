@@ -36,7 +36,8 @@ from core.inference.audio_errors import (
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
+# Fresh spawned interpreter: re-apply the process-wide network injections and CPU thread caps.
+from utils.cpu_threads import install_openblas_runtime_cap
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -146,6 +147,7 @@ def narrow_load_reason(cmd: dict) -> Optional[str]:
 
 activate_native_tls()
 activate_happy_eyeballs()
+install_openblas_runtime_cap()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -228,6 +230,17 @@ def _decode_image(image_base64: str):
     from PIL import Image
     image_data = base64.b64decode(image_base64)
     return Image.open(BytesIO(image_data))
+
+
+def _active_model_is_deepseek_ocr(backend) -> bool:
+    from core.inference.model_ids import is_deepseek_ocr
+
+    models = getattr(backend, "models", None)
+    if not isinstance(models, dict):
+        return False
+    return is_deepseek_ocr(
+        (models.get(getattr(backend, "active_model_name", None)) or {}).get("model")
+    )
 
 
 def _resize_image(img, max_size: int = 800):
@@ -741,6 +754,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["speculative_type"] = config.get("speculative_type")
+                load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
+                load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
+                load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -760,6 +777,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "has_audio_input": getattr(mc, "has_audio_input", False),
                 "can_batch": _load_can_batch(backend),
             }
+            if _active_model_is_deepseek_ocr(backend):
+                from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+
+                # The route resizes before the IPC hop, so it needs the raised cap too.
+                model_info["max_image_side"] = DEEPSEEK_OCR_MAX_IMAGE_SIDE
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
@@ -829,6 +851,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill_reason",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
+                        "speculative_type",
+                        "spec_draft_n_max",
+                        "spec_draft_model",
+                        "spec_drafter_kind",
+                        "spec_fallback_reason",
                     )
                     if k in _entry
                 }
@@ -953,6 +980,9 @@ class _Stops:
     def __contains__(self, request_id) -> bool:
         return request_id in self._stopped
 
+    def unread(self) -> bool:
+        return self._ledger is not None and self._ledger.snapshot(self._written)[1] is not None
+
 
 class _StopWhileItRuns:
     def __init__(self, cancel_event, stops, request_id: str):
@@ -1053,14 +1083,16 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    resize = _resize_image
+    if _active_model_is_deepseek_ocr(backend):
+        from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+        resize = functools.partial(_resize_image, max_size = DEEPSEEK_OCR_MAX_IMAGE_SIDE)
     image = None
     image_b64 = cmd.get("image_base64")
     if image_b64:
-        image = _resize_image(_decode_image(image_b64))
+        image = resize(_decode_image(image_b64))
     images = [
-        _resize_image(_decode_image(encoded))
-        for encoded in cmd.get("images_base64") or ()
-        if encoded
+        resize(_decode_image(encoded)) for encoded in cmd.get("images_base64") or () if encoded
     ]
 
     gen_kwargs = {
@@ -1474,11 +1506,11 @@ class _ResidentBatch:
             if request_id in stopped:
                 self.cancel(request_id)
 
-    def step(self) -> None:
+    def step(self, waiting = None) -> None:
         if self.session is None or not self.session.rows_in_flight:
             return
         try:
-            for handle, snapshot in self.session.step():
+            for handle, snapshot in self.session.step(waiting):
                 self._report(handle, snapshot)
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
@@ -2065,6 +2097,7 @@ def run_inference_process(
         warmth = _MLXIdleWarmth()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
+        waiting = lambda: stops.unread() or not cmd_queue.empty()
         if stop_ledger is not None:
             stop_ledger.worker_reads_this()
         while True:
@@ -2073,7 +2106,7 @@ def run_inference_process(
             if not tearing_down:
                 if batch.rows_in_flight:
                     warmth.active()
-                batch.step()
+                batch.step(waiting)
             from_deferred = False
             if _held_head_leaves_the_hold(batch, deferred):
                 cmd = deferred.pop(0)

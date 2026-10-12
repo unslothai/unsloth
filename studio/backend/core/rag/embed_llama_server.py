@@ -877,19 +877,29 @@ class LlamaServerBackend:
         lib_dirs = [binary_dir]
         # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
         site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
+        pip_dirs = []
         for pattern in (
             os.path.join(site, "nvidia", "cu*", "lib"),
             os.path.join(site, "nvidia", "cudnn", "lib"),
             os.path.join(site, "torch", "lib"),
         ):
-            lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
-        for cuda_lib in (
-            "/usr/local/cuda/lib64",
-            f"/usr/local/cuda/targets/{arch}-linux/lib",
-            "/usr/local/cuda-12/lib64",
-        ):
-            if os.path.isdir(cuda_lib):
-                lib_dirs.append(cuda_lib)
+            pip_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
+        system_dirs = [
+            d
+            for d in (
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{arch}-linux/lib",
+                "/usr/local/cuda-12/lib64",
+            )
+            if os.path.isdir(d)
+        ]
+        from utils.tegra import TEGRA_LIB_DIR, is_tegra
+
+        if is_tegra():
+            tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
+            lib_dirs.extend(tegra + system_dirs + pip_dirs)
+        else:
+            lib_dirs.extend(pip_dirs + system_dirs)
         existing = env.get("LD_LIBRARY_PATH", "")
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
@@ -949,7 +959,7 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _llama_server_api_key_enabled,
-            _write_direct_stream_key,
+            _llama_server_key_launch,
         )
 
         self._api_key = key_file = None
@@ -960,8 +970,9 @@ class LlamaServerBackend:
             import secrets
 
             self._api_key = secrets.token_urlsafe(32)
-            key_file = _write_direct_stream_key(self._api_key)
-            cmd[1:1] = ["--api-key-file", str(key_file)]
+            key_argv, key_env, key_file = _llama_server_key_launch(self._api_key)
+            cmd[1:1] = key_argv
+            env.update(key_env)
         self._stdout_lines = []
         # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
         # encode still resolving or downloading its model as the app quits would

@@ -47,6 +47,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { ProgressiveRows } from "@/components/progressive-rows";
 import {
   HELP_GROUPS,
   HELP_ITEMS,
@@ -102,10 +103,10 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Refresh01Icon,
   FolderExportIcon,
   Folder01Icon,
   Folder02Icon,
@@ -138,10 +139,7 @@ import {
   LayerIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  MessageCircleIcon,
-  TestTubeOutlineIcon,
-} from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -165,6 +163,7 @@ import {
   canForkChatRow,
   EditProjectDialog,
   forkChatRow,
+  regenerateChatTitle,
   showForkCreatedToast,
   getSidebarItemThreadIds,
   useForkInFlight,
@@ -354,30 +353,26 @@ type NavRowDef = {
   children?: ReactNode;
 };
 
-// An expanded project shows this many recent chats before "Show more".
-// Row kebab with centred dots: Hugeicons draws them half a unit low.
+// row kebab with centred dots: Hugeicons draws them half a unit low.
 const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
   tag,
   { ...attrs, transform: "translate(0 -0.5)" },
 ]) as unknown as IconSvgElement;
 
 const PROJECT_CHAT_LIMIT = 4;
-// And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
+const RECENTS_PAGE_SIZE = 50;
 
-// The shared radio item ticks on the right; these read as settings, so tick first.
-// A sidebar or account menu's side and top padding (.sidebar-row-menu in index.css, before the
-// UI scale), the 2px margin every menu row keeps, and the gap a submenu keeps from its menu.
+// shared radio items tick on the right; these read as settings, so tick first.
+// sidebar and account menu padding precedes UI scaling; rows keep 2px margins and submenu gaps.
 const SIDEBAR_MENU_PAD_X = 8;
 const SIDEBAR_MENU_PAD_Y = 6;
 const MENU_ROW_MARGIN_PX = 2;
-// px-2.5 and the 1px transparent border the account menu draws its edge with.
+// account padding combines px-2.5 with its 1px transparent border.
 const ACCOUNT_MENU_PAD_X = 11;
 const SUBMENU_GAP_PX = 6;
 
-// Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
-// Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
-// host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
+// read the browser platform, not the host; macOS uses cmd because ctrl-click opens a context menu.
 const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
@@ -2869,7 +2864,7 @@ export function AppSidebar() {
       },
     },
     audio: {
-      icon: AudioWave01Icon,
+      icon: AiSpeechIcon,
       label: t("shell.navigation.audio"),
       badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
@@ -3091,6 +3086,21 @@ export function AppSidebar() {
       }
     } finally {
       inFlight.setForking(false);
+    }
+  }
+
+  async function regenerateChatTitleFromMenu(item: SidebarItem) {
+    // A fast refresh would only flash the toast.
+    const toastId = `regenerate-title-${item.id}`;
+    const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
+    const outcome = await regenerateChatTitle(item);
+    clearTimeout(slow);
+    if (outcome === "empty") {
+      toast.error("This chat has no messages to title yet.", { id: toastId });
+    } else if (outcome === "failed") {
+      toast.error("Could not regenerate the title.", { id: toastId });
+    } else {
+      toast.dismiss(toastId);
     }
   }
 
@@ -3691,6 +3701,8 @@ export function AppSidebar() {
           : null,
         section: section ? { id: section.id, name: section.name } : null,
         rename: () => openRenameChat(item, false),
+        canRegenerateTitle: !generating,
+        regenerateTitle: () => void regenerateChatTitleFromMenu(item),
         togglePin: () => togglePinnedChat(item.id),
         toggleUnread: () =>
           unread
@@ -4648,6 +4660,13 @@ export function AppSidebar() {
             >
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
+            </P.Item>
+            <P.Item
+              disabled={isGenerating}
+              onSelect={() => void regenerateChatTitleFromMenu(item)}
+            >
+              <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-icon" />
+              <span>{t("library.menu.regenerateTitle")}</span>
             </P.Item>
             <P.Item onSelect={() => togglePinnedChat(item.id)}>
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -5828,8 +5847,7 @@ export function AppSidebar() {
                 })}
               </SidebarGroupLabel>
               <CollapsibleContent>
-                {/* The section as a whole takes the drop, so a chat dragged out of a folder has
-                    somewhere to land even when Recents is empty. */}
+                {/* Recents accepts drops so chats can leave folders when empty. */}
                 <SidebarGroupContent
                   className={cn(
                     unrailedRowPadding,
@@ -5839,33 +5857,37 @@ export function AppSidebar() {
                   {...dnd.dropZoneProps({ section: "recents" })}
                 >
                   <SidebarMenu>
-                    {sortedRecentChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent", {
-                        scope: RECENTS_ORDER_SCOPE,
-                        ids: recentRowIds,
-                        section: "recents",
-                        sort: { value: chatSort, set: setChatSort },
-                      }),
-                    )}
-                    {sortedRecentChatItems.length > 0 && (
-                      // The end of the list, as somewhere to aim; see Pinned's. The empty sidebar
-                      // below it aims here too (use-sidebar-drag.ts).
-                      <SidebarMenuItem
-                        aria-hidden
-                        className={cn(
-                          "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
-                          dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
-                        )}
-                        {...dnd.dropZoneProps({
+                    {/* only Recents pages unfiled chats; mount its end drop after the last row. */}
+                    <ProgressiveRows
+                      items={sortedRecentChatItems}
+                      pageSize={RECENTS_PAGE_SIZE}
+                      renderItem={(item) =>
+                        renderChatSidebarItem(item, "recent", {
+                          scope: RECENTS_ORDER_SCOPE,
+                          ids: recentRowIds,
                           section: "recents",
-                          blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
-                        })}
-                      />
-                    )}
+                          sort: { value: chatSort, set: setChatSort },
+                        })
+                      }
+                      end={
+                        sortedRecentChatItems.length > 0 && (
+                          // the end drop matches Pinned and receives empty-sidebar drops.
+                          <SidebarMenuItem
+                            aria-hidden
+                            className={cn(
+                              "relative z-[1] h-[calc(8px*var(--ui-space-scale,1))]",
+                              dropCueClass(SIDEBAR_TAIL_SCOPE, "recents"),
+                            )}
+                            {...dnd.dropZoneProps({
+                              section: "recents",
+                              blockEnd: { scope: SIDEBAR_TAIL_SCOPE, id: "recents" },
+                            })}
+                          />
+                        )
+                      }
+                    />
                   </SidebarMenu>
-                  {/* "No chats yet" only when there is truly no history:
-                      project-scoped and archived threads leave Recents empty
-                      but still count as existing chats. */}
+                  {/* existing project or archived threads can leave Recents empty. */}
                   {chatItemsLoaded &&
                     allChatItems.length === 0 &&
                     archivedChatItems.length === 0 && (
