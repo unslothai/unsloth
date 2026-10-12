@@ -7479,20 +7479,19 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
 
 
 def hf_login(token: Optional[str] = None) -> Optional[str]:
-    if token is None:
-        try:
-            from huggingface_hub import get_token
-            token = get_token()
-            if token is None:
-                return None
-        except:
-            return None
     try:
-        from huggingface_hub import login
-        login(token = token)
-        return token
-    except Exception as e:
-        logger.info(f"Failed to login to huggingface using token with error: {e}")
+        from huggingface_hub import get_token
+        saved_token = get_token()
+    except:
+        saved_token = None
+    if token is None:
+        return saved_token
+    if saved_token is None:
+        try:
+            from huggingface_hub import login
+            login(token = token)
+        except Exception as e:
+            logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
 
 
