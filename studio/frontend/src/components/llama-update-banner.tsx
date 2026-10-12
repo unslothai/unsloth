@@ -18,6 +18,8 @@ import {
 import {
   type UpdateComponent,
   type UpdateComponentFlags,
+  audibleComponents,
+  heldJobRows,
   heldUpdateBannerPref,
   llamaReleaseChanged,
   llamaUpdateToastMessage,
@@ -205,15 +207,15 @@ export function LlamaUpdateBanner({
     });
 
   const migrationPending = Boolean(status?.backend_migration_available);
-  const listed = updateBannerComponents(
-    {
-      llama: Boolean(status?.llama.update_available) || migrationPending,
-      whisper: Boolean(status?.whisper?.update_available),
-      audio: Boolean(status?.audio?.update_available),
-    },
-    muted,
-  );
-  const listedKey = listed.join(" ");
+  const listed = updateBannerComponents({
+    llama: Boolean(status?.llama.update_available) || migrationPending,
+    whisper: Boolean(status?.whisper?.update_available),
+    audio: Boolean(status?.audio?.update_available),
+  });
+  // Muted components are listed, since Update installs them, but never recorded.
+  const recordKey = audibleComponents(listed, muted)
+    .map(updateComponentKey)
+    .join(" ");
   // Each component's own release pair and download size, not the top-level ones: those
   // are llama's whatever the card lists.
   const liveRows: UpdateRow[] = listed.map((component) => {
@@ -235,13 +237,10 @@ export function LlamaUpdateBanner({
   // An error counts as in flight so a failed phase keeps its retry on screen.
   const jobState = status?.job.state;
   const inFlight = applying || jobState === "error";
-  // A chained apply clears each component from the status as its phase lands, so the
-  // card keeps the rows it started the job with until the job is over.
   const [jobRows, setJobRows] = useState<UpdateRow[] | null>(null);
-  if (inFlight && jobRows === null && liveRows.length > 0) {
-    setJobRows(liveRows);
-  } else if (!inFlight && jobRows !== null) {
-    setJobRows(null);
+  const nextJobRows = heldJobRows(jobRows, applying, liveRows);
+  if (nextJobRows !== jobRows) {
+    setJobRows(nextJobRows);
   }
   const rows = jobRows ?? liveRows;
   const label = updateComponentsLabel(rows.map((row) => row.component));
@@ -280,7 +279,12 @@ export function LlamaUpdateBanner({
     }
   }
 
-  const livePref = updateBannerAllowed(listed, due, shownChannels.length > 0);
+  const livePref = updateBannerAllowed(
+    listed,
+    due,
+    muted,
+    shownChannels.length > 0,
+  );
   // Held across a chained apply, whose status drops each component as it lands.
   const [heldPref, setHeldPref] = useState<boolean | null>(null);
   useEffect(() => {
@@ -291,15 +295,15 @@ export function LlamaUpdateBanner({
     showBannerPref &&
     visible &&
     status != null &&
+    rows.length > 0 &&
     (llamaUpdateOffered(status) || applying);
   const tabVisible = useDocumentVisible();
   useEffect(() => {
     // Every listed component counts as seen, so none of them returns on a card of its
-    // own within its quiet period. Muted components are never listed, so never recorded.
+    // own within its quiet period.
     if (show && tabVisible && livePref) {
-      const fresh = (listedKey.split(" ") as UpdateComponent[])
+      const fresh = (recordKey.split(" ") as NotificationChannel[])
         .filter(Boolean)
-        .map(updateComponentKey)
         .filter((channel) => !shownChannels.includes(channel));
       if (fresh.length > 0) {
         for (const channel of fresh) {
@@ -310,7 +314,7 @@ export function LlamaUpdateBanner({
     } else if (!show && shownChannels.length > 0) {
       setShownChannels([]);
     }
-  }, [show, tabVisible, livePref, listedKey, shownChannels]);
+  }, [show, tabVisible, livePref, recordKey, shownChannels]);
   // A migration re-applies the install's own automatic choice, so it can be offered at a
   // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
@@ -352,14 +356,23 @@ export function LlamaUpdateBanner({
   // A bundle shows each download beside its own release instead of one total, since
   // not every component reports a size.
   const sizeLabel = bundled ? null : sizeLabelOf(primary?.sizeBytes);
-  // A bundle names its components on the rows below the title.
+  // A bundle names its components on the rows below the title. While it installs, the
+  // job's own phase record says which one is running: the status alone cannot, since
+  // a migration or source-build offer is not reported while a job runs.
+  const runningPhase = status?.job.runningPhase ?? null;
+  const phaseIndex = rows.findIndex(
+    (row) => updateComponentKey(row.component) === runningPhase,
+  );
   let title: string;
-  if (applying) {
-    title = bundled
-      ? `Installing ${rows.length} updates...`
-      : `Updating ${label}...`;
+  if (applying && !bundled) {
+    title = `Updating ${label}...`;
+  } else if (applying) {
+    title =
+      phaseIndex >= 0
+        ? `Installing ${rows[phaseIndex].component} (${phaseIndex + 1} of ${rows.length})...`
+        : `Installing ${rows.length} updates...`;
   } else if (bundled) {
-    title = `${rows.length} new updates`;
+    title = `${rows.length} runtime updates`;
   } else {
     title = backendOnly ? `New ${label} backend` : `New ${label} update`;
   }
@@ -497,7 +510,7 @@ export function LlamaUpdateBanner({
                 {changelogOpen
                   ? "Hide what's new"
                   : bundled
-                    ? "What's new in llama.cpp"
+                    ? "llama.cpp changes"
                     : "Show what's new"}
               </Button>
             ) : null}

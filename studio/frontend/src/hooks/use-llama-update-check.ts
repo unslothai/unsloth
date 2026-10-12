@@ -37,6 +37,8 @@ export interface LlamaUpdateJob {
   // Set once the job leaves "running"; identifies a completed job so a
   // repeated fetch of the same success can be told apart from the next one.
   finished_at: string | null;
+  // The chained phase installing right now, when the backend reports phases.
+  runningPhase: "llama" | "whisper" | "audio" | null;
 }
 
 export interface ComponentOffer {
@@ -100,7 +102,23 @@ function parseJob(value: unknown): LlamaUpdateJob {
     progress: typeof job.progress === "number" ? job.progress : null,
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
+    runningPhase: parseRunningPhase(job.phases),
   };
+}
+
+function parseRunningPhase(value: unknown): LlamaUpdateJob["runningPhase"] {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const phases = value as Record<
+    string,
+    { state?: unknown } | null | undefined
+  >;
+  return (
+    (["llama", "whisper", "audio"] as const).find(
+      (name) => phases[name]?.state === "running",
+    ) ?? null
+  );
 }
 
 function parseOffer(offer: Record<string, unknown>): ComponentOffer {

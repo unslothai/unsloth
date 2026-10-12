@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  heldJobRows,
   heldUpdateBannerPref,
   updateBannerAllowed,
   updateBannerComponents,
@@ -245,26 +246,19 @@ test("a muted card stays muted for a job it never showed", () => {
 });
 
 // Update installs every pending component in one job, so the card lists them all.
-test("the card lists every pending component the user has not muted", () => {
+test("the card lists every component Update will install", () => {
   const none = { llama: false, whisper: false, audio: false };
-  const all = { llama: true, whisper: true, audio: true };
-  assert.deepEqual(updateBannerComponents(all, none), [
+  assert.deepEqual(updateBannerComponents({ llama: true, whisper: true, audio: true }), [
     "llama.cpp",
     "whisper.cpp",
     "audio.cpp",
   ]);
   // One pending: the same single-component card as before.
   assert.deepEqual(
-    updateBannerComponents({ llama: false, whisper: true, audio: false }, none),
+    updateBannerComponents({ llama: false, whisper: true, audio: false }),
     ["whisper.cpp"],
   );
-  // A muted component is still installed by Update but never listed.
-  assert.deepEqual(
-    updateBannerComponents(all, { llama: false, whisper: true, audio: false }),
-    ["llama.cpp", "audio.cpp"],
-  );
-  assert.deepEqual(updateBannerComponents(all, all), []);
-  assert.deepEqual(updateBannerComponents(none, none), []);
+  assert.deepEqual(updateBannerComponents(none), []);
 });
 
 test("the card names its components in install order", () => {
@@ -281,25 +275,66 @@ test("the card names its components in install order", () => {
 
 test("one due component opens the card for all of them", () => {
   const listed = ["llama.cpp", "whisper.cpp"] as const;
+  const noneMuted = { llama: false, whisper: false, audio: false };
   assert.equal(
-    updateBannerAllowed(listed, { llama: false, whisper: true, audio: false }, false),
+    updateBannerAllowed(listed, { llama: false, whisper: true, audio: false }, noneMuted, false),
     true,
   );
   assert.equal(
-    updateBannerAllowed(listed, { llama: false, whisper: false, audio: true }, false),
+    updateBannerAllowed(listed, { llama: false, whisper: false, audio: true }, noneMuted, false),
     false,
     "audio.cpp is due but has nothing listed",
   );
   // Open and recorded: nothing is due any more, and it stays up.
   assert.equal(
-    updateBannerAllowed(listed, { llama: false, whisper: false, audio: false }, true),
+    updateBannerAllowed(listed, { llama: false, whisper: false, audio: false }, noneMuted, true),
     true,
   );
-  // Every listed component muted while open: it goes.
+});
+
+// Off means the component never asks for the card, not that the card hides it.
+test("a muted component is listed but never opens or holds the card", () => {
+  const listed = ["llama.cpp", "whisper.cpp"] as const;
+  const whisperOff = { llama: false, whisper: true, audio: false };
+  // whisper.cpp alone cannot open it, even when its clock would say due.
   assert.equal(
-    updateBannerAllowed([], { llama: true, whisper: true, audio: true }, true),
+    updateBannerAllowed(listed, { llama: false, whisper: true, audio: false }, whisperOff, false),
     false,
   );
+  // llama.cpp opens it, and whisper.cpp rides along on the same card.
+  assert.equal(
+    updateBannerAllowed(listed, { llama: true, whisper: false, audio: false }, whisperOff, false),
+    true,
+  );
+  // Every listed component turned off while the card is open: it goes.
+  assert.equal(
+    updateBannerAllowed(
+      listed,
+      { llama: false, whisper: false, audio: false },
+      { llama: true, whisper: true, audio: false },
+      true,
+    ),
+    false,
+  );
+});
+
+// llama.cpp and whisper.cpp land, audio.cpp fails: the retry is for audio.cpp alone.
+test("a failed phase hands the card back to what is still pending", () => {
+  const all = ["llama.cpp", "whisper.cpp", "audio.cpp"];
+  let held = heldJobRows<string>(null, true, all);
+  assert.deepEqual(held, all);
+  // Phases land and leave the status mid-job; the card keeps naming the whole job.
+  held = heldJobRows(held, true, ["whisper.cpp", "audio.cpp"]);
+  held = heldJobRows(held, true, ["audio.cpp"]);
+  assert.deepEqual(held, all);
+  // audio.cpp fails: nothing is held, so the card shows the live rows.
+  held = heldJobRows(held, false, ["audio.cpp"]);
+  assert.equal(held, null);
+  // The retry starts from what is left.
+  held = heldJobRows(held, true, ["audio.cpp"]);
+  assert.deepEqual(held, ["audio.cpp"]);
+  // A job started elsewhere with nothing listed holds nothing.
+  assert.equal(heldJobRows<string>(null, true, []), null);
 });
 
 // The reported annoyance: the card named one component per appearance and recorded
@@ -321,7 +356,8 @@ function appearances(
       whisper: notificationDue(frequency.whisper, lastShown.whisper, now),
       audio: notificationDue(frequency.audio, lastShown.audio, now),
     };
-    if (!updateBannerAllowed(listed, due, false)) continue;
+    const noneMuted = { llama: false, whisper: false, audio: false };
+    if (!updateBannerAllowed(listed, due, noneMuted, false)) continue;
     shownAt.push(now);
     for (const component of listed) {
       lastShown[updateComponentKey(component)] = now;

@@ -96,36 +96,60 @@ export function updateComponentKey(
 /**
  * Which components the single update card lists, in install order.
  *
- * Update installs everything pending in one job, so one appearance names every
- * pending component. A component whose notifications are off is still installed,
- * only not listed.
+ * Update installs everything pending in one job, so the card names all of it,
+ * including components whose notifications are off.
  */
 export function updateBannerComponents(
   pending: UpdateComponentFlags,
-  muted: UpdateComponentFlags,
 ): UpdateComponent[] {
   return (Object.keys(UPDATE_COMPONENT_KEYS) as UpdateComponent[]).filter(
-    (component) =>
-      pending[UPDATE_COMPONENT_KEYS[component]] &&
-      !muted[UPDATE_COMPONENT_KEYS[component]],
+    (component) => pending[UPDATE_COMPONENT_KEYS[component]],
   );
+}
+
+/** The listed components whose notifications are on: they open the card and are recorded. */
+export function audibleComponents(
+  listed: readonly UpdateComponent[],
+  muted: UpdateComponentFlags,
+): UpdateComponent[] {
+  return listed.filter((component) => !muted[UPDATE_COMPONENT_KEYS[component]]);
 }
 
 /**
  * Whether the update card may appear.
  *
- * One appearance covers every listed component, so it opens when any of them is due
- * and stays allowed once open, after it has recorded them all as shown.
+ * Only a component whose notifications are on can open it, when it is due. Once open
+ * it stays, until every listed component has its notifications turned off.
  */
 export function updateBannerAllowed(
   listed: readonly UpdateComponent[],
   due: UpdateComponentFlags,
+  muted: UpdateComponentFlags,
   open: boolean,
 ): boolean {
+  const audible = audibleComponents(listed, muted);
   return (
-    listed.length > 0 &&
-    (open || listed.some((component) => due[UPDATE_COMPONENT_KEYS[component]]))
+    audible.length > 0 &&
+    (open || audible.some((component) => due[UPDATE_COMPONENT_KEYS[component]]))
   );
+}
+
+/**
+ * The rows a running job keeps on its card.
+ *
+ * A chained apply clears each component from the status as its phase lands, so the
+ * card holds the rows it started with while the job runs. Only while it runs: a failed
+ * phase hands back the live rows, so a retry names only what is still pending.
+ */
+export function heldJobRows<T>(
+  held: T[] | null,
+  applying: boolean,
+  live: T[],
+): T[] | null {
+  if (!applying) {
+    return null;
+  }
+  return held ?? (live.length > 0 ? live : null);
 }
 
 /** "llama.cpp", "llama.cpp and whisper.cpp", "llama.cpp, whisper.cpp and audio.cpp". */
