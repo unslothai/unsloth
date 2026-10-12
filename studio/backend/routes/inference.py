@@ -36749,10 +36749,6 @@ def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
 
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
-    return _with_openai_residency(await _openai_retrieve_model_object(model_id))
-
-
-async def _openai_retrieve_model_object(model_id: str) -> dict:
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
@@ -36771,7 +36767,7 @@ async def _openai_retrieve_model_object(model_id: str) -> dict:
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
-            return {**entry, "loaded": True}
+            return _with_openai_residency({**entry, "loaded": True})
 
     objects = await _openai_catalog_objects()
     for model in objects:
@@ -36799,10 +36795,10 @@ async def _openai_retrieve_model_object(model_id: str) -> dict:
         if model_id_matches(model_id, raw):
             for entry in _loaded:
                 if entry["id"] == clean:
-                    return {**entry, "loaded": True}
+                    return _with_openai_residency({**entry, "loaded": True})
     pinned = await asyncio.to_thread(_pinned_quant_object, model_id, objects)
     if pinned is not None:
-        return pinned
+        return _with_openai_residency(pinned)
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
