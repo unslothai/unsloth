@@ -880,6 +880,13 @@ export const he = {
       loginHint:
         "התחבר בתור {username} עם קוד זה כסיסמה, ולאחר מכן בחר סיסמה חדשה.",
       privateAccount: "חשבון פרטי",
+      modelAccess: "גישה למודלים",
+      modelAccessTitle: "גישה למודלים עבור {username}",
+      modelAccessDescription: "בחרו אילו מודלים של Hugging Face החשבון הזה יכול לראות, להוריד, לטעון ולהשתמש בהם דרך מפתחות ה-API שלו.",
+      modelAccessLabel: "מודלים מותרים",
+      modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
+      modelAccessSave: "שמירה",
+      modelAccessLimited: "גישה מוגבלת למודלים",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
