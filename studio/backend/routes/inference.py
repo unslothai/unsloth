@@ -3262,7 +3262,8 @@ def _prompt_kv_tokens(prompt) -> int:
         return 1
     text = str(prompt or "")
     ascii_chars = sum(1 for ch in text if ord(ch) < 128)
-    return ascii_chars // 4 + (len(text) - ascii_chars)
+    # Rounded up, so a batch of short prompts is not counted as nothing.
+    return -(-ascii_chars // 4) + (len(text) - ascii_chars)
 
 
 def _openai_llama_count_direct_holder(llama_backend, tokens: int, prefix: str) -> Optional[str]:
@@ -23998,6 +23999,7 @@ async def _generate_tts_wav(
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
     _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
+    _direct_llama_kv_tokens = 0
     if _direct_llama_tts:
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
@@ -24005,6 +24007,14 @@ async def _generate_tts_wav(
         audio_type = getattr(llama_backend, "_audio_type", None)
         supported_audio_types = _GGUF_TTS_AUDIO_TYPES
         _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
+        _tts_new_tokens = _tts_max_new_tokens(
+            payload,
+            prompt_for_budget,
+            audio_type = audio_type,
+            speech_api_default_max_tokens = speech_api_default_max_tokens,
+        )
+        # The cells the speech can occupy, so a chat beside it is contended and reads the cache.
+        _direct_llama_kv_tokens = _prompt_kv_tokens(text) + int(_tts_new_tokens or 0)
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -24012,12 +24022,7 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(
-                payload,
-                prompt_for_budget,
-                audio_type = audio_type,
-                speech_api_default_max_tokens = speech_api_default_max_tokens,
-            ),
+            max_new_tokens = _tts_new_tokens,
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
             stats_holder = stats_holder,
@@ -24143,7 +24148,7 @@ async def _generate_tts_wav(
         # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
-            with _direct_llama_request(_direct_llama_tts):
+            with _direct_llama_request(_direct_llama_tts, kv_tokens = _direct_llama_kv_tokens):
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
             # An idle auto-unload cancels through the backend without setting this route's event.
