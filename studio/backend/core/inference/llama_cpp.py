@@ -34877,6 +34877,61 @@ class LlamaCppBackend:
                         _named_now = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
                         _exact_short = (_named_now or 0, 0, 0)
                     self._exact_parking_short = _exact_short
+
+                def _relaunch_with_bounded_parking(host_short) -> bool:
+                    """Auto keeps a server the host cannot hold every park for, and that child
+                    was launched on the budget sized whole for exact parks, which no running
+                    server lowers. Launched again, same argv, on the host-bounded budget an
+                    ordinary load gets, so a park cannot take the room the check found missing.
+                    False when the load was cancelled during the relaunch."""
+                    # Only a launch that kept the exact-sized budget: a fallback before launch
+                    # was bounded already.
+                    if host_short is None or _exact_budget is None or not _exact_wanted:
+                        return True
+                    if not self._server_launched_parking:
+                        return True
+                    _bounded_cmd = list(_last_spawn_cmd or cmd)
+                    if _named_preempt_ram_mib(_bounded_cmd, env) != _exact_budget:
+                        # Named by the user, whose say is kept.
+                        return True
+                    # The weights are resident, so the free reading already excludes them.
+                    _bounded = _rebound_named_parking_budget(_bounded_cmd, _exact_budget, self)
+                    if (_bounded or 0) >= _exact_budget:
+                        self._parking_reserving_mib = None
+                        return True
+                    logger.info(
+                        "Exact concurrency (auto): relaunching llama-server with a %d MiB "
+                        "parking budget, bounded to this host, in place of %d MiB",
+                        int(_bounded or 0),
+                        int(_exact_budget),
+                    )
+                    self._kill_process()
+                    # No label: the same placement, which a labelled retry would re-plan.
+                    if not _spawn_and_wait(_bounded_cmd):
+                        if _finish_cancelled_health_wait(
+                            "Load cancelled during the bounded-parking relaunch"
+                        ):
+                            return False
+                        _raise_terminal_load_failure(
+                            "llama-server started with exact concurrency's parking budget but "
+                            "did not come back up on the smaller one this host can hold."
+                        )
+                    if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
+                        self._server_preempts_kv = False
+                    self._server_launched_parking = bool(
+                        self._server_preempts_kv and kv_cache_unified
+                    )
+                    self._launched_parking_mib = (
+                        _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
+                        if self._server_launched_parking
+                        else None
+                    )
+                    self._parking_reserving_mib = None
+                    _preemption.note_server_parking(
+                        self._server_preempts_kv and kv_cache_unified, self
+                    )
+                    return True
+
                 # The server's own answer, not the launch's intent. See the helper.
                 _server_props = self._server_props_or_last()
                 # unslothai/llama.cpp#197 carries the field and writes the per-request notices,
@@ -34956,6 +35011,8 @@ class LlamaCppBackend:
                         + _exact_why
                         + " Set exact concurrency to 'on' to fail the load instead."
                     )
+                    if not _relaunch_with_bounded_parking(_exact_host_short):
+                        return False
                 # Published only now: a required mode the server cannot keep kills the child
                 # above, and a request admitted before that would be cut off mid-answer.
                 if not self._publish_healthy():
