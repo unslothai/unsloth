@@ -923,8 +923,7 @@ def test_a_cuda_fault_in_the_efficient_kernel_is_not_a_refusal(_efficient_fresh,
 @_EFFICIENT_HOST
 @pytest.mark.parametrize("backend", ["sdpa", "flash_varlen"])
 def test_a_shape_the_flash_impl_refuses_takes_the_efficient_kernel(_efficient_fresh, monkeypatch, backend):
-    """FA4 on sm100 lacks head_dim 256 + window: without flash-attn / xformers that row ran SDPA over
-    the dense mask; now the efficient kernel. With flash-attn installed, run_attention keeps it."""
+    """FA4 on sm100 lacks hd256 + window: without flash-attn / xformers it takes the efficient kernel."""
     from transformers.integrations.sdpa_attention import sdpa_attention_forward
     from unsloth.utils import attention_dispatch as ad
     from unsloth.utils import flash_impl
@@ -1005,8 +1004,7 @@ def test_wide_heads_leave_a_compiled_caller_alone(_efficient_fresh):
 @_EFFICIENT_HOST
 @pytest.mark.parametrize("k_eq_v", [False, True])
 def test_tiny_gemma4_packed_row_matches_each_document(_efficient_fresh, monkeypatch, k_eq_v):
-    """Real Gemma4ForCausalLM with global_head_dim 512: the global layer takes the efficient kernel,
-    and packed logits / grads equal the wrapped sdpa and each document alone."""
+    """Gemma4 global_head_dim 512: efficient kernel; logits / grads match sdpa and each doc alone."""
     transformers = pytest.importorskip("transformers")
     if not hasattr(transformers, "Gemma4TextConfig"):
         pytest.skip("this transformers has no Gemma 4")

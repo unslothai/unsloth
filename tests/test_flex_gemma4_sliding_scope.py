@@ -53,7 +53,6 @@ def test_gemma4_text_only_is_not_routed_either():
 
 @pytest.mark.parametrize("top", ["gemma4_unified", None])
 def test_gemma4_unified_is_not_routed_either(top):
-    # The unified checkpoints carry the same 256 / 512 head dims and the same "sdpa" router.
     text = _Cfg(
         model_type = "gemma4_unified_text",
         head_dim = 256,

@@ -290,8 +290,7 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
-# Columns a processor turns into image / audio / video inputs. A dataset carrying any of them
-# goes through the multimodal path, which cannot be flattened into one packed row today.
+# Columns a processor turns into media inputs; such datasets cannot be packed.
 _MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
     {
         "audio",
@@ -303,8 +302,7 @@ _MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
     }
 )
 _MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
-# Any column or nested key naming media (image_path, audio_url, input_values, image_patches, ...)
-# may be loaded by the processor, so it is not text even when stored as a string.
+# Media-named keys (image_path, audio_url, ...) may be loaded by the processor even as strings.
 _MEDIA_NAME_PARTS = ("image", "audio", "video", "pixel", "input_values", "input_features")
 
 
@@ -316,8 +314,7 @@ def _is_media_name(name) -> bool:
 
 
 def _features_have_media(features) -> bool:
-    """True if a `datasets` feature tree holds an Image / Audio / Video feature anywhere,
-    e.g. images embedded inside a `messages` column's content parts."""
+    """True if a `datasets` feature tree holds an Image / Audio / Video feature anywhere."""
     stack = [features]
     seen = 0
     while stack:
@@ -357,8 +354,7 @@ def _is_text_only_dataset(dataset) -> bool:
         return False
     features = getattr(dataset, "features", None)
     if features is None:
-        # A streaming dataset can name its columns but not their types; without types an
-        # embedded image cannot be ruled out.
+        # Streaming datasets lack types, so embedded images cannot be ruled out.
         return False
     return not _features_have_media(features)
 
@@ -406,8 +402,7 @@ _PROCESSOR_TEXT_PACKING_MODELS = frozenset({"gemma3", "gemma4", "gemma4_unified"
 def _processor_text_only(
     processing_class, data_collator, train_dataset, eval_dataset, model_config
 ) -> bool:
-    """A processor trained on text-only rows tokenizes exactly like its tokenizer, so packing
-    and padding-free are as safe as with the tokenizer passed directly."""
+    """A processor on text-only rows tokenizes like its tokenizer, so packing is safe."""
     if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1").lower() in ("0", "false", "no", "off"):
         return False
     # Only families whose packed text rows are verified to equal each document alone.
@@ -1728,7 +1723,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
-        # A processor on a text-only dataset packs through its tokenizer.
         processor_text_only = is_processor and _processor_text_only(
             processing_class, data_collator, train_dataset, eval_dataset, model_config
         )
@@ -1832,8 +1826,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             original_init(self, *args, **kwargs)
         except ValueError as exc:
             if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
-                # TRL refused (a processor on TRL < 1.10, or images the schema did not show), so fall back to
-                # what this gate did before text-only processors were allowed through.
+                # TRL refused: fall back to the pre-text-only-processor behaviour.
                 if requested_pack:
                     logger.warning(
                         "Unsloth: packing=True ignored (this TRL version refuses it for processors)."

@@ -34,7 +34,6 @@ except ImportError:
 def _clean_env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     monkeypatch.delenv("UNSLOTH_PROCESSOR_TEXT_PACKING", raising = False)
-    # The gate runs only on TRL 1.10+; the stub trainer stands in for whichever TRL is installed.
     monkeypatch.setattr(trainer_module.trl, "__version__", "1.13.0")
     for name in ("enable_padding_free_metadata", "enable_sample_packing"):
         monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
@@ -223,8 +222,7 @@ def test_trl_before_1_10_never_tries_a_processor(monkeypatch, version):
     ],
 )
 def test_a_trl_refusal_falls_back_to_the_old_block(message):
-    """A refusal TRL still raises (a processor on an unexpected version, or images the schema did not
-    show) falls back to exactly the old behaviour."""
+    """A refusal TRL still raises falls back to exactly the old behaviour."""
     module, calls = _patched(raise_on = message)
     packing = message.startswith("Packing")
     t = module.SFTTrainer(model = _Model(), args = _config(packing), train_dataset = TEXT, processing_class = _Proc())
