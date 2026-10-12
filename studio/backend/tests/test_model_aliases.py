@@ -109,6 +109,9 @@ def test_middleware_rewrites_alias_and_content_length(store):
         (b"not json", {}),
         (b'["model"]', {}),
         (b'{"model": "fast-chat"}', {"headers": [(b"content-type", b"multipart/form-data")]}),
+        (b'{"model": "fast-chat"}', {"headers": [(b"content-type", b"audio/wav")]}),
+        (b'{"model": "fast-chat"}', {"headers": [(b"content-type", b"application/octet-stream")]}),
+        (b'{"model": "fast-chat"}', {"headers": []}),
     ],
 )
 def test_middleware_leaves_other_requests_byte_identical(store, body, kwargs):
@@ -139,15 +142,31 @@ def test_alias_rows_follow_the_visible_catalog(store):
         },
         {"id": "local-model", "object": "model", "loaded": False},
     ]
-    rows = alias_model_objects(catalog)
+
+    def pinned(target, objects):
+        # Stand-in for routes.inference._pinned_quant_object: only Q4_K_M is on disk.
+        if target.lower().endswith(":q4_k_m"):
+            return {**objects[0], "id": target, "quant": "Q4_K_M", "loaded": False}
+        return None
+
+    assert alias_model_objects(catalog) == []
+    rows = alias_model_objects(catalog, pinned)
     assert rows == [
         {
             "id": "fast-chat",
             "object": "model",
-            "loaded": True,
+            "loaded": False,
             "alias_for": "unsloth/Qwen3-4B-GGUF:Q4_K_M",
         }
     ]
+    set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF:Q8_0"}])
+    assert alias_model_objects(catalog, pinned) == []
+
+
+def test_set_rejects_an_alias_that_reuses_a_real_model_id(store):
+    with pytest.raises(ValueError, match = "already the name of a model"):
+        set_model_aliases([{"name": "My-Model", "model": "unsloth/Qwen3-4B-GGUF"}], ["my-model"])
+    assert store == {}
 
 
 def test_pydantic_route_sees_the_target_behind_the_body_cap(store):

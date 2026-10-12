@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Iterable, Optional
 
 MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
 MAX_MODEL_ALIASES = 100
@@ -67,12 +67,17 @@ def get_model_aliases() -> list[dict[str, str]]:
         return []
 
 
-def set_model_aliases(raw: Any) -> list[dict[str, str]]:
-    """Replace the whole alias list; the same input always stores the same value."""
+def set_model_aliases(raw: Any, model_ids: Iterable[str] = ()) -> list[dict[str, str]]:
+    """Replace the whole alias list; the same input always stores the same value. ``model_ids``
+    are real ids an alias may not reuse: the rewrite would silently serve other weights."""
     from storage.studio_db import upsert_app_settings
     from utils.openai_auto_switch_settings import _invalidate
 
     aliases = normalize_model_aliases(raw)
+    taken = {model_id.lower() for model_id in model_ids}
+    for alias in aliases:
+        if alias["name"].lower() in taken:
+            raise ValueError(f"'{alias['name']}' is already the name of a model on this server.")
     upsert_app_settings({MODEL_ALIASES_SETTING_KEY: aliases})
     _invalidate(MODEL_ALIASES_SETTING_KEY)
     return aliases
@@ -89,9 +94,12 @@ def resolve_model_alias(name: Any) -> Optional[str]:
     return model_alias_map().get(name.strip().lower())
 
 
-def alias_model_objects(objects: list[dict]) -> list[dict]:
+def alias_model_objects(
+    objects: list[dict], pinned_object: Optional[Callable[[str, list[dict]], Optional[dict]]] = None
+) -> list[dict]:
     """``/v1/models`` rows for aliases whose target is in ``objects``, the caller's visible
-    catalog, so the listing never advertises a name that would 404. Real ids win name clashes."""
+    catalog, so the listing never advertises a name that would 404. ``pinned_object`` resolves a
+    ``model:quant`` target the way ``GET /v1/models/{id}`` does (the quant must be on disk)."""
     aliases = get_model_aliases()
     if not aliases:
         return []
@@ -101,8 +109,9 @@ def alias_model_objects(objects: list[dict]) -> list[dict]:
         if alias["name"].lower() in by_id:
             continue
         target = alias["model"]
-        base, sep, _quant = target.rpartition(":")
-        listed = by_id.get(target.lower()) or (by_id.get(base.lower()) if sep else None)
+        listed = by_id.get(target.lower())
+        if listed is None and ":" in target and pinned_object is not None:
+            listed = pinned_object(target, objects)
         if listed is None:
             continue
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
@@ -152,8 +161,9 @@ class ModelAliasMiddleware:
         if root_path and path.startswith(root_path):
             path = path[len(root_path) :] or "/"
         content_type = dict(scope.get("headers", [])).get(b"content-type", b"").lower()
-        # Multipart uploads stream past the body cap (MaxBodyMiddleware passthroughs): never hold one.
-        if not path.startswith(_ALIAS_PATH_PREFIXES) or content_type.startswith(b"multipart/"):
+        # JSON only: raw and multipart uploads (audio inputs, transcriptions) stream past the body
+        # cap and must never be held here.
+        if not path.startswith(_ALIAS_PATH_PREFIXES) or b"json" not in content_type:
             await self.app(scope, receive, send)
             return
         aliases = model_alias_map()

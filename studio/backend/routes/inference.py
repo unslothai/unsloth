@@ -36506,7 +36506,7 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 async def _openai_catalog_with_aliases() -> list[dict]:
     from utils.model_aliases import alias_model_objects
     objects = await _openai_catalog_objects()
-    return objects + await asyncio.to_thread(alias_model_objects, objects)
+    return objects + await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_object)
 
 
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
