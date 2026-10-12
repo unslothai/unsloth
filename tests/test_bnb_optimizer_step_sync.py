@@ -88,7 +88,9 @@ def _gpu_ready():
 
 
 @pytest.mark.skipif(not _gpu_ready(), reason = "bitsandbytes optimizers need a CUDA device")
-@pytest.mark.parametrize("optim_name", ["AdamW8bit", "Adam8bit", "Lion8bit", "AdamW", "PagedAdamW8bit"])
+@pytest.mark.parametrize(
+    "optim_name", ["AdamW8bit", "Adam8bit", "Lion8bit", "AdamW", "PagedAdamW8bit"]
+)
 def test_step_matches_stock_and_drops_only_non_paged_syncs(optim_name):
     stock = _run("stock", optim_name)
     patched = _run("patched", optim_name)
@@ -117,7 +119,11 @@ def _fake_bnb(monkeypatch, tmp_path, source):
     spec.loader.exec_module(optimizer)  # from a file, so inspect.getsource sees the step body
     package, optim = types.ModuleType("bitsandbytes"), types.ModuleType("bitsandbytes.optim")
     package.optim, optim.optimizer = optim, optimizer
-    for name, module in (("bitsandbytes", package), ("bitsandbytes.optim", optim), ("bitsandbytes.optim.optimizer", optimizer)):
+    for name, module in (
+        ("bitsandbytes", package),
+        ("bitsandbytes.optim", optim),
+        ("bitsandbytes.optim.optimizer", optimizer),
+    ):
         monkeypatch.setitem(sys.modules, name, module)
     return optimizer
 
