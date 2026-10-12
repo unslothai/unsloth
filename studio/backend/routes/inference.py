@@ -3197,7 +3197,9 @@ def _openai_llama_publish_round_charge(
         pass
 
 
-def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None:
+def _openai_llama_count_raw_holder(
+    *, llama_backend, lease, gen_id: str, payload = None, conversation = None
+) -> None:
     """Register a surface that occupies the cache but cannot be paused.
 
     The raw passthrough and the Responses surface stream upstream bytes with no Studio-side
@@ -3211,6 +3213,10 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
     and stays unmeasured for its whole answer: counted on top of the residency once `/slots`
     carries it, which can pause a chat early. Measured at registration instead, a residency
     sample from before its prefill swallowed the charge, and a missed pause overran the cache.
+
+    ``payload`` (and ``conversation``) are what the reservation was priced from: the charge
+    carries an output allowance, and without the prompt term apart registration announces the
+    whole charge as a prefill, which can raise the buffer and pause a chat for nothing.
     """
     try:
         if not _openai_llama_preemption_will_apply(
@@ -3219,12 +3225,27 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
             return
         if lease is None:
             return
+        charged = int(getattr(lease, "tokens", 0) or 0)
+        prompt_tokens = None
+        if payload is not None:
+            try:
+                prompt_tokens = _openai_llama_admission_charged_prompt_tokens(
+                    payload,
+                    conversation = conversation,
+                    image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                    markup = _openai_llama_admission_markup(llama_backend),
+                )
+            except Exception:
+                prompt_tokens = None
+            if prompt_tokens is not None:
+                prompt_tokens = min(max(0, int(prompt_tokens)), charged) or None
         controller = get_preemption_controller(_preempt_key(llama_backend))
         controller.register(
             gen_id,
             lease = lease,
-            tokens = int(getattr(lease, "tokens", 0) or 0),
+            tokens = charged,
             state = ParticipantState.STREAMING_RAW,
+            prompt_tokens = prompt_tokens,
         )
         _plan_for_unpausable_holder(controller, gen_id)
     except Exception:
@@ -41435,6 +41456,7 @@ async def _responses_stream(
                 llama_backend = llama_backend,
                 lease = lease,
                 gen_id = resp_id,
+                payload = chat_req,
             )
             iterator = event_generator()
             stream_started = True
@@ -43585,6 +43607,8 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
+                payload = payload,
+                conversation = openai_messages,
             )
             return
         _anthropic_preempt_policy.bind(
@@ -46694,6 +46718,7 @@ async def _openai_passthrough_stream_admitted(
         llama_backend = llama_backend,
         lease = admission_lease,
         gen_id = completion_id,
+        payload = payload,
     )
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
@@ -47677,6 +47702,7 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
             lease = lease,
             gen_id = _raw_gen_id,
+            payload = payload,
         )
         return await _openai_passthrough_non_streaming_upstream(
             llama_backend,
