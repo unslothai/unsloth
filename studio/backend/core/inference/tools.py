@@ -10892,8 +10892,6 @@ def _get_project_workdir(session_id: str) -> str | None:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
-    # The user's own folder when one is set and still there; the managed one otherwise, so a moved
-    # folder never sends the tools anywhere new.
     from storage.studio_db import available_project_working_folder
 
     return available_project_working_folder(project) or sandbox_real
