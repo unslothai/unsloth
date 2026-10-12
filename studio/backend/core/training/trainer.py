@@ -157,6 +157,23 @@ def _hf_stdout_progress_disabled() -> bool:
     return not _verbose_logging_requested()
 
 
+_EMBEDDING_GETTERS = {"embed_tokens": "get_input_embeddings", "lm_head": "get_output_embeddings"}
+
+
+def _embedding_module_path(model, name: str):
+    """Full module path of the model's input embedding / output head for Studio's generic CPT names."""
+    getter = getattr(model, _EMBEDDING_GETTERS.get(name, ""), None)
+    if not callable(getter):
+        return None
+    try:
+        module = getter()
+    except Exception:
+        return None
+    if module is None:
+        return None
+    return next((path for path, m in model.named_modules() if m is module and path), None)
+
+
 def _tokenizer_blocks_map_workers(tokenizer) -> bool:
     """True when `dataset_num_proc` workers cannot receive this tokenizer. dill pickles a remote-code
     tokenizer class by value (transformers 5.5 does not set its module on the parent package), dragging
@@ -1593,8 +1610,13 @@ class UnslothTrainer:
             target_modules = [m for m in requested if m != "all-linear"] or "all-linear"
         leaf_names = {name.rsplit(".", 1)[-1] for name, _ in self.model.named_modules()}
         if modules_to_save:
-            kept = [m for m in modules_to_save if m in leaf_names]
-            dropped = sorted(set(modules_to_save) - set(kept))
+            # LLaDA names them transformer.wte / transformer.ff_out; the full path keeps each block's ff_out out.
+            resolved = {
+                m: m if m in leaf_names else _embedding_module_path(self.model, m)
+                for m in modules_to_save
+            }
+            kept = list(dict.fromkeys(path for path in resolved.values() if path))
+            dropped = sorted(m for m, path in resolved.items() if not path)
             if dropped:
                 logger.info(
                     f"Text-diffusion model has no {dropped}; training them is skipped for this model.\n"

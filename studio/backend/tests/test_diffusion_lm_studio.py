@@ -222,13 +222,32 @@ def test_lora_targets_default_to_the_profile(captured_peft, requested, expected)
     assert "use_rslora" not in captured_peft[-1]
 
 
-def test_modules_to_save_keeps_only_modules_the_model_has(captured_peft):
-    t = _trainer(model = _TinyLLaDA())
+def test_cpt_embedding_names_resolve_to_the_models_own_modules(captured_peft):
+    import torch.nn as nn
+
+    class LLaDALike(nn.Module):
+        # LLaDA: transformer.wte / transformer.ff_out, and every block has its own ff_out projection too.
+        def __init__(self):
+            super().__init__()
+            self.transformer = nn.Module()
+            self.transformer.wte = nn.Embedding(8, 4)
+            self.transformer.ff_out = nn.Linear(4, 8)
+            self.transformer.blocks = nn.ModuleList([nn.Module()])
+            self.transformer.blocks[0].ff_out = nn.Linear(4, 4)
+
+        def get_input_embeddings(self):
+            return self.transformer.wte
+
+        def get_output_embeddings(self):
+            return self.transformer.ff_out
+
+    t = _trainer(model = LLaDALike())
     t._prepare_diffusion_lora(
-        None, ["embed_tokens", "lm_head", "wte"], 8, 16, 0.0, True, True, False, False
+        None, ["embed_tokens", "lm_head"], 8, 16, 0.0, True, True, False, False
     )
-    assert captured_peft[-1]["modules_to_save"] == ["wte"]
+    assert captured_peft[-1]["modules_to_save"] == ["transformer.wte", "transformer.ff_out"]
     assert captured_peft[-1]["use_rslora"] is True
+    t = _trainer(model = _TinyLLaDA())
     t._prepare_diffusion_lora(
         None, ["embed_tokens", "lm_head"], 8, 16, 0.0, True, False, False, False
     )
@@ -331,18 +350,33 @@ def test_diffusion_cpt_passes_the_embedding_learning_rate():
     assert 'training_args.get("embedding_learning_rate") if is_cpt else None' in branch
 
 
-def test_mlx_refuses_text_diffusion_before_its_trainer(monkeypatch):
+def test_mlx_refuses_text_diffusion_before_its_trainer_and_chat_backend(monkeypatch):
+    from core.inference import worker as inference_worker
     from core.training import worker
     from utils.models import diffusion_lm
 
     profiles = {"diffusion/llada": "llada", "org/llama": None}
     monkeypatch.setattr(
-        diffusion_lm, "diffusion_lm_profile_for_model", lambda name, **kwargs: profiles[name]
+        diffusion_lm, "diffusion_lm_profile_for_model", lambda name, *a, **k: profiles[name]
     )
     assert "llada" in worker._mlx_diffusion_lm_error({}, "diffusion/llada")
     assert worker._mlx_diffusion_lm_error({}, "org/llama") is None
     src = inspect.getsource(worker.run_training_process)
     assert src.index("_mlx_diffusion_lm_error(") < src.index("run_mlx_training_process(")
+    chat = inspect.getsource(inference_worker)
+    assert chat.index("mlx_refusal(model_name") < chat.index("backend = MLXInferenceBackend()")
+
+
+def test_diffusion_turns_offload_off_before_the_vram_budget_reads_it():
+    from core.training import worker
+
+    src = inspect.getsource(worker.run_training_process)
+    off = src.index('config["offload_layers"] = 0')
+    assert (
+        src.rindex("diffusion_lm_profile_for_model(", 0, off)
+        < off
+        < src.index("_wants_budget = bool(")
+    )
 
 
 def test_pre_detect_applies_the_overrides_before_the_row_bound():

@@ -2036,7 +2036,11 @@ def run_inference_process(
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
+            from utils.models.diffusion_lm import mlx_refusal
 
+            refusal = mlx_refusal(model_name, _config_hf_token(config))
+            if refusal:
+                raise RuntimeError(refusal)
             backend = MLXInferenceBackend()
             if config.get("mlx_distributed"):
                 group, rank, size = _init_mlx_distributed()

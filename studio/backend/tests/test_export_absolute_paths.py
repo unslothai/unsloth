@@ -176,6 +176,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
+    _load_module("utils.models.diffusion_lm", "utils/models/diffusion_lm.py", monkeypatch)
     _load_module(
         "utils.models.model_identity",
         "utils/models/model_identity.py",

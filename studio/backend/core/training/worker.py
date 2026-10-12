@@ -452,22 +452,9 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
 
 
 def _mlx_diffusion_lm_error(config: dict, model_load_target: str) -> str | None:
-    """MLXTrainer only has next-token loss, so it would train a text-diffusion LM with the wrong objective."""
-    from utils.models.diffusion_lm import diffusion_lm_profile_for_model
-
-    try:
-        profile = diffusion_lm_profile_for_model(
-            model_load_target,
-            hf_token = _worker_hf_token(config),
-            revision = config.get("model_revision"),
-        )
-    except Exception:
-        return None
-    if not profile:
-        return None
-    return (
-        f"Text-diffusion models ({profile}) cannot be trained with the MLX backend on Apple Silicon yet: "
-        "it has no denoising objective. Train this model on an NVIDIA or AMD GPU."
+    from utils.models.diffusion_lm import mlx_refusal
+    return mlx_refusal(
+        model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
     )
 
 
@@ -4332,6 +4319,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+
+    if config.get("offload_layers"):
+        from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+        # The diffusion load has no block swapping; off before the budget below sizes itself to offloading.
+        _diffusion = diffusion_lm_profile_for_model(
+            model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
+        )
+        if _diffusion:
+            config["offload_layers"] = 0
+            event_queue.put(
+                {
+                    "type": "warning",
+                    "message": f"Layer offloading is not available for text-diffusion models ({_diffusion}); "
+                    "training without it.",
+                    "ts": time.time(),
+                }
+            )
 
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.

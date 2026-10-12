@@ -99,6 +99,22 @@ def diffusion_lm_profile_for_model(
         return None
 
 
+def mlx_refusal(
+    model_name: str,
+    hf_token = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Why the MLX backend cannot take this model, or None: it has no denoising objective or sampler, so
+    it would train / decode a text-diffusion LM as an autoregressive one."""
+    profile = diffusion_lm_profile_for_model(model_name, hf_token, revision = revision)
+    if not profile:
+        return None
+    return (
+        f"Text-diffusion models ({profile}) are not supported by the MLX backend on Apple Silicon yet: "
+        "it has no denoising objective or sampler. Use an NVIDIA or AMD GPU for this model."
+    )
+
+
 def loaded_diffusion_profile(model) -> Optional[str]:
     """Profile name of a model loaded through Unsloth's diffusion loader (``_unsloth_slow_diffusion``), else
     None. Resolved from the model's config with the core registry, then this mirror; PEFT wrappers forward
