@@ -29,7 +29,6 @@ const PART_STYLE: Record<
   },
 };
 
-/** The bar split by what each part of the download is, the cached model included. */
 function PartsBar({ parts }: { parts: DownloadPart[] }) {
   const total = parts.reduce((n, p) => n + p.bytes, 0);
   const widths = parts.map((p) => Math.max(2, (p.bytes / total) * 100));

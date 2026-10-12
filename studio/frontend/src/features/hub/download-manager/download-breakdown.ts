@@ -51,7 +51,6 @@ export function downloadParts(
   };
   const cached = Math.max(0, breakdown.cachedCheckpointBytes ?? 0);
   if (cached > 0) add("model", cached, cached);
-  // Other jobs of the same plan: done before this one, or still to come.
   for (const [file, b] of Object.entries(breakdown.earlierBytes ?? {})) add(partOf(file), Math.max(0, b), Math.max(0, b));
   for (const [file, b] of Object.entries(breakdown.laterBytes ?? {})) add(partOf(file), Math.max(0, b), 0);
   const listed = Object.values(breakdown.fileBytes).reduce((n, b) => n + Math.max(0, b ?? 0), 0);

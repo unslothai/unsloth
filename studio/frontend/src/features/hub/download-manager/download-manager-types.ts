@@ -63,9 +63,7 @@ export interface DownloadRequest {
   skipXetNotice?: boolean;
 }
 
-/** What a companion download's bytes are for, so the panel can colour its bar by part. */
 export interface DownloadBreakdown {
-  /** Size of each file the job counts, from the download plan. */
   fileBytes: Record<string, number>;
   /** The picked checkpoint, already on disk, shown as a full segment. */
   cachedCheckpointBytes?: number;
