@@ -1100,11 +1100,15 @@ def _resolve_load_family(
     # Wan2.2 A14B repo, or the reverse), local or remote.
     if fam is not None and gguf_filename:
         named = detect_video_family(os.path.basename(gguf_filename))
-        if named is not None and named.name != fam.name and (
-            named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
-            or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
-            # A remote pick has no header pass, so a file naming another Wan model picks the base config.
-            or (named.name.startswith("wan") and fam.name.startswith("wan"))
+        if (
+            named is not None
+            and named.name != fam.name
+            and (
+                named.name in SAME_ARCH_VARIANTS.get(fam.name, ())
+                or fam.name in SAME_ARCH_VARIANTS.get(named.name, ())
+                # A remote pick has no header pass, so a file naming another Wan model picks the base config.
+                or (named.name.startswith("wan") and fam.name.startswith("wan"))
+            )
         ):
             fam = named
     # A local file's header outranks its name (the name still picks 480p vs 720p).
@@ -1112,7 +1116,10 @@ def _resolve_load_family(
     if path:
         file_fam = detect_video_family(os.path.basename(path))
         name, _ = resolve_family_with_content(
-            fam.name if fam else None, path, "video", file_family = file_fam.name if file_fam else None
+            fam.name if fam else None,
+            path,
+            "video",
+            file_family = file_fam.name if file_fam else None,
         )
         if name is None:
             return None
@@ -2728,11 +2735,14 @@ class VideoBackend:
         # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
         # A family override names the family for an opaque pick; it cannot make refused weights runnable.
         from .video_families import unsupported_video_checkpoint_reason
+
         reason = unsupported_video_checkpoint_reason(
             display_repo_id,
             repo_id,
             gguf_filename,
-            wan21_checkpoint = (gguf_filename or repo_id) if fam and fam.name.startswith("wan2.1") else None,
+            wan21_checkpoint = (gguf_filename or repo_id)
+            if fam and fam.name.startswith("wan2.1")
+            else None,
         )
         if reason:
             raise ValueError(reason)

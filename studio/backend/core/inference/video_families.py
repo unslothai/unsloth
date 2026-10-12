@@ -591,7 +591,9 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
-        r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
+        r"(?:^|[/\\])(?=[^/\\]*"
+        + _WAN21_TOKEN
+        + r")(?=[^/\\]*(?<![a-z0-9])(?:i2v|flf2v)(?![a-z0-9]))"
         r"[^/\\]*[/\\]*$",
         "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
         "from a start frame through its own image-conditioned transformer and a CLIP vision "
@@ -601,7 +603,9 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*" + _WAN21_TOKEN + r")(?=[^/\\]*(?:(?<![a-z0-9])"
-        r"(?:vace|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)|" + _WAN21_TOKEN + r"-fun)"
+        r"(?:vace|magref|phantom|multitalk|infinitetalk|controlnet|recammaster)|"
+        + _WAN21_TOKEN
+        + r"-fun)"
         r"(?![a-z0-9]))[^/\\]*[/\\]*$",
         "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
         "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
@@ -624,7 +628,9 @@ def unsupported_video_checkpoint_reason(
         name = re.split(r"[/\\]", needle.rstrip("/\\"))[-1]
         # A leading "fun" is too generic to mark a Fun release unless it names one (version, size, InP, Control); the
         # other markers are still judged.
-        generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(r"fun-(?:v\d|1-3b|14b|inp|control)", name)
+        generic_fun = re.match(r"fun(?![a-z0-9])", name) and not re.match(
+            r"fun-(?:v\d|1-3b|14b|inp|control)", name
+        )
         needles.append(("wan2-1-t2v-" if generic_fun else "wan2-1-") + name)
     for needle in needles:
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
