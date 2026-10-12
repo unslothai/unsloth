@@ -211,6 +211,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -3024,9 +3025,14 @@ export function ChatPage({
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi k2.6/k2.5 default to thinking enabled server-side, so the Think pill starts on.
-    const isKimi = provider?.providerType === "kimi";
-    // Search defaults on only for Anthropic and OpenAI (structured citations).
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
+    // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
+    const isKimi = kimiSearchExcludesThinking(
+      provider?.providerType,
+      selection.modelId,
+    );
+    // Web search on by default only for Anthropic and OpenAI, both with structured citations.
+    // OpenRouter and Kimi work on opt-in but are less reliable.
     const searchOnByDefault =
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
@@ -3761,7 +3767,13 @@ export function ChatPage({
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
         );
-        const isKimi = selectedProvider?.providerType === "kimi";
+        // See sibling useEffect: Kimi's k2.x default to thinking enabled. Search stays off; the
+        // composer's mutual exclusion flips them.
+        const isKimi = kimiSearchExcludesThinking(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
+        // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by default; others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
