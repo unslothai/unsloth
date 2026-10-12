@@ -1465,6 +1465,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
+            if varlen is not None:
+                kwargs = _mask_hybrid_boundary_labels(kwargs, varlen)
             outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
@@ -1498,6 +1500,26 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     _wrap_generate_clears_varlen(model, hybrid_modules)
     HYBRID_PACKING_STATS["patched"] += 1
     return True
+
+
+def _mask_hybrid_boundary_labels(kwargs, varlen):
+    """Never train a packed document's first token from the previous document. TRL >= 0.24 already
+    sets labels[position_ids == 0] = -100 and Unsloth's own Llama-family forwards mask it, but the
+    hybrid models run transformers' forward, so older TRL would train every boundary target (while
+    num_items_in_batch already excludes them). Out of place, idempotent."""
+    labels = kwargs.get("labels")
+    seq_idx = varlen[1]
+    if (
+        not isinstance(labels, torch.Tensor)
+        or labels.dim() != 2
+        or labels.shape[0] != 1
+        or labels.shape[1] != seq_idx.shape[-1]
+    ):
+        return kwargs
+    starts = varlen[0][1:-1].to(device = labels.device, dtype = torch.long)
+    if starts.numel() == 0:
+        return kwargs
+    return {**kwargs, "labels": labels.index_fill(1, starts, -100)}
 
 
 def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
