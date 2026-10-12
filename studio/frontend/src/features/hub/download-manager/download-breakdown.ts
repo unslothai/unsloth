@@ -17,7 +17,8 @@ const ENCODER = /text_encoder|clip|t5|qwen.*vl/i;
 const VAE = /vae|decoder|codec|vocoder|(^|\/)ae\.safetensors$/i;
 // A weights file at the repo root is a single-file pick, the model itself: a hosted prequant such as
 // `Qwen-Image-2.1-FP8.safetensors` names no transformer/ folder. Encoder prequants there say text_encoder.
-const MODEL = /transformer|unet|\.gguf$|^[^/]+\.(safetensors|pt|pth|bin)$/i;
+// ComfyUI-layout single-file picks sit under diffusion_models/ or checkpoints/ (diffusion_content.py).
+const MODEL = /transformer|unet|diffusion_models\/|(^|\/)checkpoints\/|\.gguf$|^[^/]+\.(safetensors|pt|pth|bin)$/i;
 
 // Three parts only: the small leftovers (tokenizer, scheduler, model_index.json) count as the text encoder.
 function partOf(file: string): DownloadPartKind {

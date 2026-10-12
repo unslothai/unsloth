@@ -183,6 +183,24 @@ test("a hosted prequant transformer at the repo root is the model, its encoder t
   );
 });
 
+test("a ComfyUI-layout single-file checkpoint under diffusion_models/ is the model", () => {
+  const parts = downloadParts(
+    {
+      fileBytes: {
+        "split_files/diffusion_models/qwen_image_fp8.safetensors": 20 * GB,
+        "split_files/text_encoders/qwen_2.5_vl_7b.safetensors": 9 * GB,
+        "split_files/vae/qwen_image_vae.safetensors": 0.25 * GB,
+      },
+    },
+    0,
+  );
+  assert.deepEqual(parts?.map((p) => [p.kind, p.bytes]), [
+    ["model", 20 * GB],
+    ["encoder", 9 * GB],
+    ["vae", 0.25 * GB],
+  ]);
+});
+
 test("files of unknown size make no segment, so an all-unknown plan keeps the single bar", () => {
   assert.equal(
     downloadParts(
