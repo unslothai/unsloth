@@ -247,6 +247,14 @@ def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
         return object(), last, width, height, conditioning
 
     monkeypatch.setattr(VideoBackend, "_resolve_keyframes", staticmethod(with_first_frame))
+
+    # A first frame on Wan2.2-TI2V-5B runs its image-to-video class over the loaded pipe (video_i2v);
+    # the fake runtime only knows the text-to-video one, so give it a class to swap to.
+    class _LoopWanI2V(_LoopWanPipe):
+        def __init__(self, **_components):  # the template the swap reads; nothing to set
+            pass
+
+    monkeypatch.setattr(sys.modules["diffusers"], "WanImageToVideoPipeline", _LoopWanI2V, raising = False)
     armed = []
     import core.inference.video as video_mod
 
