@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owner-defined model aliases: a stable name (``fast-chat``) an API client sends as ``model``
-and Studio serves with the model it points at. Install-wide, stored in the owner's settings.
+"""Owner-defined, install-wide model aliases (``fast-chat`` -> a real model id) for API clients.
 
-Resolved once at the ASGI edge (:class:`ModelAliasMiddleware`), so account access checks,
-auto-switch and the resolver all see the real model id: an alias never grants what its target
-would not. Names cannot contain ``/`` or ``:``, so an alias can never shadow a Hugging Face
-repo id or a ``model:quant`` pin."""
+Resolved once at the ASGI edge, so access checks, auto-switch and the resolver all see the real
+id: an alias never grants what its target would not. Names exclude ``/`` and ``:`` so they can
+never shadow a repo id or a ``model:quant`` pin."""
 
 from __future__ import annotations
 
@@ -19,9 +17,9 @@ MODEL_ALIASES_SETTING_KEY = "openai_api_model_aliases"
 MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# Every route that reads a JSON ``model``: the OpenAI/Anthropic-compatible surface and the
-# same router under /api/inference.
+# The OpenAI/Anthropic-compatible router, mounted under both prefixes.
 _ALIAS_PATH_PREFIXES = ("/v1/", "/api/inference/")
+_MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
 
 def normalize_model_aliases(raw: Any) -> list[dict[str, str]]:
@@ -92,11 +90,8 @@ def resolve_model_alias(name: Any) -> Optional[str]:
 
 
 def alias_model_objects(objects: list[dict]) -> list[dict]:
-    """``/v1/models`` rows for aliases whose target is in ``objects`` (the caller's visible catalog).
-
-    A target the caller cannot see, or that is not on disk, lists nothing, so the listing never
-    advertises a name that would 404. A real model id always wins over an alias of the same name.
-    """
+    """``/v1/models`` rows for aliases whose target is in ``objects``, the caller's visible
+    catalog, so the listing never advertises a name that would 404. Real ids win name clashes."""
     aliases = get_model_aliases()
     if not aliases:
         return []
@@ -119,7 +114,11 @@ def alias_model_objects(objects: list[dict]) -> list[dict]:
 
 def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]:
     """The body with an aliased top-level ``model`` replaced by its target, or None if unchanged."""
-    if b'"model"' not in body:
+    # Cheap scan first so a large (image, audio) body is only parsed when it names an alias.
+    if not any(
+        value.decode("utf-8", "ignore").strip().lower() in aliases
+        for value in _MODEL_VALUE_RE.findall(body)
+    ):
         return None
     try:
         payload = json.loads(body)
@@ -138,12 +137,8 @@ def _rewrite_alias_body(body: bytes, aliases: dict[str, str]) -> Optional[bytes]
 
 
 class ModelAliasMiddleware:
-    """Swap an aliased ``model`` for its target on inference POSTs before any route runs.
-
-    Passthrough (body never read) when no alias is configured or the request is not a JSON POST
-    under an inference prefix.
-    Registered inside MaxBodyMiddleware, so the body it buffers has already passed the size cap.
-    """
+    """Swap an aliased ``model`` for its target before any route runs. Never reads the body when
+    no alias is configured; registered inside MaxBodyMiddleware, so what it buffers is capped."""
 
     def __init__(self, app):
         self.app = app
