@@ -486,6 +486,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -38010,7 +38011,8 @@ class LlamaCppBackend:
             messages = note_attached_image(
                 messages, mcp_image_targets(_gguf_active_tool_names(tools))
             )
-        conversation = list(messages)
+        # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
+        conversation = restore_replayed_tool_results(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # The loop refits on every iteration; recall must fire once per request, or each
@@ -38052,6 +38054,13 @@ class LlamaCppBackend:
                 _rolling_anchor_ids.add(id(message))
                 break
 
+        # Tool messages this run appended, by id(), to the card id their tool_end carried.
+        _tool_card_by_message: dict[int, str] = {}
+        # Feedback folded into a result after its tool_end. The client replays only the
+        # tool_end result, so it is told the suffix too, or the next turn's prompt diverges
+        # at that result and llama-server re-processes everything after it.
+        _model_note_events: list[dict] = []
+
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
             if not conversation or conversation[-1].get("role") != "tool":
@@ -38062,7 +38071,18 @@ class LlamaCppBackend:
             # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
             # /v1/messages passes a caller's own history through, which may end on a tool
             # result. An in-place edit would leave the nudge there and re-send it next turn.
-            conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
+            previous = conversation[-1]
+            conversation[-1] = {**previous, "content": f"{content}\n\n{feedback}"}
+            card_id = _tool_card_by_message.pop(id(previous), None)
+            if card_id:
+                _tool_card_by_message[id(conversation[-1])] = card_id
+                _model_note_events.append(
+                    {
+                        "type": "tool_model_note",
+                        "tool_call_id": card_id,
+                        "suffix": f"\n\n{feedback}",
+                    }
+                )
             return True
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
@@ -38485,6 +38505,10 @@ class LlamaCppBackend:
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
         _prompt_sent = False
+        # The catalogue the last tool round rendered. The final answer pass sends it again with
+        # tool_choice "none": the template puts tools at the top of the system prompt, so dropping
+        # them made that pass, and the next turn, re-process the whole conversation.
+        _last_sent_tools = None
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38495,6 +38519,8 @@ class LlamaCppBackend:
         loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
             # Here rather than at each append: six sites grow the conversation and all of
             # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
@@ -38728,6 +38754,7 @@ class LlamaCppBackend:
             if safe_tools:
                 payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
+                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             if thinking_budget_tokens is not None:
@@ -40243,6 +40270,10 @@ class LlamaCppBackend:
                                 provisional = provisional_match,
                                 allowed_tool_names = {forced_name} if forced_name else None,
                             )
+                    # As in the safetensors loop: the frontend keeps a round's cards in one
+                    # assistant message by this id. Without it a parallel batch replayed as
+                    # separate assistant/tool pairs, so the next turn's prompt diverged there.
+                    decision.provenance["round_id"] = iteration
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -41104,8 +41135,11 @@ class LlamaCppBackend:
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     _forced_choice_resolved = True
-                    yield completion.tool_end_event()
+                    _tool_end = completion.tool_end_event()
+                    yield _tool_end
                     conversation.append(completion.tool_message())
+                    if _tool_end.get("tool_call_id"):
+                        _tool_card_by_message[id(conversation[-1])] = _tool_end["tool_call_id"]
                     # Parsed only for a result that carries them and a model that will
                     # be shown them; the marker test first, so a text result never asks.
                     _completion_images = (
@@ -41365,10 +41399,13 @@ class LlamaCppBackend:
                 else:
                     conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
+        while _model_note_events:
+            yield _model_note_events.pop(0)
         # Clear status.
         yield {"type": "status", "text": ""}
 
         # Final streaming pass with the full conversation context.
+        _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
         _reasoning_kw = self._request_reasoning_kwargs(
@@ -41413,7 +41450,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41456,7 +41493,7 @@ class LlamaCppBackend:
                                 self.markup_profile,
                             ),
                             None,
-                            None,
+                            _final_tools,
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
@@ -41513,6 +41550,10 @@ class LlamaCppBackend:
         }
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
+        if _final_tools:
+            # Same catalogue, no calls: the prompt keeps the prefix the tool rounds cached.
+            stream_payload["tools"] = llama_grammar_tools(_final_tools)
+            stream_payload["tool_choice"] = "none"
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:
@@ -41575,7 +41616,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41635,7 +41676,7 @@ class LlamaCppBackend:
                                 break
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
-                            None,
+                            _final_tools,
                             stream_payload.get("chat_template_kwargs"),
                             _refit_continue,
                             _refit_protect,
@@ -41728,7 +41769,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     messages_without_unpriced_media(candidate_messages),
                     None,
-                    None,
+                    _final_tools,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -41959,7 +42000,7 @@ class LlamaCppBackend:
                             # gets that eviction rather than being abandoned.
                             _evicted_f = _evict_until_it_fits(
                                 _candidate_messages,
-                                None,
+                                _final_tools,
                                 stream_payload.get("chat_template_kwargs"),
                                 True,
                             )
@@ -42083,7 +42124,7 @@ class LlamaCppBackend:
                             )
                             if _next_cap_r != 0 and not _served_r:
                                 _evicted_r = _evict_until_it_fits(
-                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                    _candidate_r, _final_tools, _off_kw, False, _recovery_protect
                                 )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw

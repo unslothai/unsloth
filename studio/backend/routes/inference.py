@@ -32044,7 +32044,12 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args", "skill_load"):
+                        if event["type"] in (
+                            "tool_output",
+                            "tool_args",
+                            "skill_load",
+                            "tool_model_note",
+                        ):
                             if (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
@@ -44546,12 +44551,17 @@ def _openai_messages_for_gguf_chat(
     per-turn ``image_url`` parts so multi-image chat history keeps each image
     attached to its original turn.
     """
+    from core.inference.tool_loop_controller import restore_replayed_tool_results
+
     # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
     # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
     messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(
             _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in payload.messages]
+                # Replayed tool results as the model saw them, so the cached prefix holds.
+                restore_replayed_tool_results(
+                    [m.model_dump(exclude_none = True) for m in payload.messages]
+                )
             )
         )
     )

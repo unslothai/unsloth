@@ -69,6 +69,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -669,7 +670,8 @@ def run_safetensors_tool_loop(
         from core.inference.mcp_image import note_attached_image
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
-    conversation = list(messages)
+    # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
+    conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would

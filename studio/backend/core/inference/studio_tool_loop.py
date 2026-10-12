@@ -83,6 +83,7 @@ from core.inference.tool_loop_controller import (
     canonical_arguments_text,
     mcp_display_parts,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -1406,7 +1407,8 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    conversation = [dict(message) for message in run.messages]
+    # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
+    conversation = [dict(message) for message in restore_replayed_tool_results(run.messages)]
     if mcp_image is not None:
         targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
         conversation = note_attached_image(conversation, targets)

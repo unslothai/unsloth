@@ -861,6 +861,45 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+# Where the client keeps feedback the loop folded into a result after its tool_end.
+TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
+
+
+def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
+    """Rebuild replayed tool results exactly as the model saw them.
+
+    ``model_message`` showed the model a failed result plus ``TOOL_ERROR_NUDGE``, and the loop may
+    fold later feedback (the tool budget notice) into the last result, but the client stores and
+    replays the bare result. Without both the next turn's prompt diverges from the server's cached
+    tokens at that result, and a hybrid or SWA model then re-processes everything after it. The
+    folded feedback comes back in ``extra_content``. Idempotent.
+    """
+    out = list(messages)
+    for i, message in enumerate(out):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        extra = message.get("extra_content")
+        suffix = extra.get(TOOL_MODEL_SUFFIX_KEY) if isinstance(extra, dict) else None
+        suffix = suffix if isinstance(suffix, str) else ""
+        body = content[: -len(suffix)] if suffix and content.endswith(suffix) else content
+        # `in`, not endswith: an already restored message may carry folded feedback after it.
+        if is_tool_error(body) and TOOL_ERROR_NUDGE not in body:
+            body += TOOL_ERROR_NUDGE
+        restored = {**message, "content": body + suffix}
+        if isinstance(extra, dict) and TOOL_MODEL_SUFFIX_KEY in extra:
+            rest = {k: v for k, v in extra.items() if k != TOOL_MODEL_SUFFIX_KEY}
+            if rest:
+                restored["extra_content"] = rest
+            else:
+                restored.pop("extra_content", None)
+        if restored != message:
+            out[i] = restored
+    return out
+
+
 def _strip_mcp_ui_suffix(result: str) -> str:
     """The payload is one JSON line, so the scan stops there; images may follow."""
     marker = "\n__MCP_UI__:"
