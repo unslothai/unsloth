@@ -185,9 +185,15 @@ def test_unreachable_discovery_does_not_gate_a_visual_studio_box(tmp_path, monke
     assert _msvc_env.crt_headers_reachable() is True
 
 
+def _no_compile_probe(monkeypatch):
+    # These judge the discovery fallback; a real clang-cl on PATH (GitHub's Windows image) would answer first.
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: None)
+
+
 def test_a_search_that_ran_and_found_nothing_still_gates(tmp_path, monkeypatch):
     """The other half: without this, the #7595 crash is no longer prevented at all."""
     monkeypatch.setattr(sys, "platform", "win32")
+    _no_compile_probe(monkeypatch)
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
     assert _msvc_env.crt_headers_reachable() is False
@@ -244,6 +250,7 @@ def test_tinycc_is_not_gated_on_a_release_without_is_clang_cl(tmp_path, monkeypa
 def test_clang_cl_is_still_gated_without_is_clang_cl(tmp_path, monkeypatch):
     """The other half: dropping the predicate must not drop the detection."""
     monkeypatch.setattr(sys, "platform", "win32")
+    _no_compile_probe(monkeypatch)
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton(monkeypatch, [], cc = "clang-cl.exe", with_is_clang_cl = False)
     assert _msvc_env._needs_msvc_headers() is True
@@ -289,6 +296,7 @@ def test_the_get_cc_rename_is_followed(tmp_path, monkeypatch):
 
 def test_the_get_cc_rename_still_gates_clang_cl(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
+    _no_compile_probe(monkeypatch)
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton_38(monkeypatch, [], cc = "clang-cl.exe")
     assert _msvc_env._needs_msvc_headers() is True
@@ -356,6 +364,7 @@ def test_a_split_toolchain_is_judged_over_the_union(tmp_path, monkeypatch):
 def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch):
     """The other direction: a union that is still incomplete must gate, or #7595 is unprevented."""
     monkeypatch.setattr(sys, "platform", "win32")
+    _no_compile_probe(monkeypatch)
     ucrt = tmp_path / "ucrt"
     ucrt.mkdir()
     (ucrt / "stdlib.h").write_text("/* stub */")
