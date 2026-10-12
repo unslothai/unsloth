@@ -547,6 +547,45 @@ class TestExactParksAreCountedAcrossModels:
             "self._server_launched_parking = bool(self._server_preempts_kv and kv_cache_unified)"
         ) in source
 
+    def test_the_launchs_own_host_weights_are_not_parking_room(self, monkeypatch):
+        # Sized before its weights load: a partly offloaded model will hold some in host RAM,
+        # and parking must not count those as room.
+        from core.inference import llama_exact as exact
+
+        monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 100_000)
+        monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
+        monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
+        me = self._backend(exact.EXACT_STATE_OFF, None)
+        alone = llama_mod._host_bounded_parking_mib(10**9, me)
+        assert alone == 25_000
+        assert llama_mod._host_bounded_parking_mib(10**9, me, 40_000) == 15_000
+        cmd = ["llama-server", "--preempt-ram", str(alone)]
+        assert llama_mod._rebound_named_parking_budget(cmd, alone, me, 40_000) == 15_000
+        assert cmd[-1] == "15000"
+
+    def test_the_planned_host_weights_are_read_off_the_preflight(self, monkeypatch):
+        backend = object.__new__(LlamaCppBackend)
+        monkeypatch.setattr(
+            backend, "_launch_host_weights", lambda *a, **k: (6 * 1024 * 1024 * 1024, 0, 0)
+        )
+        assert backend._planned_host_weights_mib(["llama-server"], []) == 6 * 1024
+        monkeypatch.setattr(backend, "_launch_host_weights", lambda *a, **k: (-5, 0, 0))
+        assert backend._planned_host_weights_mib(["llama-server"], []) == 0
+        monkeypatch.setattr(backend, "_launch_host_weights", lambda *a, **k: None)
+        assert backend._planned_host_weights_mib(["llama-server"], []) == 0
+
+    def test_the_launch_rebounds_on_its_placement(self):
+        import inspect
+        source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        site = source.index("_offload_msg = self._launch_host_shortfall_message(")
+        window = source[site : site + 1200]
+        assert "if _exact_budget is not None and not _exact_wanted:" in window
+        assert "_host_weights_mib = self._planned_host_weights_mib(" in window
+        assert (
+            "_exact_budget = _rebound_named_parking_budget( cmd, _exact_budget, self, _host_weights_mib )"
+        ) in window
+
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
         # Each ordinary budget is allocated only when it parks, so four sized off the same free
         # reading could together take the reserve the bound promises to leave.

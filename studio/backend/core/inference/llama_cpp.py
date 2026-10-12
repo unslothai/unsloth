@@ -2600,7 +2600,7 @@ def _free_less_commitments_mib(commitments: list) -> Optional[int]:
     return max(0, int(free) - held)
 
 
-def _host_bounded_parking_mib(need_mib: int, backend = None) -> int:
+def _host_bounded_parking_mib(need_mib: int, backend = None, planned_host_mib: int = 0) -> int:
     """``need_mib`` capped to what this host can pin without pressure; 0 means do not park.
 
     A park past the budget drops its cells and is re-prefilled, which costs about what the copy
@@ -2614,6 +2614,8 @@ def _host_bounded_parking_mib(need_mib: int, backend = None) -> int:
     available = _free_less_commitments_mib(commitments)
     if available is None:
         return 0
+    # Read before the launch's own weights load: what it will hold in host RAM is not room.
+    available = max(0, available - max(0, int(planned_host_mib or 0)))
     total = _total_host_memory_mib() or available
     reserve = max(_PARKING_HOST_RESERVE_MIB, int(total * _PARKING_HOST_RESERVE_FRACTION))
     cap = min(int(available * _PARKING_HOST_AVAILABLE_FRACTION), available - reserve)
@@ -2624,11 +2626,12 @@ def _rebound_named_parking_budget(
     cmd: list,
     budget_mib: int,
     backend = None,
+    planned_host_mib: int = 0,
 ) -> Optional[int]:
     """Replace the ``--preempt-ram budget_mib`` pair Studio appended to ``cmd`` with the host-bounded
     figure, dropping the pair when that is zero. Returns the budget now in force."""
     with _parking_budget_lock:
-        bounded = _host_bounded_parking_mib(budget_mib, backend)
+        bounded = _host_bounded_parking_mib(budget_mib, backend, planned_host_mib)
         _reserve_inflight_parking(backend, bounded)
     for i in range(len(cmd) - 1, 0, -1):
         if cmd[i - 1] == "--preempt-ram" and cmd[i] == str(budget_mib):
@@ -16130,14 +16133,49 @@ class LlamaCppBackend:
         names Vulkan iGPUs whose reported free memory overlaps the host pool. Either
         reading can hold the remaining weights, but they must never be added together.
         """
+        if honor_opt_out and self._host_offload_warning_opted_out():
+            logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
+            return None
+        priced = self._launch_host_weights(
+            cmd,
+            detected_gpus,
+            env,
+            child_has_no_gpu = child_has_no_gpu,
+            shared_gpu_ids = shared_gpu_ids,
+        )
+        if priced is None:
+            return None
+        offload_bytes, heap_free_mib, heap_bytes = priced
+        # A carve-out can satisfy the dedicated-VRAM shortfall. Skip card-resident
+        # loads so a cgroup budget is never applied to a nonpositive need.
+        if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
+            # A finite cgroup still limits host-backed GPU allocations.
+            cgroup_mib = self._cgroup_available_memory_mib()
+            if cgroup_mib is None:
+                return None
+            return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
+        return self._host_offload_shortfall_message(
+            offload_bytes,
+            self._available_system_memory_mib() if avail_mib is None else avail_mib,
+        )
+
+    def _launch_host_weights(
+        self,
+        cmd: Iterable[str],
+        detected_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        child_has_no_gpu: bool = False,
+        shared_gpu_ids: Iterable[int] = (),
+    ) -> Optional[tuple[int, int, int]]:
+        """``(weight bytes past free VRAM, shared heap free MiB, shared heap bytes)`` for the
+        finished argv, or None where ``_launch_host_shortfall_message`` abstains. The first
+        is a floor on the weights this launch leaves in host RAM."""
         argv = [str(a) for a in cmd or ()]
         if not argv:
             return None
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
-            return None
-        if honor_opt_out and self._host_offload_warning_opted_out():
-            logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
             return None
         # rpc places layers on remote devices this cannot size, in either spelling
         _env = os.environ if env is None else env
@@ -16178,19 +16216,17 @@ class LlamaCppBackend:
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
-        # A carve-out can satisfy the dedicated-VRAM shortfall. Skip card-resident
-        # loads so a cgroup budget is never applied to a nonpositive need.
-        if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
-            # A finite cgroup still limits host-backed GPU allocations.
-            cgroup_mib = self._cgroup_available_memory_mib()
-            if cgroup_mib is None:
-                return None
-            return self._apu_ram_shortfall_message(heap_bytes, cgroup_mib)
-        return self._host_offload_shortfall_message(
-            offload_bytes,
-            self._available_system_memory_mib() if avail_mib is None else avail_mib,
-        )
+        return model_bytes - free_vram_mib * 1024 * 1024, heap_free_mib, heap_bytes
+
+    def _planned_host_weights_mib(self, cmd, detected_gpus, env = None, **kwargs) -> int:
+        """MiB of weights this launch will hold in host RAM, 0 when it cannot be priced."""
+        try:
+            priced = self._launch_host_weights(cmd, detected_gpus, env, **kwargs)
+        except Exception:
+            return 0
+        if priced is None:
+            return 0
+        return max(0, int(priced[0])) // (1024 * 1024)
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -32071,6 +32107,20 @@ class LlamaCppBackend:
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
+                if _exact_budget is not None and not _exact_wanted:
+                    # Sized before the placement was known: now that it is, the weights this
+                    # launch leaves in host RAM come off the room its parking may pin.
+                    _host_weights_mib = self._planned_host_weights_mib(
+                        cmd,
+                        _reachable_gpus,
+                        env,
+                        child_has_no_gpu = _child_has_no_gpu,
+                        shared_gpu_ids = _shared_gpu_ids,
+                    )
+                    if _host_weights_mib:
+                        _exact_budget = _rebound_named_parking_budget(
+                            cmd, _exact_budget, self, _host_weights_mib
+                        )
                 # Snapshotted BEFORE the override note is appended below, so a re-price
                 # that promotes this notice appends that note once rather than twice.
                 _host_ram_msg = _offload_msg
