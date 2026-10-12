@@ -1809,6 +1809,25 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
     return f"  Context length: {value_int} tokens"
 
 
+_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
+    """Hand --models-dir to the backend through the env, which both launch paths keep; the backend adds each as a Custom Folder."""
+    if not models_dir:
+        return
+    resolved = []
+    for raw in models_dir:
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            typer.echo(f"Error: --models-dir {raw} is not an existing folder.", err = True)
+            raise typer.Exit(2)
+        resolved.append(str(path.resolve()))
+    existing = [p for p in os.environ.get(_MODELS_DIRS_ENV, "").split(os.pathsep) if p]
+    merged = list(dict.fromkeys(existing + resolved))
+    os.environ[_MODELS_DIRS_ENV] = os.pathsep.join(merged)
+
+
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
@@ -1878,6 +1897,13 @@ def studio_default(
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
         "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
+    models_dir: Optional[List[Path]] = typer.Option(
+        None,
+        "--models-dir",
+        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        "Custom Folder, so its models show up in the Chat and Train model pickers on this "
+        "and later launches; remove it from Custom Folders in the model picker.",
+    ),
     password: str = typer.Option(
         "",
         "--password",
@@ -1891,6 +1917,7 @@ def studio_default(
     # --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     _ensure_studio_env_exported()
+    _export_models_dirs(models_dir)
     if ctx.invoked_subcommand is not None:
         # Typer does not forward parent options, so `unsloth studio --parallel N run` would drop N.
         if parallel != _PARALLEL_DEFAULT_PLAIN:
