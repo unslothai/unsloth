@@ -38430,9 +38430,8 @@ class LlamaCppBackend:
 
         if checkpoint.has_resume_point():
             # Unstripped, as the length continuation is: the replayed prefix has to match
-            # the text already streamed. A half-parsed tool call is dropped by not being
-            # appended, which is intended: nothing executed, so nothing is lost by asking
-            # again.
+            # the text already streamed. A half-written textual call is cut before it gets
+            # here: nothing executed, so nothing is lost by asking again.
             partial = {"role": "assistant", "content": content_accum}
             # The thought that preceded the prose is the same turn's work: replayed as prose
             # alone, the continuation is conditioned on a different prefix from the one that
@@ -42466,8 +42465,18 @@ class LlamaCppBackend:
                     content_accum,
                     reasoning_accum,
                 )
+                # A textual call the attempt was writing is dropped, not replayed: nothing has
+                # run, and the restarted parser would see only its tail and never run it. The
+                # prose the client was shown is what goes back, as the display strips it.
+                _preempt_content = content_accum
+                if detect_state == _S_DRAINING and _text_args_call_start >= 0:
+                    _preempt_content = _preempt_content[:_text_args_call_start]
+                if auto_heal_tool_calls:
+                    _preempt_content = _StreamingMarkupStripper(_enabled_names_gate).strip(
+                        _preempt_content
+                    )
                 _checkpoint = _preemption.StreamCheckpoint(
-                    visible_text = content_accum,
+                    visible_text = _preempt_content,
                     reasoning_text = reasoning_accum,
                     charged_tokens = _pre_charged,
                     resumes = _preempt_resumes + 1,
@@ -42506,7 +42515,7 @@ class LlamaCppBackend:
                     _resume_assembled = self._assemble_preempt_resume(
                         conversation,
                         _checkpoint,
-                        content_accum,
+                        _preempt_content,
                         reasoning_accum,
                     )
                 except Exception:
@@ -42597,7 +42606,11 @@ class LlamaCppBackend:
                     # Floored at 1: a request for zero tokens returns nothing at all.
                     _continuation_max_tokens = max(1, _preempt_cap_left)
                 _preempt_display_seed = (
-                    cumulative_display,
+                    # Without the dropped call's markup: left in, it reads as an open call that
+                    # hides every word the resumed attempt writes after it.
+                    _strip_tool_markup_streaming(cumulative_display)
+                    if _preempt_content != content_accum
+                    else cumulative_display,
                     _last_emitted,
                     in_thinking,
                     # Carried so the promoted answer is the WHOLE thought. Dropped once the
