@@ -45,7 +45,9 @@ def test_a_cancel_ends_the_driver_and_closes_the_stream():
         cancel_event = cancel,
         poll_interval_s = 0.01,
     )
-    entry = llama_mod._start_tool_call(_decision(name), stream, [0, 0], [False], cancel_event = cancel)
+    entry = llama_mod._start_tool_call(
+        _decision(name), stream, [0, 0], [False], cancel_event = cancel
+    )
     driver = _driver(name)
     time.sleep(0.05)
     cancel.set()
@@ -72,7 +74,9 @@ def test_an_uncancelled_call_still_returns_its_result():
         cancel_event = cancel,
         poll_interval_s = 0.01,
     )
-    entry = llama_mod._start_tool_call(_decision(name), stream, [0, 0], [False], cancel_event = cancel)
+    entry = llama_mod._start_tool_call(
+        _decision(name), stream, [0, 0], [False], cancel_event = cancel
+    )
     release.set()
     _driver_threads = [t for t in threading.enumerate() if t.name == f"tool-drive-{name}"]
     for thread in _driver_threads:

@@ -622,7 +622,11 @@ _TOOL_START_DEFERRED = object()
 _TOOL_CALL_REFUSED = object()
 
 
-def _drive_tool_stream(stream, out_queue, cancel_event = None) -> None:
+def _drive_tool_stream(
+    stream,
+    out_queue,
+    cancel_event = None,
+) -> None:
     """Read one tool's event generator to the end, on a thread of its own.
 
     ``stream_tool_execution`` starts its worker inside the generator body and then blocks

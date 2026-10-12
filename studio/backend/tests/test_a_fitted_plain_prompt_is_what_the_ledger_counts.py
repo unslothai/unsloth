@@ -57,7 +57,13 @@ def _lift(namespace: dict):
     return namespace["_gguf_refit_allowance"]
 
 
-def _refit(monkeypatch, controller, original, fitted, counted = 5):
+def _refit(
+    monkeypatch,
+    controller,
+    original,
+    fitted,
+    counted = 5,
+):
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
     monkeypatch.setattr(
         inference, "_count_gguf_admission_prompt_detail", lambda *a, **k: (counted, True)
