@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF repos list one build per quant (#13327), so deletion must preserve cached siblings."""
+"""GGUF repos expose one build per quant (#13327), but deletion must preserve cached siblings."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def test_hidden_big_endian_file_cannot_take_the_visible_rows_key(tmp_path):
 
 
 def _revisioned_repo(tmp_path: Path, names_by_revision):
-    """an HF cache repo with one snapshot per revision, the last one newest."""
+    """treat the final HF cache snapshot as newest."""
     import os
 
     repo_dir = tmp_path / "models--org--Model-GGUF"
@@ -146,7 +146,6 @@ def _revisioned_repo(tmp_path: Path, names_by_revision):
 
 
 def test_the_newest_snapshot_names_the_rows_build(tmp_path):
-    """the row lists the newest snapshot's build; older copies of it go too, other builds stay."""
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,
         _variant_bytes,
@@ -175,7 +174,6 @@ def test_the_newest_snapshot_names_the_rows_build(tmp_path):
 
 
 def test_a_build_alone_in_an_older_snapshot_is_not_the_rows(tmp_path):
-    """an hf download before the repo moved on leaves another build alone in an older snapshot."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snapshots = _revisioned_repo(tmp_path, (("old", [SWIFT]), ("new", [LISTED])))
@@ -241,7 +239,6 @@ def test_deleting_from_a_local_folder_keeps_the_other_builds(tmp_path):
 
 
 def test_reclaiming_an_update_leaves_the_other_builds(monkeypatch, tmp_path):
-    """stale reclaim must preserve sibling-build blobs that share the listed build's quant."""
     from hub.services.models import cache_inventory as CI
     from hub.services.models import deletion as D
 

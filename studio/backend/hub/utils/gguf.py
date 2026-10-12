@@ -427,7 +427,6 @@ def gguf_checkpoint_family(filename: str) -> Optional[str]:
 
 
 def _checkpoint_identity(filename: str) -> Optional[str]:
-    """fold case and separators so alternate spellings of one checkpoint compare equal."""
     family = gguf_checkpoint_family(filename)
     if family is None:
         return None
@@ -444,7 +443,7 @@ def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
 
 
 def _listed_identity(members: Sequence[str]) -> Optional[str]:
-    """identity of the first file the lister shows, skipping big-endian files it hides."""
+    """use the first lister-visible file, ignoring hidden big-endian files."""
     from utils.models.model_config import _extract_quant_label as _loader_quant
 
     selectable = [
@@ -456,7 +455,6 @@ def _listed_identity(members: Sequence[str]) -> Optional[str]:
 def gguf_listed_checkpoints(
     snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
 ) -> dict[str, Optional[str]]:
-    """map variant keys to the checkpoint chosen by the cross-snapshot lister."""
     groups = [_paths_by_variant_key(paths) for paths in snapshots]
     if completed is None:
         listed: dict[str, Optional[str]] = {}
@@ -497,11 +495,7 @@ def gguf_listed_checkpoints(
 def gguf_variant_keys_by_checkpoint(
     paths: Iterable[str], listed: Optional[dict[str, Optional[str]]] = None
 ) -> dict[str, str]:
-    """prevent destructive grouping of different checkpoints that share a variant key.
-
-    *listed* (``gguf_listed_checkpoints``) names the row's checkpoint across snapshots; without it the first file
-    of *paths* does, which in an older snapshot can be a build no row shows.
-    """
+    """separate checkpoints sharing a key; listed preserves the row's cross-snapshot build."""
     keys: dict[str, str] = {}
     for key, members in _paths_by_variant_key(paths).items():
         identity_listed = listed[key] if listed and key in listed else _listed_identity(members)
