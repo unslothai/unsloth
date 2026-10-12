@@ -409,16 +409,30 @@ _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
-def _admission_status_chunks(text: str) -> list[dict]:
-    """The pause and resume comments in one piece of the upstream stream, as chunks a
-    durable follower renders the way the legacy stream renders the comments."""
+_ADMISSION_STATUS_BY_MARKER = {
+    _ADMISSION_WAIT_MARKER: "waiting",
+    _ADMISSION_DONE_MARKER: "admitted",
+    _PREEMPT_PAUSED_MARKER: "paused",
+    _PREEMPT_RESUMED_MARKER: "resumed",
+}
+
+
+def _admission_status_chunks(text: str, last: list | None = None) -> list[dict]:
+    """The queue, pause and resume comments in one piece of the upstream stream, as chunks a
+    durable follower renders the way the legacy stream renders the comments.
+
+    ``last`` holds the status relayed before and is updated: the wait comment repeats every
+    keepalive while queued, and only a change is worth an event."""
     chunks: list[dict] = []
     for line in text.replace("\r\n", "\n").split("\n"):
-        stripped = line.strip()
-        if stripped == _PREEMPT_PAUSED_MARKER:
-            chunks.append({"_admissionStatus": "paused"})
-        elif stripped == _PREEMPT_RESUMED_MARKER:
-            chunks.append({"_admissionStatus": "resumed"})
+        status = _ADMISSION_STATUS_BY_MARKER.get(line.strip())
+        if status is None:
+            continue
+        if last is not None:
+            if last and last[0] == status:
+                continue
+            last[:] = [status]
+        chunks.append({"_admissionStatus": status})
     return chunks
 
 
@@ -803,6 +817,7 @@ class ChatGenerationSupervisor:
                 raise RuntimeError("Local generation did not return an event stream")
             decoder = _SSEDecoder()
             last_keepalive = time.monotonic()
+            last_status: list = []
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
                 timeout = (
@@ -843,7 +858,7 @@ class ChatGenerationSupervisor:
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
                         await self._try_touch_progress(run_id)
-                status_chunks = _admission_status_chunks(text)
+                status_chunks = _admission_status_chunks(text, last_status)
                 if status_chunks:
                     # Written at once, not batched: nothing follows a pause while it
                     # lasts, so a batched notice would arrive with the resume.
