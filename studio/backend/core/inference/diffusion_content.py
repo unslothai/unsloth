@@ -243,10 +243,7 @@ LTX25_VARIANT = "ltx-2.5"
 
 
 def is_ltx25_dit_keys(keys) -> bool:
-    """An LTX-2 audio-video DiT header from the 2.5 generation (diffusers' ``ff_bias=False`` +
-    ``use_keyframes_abs_pos_embedding``): a learned keyframe position embedding, or a first video FFN
-    that has weights but no bias. Every LTX-2.0 / 2.3 file (bf16, fp8, GGUF, diffusers) carries
-    ``transformer_blocks.0.ff.net.0.proj.bias``. Keys are relative to the DiT prefix."""
+    """LTX-2.5 DiT: keyframe position embedding, or block 0 video FFN without bias (every 2.0 / 2.3 file has it)."""
     names = set(keys)
     if "keyframes_abs_pos_embedding" in names:
         return True
@@ -330,8 +327,7 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "audio_caption_projection" in tops
     ):
         if is_ltx25_dit_keys(keys):
-            # Recognised but unsupported, like LTX-Video 0.9 below: the ltx-2 name must not revive it. The variant
-            # marks it for is_ltx25_checkpoint; no family means no defaults are ever looked up under it.
+            # No family: the ltx-2 name must not revive it.
             return CheckpointInfo(
                 ROLE_DIT,
                 None,
@@ -659,8 +655,6 @@ def refusal_for(path: str, page: str) -> Optional[str]:
 
 
 def is_ltx25_checkpoint(path: str) -> bool:
-    """Header-only: whether a local ``.safetensors`` / ``.gguf`` is an LTX-2.5 DiT (``is_ltx25_dit_keys`` under any DiT
-    prefix). Unreadable -> False."""
     return inspect_checkpoint(path).variant == LTX25_VARIANT
 
 

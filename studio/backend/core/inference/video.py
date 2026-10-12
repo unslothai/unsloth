@@ -1047,9 +1047,7 @@ def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) 
 
 
 def _refuse_local_ltx25_pipeline(repo_id: str, gguf_filename: Optional[str]) -> None:
-    """ValueError for a LOCAL diffusers folder holding an LTX-2.5 pipeline under a name that does not say so: its
-    model_index names a Gemma 4 text encoder or ships the 2.5-only diffusion_decoder / duration_head. Header-sized
-    reads only; anything unreadable passes."""
+    """Refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
     if gguf_filename:
         return
     import json
@@ -1082,7 +1080,7 @@ def _detect_load_family(
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
-    # Before the override too: family_override="ltx-2" must not force an LTX-2.5 pick through the 2.x loader.
+    # Before the override: family_override="ltx-2" must not load LTX-2.5.
     assert_supported_ltx_version(repo_id, gguf_filename, display_repo_id)
     _refuse_local_ltx25_pipeline(repo_id, gguf_filename)
     if family_override:

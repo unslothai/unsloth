@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 is refused instead of being loaded as LTX-2.
-
-The "ltx" alias used to hand every LTX-2.5 pick (Lightricks/LTX-2.5-Diffusers, the split
-Lightricks/LTX-2.5 files, a renamed copy) to the ltx-2 family, whose loader pairs it with the
-Gemma 3 encoder and the 2.3 VAE/connectors. These tests pin the refusal by name, by tensor header
-and by model_index.json, and that every LTX-2.0 / 2.3 pick still resolves to ltx-2."""
+"""LTX-2.5 is refused instead of being loaded as LTX-2; LTX-2.0 / 2.3 still resolve to ltx-2."""
 
 from __future__ import annotations
 
@@ -80,7 +75,6 @@ def test_lookalikes_are_not_ltx25(name):
 
 
 def test_prerelease_name_is_named_as_such():
-    # diffusers' own code called the 2.5 pre-release "2.4"; same architecture, same refusal.
     assert unsupported_ltx_version("ltx-2.4-test") == "2.4"
 
 
@@ -146,9 +140,6 @@ def test_training_refuses_ltx25_base():
             resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family)
 
 
-# --------------------------------------------------------------------------------------------
-# Header: the 2.5 DiT keeps 2.3's nine-row modulation tables, so only its tensors tell it apart.
-# --------------------------------------------------------------------------------------------
 
 _LTX23_KEYS = [
     "Lightricks/LTX-2.3/ltx-2.3-22b-distilled.safetensors",
@@ -194,7 +185,7 @@ def test_ltx25_header_is_recognised_but_unsupported(key):
 
 
 def test_ltx25_header_without_the_embedding_is_still_caught():
-    # The fixture is trimmed past the FFN, so add block 0's video FFN back: with its bias it is 2.x, without it 2.5.
+    # Fixture is trimmed past the FFN: re-add block 0's video FFN.
     shapes, meta = _shapes("Lightricks/LTX-2.3/ltx-2.3-22b-distilled.safetensors")
     ff = "model.diffusion_model.transformer_blocks.0.ff.net.0.proj"
     no_bias = {**shapes, f"{ff}.weight": [16384, 4096]}

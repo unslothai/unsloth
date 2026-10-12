@@ -284,12 +284,7 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
 
 
 def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:
-    """ValueError when the checkpoint HEADER is an LTX-2.5 DiT (see ``diffusion_content.is_ltx25_dit_keys``).
-
-    The name check (``video_families.assert_supported_ltx_version``) refuses the official file names before any
-    download; this catches a renamed hub file once it is on disk, before ``is_ltx23_checkpoint`` (which only counts
-    modulation rows, and 2.5 keeps 2.3's nine) hands it to the 2.3 assembly with the Gemma 3 encoder. An unreadable
-    header passes: the load reports its own error."""
+    """Catch a renamed LTX-2.5 file by header: ``is_ltx23_checkpoint`` counts modulation rows, and 2.5 keeps 2.3's nine."""
     from .diffusion_content import is_ltx25_checkpoint
     from .video_families import unsupported_ltx_message
 

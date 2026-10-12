@@ -36,22 +36,14 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
-# LTX releases after 2.3 (LTX-2.5; diffusers' code calls its pre-release "2.4") are not drop-in LTX-2.3 checkpoints: a
-# Gemma 4 text encoder with its own projections (transformers >= 5.10), a video DiT without the video FFN bias plus a
-# keyframe position embedding, a diffusion video decoder, a duration head and a distilled-only sigma schedule. The
-# "ltx" alias would otherwise hand them to the ltx-2 family: the split 2.5 DiT was accepted, staged 42 GB plus the
-# LTX-2 base (Gemma 3 encoder) and then died in the 2.3 assembly on the missing FFN biases; a local Diffusers pack
-# needs a text encoder class transformers 5.5 does not have, and on a newer transformers would render the distilled
-# DiT with the 40-step CFG-4 dev recipe. Matched on the version that follows the LTX token: "ltx-2.5", "ltx2.5",
-# "ltx_2_5", "ltx25"; never "ltx-2.3" or "ltx-2-19b".
+# LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in; else the "ltx" alias routes it to ltx-2.
+# Matches "ltx-2.5", "ltx2.5", "ltx_2_5", "ltx25"; never "ltx-2.3" or "ltx-2-19b".
 _LTX_NEWER_THAN_23 = re.compile(
     r"(?<![a-z0-9])ltx(?:[-_ ]?video)?[-_ ]?2(?:[._]([4-9])|([4-9])(?![0-9a-z]))(?![0-9])"
 )
 
 
 def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
-    """``"2.5"`` (etc.) when any of ``names`` (repo id, display id, picked file) names an LTX release newer than 2.3,
-    else None."""
     for name in names:
         found = _LTX_NEWER_THAN_23.search((name or "").lower())
         if found is not None:
@@ -60,7 +52,6 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
-    """The refusal for an LTX release Studio cannot run yet; ``subject`` names what was picked."""
     return (
         f"{subject} is LTX-{version}, which Studio does not support yet. LTX-{version} is not a drop-in LTX-2.3: "
         "it uses a new Gemma 4 text encoder, a new video decoder and its own sampling schedule, so loading it as "
@@ -74,12 +65,10 @@ def assert_supported_ltx_version(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """ValueError naming the release when a pick is a newer-than-2.3 LTX checkpoint (see ``_LTX_NEWER_THAN_23``).
-
-    A picked file whose own name carries an LTX token decides alone, so an ``ltx-2.3-...`` file kept in a folder
-    someone named ``ltx-2.5-tests`` still loads; a generically named file defers to the repo / display id."""
+    """A file whose own name has an LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder loads);
+    a generic file name defers to the repo / display id."""
     def leaf(name: Optional[str]) -> str:
-        # Last path segment only: an org never carries the version, and a local parent folder must not decide.
+        # Last segment only: a local parent folder must not decide.
         return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
 
     base = leaf(filename)
