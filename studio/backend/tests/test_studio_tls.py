@@ -23,7 +23,7 @@ def _write_pair(tmp_path: Path, name: str = "studio.example.ts.net") -> tuple[Pa
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
@@ -38,6 +38,22 @@ def _write_pair(tmp_path: Path, name: str = "studio.example.ts.net") -> tuple[Pa
         .not_valid_after(now + datetime.timedelta(days = 1))
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical = False)
         .add_extension(x509.BasicConstraints(ca = True, path_length = None), critical = True)
+        # macOS's verifier (truststore in the client too) refuses a TLS server cert without serverAuth
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical = False)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature = True,
+                content_commitment = False,
+                key_encipherment = False,
+                data_encipherment = False,
+                key_agreement = False,
+                key_cert_sign = True,
+                crl_sign = False,
+                encipher_only = False,
+                decipher_only = False,
+            ),
+            critical = True,
+        )
         .sign(key, hashes.SHA256())
     )
     crt, key_path = tmp_path / f"{name}.crt", tmp_path / f"{name}.key"
@@ -179,6 +195,8 @@ def test_plain_uvicorn_tls_fails_under_injection(tmp_path):
     """Negative control: the hook really breaks a context truststore owns. Under TLS 1.3 the client finishes first,
     so the server's rejection reads as a closed connection, not a client-side error."""
     reply = _handshake(tmp_path, "uvicorn")
+    # the client accepting the certificate is what makes this the server's failure
+    assert not isinstance(reply, ssl.SSLCertVerificationError), reply
     assert not _served(reply), reply
 
 
