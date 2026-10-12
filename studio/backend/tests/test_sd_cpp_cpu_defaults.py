@@ -34,7 +34,6 @@ def _cgroups(
         ({"/user.slice/app.scope": "max 100000"}, None),
         ({"/user.slice/app.scope": "400000 100000"}, 4),
         ({"/user.slice/app.scope": "250000 100000"}, 3),
-        # A parent's quota binds too, and the tightest one wins.
         ({"/user.slice": "200000 100000", "/user.slice/app.scope": "800000 100000"}, 2),
         ({"/": "600000 100000"}, 6),
         ({"/user.slice/app.scope": "garbage"}, None),
@@ -92,7 +91,6 @@ def test_other_platforms_never_read_cgroups(monkeypatch):
 
 @pytest.mark.parametrize("cpus, p_cores", [(3, 3), (10, 8), (16, 12), (10, 4)])
 def test_macos_uses_the_performance_core_count_not_half_the_cores(monkeypatch, cpus, p_cores):
-    # Apple Silicon has no SMT: halving os.cpu_count() gave 1 thread on a 3-core VM and 5 on an 8P+2E M1 Pro.
     _host(monkeypatch, cpus = cpus, platform = "darwin")
     monkeypatch.setattr(bk, "_apple_performance_cores", lambda: p_cores)
     assert bk._default_threads() == p_cores
