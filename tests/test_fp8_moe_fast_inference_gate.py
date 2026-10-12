@@ -42,7 +42,6 @@ def _moe(**quant):
 
 @pytest.fixture
 def zoo_scheme(monkeypatch):
-    """A unsloth_zoo that shares block FP8 experts (exposes fp8_moe_checkpoint_scheme)."""
     seen = []
 
     def fp8_moe_checkpoint_scheme(config):
@@ -63,7 +62,6 @@ def zoo_scheme(monkeypatch):
 
 @pytest.fixture
 def old_zoo(monkeypatch):
-    """A unsloth_zoo without fp8_moe_checkpoint_scheme: it shares no FP8 experts."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -89,7 +87,6 @@ def test_old_zoo_refuses_every_fp8_moe(old_zoo):
     assert "upgrade unsloth_zoo" in refusal(
         SimpleNamespace(num_experts = None, n_routed_experts = 64, quantization_config = BLOCK)
     )
-    # Dense FP8, unquantized MoE and bnb MoE are not this gate's business.
     assert refusal(SimpleNamespace(num_experts = None, quantization_config = BLOCK)) is None
     assert refusal(SimpleNamespace(num_experts = 8)) is None
     assert (

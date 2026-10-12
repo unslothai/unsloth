@@ -1131,10 +1131,7 @@ def _is_sparse_moe_config(config):
 
 
 def _fp8_moe_fast_inference_refusal(config):
-    """Why fast_inference cannot share this FP8 sparse MoE checkpoint's experts, else None.
-
-    An unsloth_zoo without `fp8_moe_checkpoint_scheme` shares no FP8 experts and would refuse only after vLLM loaded.
-    """
+    """Refusal reason for FP8 sparse MoE + fast_inference, else None (old zoo shares no FP8 experts)."""
     try:
         from unsloth_zoo.empty_model import fp8_moe_checkpoint_scheme
     except Exception:
@@ -3901,8 +3898,7 @@ class FastBaseModel:
                         "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
-                # Block FP8 MoE experts are shared with vLLM; other FP8 MoE formats are refused here,
-                # before vLLM allocates the engine.
+                # Refuse unsupported FP8 MoE before vLLM allocates the engine.
                 fp8_moe_refusal = _fp8_moe_fast_inference_refusal(model_config)
                 if fp8_moe_refusal is not None:
                     raise NotImplementedError(
