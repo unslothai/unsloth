@@ -3,20 +3,16 @@
 
 """Answer engine discovery probes with JSON, or with a 404, but never with the app.
 
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props``
-returned 200 and a page of HTML. That is worse than a 404: a probe reads the status
-before the body. Served here: ``/props``, ``/v1/props``, ``/version``, and the Open
-WebUI llama.cpp management surface (``GET /models``, ``POST /models/load``,
-``POST /models/unload``). Everything else in llama-server's table gets an explicit
-404, on its real method as well as GET.
+Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
+of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
+``/v1/props``, ``/version``, a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
+``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only, and Open WebUI's llama.cpp model management
+(``GET /models``, ``POST /models/load``, ``POST /models/unload``, #10610). Everything else in llama-server's
+table gets an explicit 404, on its real method as well as GET.
 
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes
-a client select Ollama and then fail on ``/api/chat``, which Studio does not implement;
-the reporting user's client instead fell back to the OpenAI surface and worked.
-Advertising a protocol we do not have is the HTML 200 again, one layer up.
-
-Also deliberately NOT served yet (Open WebUI follow-ups): ``POST /models`` (download),
-``DELETE /models`` (delete), and ``GET /models/sse`` (model events).
+Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
+and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
+to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
 """
 
 from __future__ import annotations
@@ -25,7 +21,9 @@ import asyncio
 import functools
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
@@ -36,9 +34,8 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# llama-server's table (tools/server/server.cpp) minus routes Studio serves, so the
-# set is complete rather than growing per complaint. Bare only, so it cannot shadow
-# /api/ or /v1/. Management list/load/unload are served below; download/delete/sse stay.
+# llama-server's table (tools/server/server.cpp) minus /props, so the set is complete
+# rather than growing per complaint. Bare only, so it cannot shadow /api/ or /v1/.
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -55,8 +52,10 @@ _ENGINE_PROBE_PATHS = frozenset(
         "infill",
         "lora-adapters",
         "metrics",
-        # POST /models (download) and DELETE /models stay denied via explicit routes.
+        "models",
+        "models/load",
         "models/sse",
+        "models/unload",
         "rerank",
         "reranking",
         "responses",
@@ -67,17 +66,29 @@ _ENGINE_PROBE_PATHS = frozenset(
     }
 )
 
-# Paths Studio serves on one method but still must 404 on others (no HTML).
-_MANAGEMENT_METHOD_DENIALS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # llama.cpp download/delete; Studio keeps these as follow-ups.
-    ("/models", ("POST", "PUT", "PATCH", "DELETE")),
-    # load/unload are POST-only.
-    ("/models/load", ("GET", "PUT", "PATCH", "DELETE", "HEAD")),
-    ("/models/unload", ("GET", "PUT", "PATCH", "DELETE", "HEAD")),
-)
-
 # /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
+
+# Forwarded to the resident llama-server (#11705). Slot save / restore stays denied: Studio owns slot persistence.
+_PASSTHROUGH_ROUTES = frozenset(
+    {
+        ("GET", "metrics"),
+        ("GET", "slots"),
+        ("POST", "tokenize"),
+        ("POST", "detokenize"),
+    }
+)
+_PASSTHROUGH_TIMEOUT_S = 30.0
+
+# Open WebUI's llama.cpp model management (#10610). Download, delete and /models/sse stay denied.
+_MANAGEMENT_ROUTES = frozenset(
+    {
+        ("GET", "models"),
+        ("POST", "models/load"),
+        ("POST", "models/unload"),
+    }
+)
+_SERVED_ROUTES = _PASSTHROUGH_ROUTES | _MANAGEMENT_ROUTES
 
 # The /v1 entries Studio does not implement. A test asserts each is really absent from
 # the assembled app, so implementing one fails CI instead of being shadowed by a 404.
@@ -98,9 +109,6 @@ _UNSERVED_V1_PROBE_PATHS = frozenset(
 def is_engine_probe_path(full_path: str) -> bool:
     """True for an engine endpoint that must 404 rather than render the app shell."""
     normalized = full_path.strip("/").lower()
-    if normalized in {"models", "models/load", "models/unload"}:
-        # Served routes: the SPA catch-all must not claim these as HTML.
-        return False
     return normalized in _ENGINE_PROBE_PATHS or normalized.startswith(_ENGINE_PROBE_PREFIXES)
 
 
@@ -156,14 +164,15 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with
-    # --metrics, so endpoint_metrics arrives true while public /metrics 404s here
-    # (tools/server/server-context.cpp puts all three flags in the payload).
+    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
+    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
+    # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
-    props["endpoint_slots"] = False
     props["endpoint_props"] = False
-    props["endpoint_metrics"] = False
+    passthrough = llama_loaded and not _caller_is_managed_account()
+    props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
+    props["endpoint_metrics"] = passthrough and props.get("endpoint_metrics") is True
 
     # Only when llama-server owns the resident model: with MLX loaded, reading the
     # unloaded llama backend describes a serving model as having no context or slots.
@@ -186,15 +195,102 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires.
-# The catch-all fully matches "/props/" and returns index.html; routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
+# index.html; routes/inference.py registers "/v1/models/" likewise.
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
 @router.get("/v1/props/", include_in_schema = False)
 async def llama_props(current_subject: str = Depends(get_current_subject)):
-    """llama-server-compatible ``GET /props``."""
+    """llama-server-compatible ``GET /props``. The body reveals the resident model, so another account gets the same answer ``/api/inference/status`` gives it."""
+    if await asyncio.to_thread(_resident_hidden_from_caller):
+        from hub.services.models.account_access import hidden_resident_response
+        return hidden_resident_response()
     return await asyncio.to_thread(_server_props)
+
+
+def _resident_hidden_from_caller() -> bool:
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return False
+    if account_access.resident_hidden("chat"):
+        return True
+    try:
+        slot = _inference()._loaded_slot_ident()
+    except Exception:  # noqa: BLE001 - a backend that cannot say has nothing to hide
+        return False
+    return bool(slot) and account_access.resident_hidden("chat", slot)
+
+
+def _caller_is_managed_account() -> bool:
+    from hub.services.models import account_access
+    return account_access.managed_account()
+
+
+def _upstream_client() -> httpx.AsyncClient:
+    # verify=False: plain HTTP to loopback, skips loading the CA bundle per call (~35 ms).
+    return httpx.AsyncClient(trust_env = False, verify = False)
+
+
+def _engine_error(status_code: int, message: str) -> JSONResponse:
+    error_type = "unavailable_error" if status_code == 503 else "not_found_error"
+    return JSONResponse(
+        status_code = status_code,
+        content = {"error": {"code": status_code, "message": message, "type": error_type}},
+    )
+
+
+async def _forward_to_llama_server(request: Request, path: str) -> Response:
+    # Owner only: /slots and /metrics are server-wide, not scoped per account.
+    if await asyncio.to_thread(_caller_is_managed_account):
+        return _engine_error(404, "API endpoint not found")
+    llama_backend = _inference().get_llama_cpp_backend()
+    # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
+    port = getattr(llama_backend, "_port", None)
+    if not getattr(llama_backend, "is_loaded", False) or not port:
+        return _engine_error(503, "No llama.cpp model is loaded")
+    url = f"http://127.0.0.1:{port}/{path}"
+    headers = dict(llama_backend._auth_headers or {})
+    body = await request.body() if request.method == "POST" else None
+    if body is not None:
+        headers["Content-Type"] = request.headers.get("content-type", "application/json")
+    try:
+        async with _upstream_client() as client:
+            upstream = await client.request(
+                request.method,
+                url,
+                params = request.query_params,
+                content = body,
+                headers = headers,
+                timeout = _PASSTHROUGH_TIMEOUT_S,
+            )
+    except httpx.HTTPError as exc:
+        logger.info("llama-server passthrough %s /%s failed: %s", request.method, path, exc)
+        return _engine_error(503, "llama.cpp server is not reachable")
+    return Response(
+        content = upstream.content,
+        status_code = upstream.status_code,
+        media_type = upstream.headers.get("content-type"),
+    )
+
+
+def _make_passthrough(path: str):
+    async def passthrough(request: Request, current_subject: str = Depends(get_current_subject)):
+        return await _forward_to_llama_server(request, path)
+
+    passthrough.__name__ = f"llama_passthrough_{path}"
+    return passthrough
+
+
+for _method, _path in sorted(_PASSTHROUGH_ROUTES):
+    for _form in (f"/{_path}", f"/{_path}/"):
+        router.add_api_route(
+            _form,
+            _make_passthrough(_path),
+            methods = [_method],
+            include_in_schema = False,
+        )
 
 
 @router.get("/version", include_in_schema = False)
@@ -207,81 +303,52 @@ async def studio_version(current_subject: str = Depends(get_current_subject)):
 
 
 class _ModelManageBody(BaseModel):
-    """Open WebUI / llama.cpp management body: ``{"model": "<id>"}``."""
-
     model: str = Field(..., min_length = 1)
 
 
 def _catalog_id_match(catalog: list[dict], model_id: str) -> Optional[str]:
-    """Return the catalog's canonical id for *model_id*, or None."""
-    needle = model_id.strip().lower()
-    if not needle:
-        return None
-    for entry in catalog:
-        eid = entry.get("id")
-        if isinstance(eid, str) and eid.lower() == needle:
-            return eid
-    # ``repo:QUANT`` where the bare repo is listed (Open WebUI may pin a quant).
-    base, sep, _variant = model_id.strip().rpartition(":")
-    if sep and base:
-        base_l = base.strip().lower()
-        for entry in catalog:
-            eid = entry.get("id")
-            if isinstance(eid, str) and eid.lower() == base_l:
-                return model_id.strip()
-    return None
+    """The catalog's id for ``model_id``, or ``model_id`` itself when it is ``<listed id>:<quant>``."""
+    wanted = model_id.strip()
+    ids = {e["id"].lower(): e["id"] for e in catalog if isinstance(e.get("id"), str)}
+    if wanted.lower() in ids:
+        return ids[wanted.lower()]
+    base, sep, _ = wanted.rpartition(":")
+    return wanted if sep and base.strip().lower() in ids else None
 
 
-async def _resolve_manageable_model(model_id: str) -> tuple[str, Optional[str], str]:
-    """Map a management ``model`` id to ``(load_path, gguf_variant, public_id)``.
+async def _catalog_model_id(model_id: str) -> str:
+    # The caller's own catalog, so a managed account only reaches models listed to it.
+    matched = _catalog_id_match(await _inference()._openai_catalog_objects(), model_id)
+    if matched is None:
+        raise HTTPException(status_code = 404, detail = "Model not found")
+    return matched
 
-    Reuses the public catalog and the same local resolver auto-switch uses. Raises
-    404 when the id is not a downloaded/local model this server can manage.
-    """
-    requested = (model_id or "").strip()
-    if not requested:
-        raise HTTPException(status_code = 400, detail = "model is required")
 
-    inf = _inference()
-    catalog = await inf._openai_catalog_objects()
-    matched = _catalog_id_match(catalog, requested)
-
+async def _resolve_load_target(model_id: str) -> tuple[str, Optional[str]]:
+    """``(model_path, gguf_variant)`` for /load, preferring the on-disk copy auto-switch would use."""
     from core.inference.local_model_resolver import (
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
     )
+    from core.inference.openai_auto_download import split_model_ref
 
-    resolved = resolve_trusted_cached_local_gguf(requested)
-    if resolved is None:
-        resolved = await asyncio.to_thread(resolve_local_gguf, requested)
-
+    public_id = await _catalog_model_id(model_id)
+    resolved = resolve_trusted_cached_local_gguf(public_id) or await asyncio.to_thread(
+        resolve_local_gguf, public_id
+    )
     if resolved is not None:
-        load_path, variant, loader_id = resolved[0], resolved[1], resolved[2]
-        public_id = matched or (loader_id if isinstance(loader_id, str) else requested)
-        return load_path, variant, public_id
-
-    if matched is not None:
-        # Catalog-listed (e.g. non-GGUF) without a resolver hit: load by public id.
-        from core.inference.openai_auto_download import split_model_ref
-        base, variant = split_model_ref(matched)
-        return base, variant, base
-
-    raise HTTPException(status_code = 404, detail = "model is not found")
+        return resolved[0], resolved[1]
+    return split_model_ref(public_id)
 
 
-# Outside /v1: Open WebUI strips /v1 before management calls (MODEL_MANAGEMENT_ENDPOINTS).
+# Outside /v1: Open WebUI strips it for management calls (MODEL_MANAGEMENT_ENDPOINTS).
 @router.get("/models", include_in_schema = False)
 @router.get("/models/", include_in_schema = False)
 async def manage_list_models(current_subject: str = Depends(get_current_subject)):
-    """llama.cpp / Open WebUI management catalog (``GET /models``).
-
-    Same downloaded/local catalog as ``GET /v1/models``, including residency
-    metadata. Distinct path: management clients remove the ``/v1`` suffix.
-    """
-    data = await _inference()._openai_catalog_objects()
-    return {"object": "list", "data": data}
+    return {"object": "list", "data": await _inference()._openai_catalog_objects()}
 
 
+# Delegate to Studio's own /load and /unload routes: same gates, account checks and tunnel padding.
 @router.post("/models/load", include_in_schema = False)
 @router.post("/models/load/", include_in_schema = False)
 async def manage_load_model(
@@ -289,36 +356,13 @@ async def manage_load_model(
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Explicit authenticated load (``POST /models/load`` with ``{"model":"..."}``).
-
-    Reuses ``load_model_gated`` so lifecycle gates, resolution and residency match
-    Studio's ``POST /api/inference/load``. Does not change auto-switch policy.
-    """
-    load_path, variant, public_id = await _resolve_manageable_model(body.model)
-    inf = _inference()
     from models.inference import LoadRequest
-
-    request = LoadRequest(model_path = load_path, gguf_variant = variant)
-    try:
-        response = await inf.load_model_gated(
-            request,
-            fastapi_request,
-            current_subject,
-            user_initiated = True,
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- surface as API error, keep residency consistent
-        logger.error("management load failed for %r: %s", public_id, exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Failed to load model") from exc
-
-    status = getattr(response, "status", None) or "loaded"
-    return {
-        "success": True,
-        "model": public_id,
-        "loaded": True,
-        "status": status,
-    }
+    model_path, variant = await _resolve_load_target(body.model)
+    return await _inference().load_model(
+        LoadRequest(model_path = model_path, gguf_variant = variant),
+        fastapi_request,
+        current_subject,
+    )
 
 
 @router.post("/models/unload", include_in_schema = False)
@@ -326,42 +370,20 @@ async def manage_load_model(
 async def manage_unload_model(
     body: _ModelManageBody, current_subject: str = Depends(get_current_subject)
 ):
-    """Explicit authenticated unload (``POST /models/unload`` with ``{"model":"..."}``).
-
-    Reuses ``_unload_model_impl`` so gates and identity matching match Studio's
-    ``POST /api/inference/unload``.
-    """
-    _load_path, _variant, public_id = await _resolve_manageable_model(body.model)
-    inf = _inference()
     from models.inference import UnloadRequest
 
-    # Unload under the public id the client named: _unload_model_impl matches
-    # advertised aliases and on-disk identifiers via _names_the_resident_model.
-    request = UnloadRequest(model_path = public_id)
-    try:
-        response = await inf._unload_model_impl(request, current_subject)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.error("management unload failed for %r: %s", public_id, exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Failed to unload model") from exc
-
-    status = getattr(response, "status", None) or "unloaded"
-    return {
-        "success": True,
-        "model": public_id,
-        "loaded": False,
-        "status": status,
-    }
+    # The public id is enough: the unload matches advertised aliases (_names_the_resident_model).
+    model_id = await _catalog_model_id(body.model)
+    return await _inference().unload_model(UnloadRequest(model_path = model_id), current_subject)
 
 
 async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is here
-# because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all so its
-# asset lookup wins, and OPTIONS is untouched for CORS preflight.
+# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
+# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
+# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
@@ -370,21 +392,16 @@ def _both_forms(path: str) -> tuple:
     return (path, path + "/")
 
 
+def _denied_methods(path: str) -> list:
+    return [m for m in _PROBE_DENIED_METHODS if (m, path) not in _SERVED_ROUTES]
+
+
 for _probe_path in sorted(_ENGINE_PROBE_PATHS):
     for _form in _both_forms(f"/{_probe_path}"):
         router.add_api_route(
             _form,
             _probe_not_found,
-            methods = _PROBE_DENIED_METHODS,
-            include_in_schema = False,
-        )
-
-for _manage_path, _methods in _MANAGEMENT_METHOD_DENIALS:
-    for _form in _both_forms(_manage_path):
-        router.add_api_route(
-            _form,
-            _probe_not_found,
-            methods = list(_methods),
+            methods = _denied_methods(_probe_path),
             include_in_schema = False,
         )
 
@@ -408,13 +425,13 @@ for _slots_form in _both_forms("/slots/{id_slot}"):
 
 
 def add_get_denials(app) -> None:
-    """404 the engine paths on GET as well, for an app with no frontend mounted.
-
-    The GET denial normally comes from main.py's SPA catch-all, registered only when
-    setup_frontend() finds a build. In API-only mode there is none, so these paths
-    matched on method alone and answered 405, which a client reads as "endpoint exists".
+    """404 the engine paths on GET as well, for an app with no frontend mounted. The GET denial normally comes
+    from main.py's SPA catch-all, registered only when setup_frontend() finds a build. In API-only mode there is
+    none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
+        if ("GET", path) in _SERVED_ROUTES:
+            continue
         for form in _both_forms(f"/{path}"):
             app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
     for form in _both_forms("/slots/{id_slot}"):

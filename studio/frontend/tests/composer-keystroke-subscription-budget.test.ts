@@ -57,13 +57,18 @@ test("a markdown block reads the render_html presence from context, not the stor
 
 test("the render_html scan happens once per message part, above the blocks", () => {
   const impl = body(markdown, "const MarkdownTextImpl = () => {", "\n};");
+  const renderer = body(
+    markdown,
+    "function MarkdownTextRenderer({",
+    "\nconst MarkdownTextImpl",
+  );
   assert.match(
     impl,
-    /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
+    /useAuiState\(\(\{ message \}\) =>\s*partsHaveRenderableRenderHtmlTool\(message\.parts\),?\s*\)/,
   );
   // The value has to reach the blocks, or the context read above answers with its default.
   assert.match(
-    impl,
+    renderer,
     /<RenderHtmlToolPresenceContext\.Provider\s+value=\{messageHasRenderableRenderHtmlTool\}/,
   );
 });
@@ -110,14 +115,31 @@ test("the newest message still gets the whole continue bar", () => {
     "const ContinueMessageBarForLastMessage: FC = () => {",
     "\n};",
   );
+  // The reads live in the hook the bar shares with the Continue response button.
+  assert.match(full, /useContinuation\(\);/);
+  const shared = body(thread, "function useContinuation() {", "\n}\n");
   for (const marker of [
     /useAuiState\(\(\{ message \}\) => message\.status\)/,
     /useAuiState\(\(\{ message \}\) => message\.metadata\)/,
-    /assistantMessageText\(message\.content\)/,
-    /isContinuableContent\(message\.content\)/,
+    /readContinuationSource\(message\.content\)/,
+    /isContinuableContent\(messageContent, \{[\s\S]{0,160}thought: thoughtResumable,[\s\S]{0,160}replay: geminiReplayTurns\.length > 0/,
     /findLatestUserAudioBase64\(thread\.messages, false\)/,
     /modeAllowsContinuation\(\{/,
   ]) {
-    assert.match(full, marker);
+    assert.match(shared, marker);
+  }
+});
+
+test("a streaming reply does not re-read its content for the continue bar on every token", () => {
+  const shared = body(thread, "function useContinuation() {", "\n}\n");
+  for (const gated of [
+    /const reasoning = useAuiState\(\(\{ message \}\) =>\s*"status" in message && message\.status\?\.type === "running"\s*\? ""\s*: readContinuationSource\(message\.content\)\.reasoning,/,
+    /const messageContent = useAuiState\(\(\{ message \}\) =>\s*"status" in message && message\.status\?\.type === "running"\s*\? undefined\s*: message\.content,/,
+  ]) {
+    assert.match(
+      shared,
+      gated,
+      "the bar cannot resume a running reply, so joining its reasoning or scanning its parts per token is wasted work",
+    );
   }
 });

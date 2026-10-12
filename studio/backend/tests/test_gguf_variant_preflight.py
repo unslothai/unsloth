@@ -162,6 +162,108 @@ def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeyp
     )
 
 
+def test_a_verified_cached_copy_uses_a_projector_beside_it(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """#9286: a projector beside the cached weight flips the config to vision."""
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    projector = cached.parent / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    # Carried for the training guard only: the launch resolves its own beside the weight.
+    assert config.gguf_local_mmproj_file == str(projector.resolve())
+    assert config.gguf_mmproj_file is None
+
+
+def test_a_verified_cached_copy_uses_its_repo_root_projector(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """A projector dropped in models--<repo>/ is found."""
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    projector = cached.parent.parent.parent / "mmproj-F16.gguf"
+    projector.write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_local_mmproj_file == str(projector.resolve())
+    assert config.gguf_mmproj_file is None
+
+
+def test_audio_only_repo_root_projector_still_triggers_companion_loading(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """An audio-only projector flips the flag too; the loader reads its kind later."""
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    projector = cached.parent.parent.parent / "mmproj-F16.gguf"
+    projector.write_bytes(b"audio")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+    monkeypatch.setattr(mc, "mmproj_accepts_image", lambda _path: False)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_mmproj_file is None
+
+
+def test_a_sibling_repos_projector_is_not_borrowed(remote_gguf_repo, monkeypatch, hub_cache):
+    """The cache root and sibling repos stay invisible."""
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    sibling = hub_cache / "models--someone--Other-GGUF"
+    sibling.mkdir()
+    (sibling / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    (hub_cache / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.gguf_local_mmproj_file is None
+    assert config.is_vision is False
+
+
+def test_nothing_is_named_before_a_quant_of_the_repo_is_cached(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """No weight to pair against yet."""
+    repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
+    repo_root.mkdir()
+    (repo_root / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: None)
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.gguf_verified is None
+    assert config.gguf_local_mmproj_file is None
+    assert config.is_vision is False
+
+
+def test_a_published_projector_does_not_reach_the_local_lookup(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """A repo that lists a projector never runs the walk."""
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
+    (cached.parent.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
+    monkeypatch.setattr(
+        mc, "list_gguf_variants", lambda identifier, hf_token = None: (list(VARIANTS), True)
+    )
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+
+    assert config.is_vision is True
+    assert config.gguf_local_mmproj_file is None
+
+
 def test_every_shard_of_a_verified_cached_copy_is_measured(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
@@ -249,3 +351,37 @@ def test_nothing_is_carried_when_no_cached_copy_verifies(remote_gguf_repo):
     """A first-time download has no cached path to carry."""
     assert ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_verified is None
     assert ModelConfig.from_identifier(REPO).gguf_verified is None
+
+
+QWEN_LOWERCASE_VARIANTS = [
+    GgufVariantInfo(
+        filename = f"qwen2.5-7b-instruct-{quant}-00001-of-0000{shards}.gguf",
+        quant = quant,
+        size_bytes = size,
+    )
+    for quant, shards, size in [
+        ("fp16", 4, 15_237_853_600),
+        ("q8_0", 3, 8_098_525_600),
+        ("q6_k", 2, 6_254_197_600),
+        ("q5_k_m", 2, 5_444_831_600),
+        ("q4_k_m", 2, 4_683_073_600),
+        ("q2_k", 1, 3_015_940_000),
+    ]
+]
+
+
+def test_no_variant_autoselects_a_lowercase_quant_over_the_first_listed(
+    remote_gguf_repo, monkeypatch
+):
+    monkeypatch.setattr(
+        mc,
+        "list_gguf_variants",
+        lambda identifier, hf_token = None: (list(QWEN_LOWERCASE_VARIANTS), False),
+    )
+    filenames = [v.filename for v in QWEN_LOWERCASE_VARIANTS]
+    assert mc._pick_best_gguf(filenames) == "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+    assert ModelConfig.from_identifier("Qwen/Qwen2.5-7B-Instruct-GGUF").gguf_variant == "q4_k_m"
+
+
+def test_no_variant_autoselect_matches_whole_quant_labels():
+    assert mc._pick_best_gguf(["m-Q6_K_P.gguf", "m-IQ4_XS.gguf"]) == "m-IQ4_XS.gguf"

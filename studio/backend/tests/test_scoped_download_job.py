@@ -42,6 +42,29 @@ from hub.utils.paths import is_valid_gguf_variant
 FILES = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
 
 
+REPO = "black-forest-labs/FLUX.1-dev"
+
+
+@pytest.fixture(autouse = True)
+def _repo_with_no_running_job():
+    """No job of this repo is left running around a test in this file.
+
+    The download registry is a process global and nothing resets it between tests, while a
+    running scoped job deliberately blocks a full snapshot of the same repo. Any test that
+    leaves one running therefore fails a later one here with "no full-snapshot row", and under
+    `--dist load`, which spreads a file across workers, which tests share a process changes
+    from run to run. Retiring the repo's jobs on both sides keeps that out of the assertions.
+    """
+
+    def _retire():
+        for ref in download_lifecycle.active_download_refs(dl._registry, REPO, with_variant = True):
+            dl._registry.set_job(dl._download_job_key(REPO, ref.variant), "complete")
+
+    _retire()
+    yield
+    _retire()
+
+
 def _request(**over) -> DownloadModelRequest:
     body = {
         "repo_id": "black-forest-labs/FLUX.1-dev",
@@ -80,7 +103,7 @@ def test_scope_requires_files_and_rejects_a_variant(monkeypatch):
     assert "mutually exclusive" in str(both.value)
 
 
-def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
+def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch, tmp_path):
     spawned: dict = {}
 
     monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
@@ -91,12 +114,14 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
         spawn()
         return "running"
 
-    def _fake_spawn(args, hf_token, **kwargs):
+    def _fake_spawn(args, **kwargs):
         spawned["args"] = args
         return object()
 
     monkeypatch.setattr(download_lifecycle, "launch_worker", _fake_launch)
-    monkeypatch.setattr(download_lifecycle, "spawn_worker", _fake_spawn)
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", _fake_spawn)
+    monkeypatch.setattr("huggingface_hub.utils.get_token_to_send", lambda token: None)
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
 
     result = asyncio.run(dl.download_model_response(_request()))
     assert result["accepted"] is True
@@ -105,7 +130,6 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
 
     args = spawned["args"]
     assert "--variant" in args and args[args.index("--variant") + 1] == scope_variant
-    # The file list travels in a temp JSON file, not argv: a pipeline repo lists hundreds.
     manifest_path = args[args.index("--files-json") + 1]
     assert json.loads(Path(manifest_path).read_text(encoding = "utf-8")) == FILES
     Path(manifest_path).unlink(missing_ok = True)

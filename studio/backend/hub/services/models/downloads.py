@@ -31,7 +31,8 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
-from hub.services.models import cache_inventory, gguf_variants
+from hub.services import load_downloads
+from hub.services.models import account_access, cache_inventory, gguf_variants
 
 logger = get_logger(__name__)
 
@@ -47,8 +48,7 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     )
 
 
-# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a scoped job
-# never collides with a real variant or the full snapshot.
+# A scope rides the variant slot as "@name"; no GGUF quant label starts with "@", so a scoped job never collides with a real variant or the full snapshot.
 _SCOPE_PREFIX = "@"
 
 
@@ -60,8 +60,7 @@ def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
 def scoped_file_blob_hashes(
     repo_id: str, files: Sequence[str], hf_token: Optional[str]
 ) -> frozenset[str]:
-    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer
-    protection cover its own files and nothing else in the repo."""
+    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
     from huggingface_hub import HfApi
 
     wanted = set(files)
@@ -84,16 +83,16 @@ def _job_status(
         repo_id = repo_id,
         variant = variant,
     )
-    return DownloadJobStatus(state = state, error = error, generation = generation)
+    return DownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = _registry.current_attempt(key),
+    )
 
 
 def _diffusion_load_in_flight(repo_id: str) -> bool:
-    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion
-    base repo) for a load. Both stage through the same HF cache as the download worker, so a
-    download started now would put two writers on the same blobs -- the exact race the
-    llama.cpp guard below prevents for chat. ``loading_repo_ids`` is the same signal the
-    delete-cached guard uses. Best-effort: an unavailable backend reports not-in-flight so a
-    probe failure never blocks a legitimate download."""
+    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion base repo) for a load. Both stage through the same HF cache as the download worker, so starting a download now would put two writers on the same blobs, the race the llama.cpp guard below prevents for chat. Best-effort: an unavailable backend reports not-in-flight, so a probe failure never blocks a legitimate download."""
     key = download_registry.normalize_repo_key(repo_id)
     getters = []
     try:
@@ -119,12 +118,17 @@ def _diffusion_load_in_flight(repo_id: str) -> bool:
 
 
 def _load_in_flight(repo_id: str) -> bool:
-    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that
-    downloads on the load path: the Images and Video backends stage their snapshots the same
-    way, so both are consulted."""
+    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that downloads on the load path: the Images and Video backends stage their snapshots the same way, so both are consulted."""
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
         if hf_gguf_load_in_flight(repo_id):
+            return True
+    except Exception:
+        pass
+    try:
+        from core.systemone.laya_runtime import loading_repo_ids
+        key = download_registry.normalize_repo_key(repo_id)
+        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
             return True
     except Exception:
         pass
@@ -147,6 +151,17 @@ def _reject_if_load_in_flight(repo_id: str) -> None:
         raise _load_in_flight_error(repo_id)
 
 
+def _reject_if_load_owned(key: str) -> None:
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "A model load is fetching this repo. Wait for the load to finish "
+                "(or cancel it), then start the download."
+            ),
+        )
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
@@ -160,9 +175,6 @@ def _spawn_download_worker(
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
-    if files:
-        # Via a temp file, not argv: a pipeline repo's list runs to hundreds of names.
-        args.extend(["--files-json", download_lifecycle.write_files_manifest(files)])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -170,7 +182,35 @@ def _spawn_download_worker(
         protected_blob_hashes = protected_blob_hashes,
         cache_env = cache_env,
         allow_ambient_token = allow_ambient_token,
+        files = files,
     )
+
+
+async def _audio_cpp_target(
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """``(repo, variant)`` a download of an audio.cpp umbrella folder row really works on.
+
+    Studio names such a model ``audio-cpp/audio.cpp-gguf/<Folder>`` with a quant, like any GGUF
+    repo; the job, its progress and its cancel run on the umbrella repo and the path-qualified key
+    the variant planner gives that file. Anything else passes through unchanged.
+    """
+    text = (repo_id or "").strip()
+    if not text.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        return text, variant
+    try:
+        from core.inference.audio_cpp_models import download_target
+        target = await asyncio.to_thread(
+            download_target, text, (variant or "").strip() or None, hf_token
+        )
+    except Exception as exc:  # noqa: BLE001 - an unresolvable row downloads nothing
+        logger.warning("Could not resolve the audio model %s for download: %s", text, exc)
+        target = None
+    if target is None:
+        raise HTTPException(status_code = 404, detail = f"No downloadable GGUF variant in {text}.")
+    return target
 
 
 async def download_model_response(
@@ -184,12 +224,26 @@ async def download_model_response(
     ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
     no token, for repos named over the API rather than chosen here.
     """
+    from core.training.account_jobs import account_is_retired
+
+    if account_is_retired():
+        raise HTTPException(status_code = 403, detail = "Account is retired")
+    hf_token = account_access.account_hf_token(hf_token)
+    allow_ambient_token = allow_ambient_token and not account_access.managed_account()
+    if body.gguf_variant or not body.scope_id:
+        target_repo, target_variant = await _audio_cpp_target(
+            body.repo_id, body.gguf_variant, hf_token
+        )
+        if target_repo != body.repo_id.strip():
+            body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
@@ -217,14 +271,25 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other request waits behind it.
+    _reject_if_load_owned(key)
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "model",
+        repo_id,
+        variant = variant,
+        # Mirror the claim and the worker below: files are honoured only under a scope_id.
+        files = scoped_files if scope_variant is not None else None,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -277,99 +342,129 @@ async def download_model_response(
                 variant_progress_blob_hashes,
             )
 
-    claimed, claim_state = _registry.claim(
-        key,
-        transport,
-        repo_type = "model",
-        repo_id = repo_id,
-        variant = variant,
-        blob_hashes = variant_blob_hashes,
-        progress_blob_hashes = variant_progress_blob_hashes,
-        completed_baseline_bytes = completed_baseline_bytes,
-        admission_check = lambda: not _load_in_flight(repo_id),
-        hub_cache = str(cache_paths.hub_cache),
-        xet_cache = str(cache_paths.xet_cache),
-        scoped_files = scoped_files if scope_variant is not None else None,
-    )
-    generation = _registry.current_generation(key)
-    if not claimed:
-        if claim_state == "admission_blocked":
-            raise _load_in_flight_error(repo_id)
-        if claim_state == "scope_file_mismatch":
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Another download for '{repo_id}' is already fetching a different "
-                    "set of files. Wait for it to finish (or cancel it), then start "
-                    "this one."
-                ),
-            )
-        # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this
-        # key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined
-        # nothing.
-        adoptable = _registry.adoptable(key)
-        return {
-            "job_key": key,
-            "state": claim_state,
-            "accepted": adoptable,
-            "attached": adoptable,
-            "generation": generation,
-            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-            # the one it asked for.
-            "transport": _registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-            # partial.
-            "cancel_transport": _registry.job_cancel_transport(key),
-        }
-    download_manifest.clear_cancel_marker(
-        "model",
-        repo_id,
-        variant,
-        hub_cache = cache_paths.hub_cache,
-    )
-    # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must
-    # not purge these during cache preparation.
-    protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
-
-    label = f"{repo_id}{f' [{variant}]' if variant else ''}"
-    state = download_lifecycle.launch_worker(
-        _registry,
-        key,
-        spawn = lambda: _spawn_download_worker(
+    def claim_and_launch():
+        # Claim and launch as one operation, off the loop: a cancel while queued must not
+        # leave a claimed job with no worker, and token resolution can do network I/O.
+        claimed, claim_state = _registry.claim(
+            key,
+            transport,
+            repo_type = "model",
+            repo_id = repo_id,
+            variant = variant,
+            blob_hashes = variant_blob_hashes,
+            progress_blob_hashes = variant_progress_blob_hashes,
+            completed_baseline_bytes = completed_baseline_bytes,
+            admission_check = lambda: not _load_in_flight(repo_id),
+            hub_cache = str(cache_paths.hub_cache),
+            xet_cache = str(cache_paths.xet_cache),
+            scoped_files = scoped_files if scope_variant is not None else None,
+        )
+        generation = _registry.current_generation(key)
+        if not claimed:
+            download_lifecycle.require_download_account(_registry, key)
+            if claim_state == "admission_blocked":
+                raise _load_in_flight_error(repo_id)
+            if claim_state == "scope_file_mismatch":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Another download for '{repo_id}' is already fetching a different "
+                        "set of files. Wait for it to finish (or cancel it), then start "
+                        "this one."
+                    ),
+                )
+            # claim_state is the blocking job's state. Attaching and accepting are one verdict: only this key's own in-flight job can be joined, and a cross-variant conflict or in-progress delete joined nothing.
+            _reject_if_load_owned(key)
+            adoptable = _registry.adoptable(key)
+            return {
+                "job_key": key,
+                "state": claim_state,
+                "accepted": adoptable,
+                "attached": adoptable,
+                "generation": generation,
+                # An adopted job keeps the transport it started on, so report it rather than let the caller assume the one it asked for.
+                "transport": _registry.job_transport(key),
+                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
+                "cancel_transport": _registry.job_cancel_transport(key),
+            }
+        # Record ownership with the claim, not at launch, or the last downloader keeps the key.
+        download_lifecycle.record_download_account(_registry, key)
+        # Only then read the tombstone: an account retired during the awaits must not spawn.
+        download_lifecycle.require_live_account(_registry, key)
+        download_manifest.clear_cancel_marker(
+            "model",
             repo_id,
             variant,
-            hf_token,
-            use_xet = use_xet,
-            protected_blob_hashes = protected_blob_hashes,
-            cache_env = cache_env,
-            files = scoped_files if scope_variant is not None else None,
-            allow_ambient_token = allow_ambient_token,
-        ),
-        hf_token = hf_token,
-        allow_ambient_token = allow_ambient_token,
-        label = label,
-        log_prefix = "Download",
-        logger = logger,
-        repo_type = "model",
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = f"hf-download-watch-{repo_id}",
-    )
+            hub_cache = cache_paths.hub_cache,
+        )
+        # Blobs a concurrent same-repo variant is already writing, such as a shared mmproj: the worker must not purge these during cache preparation.
+        protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
 
-    return {
-        "job_key": key,
-        "state": state,
-        "accepted": True,
-        "attached": False,
-        "generation": generation,
-        # The transport that was actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is
-        # unavailable, and a client that assumed its request stood would offer the wrong stop control.
-        "transport": transport,
-    }
+        label = f"{repo_id}{f' [{variant}]' if variant else ''}"
+        state = download_lifecycle.launch_worker(
+            _registry,
+            key,
+            spawn = lambda: _spawn_download_worker(
+                repo_id,
+                variant,
+                hf_token,
+                use_xet = use_xet,
+                protected_blob_hashes = protected_blob_hashes,
+                cache_env = cache_env,
+                files = scoped_files if scope_variant is not None else None,
+                allow_ambient_token = allow_ambient_token,
+            ),
+            hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
+            label = label,
+            log_prefix = "Download",
+            logger = logger,
+            repo_type = "model",
+            repo_id = repo_id,
+            transport = transport,
+            watch_name = f"hf-download-watch-{repo_id}",
+        )
+
+        return {
+            "job_key": key,
+            "state": state,
+            "accepted": True,
+            "attached": False,
+            "generation": generation,
+            # The transport actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is unavailable, and a client that assumed its request stood would offer the wrong stop control.
+            "transport": transport,
+        }
+
+    return await asyncio.to_thread(claim_and_launch)
+
+
+def retire_account_downloads() -> None:
+    """Cancel and reap this account's model downloads before its roots are renamed aside."""
+    stragglers = []
+    for job in _registry.active_job_refs():
+        if not download_lifecycle.download_belongs_to_account(_registry, job.key):
+            continue
+        download_lifecycle.cancel_worker(
+            _registry, job.key, generation = job.generation, label = "model", logger = logger
+        )
+        proc = _registry.get_process(job.key)
+        if proc is None:
+            continue
+        try:
+            proc.wait(timeout = 10)
+        except Exception:
+            stragglers.append(job.key)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account model downloads have not stopped: {sorted(stragglers)}"
+        )
 
 
 async def cancel_download_model_response(body: CancelDownloadRequest):
     """Cancel an in-flight model download (SIGKILL; HF cache resumes on next download)."""
+    target_repo, target_variant = await _audio_cpp_target(body.repo_id, body.gguf_variant)
+    if target_repo != body.repo_id.strip():
+        body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -384,6 +479,11 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
+    if load_downloads.is_load_owned(_registry, key):
+        raise HTTPException(
+            status_code = 409,
+            detail = "This repo is being fetched by a model load; cancel the load instead.",
+        )
 
     state = download_lifecycle.cancel_worker(
         _registry,
@@ -397,18 +497,42 @@ async def cancel_download_model_response(body: CancelDownloadRequest):
 
 async def get_download_status_response(repo_id: str, gguf_variant: str = "") -> DownloadJobStatus:
     """Return the latest state of a background download job."""
+    requested = (repo_id or "").strip(), (gguf_variant or "").strip() or None
+    try:
+        repo_id, gguf_variant = await _audio_cpp_target(repo_id, gguf_variant)
+    except HTTPException:
+        return DownloadJobStatus(state = "idle")
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return DownloadJobStatus(state = "idle")
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     variant = (gguf_variant or "").strip() or None
     key = _download_job_key(repo_id, variant)
-    return _job_status(key, repo_id = repo_id, variant = variant)
+    status = _job_status(key, repo_id = repo_id, variant = variant)
+    if requested[0] != repo_id:
+        # An umbrella folder row: echo the names the caller asked about, not the umbrella job's.
+        update = {
+            name: value
+            for name, value in (("repo_id", requested[0]), ("variant", requested[1]))
+            if name in type(status).model_fields
+        }
+        status = status.model_copy(update = update) if update else status
+    return status
 
 
 async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsResponse:
-    """Return every in-flight download for a repo in a single call."""
+    """Return every in-flight download for a repo in a single call.
+
+    Jobs of audio.cpp umbrella folder rows run on the umbrella repo; they are reported under the
+    row id and variant Studio started them with, and a row id filters to that row's jobs.
+    """
+    from core.inference.audio_cpp_models import folder_row_for_download, repo_of
+
     repo_id = repo_id.strip()
+    row_filter = None
+    if repo_id.lower().startswith("audio-cpp/audio.cpp-gguf/"):
+        row_filter = repo_id.lower()
+        repo_id = repo_of(repo_id) or repo_id
     if repo_id and not _is_valid_repo_id(repo_id):
         return ActiveDownloadsResponse(downloads = [])
     canonical_repo_id = (
@@ -416,13 +540,23 @@ async def get_active_downloads_response(repo_id: str = "") -> ActiveDownloadsRes
         if repo_id
         else None
     )
-    return ActiveDownloadsResponse(
-        downloads = download_lifecycle.active_download_refs(
-            _registry,
-            canonical_repo_id,
-            with_variant = True,
-        )
+    refs = download_lifecycle.active_download_refs(
+        _registry,
+        canonical_repo_id,
+        with_variant = True,
     )
+
+    def _as_rows():
+        out = []
+        for ref in refs:
+            row = folder_row_for_download(ref.repo_id, ref.variant)
+            if row is not None:
+                ref = ref.model_copy(update = {"repo_id": row[0], "variant": row[1]})
+            if row_filter is None or ref.repo_id.lower() == row_filter:
+                out.append(ref)
+        return out
+
+    return ActiveDownloadsResponse(downloads = await asyncio.to_thread(_as_rows))
 
 
 def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str]) -> dict:
@@ -456,8 +590,7 @@ def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str
             repo_id,
             variant,
         )
-    # A partial counts toward "resumable" only while a writer that reopens it is installed, since the
-    # next download start sweeps whatever cannot be reopened.
+    # A partial counts toward "resumable" only while a writer that reopens it is installed, since the next download start sweeps whatever cannot be reopened.
     resumable_hashes = download_registry.incomplete_blob_hashes(
         "model",
         repo_id,
@@ -489,6 +622,13 @@ async def get_model_transport_status_response(
     because ``hf_xet`` rewrites the destination from scratch on every
     call (network resume happens transparently via its chunk cache).
     """
+    try:
+        repo_id, gguf_variant = await _audio_cpp_target(repo_id, gguf_variant, hf_token)
+    except HTTPException:
+        pass
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
@@ -526,42 +666,27 @@ def _variant_manifest_decision(
 ) -> "tuple[str, Optional[download_manifest.Manifest]]":
     """The variant's manifest from whichever cache dir on disk holds it, and why.
 
-    The verdict is ``"found"``, ``"absent"`` (no cache on disk has one) or ``"refused"`` (one
-    exists but applying it across the scanned caches would be wrong). Callers have to tell those
-    last two apart: a refusal is a decision that NO manifest may speak here, so re-reading one by
-    another route walks straight back into the answer this function just rejected.
+    The verdict is "found", "absent" (no cache on disk has one) or "refused" (one exists but applying it across the scanned caches would be wrong). Callers must tell those last two apart: a refusal decides that NO manifest may speak here, so re-reading one by another route walks back into the answer just rejected.
 
-    snapshot_progress reads manifests per scanned cache entry (``entry.parent``)
-    while this resolver only ever asked the active cache, so the two could
-    disagree about whether a manifest exists at all. When it lost, the expected
-    file set came back empty and the hash filter then dropped every blob in the
-    shared ``blobs/`` dir -- a finished variant reporting 0 bytes against the
-    caller's catalog-hinted total. Active cache first, so the common case is one
-    lookup; every candidate found has to agree before one is returned.
+    snapshot_progress reads manifests per scanned cache entry (entry.parent) while this resolver only ever asked the active cache, so the two could disagree about whether a manifest exists at all. When it lost, the expected file set came back empty and the hash filter dropped every blob in the shared blobs/ dir, a finished variant reporting 0 bytes. Active cache first so the common case is one lookup; every candidate found must agree before one is returned.
     """
-    # The active cache's manifest is a candidate like any other, NOT an early return: its repo dir can
-    # be gone while its scoped state holds an old manifest, and applying those hashes to a remembered
-    # cache that has the complete variant filters out every blob of it.
+    # The active cache's manifest is a candidate like any other, NOT an early return: its repo dir can be gone while its scoped state holds an old manifest, and applying those hashes to a remembered cache holding the complete variant filters out every blob of it.
     found: list[download_manifest.Manifest] = []
-    # active_root is the root the job records, which is the one snapshot_progress scans and not
-    # necessarily the configured default.
+    # active_root is the root the job records, which is the one snapshot_progress scans and not necessarily the configured default.
     active_manifest = download_manifest.read_manifest(
         "model", repo_id, variant, hub_cache = active_root
     )
     if active_manifest is not None:
         found.append(active_manifest)
-    # The active cache was just probed by the call above and a state-dir miss is not free, so skip the
-    # entry that repeats it; in the common case preferred_repo_cache_dirs returns only that entry.
+    # The active cache was just probed above and a state-dir miss is not free, so skip the entry that repeats it; usually preferred_repo_cache_dirs returns only that entry.
     active = download_manifest._canonical_hub_cache(active_root)
-    # The SAME cache dirs snapshot_progress will scan: a remembered cache's manifest for the same
-    # variant would have its hashes applied to the active root's blobs, leaving the card at 0 B.
+    # The SAME cache dirs snapshot_progress will scan: a remembered cache's manifest for the same variant would have its hashes applied to the active root's blobs, leaving the card at 0 B.
     for entry in preferred_repo_cache_dirs(
         "model", repo_id, force_active = force_active, active_root = active_root
     ):
         if active is not None and download_manifest._canonical_hub_cache(entry.parent) == active:
             if active_manifest is None:
-                # Anything returned for a cache with no manifest of its own would be another cache's answer applied
-                # to its blobs.
+                # Anything returned for a cache with no manifest of its own would be another cache's answer applied to its blobs.
                 return ("refused", None)
             continue
         manifest = download_manifest.read_manifest(
@@ -571,18 +696,13 @@ def _variant_manifest_decision(
             hub_cache = entry.parent,
         )
         if manifest is None:
-            # A scanned cache that contributed NOTHING may hold the complete snapshot, since a manifest can be
-            # deleted or never written, and another cache's hashes would filter out every blob AND disable the
-            # name-based fallback.
+            # A scanned cache that contributed NOTHING may hold the complete snapshot, since a manifest can be deleted or never written, and another cache's hashes would filter out every blob AND disable the name-based fallback.
             return ("refused", None)
         found.append(manifest)
     if not found:
         return ("absent", None)
-    # One answer, or several that agree: safe to apply to every scanned entry, which is what
-    # snapshot_progress does with this hash set.
-    # Several that DISAGREE must be refused: snapshot_progress picks its reading by bytes across all
-    # preferred cache dirs while the hashes come from one lookup, so the first cache's older revision
-    # filters out every blob of a later complete one. None degrades to the name-based fallback.
+    # One answer, or several that agree, is safe to apply to every scanned entry, which is what snapshot_progress does with this hash set.
+    # Several that DISAGREE must be refused: snapshot_progress picks its reading by bytes across all preferred cache dirs while the hashes come from one lookup, so the first cache's older revision filters out every blob of a later complete one. None degrades to the name-based fallback.
     first = _manifest_hashes(found[0])
     if any(_manifest_hashes(m) != first for m in found[1:]):
         return ("refused", None)
@@ -601,6 +721,14 @@ async def get_gguf_download_progress_response(
     hf_token: Optional[str] = None,
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
+    try:
+        repo_id, variant = await _audio_cpp_target(repo_id, variant, hf_token)
+    except HTTPException:
+        pass
+    variant = variant or ""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     expected_total = max(expected_bytes, 0)
     progress_variant = variant.strip() or None
     if progress_variant is not None and not _is_valid_gguf_variant(progress_variant):
@@ -638,15 +766,26 @@ async def get_gguf_download_progress_response(
             force_active = job.state in {"running", "cancelling"},
             active_root = Path(hub_cache) if hub_cache else None,
         )
-        if manifest is not None:
+        if getattr(job_metadata, "scoped_files", ()) and (
+            manifest is None
+            or not snapshot_progress.manifest_matches_download(manifest, job_metadata)
+        ):
+            # Until this job's worker publishes a manifest, an older scope's must not supply bytes or completion.
             return (
-                sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
+                0,
+                frozenset(getattr(job_metadata, "progress_blob_hashes", ()) or ()),
+            )
+        if manifest is not None:
+            total = sum(max(0, int(file.size or 0)) for file in manifest.expected_files)
+            if not progress_variant.startswith(_SCOPE_PREFIX):
+                # Offline fallback: an older local revision's manifest must not shrink the caller's estimate.
+                total = max(total, expected_total)
+            return (
+                total,
                 frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
             )
         if verdict == "refused":
-            # A refusal is not a miss: the blob-hash helper reads the DEFAULT cache's manifest with none of
-            # this scoping, so falling through reinstates the hashes just rejected. An empty set degrades to
-            # the per-entry name-based fallback.
+            # A refusal is not a miss: the blob-hash helper reads the DEFAULT cache's manifest with none of this scoping, so falling through reinstates the hashes just rejected. An empty set degrades to the per-entry name-based fallback.
             return (expected_total, frozenset())
         return (
             expected_total,
@@ -661,15 +800,7 @@ async def get_gguf_download_progress_response(
     def _expected_files_resolver(
         resolved_repo_id: str, token: Optional[str]
     ) -> Sequence[download_manifest.ExpectedFile]:
-        """What HF says this variant should contain, paths and declared sizes.
-
-        The only thing that lets a finished variant whose manifest is missing
-        settle terminal instead of staying partial forever, so it has to be the
-        metadata's own file list: a byte tally taken from the shared blobs/ dir
-        cannot tell this quant's bytes from a sibling's. The requirement lookup
-        is cached, and snapshot_progress only calls this once a reading has
-        otherwise passed for complete.
-        """
+        """What HF says this variant should contain, paths and declared sizes. The only thing that lets a finished variant whose manifest is missing settle terminal instead of staying partial forever, so it has to be the metadata's own file list: a byte tally from the shared blobs/ dir cannot tell this quant's bytes from a sibling's. The requirement lookup is cached, and snapshot_progress calls this only once a reading has otherwise passed for complete."""
         if progress_variant is None:
             return ()
         requirement = gguf_variants.gguf_variant_requirements(
@@ -680,10 +811,8 @@ async def get_gguf_download_progress_response(
         return requirement.expected_files if requirement is not None else ()
 
     def _variant_file_matcher(path: str, *, companions: bool = True) -> bool:
-        # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every
-        # variant, so they belong to whichever one is being polled.
-        # companions=False asks the narrower question, whether this path proves the quant ITSELF is here:
-        # shared companions belong to every quant, so counting them reported bytes for a deleted file.
+        # Main shards are matched by quant label; mmproj and the MTP drafter are downloaded with every variant, so they belong to whichever one is being polled.
+        # companions=False asks the narrower question, whether this path proves the quant ITSELF is here: shared companions belong to every quant, so counting them reported bytes for a deleted file.
         if progress_variant is None:
             return False
         if gguf_plan.is_main_gguf_variant_path(path, progress_variant):
@@ -708,6 +837,7 @@ async def get_download_progress_response(
     repo_id: str,
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
+    mlx_load: bool = False,
 ) -> dict:
     """Return download progress for any HuggingFace model repo.
 
@@ -718,6 +848,29 @@ async def get_download_progress_response(
     (or the cache repo root if no snapshot exists yet) so the UI can
     show users where the weights actually live on disk.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
+    if mlx_load:
+
+        def _metadata(repo, token):
+            total, hashes, _files = cache_inventory.get_mlx_load_plan_cached(repo, token)
+            return total, hashes
+
+        def _files(repo, token):
+            return cache_inventory.get_mlx_load_plan_cached(repo, token)[2]
+
+        return await snapshot_progress.snapshot_progress_response(
+            repo_type = "model",
+            repo_id = repo_id,
+            job_key = _download_job_key(repo_id, "@mlx"),
+            expected_bytes = 0,
+            hf_token = hf_token,
+            registry = _registry,
+            metadata_resolver = _metadata,
+            expected_files_resolver = _files,
+            variant = "@mlx",
+        )
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,

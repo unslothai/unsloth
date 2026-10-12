@@ -174,7 +174,6 @@ export function sanitizeStoredExtraArgs(
         kept.length > 0 &&
         extraArgFlagName(kept[kept.length - 1]) !== null
       ) {
-        // The flag this value belonged to.
         kept.pop();
       }
       continue;
@@ -249,6 +248,9 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
     const minimum = INTEGER_VALUE_MINIMUM[flag];
     const unusable =
       missing ||
+      // false: a STORED list, whose mode is unknown, so only what NO mode can run is dropped.
+      (RATIO_VALUE_FLAGS.has(flag) &&
+        ratioValueProblem(flag, value, false) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
         (!INTEGER.test(value.trim()) ||
           (minimum !== undefined && Number(value.trim()) < minimum)));
@@ -372,7 +374,6 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
   const quotedIndices = new Set<number>();
   let current = "";
   let started = false;
-  // Whether any part of the token being built came from inside quotes.
   let currentQuoted = false;
   let quote: '"' | "'" | null = null;
 
@@ -655,7 +656,119 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "--spec-draft-type-v",
   "-ctvd",
   "--cache-type-v-draft",
+  // read with _last_flag_value, so a bare -ts is a 400, not a flag left to llama-server
+  "--tensor-split",
+  "-ts",
 ]);
+
+/** The spellings the GPU Layers control also emits. */
+const GPU_LAYERS_FLAGS = new Set(["--gpu-layers", "--n-gpu-layers", "-ngl"]);
+
+/** The last-wins integer value for `flags` in `tokens`, or null. Mirrors parse_gpu_layers_override
+ *  only as far as the one question asked here: is the resolved layer count non-negative. */
+function lastIntegerFlagValue(
+  tokens: readonly string[],
+  flags: ReadonlySet<string>,
+): number | null {
+  let found: number | null = null;
+  for (const [index, token] of tokens.entries()) {
+    const flag = extraArgFlagName(token);
+    if (flag === null || !flags.has(flag)) {
+      continue;
+    }
+    const attached = valueIsAttached(token, flag);
+    const raw = attached ? token.split("=")[1] : tokens[index + 1];
+    if (raw !== undefined && INTEGER.test(raw.trim())) {
+      found = Number(raw.trim());
+    }
+  }
+  return found;
+}
+
+/** Flags whose value the backend reads as a per-GPU ratio, refusing unreadable, negative or
+ *  non-finite entries and a zero total with a 400 (parse_tensor_split_override). */
+const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
+
+/** llama.cpp splits --tensor-split on this exact class, so "3/1" is "3,1". */
+const RATIO_DELIMITER = /[,/]+/;
+
+/** The spellings Python's float() accepts and math.isfinite() then rejects. */
+const NON_FINITE = /^[+-]?(nan|inf(inity)?)$/i;
+
+/** Python's `floatvalue` production (docs: functions#float), which is NOT what Number() takes:
+ *  Number() reads 0x/0b/0o literals the backend refuses, and refuses the `1_0` digit grouping
+ *  PEP 515 made valid, so a Number()-based mirror disagrees with /validate in both directions. */
+const PY_FLOAT =
+  /^[+-]?(?:(?:\d(?:_?\d)*)?\.\d(?:_?\d)*|\d(?:_?\d)*\.?)(?:[eE][+-]?\d(?:_?\d)*)?$/;
+
+/** Largest per-GPU share llama.cpp's float array holds; std::stof throws out_of_range above it. */
+const FLOAT32_MAX = 3.4028234663852886e38;
+
+/** FLT_MIN. libstdc++ reports every SUBNORMAL result as ERANGE too, so std::stof refuses a share
+ *  below this just as it refuses one above FLOAT32_MAX; exactly 0 is fine. */
+const FLOAT32_MIN_NORMAL = 1.1754943508222875e-38;
+
+/** `value` rounded to float32, so the check follows the rounding std::stof does, not the literal. */
+const toFloat32 = (value: number): number => Math.fround(value);
+
+/** `value` as the manual launcher will WRITE it: Python's `f"{x:g}"`, six significant digits.
+ *  A share validated at full precision can lose its range in that round trip, so both sides judge
+ *  the text the child actually parses. */
+const asEmitted = (value: number): number => Number(value.toPrecision(6));
+
+/** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
+function ratioValueProblem(
+  flag: string,
+  value: string,
+  reserialized: boolean,
+): string | null {
+  const parts = value
+    .split(RATIO_DELIMITER)
+    .filter((part) => part.trim() !== "");
+  if (parts.length === 0) {
+    return `${flag} takes a comma- or slash-separated list of numbers.`;
+  }
+  const trimmed = parts.map((part) => part.trim());
+  // Readability is decided by Python's grammar, never by Number(): "nan"/"inf" are readable and
+  // fail the finite test below, while 0x10 is unreadable to float() even though Number() takes it.
+  if (trimmed.some((part) => !PY_FLOAT.test(part) && !NON_FINITE.test(part))) {
+    return `${flag} takes a comma- or slash-separated list of numbers, and "${value}" is not one.`;
+  }
+  // Underscores are grouping to float() and NaN to Number(), so strip them before converting.
+  const numbers = trimmed.map((part) => Number(part.replace(/_/g, "")));
+  if (numbers.some((entry) => !Number.isFinite(entry) || entry < 0)) {
+    return `${flag} entries must be finite and non-negative.`;
+  }
+  if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
+    return `${flag} must have a positive total.`;
+  }
+  // Which text llama-server will parse: the user's own under pass-through, the launcher's
+  // six-digit rendering once manual mode promotes and rewrites the ratio. Rounding a
+  // pass-through value here would refuse input that runs exactly as typed.
+  const shares = numbers.map((entry) =>
+    toFloat32(reserialized ? asEmitted(entry) : entry),
+  );
+  if (shares.some((share) => !Number.isFinite(share))) {
+    return `${flag} entries must fit in a 32-bit float (at most ${FLOAT32_MAX.toExponential(4)}).`;
+  }
+  if (
+    shares.some(
+      (share, at) => numbers[at] !== 0 && share < FLOAT32_MIN_NORMAL,
+    )
+  ) {
+    return `${flag} entries must be 0 or at least ${FLOAT32_MIN_NORMAL.toExponential(4)}.`;
+  }
+  // Accumulated the way llama.cpp prefix-sums the shares it parsed, in float32 and step by step.
+  // A single float64 reduction disagrees with that near the top of the range.
+  let running = 0;
+  for (const share of shares) {
+    running = toFloat32(running + share);
+    if (!Number.isFinite(running)) {
+      return `${flag} adds up past the 32-bit float range.`;
+    }
+  }
+  return null;
+}
 
 /** The pass-through spellings of the batch size the floor above applies to. */
 const BATCH_SIZE_FLAGS = new Set(["--batch-size", "-b"]);
@@ -702,6 +815,9 @@ export type ExtraArgsContext = {
   gpuSelectionActive?: boolean;
   /** GPU Memory is Manual, which removes the offload flags its controls own. */
   manualGpuMemory?: boolean;
+  /** The control's GPU Layers value. Only manual mode with a RESOLVED count of 0 or more rewrites
+   *  --tensor-split; at Auto layers the flag is dropped, so it never reaches llama-server. */
+  gpuLayers?: number;
   /** Smallest --batch-size this launch can run, max(slots, 2). */
   batchFloor?: number;
   /** Model Memory keeps the weights resident, which owns the load mode. */
@@ -725,6 +841,11 @@ export function diagnoseExtraArgs(
   const noRamReserve = context.noRamReserve ?? false;
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote, quotedIndices } = parseExtraArgs(input);
+  // Mirrors _should_strip_tensor_split: an -ngl in the extras is promoted first, so the count
+  // that decides is the RESOLVED one, not the control's.
+  const nglOverride = lastIntegerFlagValue(tokens, GPU_LAYERS_FLAGS);
+  const resolvedGpuLayers = nglOverride ?? context.gpuLayers ?? -1;
+  const reserializesSplit = manualGpuMemory && resolvedGpuLayers >= 0;
   // Tokens the walk below consumed as somebody's value. A quoted token in value POSITION is a value
   // whatever it starts with, since llama.cpp takes the next argv element without looking.
   // Position matters as much as the quotes: a user quoting out of habit still wrote a flag.
@@ -786,7 +907,6 @@ export function diagnoseExtraArgs(
   // validate_extra_args refuses it outright, so saying so here is the difference between a red
   // line and a failed load. Two-value flags are allowed for.
   let pendingValues = 0;
-  // The flag those values are owed to, for the checks below.
   let pendingOwner: string | null = null;
   // A flag left waiting for its value. Reported only when the arity is known: the catalogue read
   // this build's own help, or it is the two-value flag whose arity needs no probe. An
@@ -886,6 +1006,8 @@ export function diagnoseExtraArgs(
         message = numeric
           ? `${flag} needs a number after it.`
           : `${flag} needs a value after it.`;
+      } else if (RATIO_VALUE_FLAGS.has(flag)) {
+        message = ratioValueProblem(flag, value, reserializesSplit);
       } else if (!numeric) {
         message = null;
       } else if (!INTEGER.test(value.trim())) {

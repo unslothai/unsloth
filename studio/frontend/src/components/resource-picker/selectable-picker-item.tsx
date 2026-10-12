@@ -26,9 +26,9 @@ export function SelectablePickerItem({
       aria-pressed={active ?? false}
       onClick={onSelect}
       className={cn(
-        "flex w-full cursor-pointer select-none items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-ui-12p5 transition-colors hover:bg-foreground/[0.05] focus-visible:bg-foreground/[0.05]",
+        "flex w-full cursor-pointer select-none items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-ui-12p5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] focus-visible:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
-        active && "bg-foreground/[0.06]",
+        active && "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
         className,
       )}
     >

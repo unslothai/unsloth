@@ -612,10 +612,13 @@ def test_hidden_shared_ids_do_not_outlive_their_entries():
     monitor = ApiMonitor(max_entries = 2)
     monitor.record_lifecycle(event = "unload", model = "org/A")
     monitor.clear(subject = "alice")
-    assert monitor._hidden_shared.get("alice")
+    from utils.account_context import current_account_id
+
+    key = (current_account_id(), "alice")
+    assert monitor._hidden_shared.get(key)
     for i in range(5):
         monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
-    assert not monitor._hidden_shared.get("alice")
+    assert not monitor._hidden_shared.get(key)
 
 
 def test_an_api_triggered_lifecycle_row_carries_the_attribution():
@@ -1512,6 +1515,137 @@ def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
     assert row["prompt_tok_per_sec"] == 11.0
 
 
+def test_prompt_progress_updates_for_followup_prefill_and_decode_phase(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+
+    monitor.set_prompt_progress(
+        entry_id,
+        total = 1000,
+        processed = 400,
+        cached = 100,
+        time_ms = 250.25,
+    )
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "prompt_processing"
+    assert row["prompt_progress"] == {
+        "total": 1000,
+        "processed": 400,
+        "cached": 100,
+        "time_ms": 250.25,
+        "percent": 40.0,
+    }
+
+    monitor.set_running_phase(entry_id, "token_generation")
+    monitor.set_prompt_progress(entry_id, total = 1000, processed = 500)
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "prompt_processing"
+    assert row["prompt_progress"]["processed"] == 500
+
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {
+            "prompt_progress": {"total": 1000, "processed": 600},
+            "running_phase": "token_generation",
+        },
+    )
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "token_generation"
+    assert row["prompt_progress"]["processed"] == 600
+
+
+def test_monitor_usage_relays_live_progress_and_decode_phase(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {
+            "prompt_progress": {
+                "total": 800,
+                "processed": 200,
+                "cache": 0,
+                "time_ms": 10,
+            }
+        },
+    )
+    inference_route._monitor_usage(
+        entry_id,
+        None,
+        timings = {"running_phase": "token_generation"},
+    )
+
+    row = monitor.get(entry_id)
+    assert row["running_phase"] == "token_generation"
+    assert row["prompt_progress"]["percent"] == 25.0
+
+
+@pytest.mark.parametrize(
+    "delta",
+    [
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": '{"query":'},
+                }
+            ]
+        },
+        {"function_call": {"name": "search", "arguments": '{"query":'}},
+    ],
+)
+def test_tool_only_stream_leaves_prefill_phase(monkeypatch, delta):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = _start(monitor)
+    inference_route._monitor_openai_chunk(
+        entry_id,
+        {"prompt_progress": {"total": 1000, "processed": 1000}, "choices": []},
+        streaming = True,
+    )
+    inference_route._monitor_openai_chunk(
+        entry_id,
+        {"choices": [{"index": 0, "delta": delta}]},
+        streaming = True,
+    )
+    assert monitor.get(entry_id)["running_phase"] == "token_generation"
+
+
+def test_streaming_response_exposes_monitor_id():
+    response = inference_route._sse_streaming_response(
+        iter(()),
+        monitor_id = "apireq_test",
+    )
+    assert response.headers["X-Unsloth-Monitor-ID"] == "apireq_test"
+    assert "X-Unsloth-Monitor-ID" not in inference_route._sse_streaming_response(iter(())).headers
+
+
+def test_monitor_id_reads_the_matching_concurrent_request(monkeypatch):
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    first_id = _start(monitor, subject = "alice", model = "same-model", prompt = "same")
+    second_id = _start(monitor, subject = "alice", model = "same-model", prompt = "same")
+    monitor.set_prompt_progress(first_id, total = 1000, processed = 200)
+    monitor.set_prompt_progress(second_id, total = 1000, processed = 800)
+
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    client = TestClient(app)
+
+    first = client.get(f"/monitor/{first_id}").json()
+    second = client.get(f"/monitor/{second_id}").json()
+    assert first["id"] != second["id"]
+    assert first["prompt_progress"]["processed"] == 200
+    assert second["prompt_progress"]["processed"] == 800
+
+
 def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
     """llama-server can end a stream with timings and no usage."""
     monitor = ApiMonitor(max_entries = 3)
@@ -1560,3 +1694,41 @@ def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicte
     monitor.finish(entry_id)
 
     assert monitor.snapshot()[0]["decode_ms"] is None
+
+
+def test_perf_callback_reports_decode_phase_once_per_prefill_round(monkeypatch):
+    import routes.inference as inf_mod
+    from core.inference.llama_cpp import _report_live_llama_timings
+
+    seen = []
+    monkeypatch.setattr(
+        inf_mod,
+        "_monitor_usage",
+        lambda *_a, timings, **_k: seen.append(timings.get("running_phase")),
+    )
+    callback = inf_mod._monitor_perf_callback("apireq_x", 4096)
+    progress = {
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+        "prompt_progress": {"total": 10, "processed": 10, "cache": 0, "time_ms": 1},
+    }
+    token = {"choices": [{"index": 0, "delta": {"content": "a"}}], "timings": {"predicted_n": 1}}
+    for chunk in (progress, token, token, token, progress, token, token):
+        _report_live_llama_timings(callback, chunk)
+
+    assert seen == [None, "token_generation", None, None, None, "token_generation", None]
+
+
+def test_progress_updates_advance_updated_at_on_a_frozen_clock(monkeypatch):
+    import core.inference.api_monitor as monitor_mod
+
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "p")
+    monkeypatch.setattr(monitor_mod.time, "time", lambda: 1_000.0)
+    seen = []
+    for processed in (10, 20):
+        monitor.set_prompt_progress(entry_id, total = 100, processed = processed)
+        seen.append(monitor.snapshot()[0]["updated_at"])
+    monitor.set_running_phase(entry_id, "token_generation")
+    seen.append(monitor.snapshot()[0]["updated_at"])
+
+    assert seen[0] < seen[1] < seen[2]

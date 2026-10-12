@@ -1,20 +1,88 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import {
+  isHfCacheSnapshotPath,
+  isOllamaModelId,
+  modelIdsMatch,
+  publicModelId,
+} from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import {
   ggufQuantLabel,
+  ggufVariantsMatch,
   normalizeGgufVariantIdentity,
+  residentModelIdMatches,
 } from "../../model-picker/model-config/model-identity";
 import { resolveOnlyRememberedGgufVariant } from "../../model-picker/model-config/per-model-config";
+import { isExternalModelId } from "../external-providers";
 
 export type ChatModelSwitchTarget = {
   modelId: string;
   ggufVariant?: string | null;
 };
+
+// External and Ollama ids are opaque and case-sensitive: folding them would merge distinct models.
+function isExactOnlyIdentity(id: string): boolean {
+  return isExternalModelId(id) || isOllamaModelId(id);
+}
+
+/** Same HF cache repo: snapshot path vs repo id, either direction, or two snapshots of one repo. */
+function sameHfCacheIdentity(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (isExactOnlyIdentity(left) || isExactOnlyIdentity(right)) {
+    return false;
+  }
+  if (
+    residentModelIdMatches(left, right) ||
+    residentModelIdMatches(right, left)
+  ) {
+    return true;
+  }
+  if (!(isHfCacheSnapshotPath(left) && isHfCacheSnapshotPath(right))) {
+    return false;
+  }
+  const leftRepo = publicModelId(left);
+  return (
+    leftRepo.includes("/") && modelIdsMatch(leftRepo, publicModelId(right))
+  );
+}
+
+export function chatModelIsResident(
+  createdModel: ChatModelSwitchTarget,
+  checkpoint: string,
+  activeGgufVariant: string | null,
+): boolean {
+  if (!sameHfCacheIdentity(checkpoint, createdModel.modelId)) {
+    return false;
+  }
+  return (
+    createdModel.ggufVariant == null ||
+    ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant)
+  );
+}
+
+/** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
+export function chatModelSelectableId(
+  modelId: string,
+  selectableModelIds: ReadonlySet<string>,
+): string | null {
+  if (selectableModelIds.has(modelId)) {
+    return modelId;
+  }
+  for (const id of selectableModelIds) {
+    if (sameHfCacheIdentity(id, modelId)) {
+      return id;
+    }
+  }
+  return null;
+}
 
 type ChatModelThreadSnapshot = {
   id: string;

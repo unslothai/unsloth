@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// ProgressiveRows runs in a sidebar-shaped scroller without a backend.
+
+// biome-ignore lint/correctness/noNodejsModules: Vite configs execute in Node.
+import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+const frontendRoot = path.resolve(__dirname, "../../..");
+const sourceFrontend = path.resolve(
+  process.env.PW_SOURCE_FRONTEND_DIR ?? frontendRoot,
+);
+
+// biome-ignore lint/style/noDefaultExport: Vite loads its config as a default export.
+export default defineConfig({
+  root: __dirname,
+  publicDir: path.resolve(frontendRoot, "public"),
+  plugins: [react(), tailwindcss()],
+  css: { postcss: { plugins: [] } },
+  server: {
+    host: "127.0.0.1",
+    fs: { allow: [frontendRoot, sourceFrontend] },
+  },
+  resolve: {
+    // dedupe React because the negative-control worktree has its own dependency tree.
+    dedupe: ["react", "react-dom"],
+    alias: {
+      "@": path.resolve(sourceFrontend, "src"),
+      "@dagrejs/dagre": path.resolve(
+        frontendRoot,
+        "node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
+      ),
+    },
+  },
+  optimizeDeps: { include: ["@dagrejs/dagre", "@dagrejs/graphlib"] },
+});

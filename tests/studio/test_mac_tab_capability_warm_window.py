@@ -30,6 +30,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tests/studio/playwright_mac_tab_capabilities.py"
 APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
+APP_SIDEBAR = REPO / "studio/frontend/src/components/app-sidebar.tsx"
 
 BASE = "http://127.0.0.1:18893"
 # A settled reply: no hardware_detecting at all.
@@ -71,9 +72,17 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class FakeLocator:
-    def __init__(self, present: bool) -> None:
+    def __init__(
+        self,
+        present: bool,
+        visible: bool = True,
+    ) -> None:
         self._present = present
+        self._visible = present and visible
         self.clicked = False
+
+    def is_visible(self) -> bool:
+        return self._visible
 
     def count(self) -> int:
         return 1 if self._present else 0
@@ -102,9 +111,13 @@ class FakePage:
         rows: dict,
         *,
         row_missing: bool = False,
+        sections: frozenset = frozenset(),
+        hidden_sections: frozenset = frozenset(),
     ) -> None:
         self.rows = rows
         self.row_missing = row_missing
+        self.sections = sections
+        self.hidden_sections = hidden_sections
         self.url = f"{BASE}/chat"
         self.routed: list[str] = []
         self.unrouted: list[str] = []
@@ -160,6 +173,13 @@ class FakePage:
         self.screenshots.append(str(path))
 
     def locator(self, selector: str):
+        section = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        if section:
+            key = section.group(1)
+            return FakeLocator(
+                key in self.sections or key in self.hidden_sections,
+                visible = key not in self.hidden_sections,
+            )
         rid = selector.split("nav-row-")[1].rstrip('"]')
         return FakeLocator(self.rows.get(rid) is not None)
 
@@ -310,6 +330,30 @@ def test_sampler_that_cannot_read_the_page_at_all_fails(tmp_path, monkeypatch):
     assert any("could not read the sidebar" in m for m in mod._failed), mod._failed
 
 
+def test_a_navigation_in_flight_on_the_first_read_is_not_a_failure(tmp_path, monkeypatch):
+    """The forced password change navigates the app itself, which can abort the post-login
+    goto and leave a navigation in flight: the first evaluate then loses its context. macOS
+    job 108389456188 failed on exactly that; the next read would have worked."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [UNMEASURED, SETTLED])
+    page = FakePage({TRAIN: SPINNING})
+    real_evaluate = page.evaluate
+    lost = ["Page.evaluate: Execution context was destroyed, most likely because of a navigation"]
+
+    def evaluate(script, arg = None):
+        if lost:
+            raise RuntimeError(lost.pop())
+        return real_evaluate(script, arg)
+
+    page.evaluate = evaluate
+    page.wait_for_load_state = lambda *a, **k: None
+
+    mod.sample_natural_warm_window(page)
+
+    assert not lost, "the context loss was never hit, so this proves nothing"
+    assert not any("could not read the sidebar" in m for m in mod._failed), mod._failed
+
+
 def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     """Missing the real window is normal and must stay quiet, or the macOS job goes red
     on every run. The forced check above is what carries the guarantee instead."""
@@ -351,6 +395,64 @@ def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, mon
 
     assert mod._failed == []
     assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_the_projects_section_stands_in_for_its_row(tmp_path, monkeypatch):
+    """Since #12016 a fresh install shows the Projects section and the pinned Projects row
+    yields to it. The section proves the sidebar rendered, so its row's absence is not a miss."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert mod._failed == []
+    assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_a_missing_row_whose_section_is_also_missing_still_fails(tmp_path, monkeypatch):
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows)
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_a_mounted_but_hidden_section_does_not_stand_in(tmp_path, monkeypatch):
+    """The icon rail keeps the Projects section mounted and hides it in CSS, and that is when the
+    Projects row must come back. A hidden section proves nothing about the row."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "projects"}
+    page = FakePage(rows, hidden_sections = frozenset({"projects"}))
+
+    mod.drive_tabs(page)
+
+    assert "projects" not in mod._rows_seen
+    assert any("nav row projects is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_every_stand_in_names_a_pinned_row_and_a_section_the_sidebar_renders():
+    """A stand-in selector the sidebar never renders would let a missing row pass as absent by design."""
+    stand_ins = _module_constant("ROW_STAND_INS")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    assert "data-sidebar-section={key}" in sidebar, "sections no longer carry data-sidebar-section"
+    assert "projectsSectionShowing" in sidebar, "the Projects row no longer yields to its section"
+    for row_id, selector in stand_ins.items():
+        assert row_id in _module_constant("INLINE_ROW_IDS"), row_id
+        key = re.fullmatch(r'\[data-sidebar-section="(\w+)"\]', selector)
+        assert key, selector
+        assert re.search(
+            rf'_SECTION_KEY = "{key.group(1)}"',
+            REPO.joinpath(
+                "studio/frontend/src/features/chat/stores/sidebar-organization-store.ts"
+            ).read_text(encoding = "utf-8"),
+        ), f"no sidebar section is keyed {key.group(1)!r}"
 
 
 # --------------------------------------------------------------------------------
@@ -953,18 +1055,25 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    state = {"accepted": 0, "lines": 0}
+    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
+    # and end the call themselves in ~2s, passing against a build with no deadline at all.
+    chunk = b"x"
+    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
+    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
+    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
+    state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
     def drip(conn):
         try:
             conn.recv(4096)
-            # One header line that is never terminated, a byte at a time.
-            # Whole header LINES would hit http.client's own _MAXHEADERS cap of 100 and end the call on their own at
-            # about two seconds, which would make this fixture pass against a build that has no deadline at all.
             conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
             while not stop.is_set():
-                conn.sendall(b"x")
+                conn.sendall(chunk)
+                now = time.monotonic()
+                if state["last_write"] is not None:
+                    state["max_gap"] = max(state["max_gap"], now - state["last_write"])
+                state["last_write"] = now
                 state["lines"] += 1
                 time.sleep(0.02)
         except Exception:
@@ -1022,21 +1131,41 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
     urlopen has not returned, so nothing inside it is running yet and only urllib's
     per-socket-operation timeout applies, which a peer resets by dribbling. The budget is
     whole-request for that reason: connect, headers and body under one deadline."""
+    socket_timeout = 0.5
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve_trickling_headers()
     monkeypatch.setattr(mod, "BASE", base)
     try:
-        returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 6.0)
+        returned, value, elapsed = _probe_bounded(
+            mod, "/api/liveness", timeout = socket_timeout, wait = 6.0
+        )
+        probe_ended = time.monotonic()
+        lines, max_gap, last_write = state["lines"], state["max_gap"], state["last_write"]
     finally:
         shutdown()
-    # Fixture preconditions first, so a server that stopped trickling fails loudly instead of letting the probe return
-    # fast and passing for free.
+
     assert state["accepted"] >= 1, "fixture never accepted a connection"
-    assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
-    assert state["lines"] < 100, (
+    assert b"\n" not in state["chunk"] and b"\r" not in state["chunk"], (
         "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
-        "end the call by itself and this would pass without any deadline"
+        f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
+
+    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
+    # rather than pass on a build with no deadline or go red on a busy machine.
+    trickled_throughout = (
+        lines >= 3
+        and last_write is not None
+        and max_gap < socket_timeout
+        and probe_ended - last_write < socket_timeout
+    )
+    if not trickled_throughout:
+        pytest.skip(
+            "fixture could not keep inside the per-operation timeout on this runner, so a "
+            f"timeout here would not distinguish the two bounds: {lines} bytes, "
+            f"max gap {max_gap:.3f}s, last write {probe_ended - (last_write or probe_ended):.3f}s "
+            f"before the probe returned, socket timeout {socket_timeout}s"
+        )
+
     assert returned, "probe never returned: urlopen is outside the deadline again"
     assert value[2] == "timeout", value
     assert 0.4 <= elapsed < 4.0, f"probe took {elapsed:.2f}s against a 0.5s whole-request budget"

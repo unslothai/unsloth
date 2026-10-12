@@ -13,6 +13,7 @@ import {
   describeInferenceStatus,
   describeSttStatus,
   describeVideoStatus,
+  loadedModelKindLabel,
   loadedModelTarget,
   mergeLoadedModels,
   withPendingLoads,
@@ -530,4 +531,176 @@ test("the announced row yields once that same model is resident", () => {
   );
   assert.equal(rows.length, 1);
   assert.notEqual(rows[0].loading, true);
+});
+
+test("an nvfp4 image row names the kernel backend that served it", () => {
+  const [flashinfer] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-NVFP4",
+    family: "z-image",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "flashinfer",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(flashinfer.detail, "z-image · NVFP4 · FlashInfer · cuda");
+
+  const [torchao] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-NVFP4",
+    family: "z-image",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "torchao",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(torchao.detail, "z-image · NVFP4 · torchao · cuda");
+});
+
+test("a row without a quant backend is unchanged, on old and new backends alike", () => {
+  const [fp8] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo",
+    family: "z-image",
+    transformer_quant: "fp8",
+    transformer_quant_backend: null,
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(fp8.detail, "z-image · FP8 · cuda");
+  const [old] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo",
+    family: "z-image",
+    transformer_quant: "fp8",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(old.detail, "z-image · FP8 · cuda");
+});
+
+test("an nvfp4 video row names the kernel backend that served it", () => {
+  const [flashinfer] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B-NVFP4",
+    family: "wan2.2-t2v-a14b",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "flashinfer",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(
+    flashinfer.detail,
+    "wan2.2-t2v-a14b · NVFP4 · FlashInfer · cuda",
+  );
+
+  const [torchao] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B-NVFP4",
+    family: "wan2.2-t2v-a14b",
+    transformer_quant: "nvfp4",
+    transformer_quant_backend: "torchao",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(torchao.detail, "wan2.2-t2v-a14b · NVFP4 · torchao · cuda");
+});
+
+test("a video row without a quant backend is unchanged", () => {
+  const [row] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B",
+    family: "wan2.2-t2v-a14b",
+    transformer_quant: "fp8",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(row.detail, "wan2.2-t2v-a14b · FP8 · cuda");
+});
+
+// Chat refuses a speech-only model, so its row opens the Audio page on the workflow that runs it.
+test("an audio model in the chat slot opens its Audio workflow, named for what it does", () => {
+  const row = (overrides: Record<string, unknown>) => {
+    const [entry] = describeInferenceStatus(
+      inferenceStatus({ active_model: "m/x", is_audio: true, ...overrides }),
+    );
+    return {
+      target: loadedModelTarget(entry.source, entry.workflows),
+      label: loadedModelKindLabel(entry),
+    };
+  };
+  const audio = (workflow: string) => ({
+    open: "route",
+    to: "/audio",
+    search: { workflow },
+    label: "Audio",
+  });
+  assert.deepEqual(row({ audio_type: "snac", audio_workflows: ["speak"] }), {
+    target: audio("speak"),
+    label: "Speech",
+  });
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_music", audio_workflows: ["music"] }),
+    { target: audio("music"), label: "Music" },
+  );
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_sep", audio_workflows: ["separate"] }),
+    {
+      target: audio("separate"),
+      label: "Separation",
+    },
+  );
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_tts", audio_workflows: ["convert"] }),
+    { target: audio("convert"), label: "Voice conversion" },
+  );
+  // An older backend sends no workflows; the audio type still tells Music from Speak.
+  assert.deepEqual(
+    row({ audio_type: "minimax_music3" }).target,
+    audio("music"),
+  );
+  assert.deepEqual(row({ audio_type: "csm" }).target, audio("speak"));
+  // The first workflow names the row and is where the Audio page opens.
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_tts", audio_workflows: ["speak", "edit"] }),
+    { target: audio("speak"), label: "Speech" },
+  );
+  // The GGUF audio runtime reports is_gguf false; its rows still read GGUF.
+  const [sep] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "audio-cpp/audio.cpp-gguf/HTDemucs-GGUF",
+      is_audio: true,
+      is_gguf: false,
+      audio_type: "audiocpp_sep",
+      gguf_variant: "Q8_0",
+    }),
+  );
+  assert.equal(sep.detail, "GGUF · Q8_0");
+  // Whisper in the chat slot is still Chat's.
+  assert.equal(row({ audio_type: "whisper" }).target.label, "Chat");
+});
+
+// Switching the Audio page's workflow stops a generation running on it, and the card only navigates.
+test("an Audio page already on a workflow the model runs is left there", () => {
+  const [row] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "audio-cpp/audio.cpp-gguf/DotTTS-Edit-GGUF",
+      is_audio: true,
+      audio_type: "audiocpp_tts",
+      audio_workflows: ["speak", "edit"],
+    }),
+  );
+  assert.deepEqual(row.workflows, ["speak", "edit"]);
+  assert.deepEqual(loadedModelTarget(row.source, row.workflows, "edit"), {
+    open: "route",
+    to: "/audio",
+    label: "Audio",
+  });
+  // A workflow the model does not run still opens its first one.
+  assert.deepEqual(loadedModelTarget(row.source, row.workflows, "music"), {
+    open: "route",
+    to: "/audio",
+    search: { workflow: "speak" },
+    label: "Audio",
+  });
 });

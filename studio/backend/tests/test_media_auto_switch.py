@@ -30,7 +30,7 @@ import core.inference.media_switch_backends as backends
 import core.inference.media_switch_errors as errors
 import routes.models as models_route
 import utils.openai_auto_switch_settings as settings
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 from routes.video import router as video_router
@@ -428,6 +428,9 @@ def _client(router, prefix):
     install_api_error_handlers(app)
     app.include_router(router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # The caller-class dependency resolves the same bearer scheme, so leaving it live makes a
+    # bare app 401 before the route is reached. An operator session is what this file tests.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 

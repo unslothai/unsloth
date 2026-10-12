@@ -6,12 +6,13 @@
 
 import type { LoraModelOption } from "./types";
 
-export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
+export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter" | "npu";
 
 // Format keyword to DotTag tone. Looked up by full token and by first word, so "Full finetune" resolves via "full".
 export const FORMAT_TONE: Record<string, FormatTone> = {
   gguf: "gguf",
   mlx: "mlx",
+  npu: "npu",
   local: "checkpoint",
   safetensors: "checkpoint",
   checkpoint: "checkpoint",

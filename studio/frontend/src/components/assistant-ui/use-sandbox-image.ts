@@ -8,7 +8,7 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 
 export type SandboxImageState =
   | { status: "idle" }
-  | { status: "loaded"; url: string }
+  | { status: "loaded"; url: string; blob: Blob }
   | { status: "failed" };
 
 const IDLE: SandboxImageState = { status: "idle" };
@@ -79,7 +79,7 @@ export function useSandboxImage(url: string | null): {
         objectUrl = URL.createObjectURL(blob);
         setState({
           url,
-          load: { status: "loaded", url: objectUrl },
+          load: { status: "loaded", url: objectUrl, blob },
           signal: controller.signal,
         });
       })

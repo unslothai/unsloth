@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -20,6 +17,9 @@ from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
 from .granite import FastGraniteModel
 from .sentence_transformer import FastSentenceTransformer
+from .decision import *
+from .diffusion import *
+from .diffusion_trainer import *
 
 try:
     from .falcon_h1 import FastFalconH1Model
@@ -29,3 +29,7 @@ except:
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
+from .lora_init import patch_peft_calibration_eager as _patch_peft_calibration_eager
+
+_patch_peft_calibration_eager()
+del _patch_peft_calibration_eager

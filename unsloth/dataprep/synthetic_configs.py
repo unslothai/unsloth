@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -35,8 +32,8 @@ paths:
 
 # VLLM server configuration
 vllm:
-  api_base: "http://localhost:8000/v1" # Base URL for VLLM API
-  port: 8000                           # Port for VLLM server
+  api_base: "http://localhost:{port}/v1" # Base URL for VLLM API
+  port: {port}                           # Port for VLLM server
   model: "{model_name}"                # Default model to use
   max_retries: 3                       # Number of retries for API calls
   retry_delay: 1.0                     # Initial delay between retries (seconds)

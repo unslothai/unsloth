@@ -6,9 +6,8 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 
 const BASE_CLASSES =
-  // White fill with a subtle border,
-  // fully-rounded pill for single-row controls.
-  "bg-background border-border dark:border-transparent dark:bg-white/[0.06] focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-full border px-3.5 py-1 text-base transition-colors file:h-7 file:text-sm file:font-medium aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
+  // White fill with a subtle border, fully-rounded pill for single-row controls.
+  "bg-background border-border dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-full border px-3.5 py-1 text-base transition-colors file:h-7 file:text-sm file:font-medium aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
 
 function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
   if (input.disabled || input.readOnly) {
@@ -36,8 +35,7 @@ function stepNumberInput(input: HTMLInputElement, direction: 1 | -1): void {
         : Math.floor(pos);
     next = base + nextPos * step;
   } else {
-    // Stepping an empty, non-numeric field starts from the minimum, matching
-    // the native spinner.
+    // Stepping an empty, non-numeric field starts from the minimum, matching the native spinner.
     next = min ?? direction * step;
   }
   if (min !== null) {
@@ -64,7 +62,7 @@ function StepperArrow({ direction }: { direction: 1 | -1 }) {
     <svg
       viewBox="0 0 10 6"
       aria-hidden="true"
-      className={cn("h-[5px] w-2", direction === -1 && "rotate-180")}
+      className={cn("h-[calc(5px*var(--ui-space-scale,1))] w-2", direction === -1 && "rotate-180")}
     >
       <path d="M5 0.5 9 5.5H1Z" fill="currentColor" />
     </svg>
@@ -89,7 +87,7 @@ function StepperButton({ direction }: { direction: 1 | -1 }) {
           stepNumberInput(input, direction);
         }
       }}
-      className="flex h-1/2 w-full cursor-default items-center justify-center text-foreground/55 hover:bg-black/10 active:bg-black/15 dark:text-white/70 dark:hover:bg-white/10 dark:active:bg-white/15"
+      className="flex h-1/2 w-full cursor-default items-center justify-center text-foreground/55 hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] active:bg-[rgb(0_0_0_/_calc(0.15*var(--contrast-wash-gain,1)))] dark:text-white/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:active:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]"
     >
       <StepperArrow direction={direction} />
     </button>
@@ -134,7 +132,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       {field}
       <span
         aria-hidden="true"
-        className="absolute top-1/2 right-2.5 flex h-[21px] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-black/[0.07] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-white/[0.12]"
+        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
       >
         <StepperButton direction={1} />
         <StepperButton direction={-1} />

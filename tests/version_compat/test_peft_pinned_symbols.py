@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
 
 
 # pyproject pin: peft>=0.18.0. Test the floor + each minor since. `main` catches breakage before a release lands.
@@ -21,6 +21,7 @@ PEFT_TAGS = [
     "v0.18.1",
     "v0.19.0",
     "v0.19.1",
+    "v0.20.0",
     "main",
 ]
 
@@ -38,7 +39,7 @@ def test_peft_top_level_exports(tag: str):
         "get_peft_model",
         "PeftModel",
     )
-    missing = [n for n in needed if n not in src]
+    missing = [n for n in needed if not is_bound(src, n)]
     assert not missing, (
         f"{tag}: peft top-level missing {missing}; "
         f"unsloth.models.sentence_transformer:1948 + unsloth-zoo saving_utils "
@@ -137,7 +138,7 @@ def test_peft_variant_kwarg_keys_const(tag: str):
     src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
     if src is None:
         pytest.skip(f"{tag}: src/peft/tuners/lora/layer.py missing")
-    if "VARIANT_KWARG_KEYS" not in src:
+    if not is_bound(src, "VARIANT_KWARG_KEYS"):
         pytest.fail(
             f"{tag}: peft.tuners.lora.layer.VARIANT_KWARG_KEYS missing; "
             f"unsloth_zoo/compiler.py:2645 import injection breaks (unsloth-zoo#430)"
@@ -200,9 +201,7 @@ def test_peft_transformers_weight_conversion_module(tag: str):
     if hit is None:
         pytest.skip(f"{tag}: transformers_weight_conversion not present (legacy peft)")
     _, src = hit
-    assert (
-        has_def(src, "build_peft_weight_mapping", "func") or "build_peft_weight_mapping" in src
-    ), (
+    assert is_bound(src, "build_peft_weight_mapping"), (
         f"{tag}: build_peft_weight_mapping missing in transformers_weight_conversion; "
         f"unsloth/import_fixes.py:1375-1456 wrap breaks (unsloth#5167)"
     )
@@ -217,7 +216,7 @@ def test_peft_integrations_dequantize_module_weight(tag: str):
     hit = first_match("huggingface/peft", tag, candidates)
     assert hit is not None, f"{tag}: src/peft/utils/integrations[.py|/__init__.py] both missing"
     _, src = hit
-    assert has_def(src, "dequantize_module_weight", "func") or "dequantize_module_weight" in src, (
+    assert is_bound(src, "dequantize_module_weight"), (
         f"{tag}: peft.utils.integrations.dequantize_module_weight missing; "
         f"unsloth-zoo vllm_utils.py:2701, unsloth/_utils.py:1550, "
         f"saving_utils.py:270 ImportError"
@@ -291,3 +290,37 @@ def test_peft_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata
     ), f"{tag}: peft.__version__ not exported via any known mechanism"
+
+
+# 11. init_lora_weights="mica": check_mica_init imports MiCALinearVariant; PEFT inits via LoraLayer.mica_init
+#     and freezes lora_B via _freeze_non_trainable_peft_weights (freeze_peft_variant_weights). PEFT >= 0.20.0.
+def test_peft_mica_variant_and_init(tag: str):
+    variants_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/variants.py")
+    if variants_src is None or not has_def(variants_src, "MiCALinearVariant", "class"):
+        pytest.skip(f"{tag}: MiCA not yet introduced (peft 0.20)")
+    layer_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    tuners_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/tuners_utils.py")
+    assert layer_src is not None and has_def(
+        layer_src, "mica_init", "func"
+    ), f"{tag}: mica_init missing"
+    assert tuners_src is not None and has_def(
+        tuners_src, "_freeze_non_trainable_peft_weights", "func"
+    ), f"{tag}: _freeze_non_trainable_peft_weights missing"
+
+
+# 12. unsloth/models/lora_init.py replaces LoraLayer.pissa_init(self, adapter_name, init_lora_weights) and
+#     mica_init(self, adapter_name) during get_peft_model and calls layer.py's `transpose`.
+def test_peft_lora_init_hooks(tag: str):
+    src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    if src is None:
+        pytest.skip(f"{tag}: layer.py missing")
+    assert re.search(
+        r"def pissa_init\(self, adapter_name, init_lora_weights\)", src
+    ), f"{tag}: pissa_init signature moved"
+    assert re.search(
+        r"^from peft\.utils\.other import transpose$", src, re.M
+    ), f"{tag}: transpose import moved"
+    if has_def(src, "mica_init", "func"):
+        assert re.search(
+            r"def mica_init\(self, adapter_name\)", src
+        ), f"{tag}: mica_init signature moved"

@@ -714,6 +714,23 @@ def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
         _shared_setup_2(e, out)
 
 
+@pytest.mark.parametrize("returncode", [-6, 0])
+def test_native_failure_keeps_reason_before_long_backtrace(tmp_path, monkeypatch, returncode):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    reason = "CUDA error: no kernel image is available for execution on the device"
+    lines = [reason] + [f"#{i} 0x123456 in native_frame_{i}()" for i in range(80)]
+    _patch_popen(monkeypatch, lines = lines, returncode = returncode, out_file = out, write = False)
+
+    with pytest.raises(RuntimeError) as failure:
+        _shared_setup_2(e, out)
+
+    detail = str(failure.value).split("Last output:\n", 1)[1]
+    assert detail.startswith(reason)
+    assert "native_frame_79" in detail
+    assert len(detail) <= 1500
+
+
 def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
