@@ -942,6 +942,111 @@ export async function listChatThreads(
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
+/** One sidebar row as the server groups it: a chat, or a compare pair under its pair id. */
+export interface SidebarRowRecord {
+  id: string;
+  type: "single" | "compare";
+  threadIds: string[];
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  modifiedAt?: number | null;
+  modelIds?: string[] | null;
+  isFork?: boolean | null;
+  projectId?: string | null;
+}
+
+/** Which rows one sidebar list holds, and in what order. Mirrors POST /api/chat/sidebar/rows. */
+export interface SidebarRowsRequest {
+  archived: boolean;
+  projectId: string | null;
+  unfiledOnly: boolean;
+  includeIds: string[] | null;
+  excludeIds: string[];
+  sort: "updated" | "manual";
+  manualOrder: string[] | null;
+  limit: number;
+  cursor: string | null;
+}
+
+export interface SidebarRowsPage {
+  rows: SidebarRowRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total?: number | null;
+}
+
+/** The server no longer accepts a cursor (malformed, or minted for another sort): the list has to
+ *  be read again from the top. */
+export class SidebarCursorRejectedError extends Error {
+  readonly cursorRejected = true;
+  constructor() {
+    super("Sidebar page cursor rejected");
+    this.name = "SidebarCursorRejectedError";
+  }
+}
+
+/** One page of a sidebar list. Null when the server predates the route, so the caller falls back
+ *  to the full thread list. */
+export async function fetchSidebarRows(
+  request: SidebarRowsRequest,
+): Promise<SidebarRowsPage | null> {
+  // An empty include list names no rows; the route agrees, so the request is not worth sending.
+  if (request.includeIds && request.includeIds.length === 0) {
+    return { rows: [], nextCursor: null, hasMore: false, total: 0 };
+  }
+  // The route rejects unknown fields, so only these go out.
+  const body: SidebarRowsRequest = {
+    archived: request.archived,
+    projectId: request.projectId,
+    unfiledOnly: request.unfiledOnly,
+    includeIds: request.includeIds,
+    excludeIds: request.excludeIds,
+    sort: request.sort,
+    manualOrder: request.manualOrder,
+    limit: request.limit,
+    cursor: request.cursor,
+  };
+  const response = await authFetch("/api/chat/sidebar/rows", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  if (response.status === 400 && request.cursor) throw new SidebarCursorRejectedError();
+  const data = await parseJsonOrThrow<SidebarRowsPage>(response);
+  return {
+    rows: Array.isArray(data.rows) ? data.rows : [],
+    nextCursor: data.nextCursor ?? null,
+    hasMore: Boolean(data.hasMore),
+    total: typeof data.total === "number" ? data.total : null,
+  };
+}
+
+const SIDEBAR_THREAD_ROWS_MAX = 500;
+
+/** The sidebar row each thread belongs to (a compare pane's pair id, else its own id). Null on an
+ *  older server. Unknown ids are left out. */
+export async function fetchSidebarThreadRows(
+  threadIds: string[],
+): Promise<Record<string, string> | null> {
+  const out: Record<string, string> = {};
+  // The route takes at most this many ids per request.
+  for (let start = 0; start < threadIds.length; start += SIDEBAR_THREAD_ROWS_MAX) {
+    const params = new URLSearchParams();
+    for (const id of threadIds.slice(start, start + SIDEBAR_THREAD_ROWS_MAX)) {
+      params.append("thread_ids", id);
+    }
+    const response = await authFetch(`/api/chat/sidebar/thread-rows?${params}`);
+    if (response.status === 404 || response.status === 405) return null;
+    const data = await parseJsonOrThrow<{ rowIdByThreadId?: Record<string, string> }>(response);
+    for (const [threadId, rowId] of Object.entries(data.rowIdByThreadId ?? {})) {
+      if (typeof rowId === "string" && rowId) out[threadId] = rowId;
+    }
+  }
+  return out;
+}
+
 /** One chat message attachment, as listed for the settings uploaded-files view. */
 export interface ChatAttachmentRecord {
   id: string;

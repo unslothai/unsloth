@@ -511,6 +511,15 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
+/** Runs this session's browser-history import, as the full listing does, and says whether the
+ *  server alone now holds every chat. A paged sidebar reads only the server, so until then it
+ *  lists through `listStoredChatThreads` instead. */
+export async function settleLegacyChatImport(): Promise<boolean> {
+  await importLegacyChatsIfNeeded().catch(() => undefined);
+  await Promise.allSettled([...pendingLegacyThreadImports]);
+  return isLegacyChatImportDone();
+}
+
 async function importLegacyChatsIfNeeded(): Promise<void> {
   // Session-level cache: repeated sidebar mounts share one import. localStorage is NOT
   // consulted, so a studio.db wipe re-triggers the import even with a stale hint.

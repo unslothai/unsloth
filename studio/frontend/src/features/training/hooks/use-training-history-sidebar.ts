@@ -12,6 +12,8 @@ import {
 import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
+/** The route's own cap on one request. */
+const MAX_REQUEST_LIMIT = 200;
 const RUNNING_POLL_MS = 5000;
 const INITIAL_RETRY_DELAYS_MS = [500, 1500, 3500];
 const LOAD_FAILURE_TOAST_ID = "training-history-load-failure";
@@ -23,7 +25,13 @@ function isAbortError(err: unknown): boolean {
 export function useTrainingHistorySidebarItems(enabled: boolean) {
   const [items, setItems] = useState<TrainingRunSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [total, setTotal] = useState(0);
   const controllerRef = useRef<AbortController | null>(null);
+  // How many runs the sidebar holds, so a refresh or a poll re-reads every page scrolled into.
+  const loadedCountRef = useRef(0);
+  useEffect(() => {
+    loadedCountRef.current = items.length;
+  }, [items.length]);
 
   const fetchRuns = useCallback(async (): Promise<void> => {
     if (controllerRef.current && !controllerRef.current.signal.aborted) {
@@ -32,17 +40,58 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
+      const wanted = Math.max(SIDEBAR_LIMIT, loadedCountRef.current);
+      const runs: TrainingRunSummary[] = [];
+      let runTotal = 0;
+      while (runs.length < wanted) {
+        const result = await listTrainingRuns(
+          Math.min(MAX_REQUEST_LIMIT, wanted - runs.length),
+          runs.length,
+          controller.signal,
+        );
+        runs.push(...result.runs);
+        runTotal = result.total;
+        if (result.runs.length === 0 || runs.length >= result.total) break;
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
+      setItems(runs);
+      setTotal(runTotal);
+      setLoaded(true);
+      toast.dismiss(LOAD_FAILURE_TOAST_ID);
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
+    }
+  }, []);
+
+  const hasMore = loaded && items.length < total;
+  // The next page, when the list is scrolled to its end. Shares the in-flight guard, so a poll and
+  // a page never race to write the list.
+  const loadMore = useCallback(async (): Promise<void> => {
+    if (controllerRef.current && !controllerRef.current.signal.aborted) {
+      return;
+    }
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
       const result = await listTrainingRuns(
         SIDEBAR_LIMIT,
-        0,
+        loadedCountRef.current,
         controller.signal,
       );
       if (controller.signal.aborted) {
         return;
       }
-      setItems(result.runs);
-      setLoaded(true);
-      toast.dismiss(LOAD_FAILURE_TOAST_ID);
+      setItems((prev) => {
+        const seen = new Set(prev.map((run) => run.id));
+        return [...prev, ...result.runs.filter((run) => !seen.has(run.id))];
+      });
+      setTotal(result.total);
+    } catch {
+      // the next scroll retries
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;
@@ -178,6 +227,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     const offDeleted = onTrainingRunDeleted((runId) => {
       controllerRef.current?.abort();
       setItems((prev) => prev.filter((run) => run.id !== runId));
+      setTotal((count) => Math.max(0, count - 1));
     });
     const offChanged = onTrainingRunsChanged(() => {
       controllerRef.current?.abort();
@@ -190,5 +240,5 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [refresh]);
 
-  return { items, loaded, refresh };
+  return { items, loaded, refresh, hasMore, loadMore };
 }

@@ -207,7 +207,7 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // Projects renders what is left, in its own.
   assert.match(
     APP_SIDEBAR,
-    /visibleProjectRecords\.map\(\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
+    /items=\{visibleProjectRecords\}[\s\S]{0,200}renderItem=\{\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
   );
   // And the Projects list no longer carries them, so a folder is never in both sections.
   const records = APP_SIDEBAR.slice(
@@ -408,7 +408,7 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
   );
   // Everything a folder draws under itself hangs off that one flag.
   for (const gated of [
-    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && \(\n\s*<ProgressiveRows\n\s*items=\{visibleChats\}/,
     /\{expanded && projectChats\.length === 0 && \(/,
     /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
   ]) {

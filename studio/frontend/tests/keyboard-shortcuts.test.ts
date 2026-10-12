@@ -1620,9 +1620,14 @@ test("the published chat lists stop where the sidebar stops", async () => {
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  // Select All reads the same rows the walk does, so it cannot reach further.
-  const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
-  assert.ok(selectAll !== -1, "selectAllChats moved");
+  // Select All reads the same rows the walk does, so it cannot reach further. It first reads the
+  // remaining pages of the lists that are open, then selects what they draw.
+  assert.match(
+    APP_SIDEBAR,
+    /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
+  );
+  const selectAll = APP_SIDEBAR.indexOf("const selectRenderedChats = useCallback(");
+  assert.ok(selectAll !== -1, "selectRenderedChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
     /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,
