@@ -69,6 +69,25 @@ def _local_adapter_base(model_name: str) -> Optional[str]:
         return None
 
 
+def _hub_adapter_base(
+    model_name: str,
+    hf_token = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    try:
+        from utils.paths import is_local_path
+
+        if is_local_path(model_name):
+            return None
+        import json
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(model_name, "adapter_config.json", token = hf_token, revision = revision)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig")).get("base_model_name_or_path")
+    except Exception:
+        return None
+
+
 def diffusion_lm_profile_for_model(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -107,6 +126,10 @@ def mlx_refusal(
     """Why the MLX backend cannot take this model, or None: it has no denoising objective or sampler, so
     it would train / decode a text-diffusion LM as an autoregressive one."""
     profile = diffusion_lm_profile_for_model(model_name, hf_token, revision = revision)
+    if not profile:
+        # A Hub LoRA has no config.json; off MLX the post-load check catches it, here nothing loads first.
+        base = _hub_adapter_base(model_name, hf_token, revision)
+        profile = base and diffusion_lm_profile_for_model(base, hf_token)
     if not profile:
         return None
     return (

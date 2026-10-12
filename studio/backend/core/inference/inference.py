@@ -892,7 +892,7 @@ class InferenceBackend:
             )
 
             diffusion_lm_profile = diffusion_lm_profile_for_model(
-                load_path, hf_token = _hf_token_for_loader(hf_token) or None
+                load_path, hf_token = _hf_token_for_loader(hf_token)
             )
             if diffusion_lm_profile:
                 # Text-diffusion LMs (LLaDA, Dream, DiffusionGemma, ...) decode with their own sampler,
@@ -910,9 +910,14 @@ class InferenceBackend:
                     use_exact_model_name = use_exact_model_name,
                 )
                 FastModel.for_inference(model)
-                self.models[model_name]["diffusion_lm_profile"] = (
-                    loaded_diffusion_profile(model) or diffusion_lm_profile
-                )
+                loaded_profile = loaded_diffusion_profile(model)
+                if not loaded_profile:
+                    # As training does: an autoregressive load must never reach the diffusion sampler.
+                    raise RuntimeError(
+                        f"'{load_path}' is a text-diffusion model ({diffusion_lm_profile}), but the installed "
+                        "Unsloth loaded it as an ordinary model. Update with `unsloth studio update`."
+                    )
+                self.models[model_name]["diffusion_lm_profile"] = loaded_profile
                 self.models[model_name]["is_vision"] = False
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
@@ -2398,7 +2403,9 @@ class InferenceBackend:
                 "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
             )
         try:
-            from unsloth.models.diffusion import DiffusionGenerationCancelled as cancelled_error
+            from unsloth.models.diffusion_samplers import (
+                DiffusionGenerationCancelled as cancelled_error,
+            )
         except ImportError:  # an older core: no cancellation error to catch
             cancelled_error = ()
         with self._generation_lock:

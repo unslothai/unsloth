@@ -10,6 +10,8 @@ from __future__ import annotations
 import inspect
 import json
 import threading
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -552,9 +554,9 @@ def test_sampler_cancellation_error_ends_the_chat_quietly(monkeypatch):
 
     backend, _ = _inference_backend(monkeypatch)
     monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: _Cancelling)
-    import unsloth.models.diffusion as core_diffusion
-
-    monkeypatch.setattr(core_diffusion, "DiffusionGenerationCancelled", Cancelled, raising = False)
+    samplers = types.ModuleType("unsloth.models.diffusion_samplers")
+    samplers.DiffusionGenerationCancelled = Cancelled
+    monkeypatch.setitem(sys.modules, "unsloth.models.diffusion_samplers", samplers)
     assert list(backend.generate_stream("x", cancel_event = threading.Event())) == []
     lock_free = backend._generation_lock.acquire(blocking = False)
     assert lock_free
@@ -572,6 +574,42 @@ def test_text_path_load_still_catches_a_diffusion_model():
     chat_src = inspect.getsource(inference_mod.InferenceBackend.load_model)
     tail = chat_src[chat_src.rindex("FastLanguageModel.for_inference(model)") :]
     assert "loaded_diffusion_profile(model)" in tail.split("raise_if_offloaded")[0]
+
+
+def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_boundary():
+    from core.inference import inference as inference_mod
+
+    src = inspect.getsource(inference_mod.InferenceBackend.load_model)
+    branch = src[src.index("diffusion_lm_profile = diffusion_lm_profile_for_model(") :]
+    branch = branch[: branch.index('self.models[model_name]["is_vision"] = False')]
+    # False (caller denied the ambient credential) must reach the probe as False, not None.
+    assert "hf_token = _hf_token_for_loader(hf_token)\n" in branch
+    assert "if not loaded_profile:" in branch and "raise RuntimeError(" in branch
+    assert "or diffusion_lm_profile" not in branch
+
+
+def test_mlx_refusal_resolves_a_hub_adapter_to_its_base(monkeypatch, tmp_path):
+    import huggingface_hub
+    from utils.models import diffusion_lm
+
+    profiles = {
+        "someone/llada-lora": None,
+        "GSAI-ML/LLaDA-8B-Instruct": "llada",
+        "org/llama-lora": None,
+    }
+    bases = {"someone/llada-lora": "GSAI-ML/LLaDA-8B-Instruct", "org/llama-lora": "org/llama"}
+    monkeypatch.setattr(
+        diffusion_lm, "diffusion_lm_profile_for_model", lambda name, *a, **k: profiles.get(name)
+    )
+
+    def hf_hub_download(repo_id, filename, **kwargs):
+        path = tmp_path / repo_id.replace("/", "__")
+        path.write_text(json.dumps({"base_model_name_or_path": bases[repo_id]}))
+        return str(path)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+    assert "llada" in diffusion_lm.mlx_refusal("someone/llada-lora")
+    assert diffusion_lm.mlx_refusal("org/llama-lora") is None
 
 
 @pytest.mark.parametrize(
