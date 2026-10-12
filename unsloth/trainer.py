@@ -381,7 +381,6 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
-# Columns a processor turns into media inputs; such datasets cannot be packed.
 _MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
     {
         "audio",
@@ -405,7 +404,6 @@ def _is_media_name(name) -> bool:
 
 
 def _features_have_media(features) -> bool:
-    """True if a `datasets` feature tree holds an Image / Audio / Video feature anywhere."""
     stack = [(features, False)]
     seen = 0
     while stack:
@@ -418,8 +416,7 @@ def _features_have_media(features) -> bool:
         if isinstance(node, dict):
             if any(_is_media_name(key) for key in node):
                 return True
-            # A content part names its modality only in the "type" value ({"type": "audio", "url": ...});
-            # only {"type", "text"} parts are provably text.
+            # Only {"type", "text"} content parts are provably text.
             if nested and "type" in node and set(node) - {"type", "text"}:
                 return True
             stack.extend((value, True) for value in node.values())
@@ -433,10 +430,7 @@ def _features_have_media(features) -> bool:
 
 
 def _is_text_only_dataset(dataset) -> bool:
-    """Positively text-only: a known schema with no image / audio / video column or feature.
-
-    Unknown schemas (plain lists, feature-less streams) are not text-only, since probing a
-    stream can drop a sample and a list of dicts can hold PIL images under any key."""
+    """Positively text-only: unknown schemas (lists, feature-less streams) count as media."""
     if dataset is None:
         return False
     column_names = getattr(dataset, "column_names", None)
@@ -463,9 +457,7 @@ def _is_text_only_eval_dataset(dataset) -> bool:
 
 
 def _uses_multimodal_rope(model_config) -> bool:
-    """Qwen2-VL style multimodal RoPE (`mrope_section`). Those models only build a packed mask
-    from 4-row `position_ids` (text row first); the 2D ids the padding-free collator emits leave
-    the mask causal across the whole row, so documents attend to each other."""
+    """mRoPE models build a packed mask only from 4-row position_ids; 2D ids leak across docs."""
     if model_config is None:
         return True  # unknown: assume the worst
     try:
@@ -491,7 +483,6 @@ def _uses_multimodal_rope(model_config) -> bool:
     return False
 
 
-# The *_text names are the same decoders loaded text-only (FastLanguageModel on a multimodal checkpoint).
 _PROCESSOR_TEXT_PACKING_MODELS = frozenset(
     {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
 )
@@ -518,8 +509,7 @@ def _processor_text_only(
     return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
 
 
-# TRL < 1.10 raises the first two on `_is_vlm` (any processor); 1.10+ raises the last two when the
-# first sample holds images (e.g. added by a dataset transform the schema does not show).
+# TRL < 1.10 raises the first two for any processor; 1.10+ the last two when a sample holds images.
 _TRL_VLM_PACKING_REJECTIONS = (
     "packing is not supported for vision-language models",
     "padding-free training is yet not supported for vision-language models",
@@ -1802,8 +1792,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta / Mamba2 conv and scan reset at
-            # sequence boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models pack only when the varlen shim's kernel checks and exactness probe pass.
             if (
                 is_hybrid
                 and not isinstance(model, str)
@@ -1927,7 +1916,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
             original_init(self, *args, **kwargs)
         except ValueError as exc:
             if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
-                # TRL refused: fall back to the pre-text-only-processor behaviour.
                 if requested_pack:
                     logger.warning(
                         "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
@@ -1940,7 +1928,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 packing_active = False
                 auto_padding_free_active = False
                 blocked = True
-                # The failed attempt's frames can hold a model it loaded: release them before retrying.
+                # Release the failed attempt's frames (may hold a loaded model) before retrying.
                 exc.__traceback__ = None
                 original_init(self, *args, **kwargs)
             elif packing_active and _should_skip_auto_packing_error(exc):

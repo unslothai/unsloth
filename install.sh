@@ -4489,6 +4489,7 @@ _TORCH_CEILING="2.12.0"
 _TORCHVISION_CEILING="0.27.0"
 _TORCHAUDIO_CEILING="2.12.0"
 # Default torch constraint; tightened for Python 3.13+ on arm64 macOS (no cp313 wheels below 2.6).
+# torch 2.4 is supported without torchcodec: install_python_stack.py's codec table starts at 2.5 (#10598).
 TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
@@ -6135,10 +6136,19 @@ _torch_release_in_window() {
     echo "no"
 }
 
-# "yes" when $1 is the cu130 index on Linux/WSL x86_64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
+# "yes" when $1 is the cu130 index on Linux/WSL x86_64 or aarch64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
 _cu130_torch213_route() {
     [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
+    [ "$(_cu130_torch213_host_ok)" = "yes" ] || { echo "no"; return; }
     _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# New installs only: torch 2.13 has no cp313t wheel, and the kernel wheels need glibc 2.35.
+_cu130_torch213_host_ok() {
+    _cth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
+    [ "$_cth_gil" = "gil-enabled" ] || { echo "no"; return; }
+    _cth_glibc=$(_uv_glibc_minor) || { echo "no"; return; }
+    [ "$_cth_glibc" -ge 35 ] 2>/dev/null && echo "yes" || echo "no"
 }
 
 # The local half of the route, with no network: it alone decides the preservation window, so a
@@ -6146,7 +6156,7 @@ _cu130_torch213_route() {
 _cu130_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
-    case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
+    case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
 }
@@ -7263,6 +7273,7 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL"
     # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
     if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "$(_cu130_torch213_host_ok)" = "yes" ] \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi

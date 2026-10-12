@@ -123,6 +123,7 @@ from ._utils import (
     _requested_float32,
     _mark_requested_float32,
     _mark_forced_float32,
+    _ignore_block_swap_params_for_ddp,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -1781,6 +1782,8 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Loaded adapters skip get_peft_model.
+        _ignore_block_swap_params_for_ddp(model)
         # This path never sets UNSLOTH_FORCE_FLOAT32, so answer False rather than let the trainer read whatever a later load writes to the environment.
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
@@ -3089,6 +3092,8 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Loaded adapters skip get_peft_model.
+        _ignore_block_swap_params_for_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer
