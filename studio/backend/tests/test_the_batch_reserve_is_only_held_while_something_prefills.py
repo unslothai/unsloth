@@ -157,12 +157,17 @@ class TestAPendingResumeLargerThanTheBatch:
         assert c.snapshot().prefilling == 2700
         assert c.snapshot().buffer == PREFILL_BUFFER
 
-    def test_a_stale_announcement_expires(self):
+    def test_a_stale_announcement_expires(self, monkeypatch):
         """The backstop for a prefill that is announced and then never submitted."""
+        import time
+
         c = _controller()
-        chat = c.register("chat", tokens = 5000, signal = PreemptSignal())
+        c.register("chat", tokens = 5000, signal = PreemptSignal())
         assert c.snapshot().buffer == PREFILL_BUFFER
-        chat.pending_prefill_at -= PENDING_PREFILL_TTL_S + 1.0
+        # The clock moved forward, not the stamp back: on a host up for less than the TTL a
+        # stamp moved back goes below zero and loses to the never-progressed 0.0.
+        later = time.monotonic() + PENDING_PREFILL_TTL_S + 1.0
+        monkeypatch.setattr(time, "monotonic", lambda: later)
         assert c.snapshot().prefilling == 0
         assert c.snapshot().buffer == IDLE_BUFFER
 
