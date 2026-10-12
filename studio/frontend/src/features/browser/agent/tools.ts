@@ -21,7 +21,6 @@ export const BROWSER_AGENT_TOOLS = [
 /** Captured from the panel without a prompt only in the desktop app; the server keeps it for vision models. */
 export const BROWSER_SCREENSHOT_TOOL = "browser_screenshot";
 
-/** Offered unless Settings says the model may never read the browsing history. */
 export const BROWSER_HISTORY_TOOL = "browser_history";
 
 /** The browser tools to offer this turn: none unless the Browser tool is on and the panel can show. */

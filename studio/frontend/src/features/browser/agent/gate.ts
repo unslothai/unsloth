@@ -155,19 +155,12 @@ const CONSEQUENTIAL_LINK = /\b(buy|purchase|order now|checkout|check out|pay|don
 // The same verbs in the languages Studio ships in (src/i18n/locales). Whole words where words are
 // spaced; anywhere in Chinese, Japanese and Korean, where a verb sits inside a longer run.
 const SPACED_WORDS = [
-  // es, pt-br
   "comprar", "compra", "pagar", "pague", "eliminar", "borrar", "excluir", "apagar", "enviar", "transferir", "suscribirse", "assinar", "confirmar", "publicar", "finalizar compra",
-  // fr
   "acheter", "payer", "commander", "supprimer", "envoyer", "virement", "transférer", "s'abonner", "confirmer", "publier", "se connecter", "s'inscrire",
-  // de
   "kaufen", "bezahlen", "bestellen", "löschen", "entfernen", "senden", "überweisen", "abonnieren", "bestätigen", "veröffentlichen", "anmelden", "registrieren",
-  // it
   "acquista", "paga", "ordina", "elimina", "invia", "trasferisci", "iscriviti", "abbonati", "conferma", "pubblica", "accedi",
-  // sv
   "köp", "betala", "beställ", "radera", "ta bort", "skicka", "överför", "prenumerera", "bekräfta", "publicera", "logga in",
-  // ru
   "купить", "оплатить", "заказать", "удалить", "отправить", "перевести", "подписаться", "подтвердить", "опубликовать", "войти",
-  // ar, he, hi
   "شراء", "ادفع", "دفع", "حذف", "إرسال", "تحويل", "اشتراك", "تأكيد", "نشر",
   "קנה", "רכישה", "תשלום", "מחק", "שלח", "העבר", "הירשם", "אשר", "פרסם", "התחבר",
   "खरीदें", "भुगतान", "हटाएं", "भेजें", "सदस्यता", "पुष्टि", "प्रकाशित",

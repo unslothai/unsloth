@@ -15,7 +15,6 @@ import {
   ruleFor,
 } from "./permissions";
 
-/** A question the agent is waiting on, shown in the panel's agent bar. */
 export type AgentPrompt = Question & { id: number };
 
 type BrowserAgentState = {
@@ -24,9 +23,7 @@ type BrowserAgentState = {
   setEnabled: (enabled: boolean) => void;
   permissions: AgentPermissions;
   setDefaultRule: (patch: Partial<SiteRule>) => void;
-  /** null removes the site's rule. */
   setSiteRule: (site: string, rule: SiteRule | null) => void;
-  /** Whether the model may read the browser's history (the browser_history tool). */
   historyAccess: HistoryAccess;
   setHistoryAccess: (access: HistoryAccess) => void;
   /** The tab the agent drives; the model can't reach any other. */
@@ -120,7 +117,6 @@ export function answerQuestion(id: number, allow: boolean): void {
 
 const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };
 
-/** The stricter of two rules, either possibly absent. */
 export function stricterDownloadRule(a: DownloadsRule | null, b: DownloadsRule | null): DownloadsRule | null {
   if (!a || !b) return a ?? b;
   return DOWNLOAD_STRICTNESS[a] >= DOWNLOAD_STRICTNESS[b] ? a : b;
