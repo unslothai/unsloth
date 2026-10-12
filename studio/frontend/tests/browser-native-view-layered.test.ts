@@ -150,6 +150,21 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.2 0 0)");
 
+    // a split drag pins the outer page box at its old width while the panel shrinks past it: the
+    // page is trimmed to the panel, not to that box, or it draws over the chat beside the handle
+    const panelBody = { getBoundingClientRect: () => rect(650, 0, 350, 800), closest: () => null };
+    const outerPage: { parentElement: object; closest: () => unknown } = { parentElement: panelBody, closest: () => outerPage };
+    const innerPage = { parentElement: outerPage, closest: () => innerPage };
+    const unpinned = placeholder.closest;
+    Object.assign(placeholder, { closest: () => innerPage });
+    await frame();
+    const trimmed = calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args?.bounds as
+      | { x: number; width: number }
+      | undefined;
+    assert.deepEqual([trimmed?.x, trimmed?.width], [650, 350]);
+    Object.assign(placeholder, { closest: unpinned });
+    await frame();
+
     const shows = calls.filter(({ command }) => command === "browser_view_show").length;
     blocking.push(overlay(rect(900, 100, 100, 200)));
     await frame();

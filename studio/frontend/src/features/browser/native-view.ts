@@ -560,8 +560,14 @@ function closeHole(): void {
 
 function visibleRect(element: HTMLElement): DOMRect | null {
   let rect = element.getBoundingClientRect();
-  // A native view isn't clipped by the DOM: trim it to the page area (overflowed while pinned).
-  const area = element.closest("[data-browser-page]")?.parentElement?.getBoundingClientRect();
+  // A native view isn't clipped by the DOM: trim it to the panel around the page. The outer page
+  // box's parent, not the inner box's: a split drag pins the outer box at its old width, so as the
+  // panel shrinks it overflows past the handle, and so did the page drawn from it.
+  let page = element.closest("[data-browser-page]");
+  for (let outer = page?.parentElement?.closest("[data-browser-page]"); outer; outer = outer.parentElement?.closest("[data-browser-page]")) {
+    page = outer;
+  }
+  const area = page?.parentElement?.getBoundingClientRect();
   if (area) {
     const left = Math.max(rect.left, area.left);
     rect = new DOMRect(left, rect.top, Math.min(rect.right, area.right) - left, rect.height);
