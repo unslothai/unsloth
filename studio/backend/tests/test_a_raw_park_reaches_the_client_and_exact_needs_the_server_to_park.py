@@ -374,8 +374,12 @@ class TestTheNamedBudgetIsJudged:
         assert "_exact_cap = _PREEMPT_RAM_DEFAULT_MIB" in window
         assert "_exact_writes = min(_exact_cap, _exact_writes)" in window
         assert "_exact_host_free_mib(self)" in window
-        assert "_exact_writes > _host_free_mib" in window
-        assert "self._exact_host_short = (_exact_writes, _host_free_mib)" in window
+        # An unreadable host is a shortfall too, read as the check after the load reads it.
+        assert (
+            "_host_short_now = _exact_host_shortfall_after_load( _exact_writes, _host_free_mib )"
+            in window
+        )
+        assert "self._exact_host_short = _host_short_now" in window
         assert "if _exact_setting == _exact.EXACT_AUTO: _exact_wanted = False" in window
         assert "parking_holds = _exact_short is None and _exact_host_short is None" in source
         assert "self._exact_host_short = None" in source
@@ -387,7 +391,9 @@ class TestTheNamedBudgetIsJudged:
         launch = source.index('cmd.extend(["--preempt-ram", str(_exact_budget)])')
         assert "self._exact_parking_writes = _exact_writes" in source[launch : launch + 1800]
         after = source.index("_server_props = self._query_server_props() or {}")
-        again = source.index("_exact_host_shortfall_after_load(")
+        again = source.index(
+            '_exact_host_shortfall_after_load( getattr(self, "_exact_parking_writes", None)'
+        )
         assert again < after, "judged after the props read, which is after the launch"
         assert "if _exact_host_short is None: " in source[again - 400 : again]
         assert (

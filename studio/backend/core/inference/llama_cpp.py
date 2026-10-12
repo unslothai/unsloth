@@ -31597,14 +31597,23 @@ class LlamaCppBackend:
                             # Judged again once the weights are resident: see after launch.
                             self._exact_parking_writes = _exact_writes
                             _host_free_mib = _exact_host_free_mib(self)
-                            if _host_free_mib is not None and _exact_writes > _host_free_mib:
-                                self._exact_host_short = (_exact_writes, _host_free_mib)
+                            # An unreadable host is short too: it certifies nothing, and the
+                            # plain parking an auto fallback gets is bounded to nothing there.
+                            _host_short_now = _exact_host_shortfall_after_load(
+                                _exact_writes, _host_free_mib
+                            )
+                            if _host_short_now is not None:
+                                self._exact_host_short = _host_short_now
                                 self._record_load_warning(
                                     "Exact concurrency may park up to %d MiB of KV state in host "
                                     "RAM, and this host has %d MiB free. A park the host cannot "
                                     "hold is re-prefilled, which is not byte-identical. The load "
                                     "will run without exact concurrency, or fail, depending on "
-                                    "the setting." % (_exact_writes, _host_free_mib)
+                                    "the setting." % _host_short_now
+                                    if _host_short_now[1] >= 0
+                                    else _exact_host_short_warning(_host_short_now)
+                                    + " The load will run without exact concurrency, or fail, "
+                                    "depending on the setting."
                                 )
                                 if _exact_setting == _exact.EXACT_AUTO:
                                     _exact_wanted = False
@@ -32505,7 +32514,17 @@ class LlamaCppBackend:
                     and getattr(self, "_exact_host_short", None) is None
                 ):
                     _exact_free_now = _exact_host_free_mib(self)
-                    if _exact_free_now is not None:
+                    if _exact_free_now is None:
+                        # Unreadable now: certifies nothing, as before launch.
+                        self._exact_host_short = (int(_exact_writes_now), -1)
+                        self._record_load_warning(
+                            _exact_host_short_warning(self._exact_host_short)
+                            + " The load will run without exact concurrency, or fail, "
+                            "depending on the setting."
+                        )
+                        if _exact_setting == _exact.EXACT_AUTO:
+                            _exact_wanted = False
+                    else:
                         _exact_room = max(0, int(_exact_free_now) - _host_weights_mib)
                         if int(_exact_writes_now) > _exact_room:
                             self._exact_host_short = (int(_exact_writes_now), _exact_room)

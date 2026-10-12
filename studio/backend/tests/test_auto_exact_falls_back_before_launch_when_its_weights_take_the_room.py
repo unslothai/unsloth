@@ -98,12 +98,13 @@ def test_room_enough_keeps_exact(host):
     assert cmd[-1] == "40000"
 
 
-def test_an_unreadable_host_is_left_to_the_check_after_the_load(host, monkeypatch):
+def test_an_unreadable_host_certifies_nothing(host, monkeypatch):
+    # Read as the check after the load reads it: an unknown reading is no room.
     monkeypatch.setattr(llama_mod, "_exact_host_free_mib", lambda backend: None)
     backend = _Backend(writes = 40_000)
     namespace, _cmd = _run(backend, setting = exact.EXACT_AUTO, weights = 80_000)
-    assert namespace["_exact_wanted"] is True
-    assert backend._exact_host_short is None
+    assert namespace["_exact_wanted"] is False
+    assert backend._exact_host_short == (40_000, -1)
 
 
 def test_it_runs_before_the_child_env_is_set():
