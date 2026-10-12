@@ -698,6 +698,42 @@ def test_an_undistilled_base_tag_selects_the_base_config_and_companions(env, mon
 
 
 @pytest.mark.parametrize(
+    "card_tag, expected_base, expected_config",
+    [
+        (None, "Tongyi-MAI/Z-Image", "z-image"),
+        ("Tongyi-MAI/Z-Image-Turbo", BASE, "z-image-turbo"),
+    ],
+)
+def test_an_online_undistilled_pick_without_a_card_tag_keeps_the_named_variant(
+    env, monkeypatch, card_tag, expected_base, expected_config
+):
+    # A failed card read returns no tag: the name still decides, a real tag still wins.
+    import core.inference.diffusion as diffusion
+
+    backend, runtime, calls = env
+    monkeypatch.setattr(mb, "resolve_variant_base", _REAL_RESOLVE_VARIANT_BASE, raising = False)
+    monkeypatch.setattr(diffusion, "_hf_base_model", lambda repo_id, token: card_tag)
+    monkeypatch.setattr(diffusion, "_remember_companion_base", lambda *a: None)
+    backend.begin_load("unsloth/Z-Image-GGUF", gguf_filename = "z-image-Q4_0.gguf", model_kind = "gguf")
+    assert _wait_loaded(backend)["phase"] == "ready"
+    assert calls["fetch_base"][-1] == (expected_base, False)
+    assert runtime.builds[-1]["model_config"] == expected_config
+
+
+def test_a_resolver_error_keeps_the_named_variant(monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("hub down")
+
+    monkeypatch.setattr(diffusion, "_hf_base_model", _boom)
+    out = mb.resolve_variant_base(
+        "unsloth/Z-Image-GGUF", ZIMAGE, None, "z-image-Q4_0.gguf", fallback = BASE
+    )
+    assert out == "Tongyi-MAI/Z-Image"
+
+
+@pytest.mark.parametrize(
     "folder, expected", [("Z-Image", "z-image"), ("Z-Image-Turbo", "z-image-turbo")]
 )
 def test_an_explicit_local_base_selects_the_config_its_name_spells(env, tmp_path, folder, expected):
@@ -1007,6 +1043,21 @@ def test_base_companions_come_from_the_repo_the_plan_staged(monkeypatch):
     assert fetched == [("unsloth/Z-Image-Turbo", f, "abc") for f in files]
 
 
+def _companion_snapshot(root, complete = True):
+    root.mkdir(parents = True, exist_ok = True)
+    for sub in ("text_encoder", "tokenizer", "vae"):
+        (root / sub).mkdir(exist_ok = True)
+    (root / "tokenizer" / "tokenizer.json").write_text("{}")
+    (root / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    (root / "text_encoder" / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": shards[0], "b": shards[1]}})
+    )
+    for shard in shards if complete else shards[:1]:
+        (root / "text_encoder" / shard).write_bytes(b"x")
+    return str(root)
+
+
 def test_cache_only_companions_read_the_mirror_and_the_live_cache_root(monkeypatch, tmp_path):
     import huggingface_hub
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -1021,6 +1072,7 @@ def test_cache_only_companions_read_the_mirror_and_the_live_cache_root(monkeypat
         lambda base, tok = None, **k: "unsloth/Z-Image-Turbo",
         raising = False,
     )
+    mirror_snapshot = _companion_snapshot(tmp_path / "live" / "mirror-snap")
     asked = []
 
     def _snapshot(
@@ -1033,19 +1085,50 @@ def test_cache_only_companions_read_the_mirror_and_the_live_cache_root(monkeypat
         assert local_files_only
         asked.append((repo, cache_dir))
         if (repo, cache_dir) == ("unsloth/Z-Image-Turbo", live):
-            return f"{live}/models--unsloth--Z-Image-Turbo/snapshots/abc"
+            return mirror_snapshot
         raise LocalEntryNotFoundError("not cached")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
     out = mb.fetch_base_snapshot(BASE, None, local_files_only = True)
-    assert out.startswith(live)
+    assert out == mirror_snapshot
     assert asked == [("unsloth/Z-Image-Turbo", live)]
     asked.clear()
     monkeypatch.setattr(mb, "prefer_ungated_mirror", lambda base, tok = None, **k: base)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     with pytest.raises(LocalEntryNotFoundError):
         mb.fetch_base_snapshot(BASE, None, local_files_only = True)
     assert asked and all(repo == BASE for repo, _ in asked)
     assert asked[0] == (BASE, live)
+
+
+def test_cache_only_companions_skip_an_incomplete_upstream_for_the_staged_mirror(
+    monkeypatch, tmp_path
+):
+    # The upstream holds some weights, so the fetch-repo choice keeps it, but the plan staged the mirror.
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_cache_settings as cache_settings
+
+    live = str(tmp_path / "live")
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: live)
+    monkeypatch.setattr(mb, "prefer_ungated_mirror", lambda base, tok = None, **k: base)
+    snapshots = {
+        BASE: _companion_snapshot(tmp_path / "upstream", complete = False),
+        "unsloth/Z-Image-Turbo": _companion_snapshot(tmp_path / "mirror"),
+    }
+
+    def _snapshot(repo, *, cache_dir = None, local_files_only = False, **_k):
+        assert local_files_only
+        if cache_dir != live or repo not in snapshots:
+            raise LocalEntryNotFoundError("not cached")
+        return snapshots[repo]
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _snapshot)
+    assert mb.fetch_base_snapshot(BASE, None, local_files_only = True) == snapshots["unsloth/Z-Image-Turbo"]
+    del snapshots["unsloth/Z-Image-Turbo"]
+    with pytest.raises(LocalEntryNotFoundError, match = "complete"):
+        mb.fetch_base_snapshot(BASE, None, local_files_only = True)
 
 
 def _mlx_route_stubs(monkeypatch, *, predicted = "mlx"):

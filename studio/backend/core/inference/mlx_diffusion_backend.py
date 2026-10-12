@@ -9,6 +9,7 @@ Same duck-typed surface as the other image engines; selected only by ``diffusion
 from __future__ import annotations
 
 import gc
+import json
 import os
 import random
 import subprocess
@@ -30,6 +31,7 @@ from core.inference.diffusion_families import (
     detect_family_for_pick,
     family_mlx_supported,
     load_identity,
+    mirror_repo,
     mlx_model_config_for,
     named_variant_base,
     prefer_ungated_mirror,
@@ -353,6 +355,28 @@ def fetch_gguf(
     )
 
 
+def _holds_base_components(snapshot: str) -> bool:
+    root = Path(snapshot)
+    if not all((root / sub).is_dir() for sub in _LINKED_SUBDIRS):
+        return False
+    if not any((root / "tokenizer").iterdir()):
+        return False
+    for sub in ("text_encoder", "vae"):
+        folder = root / sub
+        shards: set[str] = set()
+        for index in folder.glob("*.safetensors.index.json"):
+            try:
+                shards.update(json.loads(index.read_text(encoding = "utf-8"))["weight_map"].values())
+            except (OSError, ValueError, KeyError, AttributeError):
+                return False
+        if shards:
+            if not all((folder / shard).is_file() for shard in shards):
+                return False
+        elif not any(folder.glob("*.safetensors")):
+            return False
+    return True
+
+
 def fetch_base_snapshot(
     base_repo: str,
     hf_token: Optional[str],
@@ -373,10 +397,15 @@ def fetch_base_snapshot(
         from utils.hf_cache_settings import active_hf_hub_cache
 
         missing: Optional[Exception] = None
-        for repo in dict.fromkeys((prefer_ungated_mirror(base_repo, hf_token), base_repo)):
+        incomplete: Optional[Exception] = None
+        # The plan may have staged the mirror even when the upstream holds some weights: try both.
+        repos = [prefer_ungated_mirror(base_repo, hf_token), base_repo]
+        if not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+            repos.append(mirror_repo(base_repo))
+        for repo in dict.fromkeys(r for r in repos if r):
             for cache_dir in dict.fromkeys((active_hf_hub_cache(), constants.HF_HUB_CACHE)):
                 try:
-                    return snapshot_download(
+                    snapshot = snapshot_download(
                         repo,
                         allow_patterns = list(BASE_ALLOW_PATTERNS),
                         token = hf_token,
@@ -385,7 +414,13 @@ def fetch_base_snapshot(
                     )
                 except LocalEntryNotFoundError as exc:
                     missing = exc
-        raise missing
+                    continue
+                if _holds_base_components(snapshot):
+                    return snapshot
+                incomplete = incomplete or LocalEntryNotFoundError(
+                    f"'{repo}' is cached without a complete text_encoder / tokenizer / vae"
+                )
+        raise incomplete or missing
     import fnmatch
 
     from huggingface_hub import HfApi
@@ -457,15 +492,18 @@ def resolve_variant_base(
         if named:
             return named
     try:
-        from core.inference.diffusion import _resolve_base_repo
+        from core.inference.diffusion import _hf_base_model, _resolve_base_repo
     except Exception as exc:  # noqa: BLE001 -- no diffusers stack: the family default stands
         logger.debug("mlx_diffusion.base_resolver_unavailable: %s", exc)
         return fallback
+    named = _named_mlx_base(fam, repo_id, gguf_filename)
     try:
-        return _resolve_base_repo(repo_id, None, fam, hf_token, gguf_filename)
-    except Exception as exc:  # noqa: BLE001 -- a metadata failure keeps the family default
+        # No card tag (none set, or the Hub read failed): the named variant decides, as offline.
+        explicit = named if named and _hf_base_model(repo_id, hf_token) is None else None
+        return _resolve_base_repo(repo_id, explicit, fam, hf_token, gguf_filename)
+    except Exception as exc:  # noqa: BLE001 -- a metadata failure keeps the named variant or default
         logger.debug("mlx_diffusion.base_resolve_failed: %s", exc)
-        return fallback
+        return named or fallback
 
 
 def _cached_variant_base(
