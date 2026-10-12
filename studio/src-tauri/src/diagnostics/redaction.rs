@@ -173,8 +173,6 @@ fn looks_like_credential(value: &str) -> bool {
         || value
             .bytes()
             .any(|b| b.is_ascii_digit() || b"._-+/=~".contains(&b))
-        || (value.bytes().any(|b| b.is_ascii_uppercase())
-            && value.bytes().any(|b| b.is_ascii_lowercase()))
 }
 
 fn replace_known_paths(input: &str, report: &mut RedactionReport) -> String {
@@ -279,7 +277,12 @@ fn secret_flag_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"(?i)(?:^|\s|\\[nrt])--(?P<key>{SECRET_KEYS})[ \t]+{SECRET_VALUE}"
+            r"(?i)(?:^|\s|\\[nrt])--(?P<key>{SECRET_KEYS})[ \t]+{}",
+            // A flag names its value outright, so any length counts; a following flag does not.
+            SECRET_VALUE.replace(
+                r#"(?P<uv>[^"'\\\s,;}\]<>]{6,})"#,
+                r#"(?P<uv>[^-"'\\\s,;}\]<>][^"'\\\s,;}\]<>]*)"#
+            )
         ))
         .unwrap()
     })
@@ -321,7 +324,7 @@ fn token_re() -> &'static Regex {
 fn env_secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|(?:"[^"\r\n]*"?|'[^'\r\n]*'?)[^\s;&]*|[^\s;&"'][^\s;&]*)"#).unwrap()
+        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|(?:"(?:[^"\\\r\n]|\\.)*"?|'[^'\r\n]*'?)[^\s;&]*|[^\s;&"'][^\s;&]*)"#).unwrap()
     })
 }
 
@@ -636,6 +639,8 @@ mod tests {
             ("DATABASE_PASSWORD=<redacted-but-real>", "but-real", ""),
             (r#"ACCESS_KEY="don't-share-this""#, "share-this", ""),
             (r#"ACCESS_KEY="quoted"opaque0123456789"#, "opaque", ""),
+            (r#"ACCESS_KEY="opaque\"still secret""#, "secret", ""),
+            ("serve --password abcde --port 8888", "abcde", "--port 8888"),
             ("DATABASE_PASSWORD=<redacted>x", "<redacted>x", ""),
             (r#"{"password":"bearer"}"#, "bearer", ""),
             ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
@@ -677,7 +682,7 @@ mod tests {
             "{\"token_type\":\"bearer\",\"max_tokens\": 4096,\"eos_token\": \"</s>\"}\n",
             "{\"secret_sauce_path\": \"/x\", \"password_required\": true, \"api_key_count\": 2}\n",
             "{\"event\": \"loaded {\\\"pad_token\\\": \\\"<pad>\\\"}\"}\n",
-            "{\"unk_token\": \"[UNK]\", \"eos_token\": \"<|im_end|>\", \"next_token\": \"Hello\"}\n",
+            "{\"unk_token\": \"[UNK]\", \"eos_token\": \"<|im_end|>\", \"next_token\": \"Assistant\"}\n",
             "{\"num_tokens\": 512, \"token_count\": 12, \"tokenizer\": \"fast\", \"credentials\": null}\n",
             "sha256:9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a\n",
         );
