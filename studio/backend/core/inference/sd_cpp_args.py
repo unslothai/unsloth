@@ -144,17 +144,29 @@ NATIVE_SPEED_MAX = "max"
 NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
-def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
+def native_speed_flags(
+    speed_mode: Optional[str], backend_args: Optional[Sequence[str]] = None
+) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
-    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site."""
+    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
+    ``backend_args``: the other argv flags; a ``--backend cpu`` there keeps direct conv even on Metal hosts."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if _runs_on_apple_metal():
+        if _runs_on_apple_metal() and not selects_cpu_backend(backend_args or ()):
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+def selects_cpu_backend(args: Sequence[str]) -> bool:
+    """True if ``args`` holds a bare ``--backend cpu`` (the whole graph on the CPU backend)."""
+    args = list(args)
+    return any(
+        flag == "--backend" and i + 1 < len(args) and str(args[i + 1]).strip().lower() == "cpu"
+        for i, flag in enumerate(args)
+    )
 
 
 def _runs_on_apple_metal() -> bool:
@@ -559,6 +571,9 @@ def build_sd_cpp_upscale_command(
     if params.tile_size is not None:
         cmd += ["--upscale-tile-size", str(int(params.tile_size))]
     cmd += ["--output", output_path]
+    # Same paravirtual-GPU CPU placement as generation; an explicit --backend in extra_args wins.
+    if metal_is_paravirtual() and "--backend" not in (extra_args or ()):
+        cmd += list(CPU_BACKEND_FLAGS)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -625,8 +640,10 @@ def build_sd_cpp_server_command(
     if offload:
         cmd += offload
     # De-dup speed flags against offload (may already include --diffusion-fa).
-    cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
-    cmd += metal_placement_flags(offload)
+    placement = metal_placement_flags(offload)
+    backend_args = [*offload, *placement, *(extra_args or ())]
+    cmd += [f for f in native_speed_flags(native_speed, backend_args) if f not in offload]
+    cmd += placement
     if verbose:
         cmd += ["-v"]
     if extra_args:

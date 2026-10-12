@@ -211,6 +211,62 @@ def test_native_speed_on_apple_metal_drops_direct_conv(monkeypatch):
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
 
 
+def test_native_speed_keeps_direct_conv_on_a_forced_cpu_backend(monkeypatch):
+    # The CPU-backend restart and an explicit --backend cpu run on the CPU, where direct conv is the profile's win.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    assert native_speed_flags("default", ["--backend", "cpu"]) == full
+    assert native_speed_flags("default", ["--backend", "diffusion=MTL0"]) == ["--diffusion-fa"]
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    restart = build_sd_cpp_server_command(
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
+        native_speed = "default",
+        extra_args = ["--backend", "cpu"],
+    )
+    assert "--diffusion-conv-direct" in restart
+
+
+def test_engine_generate_keeps_direct_conv_on_a_forced_cpu_backend(monkeypatch):
+    from core.inference.sd_cpp_engine import SdCppEngine
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    captured = {}
+    eng = SdCppEngine(binary = "/x/sd-cli")
+    monkeypatch.setattr(eng, "_require_binary", lambda: "/x/sd-cli")
+    monkeypatch.setattr(eng, "_prepare_out", lambda p: p)
+    monkeypatch.setattr(eng, "_run", lambda cmd, *a, **k: captured.setdefault("cmd", cmd))
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    eng.generate(
+        files,
+        SdCppGenParams(prompt = "x"),
+        output_path = "/o/x.png",
+        native_speed = "default",
+        extra_args = ["--backend", "cpu"],
+    )
+    assert "--diffusion-conv-direct" in captured["cmd"]
+
+
+def test_upscale_on_paravirtual_metal_runs_on_the_cpu_backend(monkeypatch):
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    params = SdCppUpscaleParams(input_image = "/i/in.png", upscale_model = "/m/esrgan.pth")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    cmd = build_sd_cpp_upscale_command("sd-cli", params, output_path = "/o/out.png")
+    assert cmd.count("--backend") == 1 and cmd[cmd.index("--backend") + 1] == "cpu"
+    # An explicit caller --backend wins: no second, concatenated spec.
+    pinned = build_sd_cpp_upscale_command(
+        "sd-cli", params, output_path = "/o/out.png", extra_args = ["--backend", "MTL0"]
+    )
+    assert pinned.count("--backend") == 1 and pinned[-1] == "MTL0"
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    assert "--backend" not in build_sd_cpp_upscale_command("sd-cli", params, output_path = "/o/out.png")
+
+
 def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []

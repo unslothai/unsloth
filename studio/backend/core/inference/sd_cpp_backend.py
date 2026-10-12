@@ -69,6 +69,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
 )
+from core.inference import sd_cpp_args as sd_cpp_args_mod
 from core.inference.sd_cpp_args import (
     CPU_BACKEND_FLAGS,
     SdCppGenParams,
@@ -3045,6 +3046,9 @@ class SdCppDiffusionBackend:
                 if off_torch is not None
                 else resolve_diffusion_device_target().device
             )
+            # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
+            if device == "mps" and sd_cpp_args_mod.metal_is_paravirtual():
+                device = "cpu"
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
             offload: tuple[str, ...] = ()
