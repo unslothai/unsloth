@@ -40,6 +40,7 @@ _CONTROL_TYPES = frozenset(
         "skill_load",
         "diffusion_frame",
         "reasoning_summary",
+        "context_usage",
     }
 )
 
@@ -49,6 +50,7 @@ _CONTROL_KEYS = (
     "_toolStatus",
     "_diffusionFrame",
     "_reasoningDurationMs",
+    "_contextUsage",
     "_mcp_provenance",
     "quote_cut",
 )

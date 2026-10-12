@@ -139,6 +139,11 @@ class DiffusionFamily:
     sd_cpp_vae: Optional[tuple[str, str]] = None
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
+    mlx_model_config: Optional[str] = None
+    mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
+    # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
     # Literal an sd.cpp build carries once it can run this family; matched against binary bytes
@@ -496,6 +501,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         fp16_incompatible = True,
         fp16_guard = "rescale_post_norm",
+        mlx_model_config = "z-image-turbo",
+        mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
+        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
             (
@@ -1645,6 +1653,20 @@ def pipeline_available_family_names() -> tuple[str, ...]:
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """A single-file-pipeline family or a multi-denoiser family has no transformer-only GGUF to load."""
     return not fam.single_file_is_pipeline and not fam.pipeline_only
+
+
+def family_mlx_supported(fam: Optional[DiffusionFamily]) -> bool:
+    return fam is not None and bool(getattr(fam, "mlx_model_config", None))
+
+
+def mlx_model_config_for(fam: DiffusionFamily, base_repo: Optional[str]) -> Optional[str]:
+    if not family_mlx_supported(fam):
+        return None
+    key = (base_repo or "").strip().lower()
+    for base, name in getattr(fam, "mlx_model_config_by_base", ()) or ():
+        if key == base.lower():
+            return name
+    return fam.mlx_model_config
 
 
 def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:

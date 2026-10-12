@@ -2912,7 +2912,7 @@ class DiffusionBackend:
         # Too-old diffusers only matters when this load builds a diffusers pipeline (not native sd.cpp).
         from .diffusion_engine_router import family_buildable_here
 
-        if not family_buildable_here(fam, model_kind = kind):
+        if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
@@ -4193,9 +4193,27 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         allow_device_probe: bool = True,
         memory_verdict: bool = True,
+        discover_text_encoders: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
-        """The repos and exact files the loader needs, so the manager does not pull tens of GB it skips."""
+        """The repos + exact files this pick needs, so the Hub download manager can fetch them with the
+        same file scope the loader would.
+
+        A plain snapshot_download would also pull what the loader deliberately skips (the packaged
+        root single, transformer/ shards, fp16 twins), tens of GB per FLUX repo. Resolves
+        family/kind/base exactly as ``_run_load`` does. Local paths are already on disk and yield no
+        entries.
+
+        ``text_encoder_quant`` is read for the same reason as the DiT quant: an fp8 request loads a
+        hosted PRE-CAST encoder, so the base repo's dense encoder shards must not be staged and the
+        pre-cast checkpoint must be.
+
+        ``allow_device_probe=False`` skips device-dependent precision planning and the memory
+        verdict while training owns the GPU. It is not free: the pre-cast encoder and the DiT
+        prequant need a target to resolve, so clearing it also changes WHICH FILES the plan counts.
+        ``memory_verdict=False`` suppresses only the oversized-unified-memory refusal.
+        ``discover_text_encoders=False`` keeps the base repo's encoder for an engine that never opens a single-file one.
+        """
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
@@ -4211,7 +4229,11 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         component_overrides = None
-        if not load_kwargs.get("text_encoder_files") and not load_kwargs.get("vae_file"):
+        if (
+            discover_text_encoders
+            and not load_kwargs.get("text_encoder_files")
+            and not load_kwargs.get("vae_file")
+        ):
             # The same pick the load makes, so the plan stages no encoder the load will not open.
             load_kwargs["text_encoder_files"] = (
                 self._comfy_text_encoders(

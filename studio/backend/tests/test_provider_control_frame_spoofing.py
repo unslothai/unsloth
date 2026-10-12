@@ -26,6 +26,7 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
         "tool_status",
         "diffusion_frame",
         "reasoning_summary",
+        "context_usage",
     ],
 )
 def test_every_control_type_is_dropped(frame_type):
@@ -41,6 +42,7 @@ def test_every_control_type_is_dropped(frame_type):
         "_toolStatus",
         "_diffusionFrame",
         "_reasoningDurationMs",
+        "_contextUsage",
         "_mcp_provenance",
         "quote_cut",
     ],

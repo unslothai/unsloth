@@ -840,6 +840,7 @@ def _select_torchao_spec(torch_version: str | None) -> str:
 # torchcodec 0.11 and older target one torch minor; 0.12 is ABI-stable with torch 2.11+.
 _TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
 _TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
+# install.sh still accepts torch 2.4: deliberately no row, so it ships without torchcodec rather than 0.0.3 (#10598).
 _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     12: _TORCHCODEC_ABI_STABLE_SPEC,
     11: "torchcodec>=0.11.0,<0.12.0",
@@ -10514,6 +10515,49 @@ _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.4"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
+# mflux goes in --no-deps: its declared torch / transformers floors would move the MLX pins, and Z-Image
+# needs only the deps below. Best-effort: a failure must never mark the MLX stack broken.
+_MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
+_MLX_DIFFUSION_DEPS: tuple[str, ...] = (
+    "piexif>=1.1.3,<2",
+    "platformdirs>=4,<5",
+    "toml>=0.10.2,<1",
+)
+
+
+def _mlx_diffusion_engine_is_current() -> bool:
+    """Whether mflux is at its pin and its light runtime deps are inside their ranges."""
+    if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_DIFFUSION_PINS):
+        return False
+    try:
+        from packaging.requirements import Requirement
+        for spec in _MLX_DIFFUSION_DEPS:
+            requirement = Requirement(spec)
+            installed = _installed_distribution_version(requirement.name)
+            if installed is None or not requirement.specifier.contains(installed, prereleases = True):
+                return False
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+    return True
+
+
+def _install_mlx_diffusion_engine() -> None:
+    """Install the opt-in MLX image engine; a failure is noted, never fatal."""
+    if not _full_deps_requested() and _mlx_diffusion_engine_is_current():
+        return
+    try:
+        pip_install(
+            "Installing the MLX image engine (mflux)",
+            "--no-cache-dir",
+            "--no-deps",
+            *_MLX_DIFFUSION_PINS,
+            *_MLX_DIFFUSION_DEPS,
+        )
+    except SystemExit:
+        _note(
+            f"{_MLX_DIFFUSION_PINS[0]} failed to install; image generation keeps its "
+            "current engine (UNSLOTH_DIFFUSION_MLX has no effect)"
+        )
 
 
 def _mlx_vlm_spec_for_installed_zoo() -> str:
@@ -12402,6 +12446,9 @@ def install_python_stack() -> int:
                     *_MLX_PINS,
                     _mlx_vlm_spec_for_installed_zoo(),
                 )
+            # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
+            # stack still gets a missing engine.
+            _install_mlx_diffusion_engine()
             _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")

@@ -870,7 +870,7 @@ def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(mo
     router = __import__("core.inference.diffusion_engine_router", fromlist = ["x"])
     families = __import__("core.inference.diffusion_families", fromlist = ["x"])
     monkeypatch.setattr(families, "detect_family_for_pick", lambda *a, **k: object())
-    monkeypatch.setattr(router, "predict_engine", lambda fam, model_kind = None: ENGINE_SD_CPP)
+    monkeypatch.setattr(router, "predict_engine", lambda fam, model_kind = None, **_k: ENGINE_SD_CPP)
     monkeypatch.setattr(router, "engine_for", lambda name: name)
 
     monkeypatch.setattr(router, "native_binary_installed", lambda: True)

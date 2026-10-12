@@ -153,6 +153,7 @@ def test_control_frame_lines_are_recognised_by_type():
         "tool_status",
         "diffusion_frame",
         "reasoning_summary",
+        "context_usage",
     ):
         assert is_ui_control_sse_line('data: {"type": "%s"}' % frame) is True, frame
 

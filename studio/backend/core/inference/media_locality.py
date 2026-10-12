@@ -192,7 +192,7 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     if fam is None:
         return [backend_for(owner)]
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
-    predicted = predict_engine(fam, model_kind = kind)
+    predicted = predict_engine(fam, model_kind = kind, gguf_filename = pick.gguf_filename)
     names = [predicted]
     if predicted == ENGINE_SD_CPP and not native_binary_installed():
         names.append(ENGINE_DIFFUSERS)
