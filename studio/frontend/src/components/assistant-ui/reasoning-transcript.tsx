@@ -710,7 +710,7 @@ export function ReasoningTranscript({
   }, [setLimit]);
   const adjustThread = useAdjustForContentInsertedAbove();
   const boundedRef = useRef(bounded);
-  // In the live tail box rows grow upward in a fixed box, so no thread correction applies.
+  // Rows grow upward inside the live tail box: no thread correction applies.
   const adjustAbove = useCallback(
     (delta: number) => !boundedRef.current && adjustThread(delta),
     [adjustThread],
@@ -763,7 +763,6 @@ export function ReasoningTranscript({
 
   useLayoutEffect(() => {
     if (!bounded || covered) return;
-    // The box shows the end of the trace, which the prefix mount reaches last.
     let start = fragments.length;
     for (let height = 0; start > 0 && height < BOUNDED_TAIL_PX; )
       height += estimates[--start];
@@ -778,7 +777,6 @@ export function ReasoningTranscript({
   }, [bounded, covered, fragments.length, estimates, grid, setIslands]);
 
   useLayoutEffect(() => {
-    // Lifting the cap moves every row without resizing the transcript.
     recapture.current(true);
   }, [bounded]);
 
@@ -1095,7 +1093,7 @@ export function ReasoningTranscript({
         stopJumpWatch?.();
         stopJumpWatch = undefined;
         scroll.addEventListener("scroll", schedule, { passive: true });
-        // A jump lands before IntersectionObserver reports: mount the rows in view before this paint.
+        // A jump lands before IntersectionObserver reports: mount before this paint.
         if (beforePaint) flushSync(capture);
         else schedule();
         return;

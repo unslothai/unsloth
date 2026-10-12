@@ -71,7 +71,6 @@ test("a jump past the observer margin wakes far transcripts through one listener
 });
 
 test("a far transcript still corrects a resize above the reader without the scroll listener", () => {
-  // Corrections come from the transcript's own resize and commit hooks, not from scroll events.
   const remeasure = between(transcript, "rowRemeasurers.set(element, (row) => {", "});");
   assert.match(remeasure, /element\.getBoundingClientRect\(\)\.bottom -/);
   assert.match(remeasure, /adjustAbove\(Math\.round\(shift\)\)/);

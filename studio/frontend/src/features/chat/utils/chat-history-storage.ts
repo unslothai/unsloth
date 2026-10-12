@@ -980,7 +980,7 @@ export async function listStoredChatThreadsWithMessages(
   if (counts !== null) {
     return threads.filter((thread) => (counts.get(thread.id) ?? 0) > 0);
   }
-  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback only fires when the batch result is empty.
+  // Per-thread Dexie fallback only when the batch is empty.
   let backendByThread: Map<string, MessageRecord[]>;
   try {
     backendByThread = await batchListChatMessages(threadIds);

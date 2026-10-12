@@ -298,8 +298,7 @@ const unwatchScrolling = (): void => {
  * printed window match the reader's: a print lays out at PAPER width while the scroll offset
  * carries across as raw pixels, so the page lands several fences away (matching paper to window
  * removes the difference, which is why chasing the window is the wrong fix). The whole document is
- * on the page, so every fence is revealed; pending highlighting is bounded by PRINT_TOKENIZE_CHARS
- * and fences beyond that budget or still waiting for a grammar remain plain text.
+ * on the page, so every fence is revealed (highlighting capped by PRINT_TOKENIZE_CHARS).
  * An earlier attempt latched every fence from `beforeprint` with `flushSync` and 53 of 56 still
  * printed on streamdown's raw fallback, because the swap alone renders UNHIGHLIGHTED while the
  * passive effect waits on a grammar. `latchNow` closes both halves and `warmGrammars` keeps a
@@ -841,7 +840,6 @@ export const FenceLine = memo(function FenceLine({
 }: {
   line: TokenLine;
   windowed: boolean;
-  /** A thinking-trace code row: the row supplies the line breaks, so no block box and no number. */
   inline?: boolean;
 }) {
   if (!inline && isBlankLine(line)) {
@@ -972,8 +970,7 @@ const flyingDuringFrame = (
 };
 
 /*
- * A print puts every line on the page. Pending highlighting has a synchronous budget;
- * fences beyond it or still waiting for a grammar remain plain text.
+ * A print puts every line on the page.
  * `upgradeEverythingForPrint` makes the same argument for a deferred fence.
  *
  * This one REVERTS where the latch does not: the tokens are already in `fence.lines`, so
@@ -1030,7 +1027,6 @@ const remeasureWindows = (): void => {
   }
 };
 
-/** Is a print in progress? While it is, every fence renders every line. */
 export const fencePrinting = (): boolean => printing;
 
 const FIND_BAR_FLAG = "data-find-bar-open";

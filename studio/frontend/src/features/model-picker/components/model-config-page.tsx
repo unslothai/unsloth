@@ -504,8 +504,7 @@ function MaxSeqLengthSetting({
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
   const { draft, sliderProps } = useSliderDraft(
-    // Outside the control's range it sits at the nearer edge, or the first nudge
-    // would step from the shown number onto the bound.
+    // Clamped, or the first nudge would jump from the shown number to the bound.
     Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max),
     onChange,
   );
@@ -618,8 +617,6 @@ function GgufContextLengthSetting({
               {...sliderProps}
               className="panel-slider"
               aria-label="Context Length"
-              // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
-              // model has. The number is only spoken once one exists.
               thumbValueText={(v) =>
                 v !== 0
                   ? `${v.toLocaleString()} tokens`

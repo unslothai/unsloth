@@ -97,7 +97,6 @@ export function createPanelWidthStore({
     listeners.forEach((cb) => cb());
   }
 
-  // Keep tabs in sync, same as the pin flag.
   function onStorage(event: StorageEvent) {
     if (event.key !== key && event.key !== null) return;
     storedWidth = load();

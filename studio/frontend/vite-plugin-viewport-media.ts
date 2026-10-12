@@ -150,8 +150,7 @@ export function gateViewportMedia(css: string): { css: string; queries: Viewport
 }
 
 export function viewportBootScript(queries: readonly ViewportQuery[]): string {
-  // Also keep the data safe if this external script is ever inlined into HTML.
-  // JSON.stringify already escapes quotes, backslashes and control characters.
+  // Escaped beyond JSON so the data stays safe if this script is ever inlined into HTML.
   const entries = JSON.stringify(queries.map(({ attribute, query }) => [attribute, query]))
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")

@@ -5,8 +5,6 @@ import type { HighlightResult } from "@streamdown/code";
 
 export type TokenLine = HighlightResult["tokens"][number];
 
-// Settled thinking fences, coloured once by the worker. Remounting a row (the trace mounts and
-// unmounts chunks as the reader moves) must not ask again, so results outlive their rows.
 const MAX_ENTRIES = 128;
 const MAX_CHARACTERS = 1_000_000;
 const results = new Map<string, { result: HighlightResult; chars: number }>();
@@ -19,7 +17,6 @@ export function cachedSettledColour(
   language: string | null,
   source: string,
 ): HighlightResult | null {
-  // A pure read, so a render may ask; recency is kept by the write side.
   return results.get(keyOf(language, source))?.result ?? null;
 }
 
@@ -45,10 +42,7 @@ export function rememberSettledColour(
   }
 }
 
-/**
- * The tokens of `line` covering `text`, which starts at `column`; null when they do not spell
- * `text` exactly, so a row never shows another source's colours.
- */
+/** The tokens of `line` covering `text` from `column`; null unless they spell it exactly. */
 export function clipLineTokens(
   line: TokenLine | undefined,
   column: number,
@@ -105,10 +99,6 @@ const sameLine = (a: TokenLine, b: TokenLine): boolean =>
       sameStyle(token.htmlStyle, b[index].htmlStyle),
   );
 
-/**
- * `next` with every line that did not change taken from `previous`, so a growing fence re-coloured
- * by the worker re-renders only the lines that moved.
- */
 export function keepUnchangedLines(
   previous: HighlightResult | null,
   next: HighlightResult,
@@ -123,15 +113,10 @@ export function keepUnchangedLines(
   };
 }
 
-// Same shape as code-plugin's uncoloured tail.
 const plainLine = (content: string): TokenLine =>
   [{ content, offset: 0 }] as unknown as TokenLine;
 
-/**
- * One line of tokens per line of `lines`: the colours of a result taken for an earlier, shorter
- * source where they still spell the line, plain text where they do not (the line still growing,
- * or not tokenized yet).
- */
+/** Colours from an earlier, shorter source where they still spell the line; plain otherwise. */
 export function spellLines(
   result: HighlightResult,
   lines: readonly string[],

@@ -26,7 +26,6 @@ test("Tailwind's spacing and divide utilities are rewritten to test the parent f
     "divide-y",
     "divide-border",
     "divide-border/50",
-    // Composed, so Tailwind's source scan does not ship these variants in the app's stylesheet.
     ...["hover", "group-hover"].map((variant) => `${variant}:space-y-4`),
   ]);
   assert.match(

@@ -347,8 +347,7 @@ export function createCodePlugin(
   const reachInto = (fence: Fence, code: string): number => {
     if (fence.result === null || fence.seeded) return -1;
     const anchor = fence.code;
-    // A block that lost more than its closing delimiter is a different fence;
-    // sharing this entry would cancel the refresh it has queued.
+    // Lost more than its closing delimiter: a different fence, so do not share the entry.
     const reaches =
       code.startsWith(anchor) ||
       (code.length >= fence.committedLength && shedsClosingRun(code, anchor));

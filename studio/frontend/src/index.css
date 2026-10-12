@@ -3138,8 +3138,7 @@ html[data-chat-font] .aui-root {
 		background-color: var(--sidebar) !important;
 	}
 
-	/* Menus opened from a card dialog or the model picker glow in its surface, and stock menus
-	   lift to the Hub tone. Defined on <html> so --accent can be reassigned without a cycle. */
+	/* On <html> so --accent can be reassigned without a cycle. */
 	.dark {
 		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
 		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
@@ -3759,17 +3758,12 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(0.75rem * var(--ui-space-scale, 1));
 	}
 
-	/* The welcome screen is inside the viewport's own 20px gutter, so pull
-	   back to the dock's 12px rather than adding to it; otherwise the empty
-	   state is 40px narrower than the thread it turns into. */
+	/* Pull back into the viewport's gutter, or the empty state is 40px narrower than the thread. */
 	:where(.aui-thread-root[data-thread-narrow]) .aui-thread-welcome-message {
 		padding-left: 0;
 		padding-right: 0;
 		margin-left: calc(-0.5rem * var(--ui-space-scale, 1));
 		margin-right: calc(-0.5rem * var(--ui-space-scale, 1));
-		/* w-full would pin the width and the margins would only shift the
-		   box left. An explicit width widens it into the gutter instead;
-		   auto would shrink-wrap, since the parent centres its children. */
 		width: calc(100% + 1rem * var(--ui-space-scale, 1));
 	}
 
@@ -5936,7 +5930,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	top: calc(var(--studio-content-top-inset, 0px) + 3.5rem);
 }
 
-/* The blocking screens flag <html> while mounted, so CSS keeps the portaled bars under them. */
 html[data-blocking-screen-open] [data-find-bar-layer],
 html[data-blocking-screen-open] .interface-zoom-position {
 	display: none;

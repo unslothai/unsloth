@@ -11,7 +11,6 @@ import {
 } from "./reasoning-code-colour";
 import { requestFullHighlight } from "./use-reasoning-highlight";
 
-/** A growing thinking fence is re-coloured at most this often, and only while it is on screen. */
 export const LIVE_COLOUR_MS = 250;
 
 const OBSERVES = typeof IntersectionObserver !== "undefined";
@@ -19,16 +18,8 @@ const OBSERVES = typeof IntersectionObserver !== "undefined";
 const viewportOf = (element: Element): Element | null =>
   element.closest(".aui-thread-viewport");
 
-/**
- * Worker colours for a thinking code block, or null. All grammar work is on the worker; without it
- * the block stays plain.
- *
- * Settled (the fence closed, or the trace stopped): asked once, when the block nears the viewport,
- * and cached past the row's life.
- * Growing: asked again at most every `LIVE_COLOUR_MS` while the block intersects the viewport, so
- * a block scrolled away, or never reached, costs nothing. The answer may be for an earlier,
- * shorter source: callers keep only the lines its tokens still spell.
- */
+// Worker colours for a thinking code block: settled ones once near the viewport, growing ones
+// every LIVE_COLOUR_MS while on screen (possibly for a shorter source; callers re-check lines).
 export function useThinkingCodeColour(
   surface: RefObject<HTMLElement | null>,
   source: string,
@@ -153,6 +144,5 @@ export function useThinkingCodeColour(
     };
   }, []);
 
-  // A block that just closed keeps its growing colours until the settled ones land.
   return final ?? colour?.result ?? null;
 }

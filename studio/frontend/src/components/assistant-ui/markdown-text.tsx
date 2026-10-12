@@ -859,8 +859,7 @@ function StreamdownBlockContent(props: BlockProps) {
       <>
         {highlightCode || highlightMode === "settled" ? (
           <FenceBlock
-            // A closed fence in a trace is settled even while the trace streams, so it defers and
-            // takes the worker route instead of the growing fence's main-thread tokenizer.
+            // A closed fence in a streaming trace is settled: worker route, not the main thread.
             isIncomplete={highlightCode ? props.isIncomplete : false}
             language={codeFence.language}
             source={codeFence.source}
@@ -1160,11 +1159,6 @@ function PlainFenceBlock({
   );
 }
 
-/**
- * A thinking fence still being written: plain until the worker colours it, re-coloured only while
- * it is on screen (see `useThinkingCodeColour`). Same wrapper as the closed fence's `FenceBlock`,
- * so the block keeps its shape when the delimiter lands.
- */
 function LiveThinkingFence({
   language,
   source,
@@ -1368,9 +1362,7 @@ StreamdownBlock.displayName = "StreamdownBlock";
 // Only the adapter's inline wav: any other src (remote URL, WebKit-followed audio/mpegurl) fetches on render.
 const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/wav;base64,[A-Za-z0-9+/=]+)"\s*\/>/;
 
-// Coalesce token events into one render per paint, as textgen does, and space
-// renders by their measured cost. There is no length throttle. Incremental block
-// parsing bounds the work performed per paint, and completion returns immediately.
+// One render per paint, spaced by measured cost; incremental parsing bounds the work per paint.
 function useCoalescedStreamingText(
   text: string,
   isStreaming: boolean,

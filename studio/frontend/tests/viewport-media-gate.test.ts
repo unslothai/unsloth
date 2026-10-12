@@ -221,7 +221,6 @@ test("boot script data cannot close an inline script and retains its exact runti
     "line\u2028paragraph\u2029end",
     "surrogates: \ud800 \udfff; emoji: \ud83d\ude00",
   ];
-  // Exercise both serialized fields; the DOM stubs record their unmodified values.
   const queries = values.map((value) => ({ attribute: value, query: value }));
   const script = viewportBootScript(queries);
   assert.doesNotMatch(script, /[<>\u2028\u2029]/u);

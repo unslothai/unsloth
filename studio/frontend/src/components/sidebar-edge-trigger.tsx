@@ -84,8 +84,6 @@ export function SidebarEdgeTrigger({
       {(!sidebarShowing || holding) && (
         <PanelResizeHandle
           edge="right"
-          // Follows the pin, which a drag flips part-way through: from there the
-          // handle resizes the sidebar it just opened and commits on release.
           open={pinned}
           width={width}
           stored={storedWidth}
@@ -96,8 +94,6 @@ export function SidebarEdgeTrigger({
           setWidth={setWidth}
           resetWidth={resetWidth}
           onToggle={toggleSidebar}
-          // Start from what is on screen: held out, the panel is already at its
-          // full width, so a drag carries on from there instead of jumping.
           measure={() => (peeking ? width : 0)}
           target={() =>
             ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
@@ -105,9 +101,7 @@ export function SidebarEdgeTrigger({
           }
           cssVar="--sidebar-width"
           rootVar="--studio-sidebar-live-width"
-          // The sidebar declares --sidebar-width on itself, so a live width
-          // painted any higher up is shadowed. Queried, not `closest`: this
-          // strip is the sidebar's sibling.
+          // The sidebar declares --sidebar-width itself, shadowing any ancestor.
           scopedTarget={() =>
             ref.current
               ?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')
@@ -122,30 +116,16 @@ export function SidebarEdgeTrigger({
           }
           label={t("shell.aria.resizeSidebar")}
           toggleLabel={t("shell.aria.openSidebar")}
-          // The sidebar coming out says it better than a label would.
           hideTooltip={true}
           onHoverChange={setPeeking}
           dataSlot="sidebar-edge-trigger"
           className={cn(
-            // Below the titlebar so the window controls and drag region keep
-            // their clicks, above the panel it holds out so the edge still
-            // answers under the sidebar. `block` beats the handle's
-            // `hidden sm:block`, which a narrowed window would trip.
+            // Below the titlebar, above the held-out panel; `block` beats the handle's `hidden sm:block`.
             "fixed bottom-0 left-0 right-auto top-[var(--studio-desktop-titlebar-height,48px)] z-[55] block",
-            // The window edge and nothing more: every pixel here takes a click
-            // from the page. Wider where the window is undecorated (Windows,
-            // Linux, see `setup_custom_titlebar`): there the toolkit hit-tests
-            // its own resize border inside the window, so 2px would land
-            // entirely within it. macOS keeps that border outside the content.
+            // Undecorated windows (Windows, Linux) hit-test their resize border inside the content.
             usesCustomTitlebar ? "w-3" : "w-0.5",
-            // The sidebar sliding out is the hover feedback, not a hairline
-            // hanging down the middle of the page.
             "after:hidden",
-            // That hairline is also where the shared handle marks focus, and on
-            // a 2px strip it would sit off-screen, so mark it on the strip.
             "focus-visible:bg-sidebar-ring/60",
-            // The two-headed resize cursor other chat apps put here, not the
-            // one-way `e-resize` of a collapsed panel border.
             "cursor-col-resize!",
             className,
           )}
