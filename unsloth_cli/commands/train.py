@@ -82,8 +82,23 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
 
 def _default_output_dir(model_name: str) -> str:
     ensure_studio_backend_path()
-    from utils.paths import default_run_dir_name, resolve_output_dir
-    return str(resolve_output_dir(f"{default_run_dir_name(model_name)}_{int(time.time())}"))
+    from utils.paths import default_run_dir_name, ensure_dir, resolve_output_dir
+
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.dataset_bounds import world_size_from_env
+
+    stamp = int(time.time())
+    while True:
+        path = resolve_output_dir(f"{default_run_dir_name(model_name)}_{stamp}")
+        # Ranks of one launch must agree on the folder, so only a single process reserves one.
+        if world_size_from_env() > 1:
+            return str(path)
+        ensure_dir(path.parent)
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            stamp += 1
 
 
 @add_options_from_config(Config)
@@ -193,7 +208,7 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
-    if cfg.training.output_dir == Path("outputs"):
+    if "output_dir" not in cfg.training.model_fields_set:
         training_kwargs["output_dir"] = _default_output_dir(cfg.model)
     training_kwargs["wandb_token"] = wandb_token
     training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))

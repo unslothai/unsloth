@@ -23,6 +23,7 @@ class _SavingTrainer:
 
     def __init__(self):
         self.output_dirs = []
+        self.requested = []
 
     def load_model(self, **kwargs):
         return True
@@ -36,6 +37,7 @@ class _SavingTrainer:
     def start_training(self, **kwargs):
         from utils.paths import ensure_dir, resolve_output_dir
 
+        self.requested.append(kwargs.get("output_dir"))
         output_dir = resolve_output_dir(kwargs.get("output_dir"))
         ensure_dir(output_dir)
         (output_dir / "adapter_config.json").write_text(
@@ -88,3 +90,25 @@ def test_explicit_output_dir_is_kept(tmp_path, monkeypatch):
     from utils.paths import outputs_root
 
     assert trainer.output_dirs == [outputs_root() / "my_run"]
+
+
+def test_explicit_outputs_is_not_treated_as_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    trainer = _SavingTrainer()
+
+    assert _train(monkeypatch, trainer, "--output-dir", "./outputs").exit_code == 0
+
+    assert trainer.requested == ["outputs"]
+
+
+def test_runs_started_in_the_same_second_get_separate_folders(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: 1000))
+    trainer = _SavingTrainer()
+
+    assert _train(monkeypatch, trainer).exit_code == 0
+    assert _train(monkeypatch, trainer).exit_code == 0
+
+    first, second = trainer.output_dirs
+    assert first != second
+    assert first.name.endswith("_1000") and second.name.endswith("_1001")

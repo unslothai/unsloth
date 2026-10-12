@@ -76,6 +76,7 @@ def _run(tmp_path, monkeypatch, trainer, sleep):
         "model: unsloth/Qwen3-0.6B\ndata:\n  dataset: yahma/alpaca-cleaned\n",
         encoding = "utf-8",
     )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *args: trainer)
     monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep = sleep, time = time.time))
     app = typer.Typer()
