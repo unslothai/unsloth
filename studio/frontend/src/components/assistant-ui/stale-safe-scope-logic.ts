@@ -22,10 +22,8 @@ interface ThreadLike<M> {
 }
 
 /**
- * Resolves message `index` of the current thread for one row. While `index` is past the thread's end
- * it keeps the last message it resolved, and while a part index is past the message's parts it keeps
- * the last part it resolved there (assistant-ui#5127). Reads only land past the end in the window
- * between a thread switch and React unmounting the row. Never resolved: the lookup throws as upstream.
+ * One row's message lookup that keeps the last message (and per part index, the last part) it resolved
+ * while the index is past the end; never resolved throws as upstream (assistant-ui#5127, #5948).
  */
 export function createStaleSafeMessageResolver<P, M extends MessageLike<P>>(
   index: number,
@@ -49,9 +47,8 @@ export function createStaleSafeMessageResolver<P, M extends MessageLike<P>>(
         lastParts.set(selector.index, resolved);
         return resolved;
       };
-      // A fresh target, not `message`: assistant-ui's client is itself a Proxy whose
-      // getOwnPropertyDescriptor reports absent keys as non-configurable, so the engine's invariant
-      // check on any read through a Proxy over it throws. Receiver stays `message`: it rebinds per receiver.
+      // Not `new Proxy(message)`: the client is a Proxy reporting absent keys as non-configurable, which
+      // trips the get invariant. Receiver stays `message`, since the client rebinds methods per receiver.
       proxy = new Proxy({} as M, {
         get: (_, prop) => (prop === "part" ? part : Reflect.get(message, prop)),
         has: (_, prop) => prop === "part" || Reflect.has(message, prop),
