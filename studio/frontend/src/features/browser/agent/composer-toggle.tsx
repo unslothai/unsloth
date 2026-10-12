@@ -4,7 +4,7 @@
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { CursorInWindowIcon } from "@hugeicons/core-free-icons";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useBrowserAgentStore } from "./agent-store";

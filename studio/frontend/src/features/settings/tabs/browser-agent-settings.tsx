@@ -13,7 +13,8 @@ import {
   useBrowserAgentStore,
 } from "@/features/browser";
 import { useT } from "@/i18n";
-import { Add01Icon, Cancel01Icon, CursorInWindowIcon } from "@hugeicons/core-free-icons";
+import { CursorInWindowIcon } from "@/lib/browser-use-icon";
+import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
