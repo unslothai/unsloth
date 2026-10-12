@@ -6679,7 +6679,13 @@ class _FakeWanI2VPipe(_FakeWanPipeBase):
 
     calls: list = []
 
-    def __init__(self, transformer = None, vae = None, image_encoder = None, image_processor = None):
+    def __init__(
+        self,
+        transformer = None,
+        vae = None,
+        image_encoder = None,
+        image_processor = None,
+    ):
         self.transformer = transformer
         self.vae = vae
         self.image_encoder = image_encoder
@@ -6801,9 +6807,7 @@ def test_the_swap_is_undone_when_the_i2v_render_fails(fake_i2v, monkeypatch):
     t2v_cls = type(pipe)
     from core.inference import video as video_mod
 
-    monkeypatch.setattr(
-        video_mod, "video_i2v_call_kwargs", lambda fam, *ids: {"explode": True}
-    )
+    monkeypatch.setattr(video_mod, "video_i2v_call_kwargs", lambda fam, *ids: {"explode": True})
     with pytest.raises(RuntimeError, match = "i2v render failed"):
         backend.generate(prompt = "p", steps = 2, first_frame = _data_url(64, 64))
     assert type(pipe) is t2v_cls

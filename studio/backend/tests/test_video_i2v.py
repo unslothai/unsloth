@@ -172,7 +172,10 @@ def test_ltx2_checkpoints_are_not_refused(ids):
     [
         ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v", "hunyuanvideo-1.5"),
         ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_i2v", "hunyuanvideo-1.5-720p"),
-        ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v_step_distilled", "hunyuanvideo-1.5"),
+        (
+            "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v_step_distilled",
+            "hunyuanvideo-1.5",
+        ),
         ("someone/hunyuanvideo1.5_i2v_480p-GGUF", "hunyuanvideo-1.5"),
     ],
 )
@@ -329,7 +332,6 @@ def test_class_swap_restores_on_failure():
 
 def test_class_swap_is_a_noop_without_a_class():
     from core.inference.video_i2v import first_frame_pipeline
-
     sentinel = object()
     with first_frame_pipeline(sentinel, None) as got:
         assert got is sentinel
@@ -388,6 +390,5 @@ def test_a_component_assigned_mid_swap_stays_registered_after_it():
 
 def test_availability_probe_never_raises():
     from core.inference.video_i2v import i2v_pipeline_available
-
     assert i2v_pipeline_available(None) is False
     assert i2v_pipeline_available("NoSuchPipelineAnywhere") is False

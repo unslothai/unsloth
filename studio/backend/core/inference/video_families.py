@@ -149,7 +149,9 @@ class VideoFamily:
     i2v_pipeline_class: Optional[str] = None
     i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     # (identifier regex, ((kwarg, value), ...)); first matching row applies.
-    i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(default_factory = tuple)
+    i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(
+        default_factory = tuple
+    )
     # (identifier regex, refusal) for checkpoints the name tokens claim but this family cannot run.
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
@@ -787,7 +789,9 @@ def validate_video_request_shape(
 
 
 def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
-    return bool(getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None))
+    return bool(
+        getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None)
+    )
 
 
 def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
@@ -795,7 +799,9 @@ def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
 
 
 def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
-    return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(fam, "supports_keyframes", False)
+    return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(
+        fam, "supports_keyframes", False
+    )
 
 
 def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
@@ -831,7 +837,9 @@ def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict
     return {}
 
 
-def first_frame_canvas(fam: VideoFamily, aspect_width: float, aspect_height: float) -> tuple[int, int]:
+def first_frame_canvas(
+    fam: VideoFamily, aspect_width: float, aspect_height: float
+) -> tuple[int, int]:
     """Nearest-aspect preset in log space; ties keep table order so the family default wins."""
     import math
 
@@ -869,9 +877,7 @@ def validate_video_keyframe_conditioning(
             f"{fam.name} generates from the prompt alone; it takes no first or last frame."
         )
     if has_last_frame and not video_family_accepts_last_frame(fam):
-        raise ValueError(
-            f"{fam.name} animates from a first frame only; it takes no last frame."
-        )
+        raise ValueError(f"{fam.name} animates from a first frame only; it takes no last frame.")
     if h3_task == H3_TASK_REFERENCES:
         raise ValueError(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "

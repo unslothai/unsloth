@@ -9798,7 +9798,11 @@ class VideoBackend:
             last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
         # i2v pipelines centre-crop onto the nearest-aspect preset, as the reference workflow does.
         i2v_pipeline = video_family_uses_i2v_pipeline(fam)
-        if first is not None and i2v_pipeline and not _i2v_pipeline_available(fam.i2v_pipeline_class):
+        if (
+            first is not None
+            and i2v_pipeline
+            and not _i2v_pipeline_available(fam.i2v_pipeline_class)
+        ):
             raise ValueError(
                 f"{fam.name} needs diffusers' {fam.i2v_pipeline_class} for a first frame, which this "
                 "install does not have. Update Unsloth to get a newer diffusers."

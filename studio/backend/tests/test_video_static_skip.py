@@ -254,7 +254,9 @@ def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
         def __init__(self, **_components):  # the template the swap reads; nothing to set
             pass
 
-    monkeypatch.setattr(sys.modules["diffusers"], "WanImageToVideoPipeline", _LoopWanI2V, raising = False)
+    monkeypatch.setattr(
+        sys.modules["diffusers"], "WanImageToVideoPipeline", _LoopWanI2V, raising = False
+    )
     armed = []
     import core.inference.video as video_mod
 

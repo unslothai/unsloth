@@ -86,7 +86,11 @@ def _init_kwargs(pipe: Any, cls: type, config_overrides: dict[str, Any]) -> dict
     return kwargs
 
 
-def i2v_instance_state(pipe: Any, cls: type, config_overrides: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def i2v_instance_state(
+    pipe: Any,
+    cls: type,
+    config_overrides: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     template = cls(**_init_kwargs(pipe, cls, dict(config_overrides or {})))
     own = pipe.__dict__
     return {k: v for k, v in template.__dict__.items() if own.get(k, _MISSING) is not v}
@@ -124,7 +128,9 @@ def first_frame_pipeline(
             _restore(pipe, saved)
 
 
-def _carry_component_registrations(pipe: Any, overlay: dict[str, Any], saved: dict[str, Any]) -> None:
+def _carry_component_registrations(
+    pipe: Any, overlay: dict[str, Any], saved: dict[str, Any]
+) -> None:
     """Components assigned mid-render register into the overlaid config; copy them to the restored one."""
     live = pipe.__dict__.get("_internal_dict")
     template = overlay.get("_internal_dict")
@@ -135,7 +141,9 @@ def _carry_component_registrations(pipe: Any, overlay: dict[str, Any], saved: di
         changed = {
             k: v
             for k, v in dict(live).items()
-            if k in original and (template is None or template.get(k, _MISSING) != v) and original[k] != v
+            if k in original
+            and (template is None or template.get(k, _MISSING) != v)
+            and original[k] != v
         }
         if changed:
             saved["_internal_dict"] = type(original)({**dict(original), **changed})
