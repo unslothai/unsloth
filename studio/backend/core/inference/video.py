@@ -201,7 +201,7 @@ from .video_families import (
     VIDEO_MODEL_CHANGED_MSG,
     VIDEO_NOT_LOADED_MSG,
     assert_local_pipeline_not_ltx25,
-    assert_supported_ltx_version,
+    assert_ltx_pick_supported,
     pipeline_available_video_families,
     VideoFamily,
     default_video_generation_params,
@@ -1059,15 +1059,25 @@ def _detect_load_family(
     display_repo_id: Optional[str] = None,
     model_kind: Optional[str] = None,
 ) -> Optional[VideoFamily]:
+    # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
+    ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
+    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
+    fam = _resolve_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+    # After resolution: family_override="ltx-2" must not load LTX-2.5, and a non-LTX pick never trips on the name.
+    assert_ltx_pick_supported(fam.name if fam else None, repo_id, ltx_file, display_repo_id)
+    return fam
+
+
+def _resolve_load_family(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    family_override: Optional[str],
+    display_repo_id: Optional[str] = None,
+) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
-    # Before the override: family_override="ltx-2" must not load LTX-2.5.
-    # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
-    ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
-    assert_supported_ltx_version(repo_id, ltx_file, display_repo_id)
-    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
     if family_override:
         return detect_video_family(repo_id, family_override)
     fam = (

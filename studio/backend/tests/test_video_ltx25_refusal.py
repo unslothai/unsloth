@@ -319,3 +319,28 @@ def test_training_name_guard_is_scoped_to_ltx(tmp_path):
     assert resolve_trainable_family(str(folder), "sdxl") == "sdxl"
     with pytest.raises(ValueError, match = "LTX-2.5"):
         resolve_trainable_family(str(folder), "ltx-2")
+
+
+@pytest.mark.parametrize("name", ["ltxv-2.5.safetensors", "ltxv25", "LTXV_2_5-dev.safetensors", "ltxv2.4"])
+def test_versioned_ltxv_alias_is_refused(name):
+    assert unsupported_ltx_version(name) is not None
+    with pytest.raises(ValueError, match = "LTX-2"):
+        assert_supported_ltx_version("/models/x", name)
+
+
+@pytest.mark.parametrize("filename", ["ltx-24fps-clip.safetensors", "ltx-23.safetensors", "ltx-2.10-x.safetensors", "ltx2fast.safetensors"])
+def test_numeric_lookalike_file_name_defers_to_the_repo(filename):
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        assert_supported_ltx_version("Lightricks/LTX-2.5", filename)
+    assert_supported_ltx_version("Lightricks/LTX-2.3", filename)
+
+
+def test_inference_name_guard_is_scoped_to_ltx():
+    from core.inference.video import _detect_load_family
+
+    fam = _detect_load_family(
+        "someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "wan2.2-ti2v-5b", None, "single_file"
+    )
+    assert fam is not None and fam.name == "wan2.2-ti2v-5b"
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        _detect_load_family("someone/wan-ltx-2.5-style", "wan-ltx-2.5-style.safetensors", "ltx-2", None, "single_file")

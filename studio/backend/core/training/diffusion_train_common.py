@@ -281,11 +281,9 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     family = _resolve_trainable_family(base_model, model_family)
-    if family == "ltx-2":
-        # Name guard only for LTX: "sdxl-ltx-2.5-style" with model_family="sdxl" is not LTX.
-        from core.inference.video_families import assert_supported_ltx_version
+    from core.inference.video_families import assert_ltx_pick_supported
 
-        assert_supported_ltx_version(base_model)
+    assert_ltx_pick_supported(family, base_model)
     return family
 
 

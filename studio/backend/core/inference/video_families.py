@@ -36,18 +36,27 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
-# LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in; else the "ltx" alias routes it to ltx-2.
-# Matches "ltx-2.5", "ltx2.5", "ltx_2_5", "ltx25"; never "ltx-2.3" or "ltx-2-19b".
-_LTX_NEWER_THAN_23 = re.compile(
-    r"(?<![a-z0-9])ltx(?:[-_ ]?video)?[-_ ]?2(?:[._]([4-9])|([4-9])(?![0-9a-z]))(?![0-9])"
+# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor), "N" ending the
+# token ("ltx25"), or nothing ("ltx-2-19b" = 2.0). Anything else ("ltx-24fps", "ltx-transformer") is no name evidence,
+# as is a bare "ltx23" / "ltx-23" (no release uses that spelling, so it cannot outrank the repo).
+_LTX_VERSION = re.compile(
+    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9])(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
 )
 
 
+def ltx_name_version(name: Optional[str]) -> Optional[str]:
+    for found in _LTX_VERSION.finditer((name or "").lower()):
+        if found.group(2) is None or int(found.group(2)) >= 4:
+            return f"2.{found.group(1) or found.group(2) or 0}"
+    return None
+
+
 def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
+    # LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in LTX-2.
     for name in names:
-        found = _LTX_NEWER_THAN_23.search((name or "").lower())
-        if found is not None:
-            return f"2.{found.group(1) or found.group(2)}"
+        version = ltx_name_version(name)
+        if version is not None and int(version[2:]) >= 4:
+            return version
     return None
 
 
@@ -72,7 +81,7 @@ def assert_supported_ltx_version(
         return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
 
     base = leaf(filename)
-    if base and re.search(r"(?<![a-z0-9])ltx(?:[-_ ]?video)?[-_ ]?[0-9]", base.lower()):
+    if ltx_name_version(base) is not None:
         picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
     else:
         picks = ((base, filename), (leaf(display_repo_id), display_repo_id), (leaf(repo_id), repo_id))
@@ -80,6 +89,17 @@ def assert_supported_ltx_version(
         version = unsupported_ltx_version(name)
         if version is not None:
             raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+
+
+def assert_ltx_pick_supported(
+    family: Optional[str],
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> None:
+    """Name guard for a pick already resolved to ``family``; a non-LTX family never trips on an ltx-2.5 token."""
+    if family == "ltx-2":
+        assert_supported_ltx_version(repo_id, filename, display_repo_id)
 
 
 def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
