@@ -48,9 +48,9 @@ class TestARefusedYieldRestoresTheHolder:
         assert controller.note_cells_reclaimed(seen) == 1
         assert lease.asked == [7], "the yield names the commitment that parked"
         participant = controller.participant("chat")
-        assert participant.cells_reclaimed is False and participant.holds_kv, (
-            "the lease kept the new commitment, so the cells it is filling must count"
-        )
+        assert (
+            participant.cells_reclaimed is False and participant.holds_kv
+        ), "the lease kept the new commitment, so the cells it is filling must count"
         assert controller.snapshot().prefilling == 6400
 
     def test_a_granted_yield_still_releases_it(self):

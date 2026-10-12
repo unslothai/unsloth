@@ -40,7 +40,14 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
     outcome: dict = {}
     finished = threading.Event()
 
-    def _execute(name, arguments, *, cancel_event = None, output_callback = None, **_kwargs):
+    def _execute(
+        name,
+        arguments,
+        *,
+        cancel_event = None,
+        output_callback = None,
+        **_kwargs,
+    ):
         query = (arguments or {}).get("query")
         if query == "alpha":
             first_running.set()
@@ -61,7 +68,12 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
     backend = _make_backend(
         monkeypatch,
         [
-            [_gguf_sse({"tool_calls": [_call(0, "call_a", "alpha"), _call(1, "call_b", "beta")]}), _gguf_done()],
+            [
+                _gguf_sse(
+                    {"tool_calls": [_call(0, "call_a", "alpha"), _call(1, "call_b", "beta")]}
+                ),
+                _gguf_done(),
+            ],
             [_gguf_sse({"content": "Final answer."}), _gguf_done()],
         ],
         [],
@@ -74,7 +86,11 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
         cancel_event = threading.Event(),
     )
     for event in gen:
-        if first_running.is_set() and isinstance(event, dict) and event.get("type") == "tool_output":
+        if (
+            first_running.is_set()
+            and isinstance(event, dict)
+            and event.get("type") == "tool_output"
+        ):
             break
     else:
         raise AssertionError("the round never reached its first call's output")
@@ -99,7 +115,12 @@ def test_an_ordinary_error_in_the_drain_is_still_reported(monkeypatch):
     backend = _make_backend(
         monkeypatch,
         [
-            [_gguf_sse({"tool_calls": [_call(0, "call_a", "alpha"), _call(1, "call_b", "beta")]}), _gguf_done()],
+            [
+                _gguf_sse(
+                    {"tool_calls": [_call(0, "call_a", "alpha"), _call(1, "call_b", "beta")]}
+                ),
+                _gguf_done(),
+            ],
             [_gguf_sse({"content": "Final answer."}), _gguf_done()],
         ],
         [],
