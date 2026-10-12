@@ -167,6 +167,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
         for gindex, group in enumerate(self.param_groups):
             for pindex, p in enumerate(group["params"]):
                 if p.grad is None:
+                    # Unrouted weights were densified by the model pre-hook; the INT8 copy is still current.
+                    if self._has_weight_quant(p, group) and _is_materialized(p):
+                        p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
                     continue
 
                 state = self.state[p]
@@ -176,7 +179,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 has_weight_quant = self._has_weight_quant(p, group)
 
                 if has_weight_quant:
-                    _restore_dense_weight(p)
+                    _materialize_weight(p)
 
                 if "rank" in group:
                     if "projector" not in state:
@@ -286,41 +289,50 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 p._weight_group_size = group_size
 
 
-def _restore_dense_weight(p):
-    """Dequantize into ``p.data`` and drop the INT8 copy so it cannot overwrite later writes."""
-    if getattr(p, "_q_scales", None) is None:
-        return
-    p.data = _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
-    p._q_scales = None
-    p._q_zeros = None
-    del p._q_data
+def _is_placeholder(p):
+    return getattr(p, "_q_scales", None) is not None and p.shape != p._q_shape
+
+
+def _is_materialized(p):
+    return getattr(p, "_q_scales", None) is not None and p.shape == p._q_shape
+
+
+def _dequantized(p):
+    return _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
+
+
+def _materialize_weight(p):
+    if _is_placeholder(p):
+        p.data = _dequantized(p)
 
 
 def _weight_quant_pre_hook(module, args):
     """Forward pre-hook: dequantize INT8 weights to float before forward."""
     for p in module.parameters(recurse = False):
-        _restore_dense_weight(p)
+        _materialize_weight(p)
 
 
 def _weight_quant_model_pre_hook(module, args, kwargs):
     # Runs outside torch.compile'd submodules, whose own pre-hooks never see the placeholder.
     for p in module.parameters():
-        _restore_dense_weight(p)
+        _materialize_weight(p)
 
 
 def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
     """Serialize full weights without materializing the live placeholders."""
     for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
-        if getattr(p, "_q_scales", None) is not None:
-            state_dict[prefix + name] = _dequantize(
-                p._q_data, p._q_scales, p._q_zeros, p._q_shape
-            ).to(p.device)
+        if _is_placeholder(p):
+            state_dict[prefix + name] = _dequantized(p)
 
 
 def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
+    # Loaded values must win over the INT8 copy, so drop it.
     for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
-        if prefix + name in state_dict:
-            _restore_dense_weight(p)
+        if prefix + name in state_dict and getattr(p, "_q_scales", None) is not None:
+            _materialize_weight(p)
+            p._q_scales = None
+            p._q_zeros = None
+            del p._q_data
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:

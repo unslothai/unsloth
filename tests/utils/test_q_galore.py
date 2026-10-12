@@ -829,4 +829,36 @@ def test_weight_quant_root_hook_restores_weights_for_bypassed_submodules():
     expected = _dequantize(weight._q_data, weight._q_scales, weight._q_zeros, weight._q_shape)
     model(torch.randn(2, 32, device = device))
     torch.testing.assert_close(weight.data, expected)
-    assert weight._q_scales is None and not hasattr(weight, "_q_data")
+    # Already materialized: checkpointing reuses the live tensor instead of a second dense copy.
+    assert model.state_dict()["q_proj.weight"].data_ptr() == weight.data_ptr()
+
+
+class _TwoBranchBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = nn.Linear(32, 32, bias = False)
+        self.k_proj = nn.Linear(32, 32, bias = False)
+        self.use_k = True
+
+    def forward(self, x):
+        return (self.k_proj if self.use_k else self.q_proj)(x)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_unrouted_weights_return_to_placeholders():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TwoBranchBlock().to(device)
+    groups = _q_galore_step(model, device, weight_quant = True, targets = ["q_proj", "k_proj"])
+    weight = model.k_proj.weight
+    assert weight.shape == (1,)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(groups, lr = 1e-2)
+    weight.grad = None
+    model.use_k = False
+    model(torch.randn(2, 32, device = device)).square().sum().backward()
+    assert weight.shape == (32, 32)
+    q_data = weight._q_data.clone()
+    optimizer.step()
+    assert weight.shape == (1,)
+    assert torch.equal(weight._q_data, q_data)
