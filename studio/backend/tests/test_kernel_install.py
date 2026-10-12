@@ -460,8 +460,10 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
 def test_setup_installs_mamba_ssm_before_a_gpu_is_visible(
     uv, monkeypatch, without_gpu, capability, installs
 ):
-    # An image build sees no GPU; a visible pre-Ampere one still skips.
+    # An image build sees no GPU; a visible pre-Ampere one still skips. Linux, so Windows'
+    # triton-windows gate (its own test) does not answer first.
     uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([False, True], capability = capability)
     assert (
