@@ -1430,3 +1430,13 @@ def test_management_unload_refuses_a_pin_this_machine_does_not_have(_no_local_gg
     with _client(mod) as c:
         assert c.post("/models/unload", json = {"model": QWEN + ":Q8_0"}).status_code == 404
     assert calls == []
+
+
+def test_management_unload_never_reaches_another_accounts_resident(monkeypatch):
+    """The caller's catalog shows the row unloaded; matching the global resident would reveal it."""
+    mod, calls = _management(catalog = [{**CATALOG[0], "loaded": False}])
+    monkeypatch.setattr(mod, "_resident_hidden_from_caller", lambda: True)
+    with _client(mod) as c:
+        r = c.post("/models/unload", json = {"model": QWEN})
+    assert r.json() == {"success": True, "model": QWEN}
+    assert calls == []

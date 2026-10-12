@@ -356,6 +356,9 @@ async def _unload_target(model_id: str, row: dict) -> Optional[str]:
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
+    # Another account's resident is not this caller's to name: answering for it would reveal it.
+    if not row.get("loaded") and await asyncio.to_thread(_resident_hidden_from_caller):
+        return None
     inf = _inference()
     resolved = await _resolve_local(model_id)
     path = resolved[0] if resolved else None
