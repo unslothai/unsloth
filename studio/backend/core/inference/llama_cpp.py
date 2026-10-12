@@ -37893,7 +37893,14 @@ class LlamaCppBackend:
                     logger.info("Paused with the caller's output cap spent; ending the turn")
                     yield from _finish_after_giving_up(notice = False)
                     return
-            resumed_p = yield from _await_resume(preempt_policy, cancel_event)
+            try:
+                resumed_p = yield from _await_resume(preempt_policy, cancel_event)
+            except Exception:
+                # Not a grant, as the tool paths treat it: the turn ends with its partial.
+                logger.warning(
+                    "preemption policy raised during the wait; ending the turn", exc_info = True
+                )
+                resumed_p = False
             # `await_resume` answers False for a Stop as well as for a give-up, and the two
             # are not the same ending: a cancel leaves the stream the way every other cancel
             # in this generator does, silently, rather than telling the client its turn ran

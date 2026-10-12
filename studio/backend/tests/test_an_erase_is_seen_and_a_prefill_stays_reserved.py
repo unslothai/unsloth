@@ -157,10 +157,17 @@ class _Policy:
         self.resumes += 1
 
 
+class _RaisingPolicy(_Policy):
+    def await_resume(self, timeout = None) -> bool:
+        raise RuntimeError("the controller went away")
+
+
 class TestAPlainChatCannotNestPastTheLimit:
-    def test_productive_pauses_end_the_turn_continuable(self, monkeypatch):
+    @pytest.mark.parametrize("policy_type", [_Policy, _RaisingPolicy])
+    def test_productive_pauses_end_the_turn_continuable(self, monkeypatch, policy_type):
+        """A wait that raises is no grant: the turn ends with its partial, as the tool paths do."""
         signal = preemption.PreemptSignal()
-        policy = _Policy()
+        policy = policy_type()
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._process = object()
         backend._healthy = True
@@ -202,10 +209,11 @@ class TestAPlainChatCannotNestPastTheLimit:
                 preempt_policy = policy,
             )
         )
-        assert len(opened) == preemption.MAX_NESTED_RESUMES, len(opened)
+        attempts = 1 if policy_type is _RaisingPolicy else preemption.MAX_NESTED_RESUMES
+        assert len(opened) == attempts, len(opened)
         metas = [e for e in events if isinstance(e, dict) and e.get("type") == "metadata"]
         assert metas and metas[-1]["finish_reason"] == "length"
-        assert policy.resumes == preemption.MAX_NESTED_RESUMES - 1
+        assert policy.resumes == attempts - 1
 
     def test_the_limit_is_far_below_the_interpreter_stack(self):
         import sys
