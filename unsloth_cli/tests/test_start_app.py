@@ -823,7 +823,7 @@ def test_vscode_over_ssh_prints_the_group_instead_of_writing_a_dead_file(studio,
 
     assert result.exit_code == 0, result.output
     assert not user_dir.exists()
-    assert "nothing was written" in result.output and "port 8888" in result.output
+    assert "nothing was written" in result.output and "ssh -L 8888:127.0.0.1:8888" in result.output
     group = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
     assert group["models"][0]["requestHeaders"] == {"Authorization": f"Bearer {APP_KEY}"}
 
@@ -863,3 +863,17 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert result.exit_code == 0, result.output
     assert "nothing was written" in result.output
     assert not (studio["home"] / ".config" / "Code").exists()
+
+
+def test_vscode_under_wsl_says_to_use_a_local_window(studio, monkeypatch, tmp_path):
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    windows = Path("/mnt/c/Users/me/AppData/Roaming/Code/User/chatLanguageModels.json")
+    monkeypatch.setattr(start, "_vscode_models_path", lambda: windows)
+    monkeypatch.setattr(start, "_read_app_file", lambda path: None)
+    monkeypatch.setattr(start, "_save_app_config", lambda *args: None)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "local VS Code window" in result.output

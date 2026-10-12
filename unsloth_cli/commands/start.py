@@ -6280,10 +6280,11 @@ def _add_vscode_provider(
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
         typer.echo(
-            "This is an SSH session with no VS Code user dir here, so nothing was written: VS Code "
-            "reads its model list on the machine it runs on. There, run Chat: Manage Language "
-            f"Models, open chatLanguageModels.json and add the group below, then forward port "
-            f"{port} to the same local port (Remote-SSH: Ports view)."
+            "This is a remote session (SSH or a container) with no VS Code user dir here, so "
+            "nothing was written. VS Code does not list these models in remote windows yet "
+            f"(microsoft/vscode#332085), so forward port {port} to the same port on your machine "
+            f"(for example: ssh -L {port}:127.0.0.1:{port} <this host>). Then, in a local VS Code "
+            "window, run Chat: Manage Language Models, open chatLanguageModels.json and add:"
         )
         typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
         _app_server_notice(base)
@@ -6294,6 +6295,11 @@ def _add_vscode_provider(
         "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
         "extension; no Copilot plan is required."
     )
+    if os.environ.get("WSL_DISTRO_NAME") and target.path.parts[:2] == ("/", "mnt"):
+        typer.echo(
+            "Use it from a local VS Code window: VS Code does not list these models in remote "
+            "(WSL, SSH, container) windows yet (microsoft/vscode#332085)."
+        )
     if not tool_calling:
         typer.echo(
             f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
