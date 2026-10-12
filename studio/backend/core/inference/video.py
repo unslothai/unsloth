@@ -1714,8 +1714,7 @@ def _video_auto_denoiser_scheme(
             family = getattr(fam, "name", None),
             base_repo = base_repo,
             has_prequant = lambda candidate: (
-                denoiser_prequant_sources(fam, candidate, base_repo, hf_token = hf_token)
-                is not None
+                denoiser_prequant_sources(fam, candidate, base_repo, hf_token = hf_token) is not None
             ),
         )
         if scheme is None or scheme == TQ_AUTO:

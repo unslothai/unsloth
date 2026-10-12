@@ -1054,7 +1054,11 @@ def _gated_hub(monkeypatch):
 
     real = huggingface_hub.get_hf_file_metadata
 
-    def gated(url, token = None, **kwargs):
+    def gated(
+        url,
+        token = None,
+        **kwargs,
+    ):
         if not token:
             err = Exception("401")
             err.response = types.SimpleNamespace(status_code = 401)
@@ -1072,11 +1076,14 @@ def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkey
     # Anonymous: the header is unreadable, so unknown keeps today's answer.
     assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
     # With the token the plan stages under, the stale header is read and refused.
-    assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
+    assert (
+        VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
+    )
     assert not VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V, hf_token = "hf_x")
     listed: list = []
     api = types.SimpleNamespace(
-        token = "hf_x", model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = [])
+        token = "hf_x",
+        model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = []),
     )
     assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", _WAN_TI2V, api) == (None, [])
     assert listed == [] and hub.downloads == []
@@ -1085,7 +1092,10 @@ def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkey
 def test_an_extension_opcode_never_reaches_a_registered_callable(tmp_path):
     import copyreg
 
-    from core.inference.prequant_header_probe import _pickle_ops_within, read_local_checkpoint_header
+    from core.inference.prequant_header_probe import (
+        _pickle_ops_within,
+        read_local_checkpoint_header,
+    )
 
     called: list = []
 

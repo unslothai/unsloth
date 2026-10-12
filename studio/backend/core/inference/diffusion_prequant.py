@@ -1946,7 +1946,6 @@ def _planning_min_features(min_features: Optional[int]) -> Optional[int]:
         return min_features
     try:
         from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
-
         return DEFAULT_MIN_LINEAR_FEATURES
     except Exception:  # noqa: BLE001 - no quant module: skip the check, as before
         return None
