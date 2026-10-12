@@ -237,9 +237,11 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
     if await asyncio.to_thread(_caller_is_managed_account):
         return _engine_error(404, "API endpoint not found")
     llama_backend = _inference().get_llama_cpp_backend()
-    if not getattr(llama_backend, "is_loaded", False):
+    # Port read once: an unload clears it after is_loaded flips, and "127.0.0.1:None" is not an httpx.HTTPError.
+    port = getattr(llama_backend, "_port", None)
+    if not getattr(llama_backend, "is_loaded", False) or not port:
         return _engine_error(503, "No llama.cpp model is loaded")
-    url = f"{llama_backend.base_url}/{path}"
+    url = f"http://127.0.0.1:{port}/{path}"
     headers = dict(llama_backend._auth_headers or {})
     body = await request.body() if request.method == "POST" else None
     if body is not None:

@@ -71,7 +71,7 @@ class _Backend:
         self.context_length = 262144
         self.chat_template = "{{ messages }}"
         self._props = props
-        self.base_url = "http://127.0.0.1:52345"
+        self._port = 52345
         self._auth_headers = {"Authorization": "Bearer child-key"}
 
     def _query_server_props(self):
@@ -742,6 +742,19 @@ def test_nothing_loaded_is_503_in_llama_servers_error_shape(monkeypatch):
         r = c.post("/tokenize", json = {"content": "x"})
     assert r.status_code == 503
     assert r.json()["error"]["code"] == 503
+    assert upstream.calls == []
+
+
+def test_an_unload_racing_the_request_is_503_not_500(monkeypatch):
+    """unload_model flips is_loaded before it clears _port; a port already gone must not build a bad URL."""
+    backend = _Backend()
+    backend._port = None
+    mod = _load(backend = backend)
+    upstream = _Upstream()
+    _with_upstream(monkeypatch, mod, upstream)
+    with _client(mod) as c:
+        r = c.get("/slots")
+    assert r.status_code == 503
     assert upstream.calls == []
 
 
