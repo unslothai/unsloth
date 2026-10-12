@@ -16,7 +16,7 @@ import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { lazy, type ReactNode, Suspense, useEffect, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -78,82 +78,8 @@ function CheckingContent() {
   );
 }
 
-interface StudioInstallLocation {
-  path: string;
-  is_default: boolean;
-  can_change: boolean;
-}
-
-// Where the install goes. Only the Windows shell offers a choice; elsewhere, or
-// on a shell without these commands, nothing renders and the screen is unchanged.
-function InstallLocation({ disabled }: { disabled: boolean }) {
-  const [location, setLocation] = useState<StudioInstallLocation | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const next = await invoke<StudioInstallLocation>(
-          "studio_install_location",
-        );
-        if (!cancelled) setLocation(next);
-      } catch {
-        // No location command: keep the default install.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (!location?.can_change) return null;
-
-  async function run(command: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const next = await invoke<StudioInstallLocation | null>(command);
-      if (next) setLocation(next);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="flex max-w-[min(560px,90vw)] flex-col items-center gap-1 text-center text-ui-12 text-muted-foreground">
-      <p className="break-all">
-        Install location: <span className="text-foreground">{location.path}</span>
-      </p>
-      <div className="flex items-center gap-3">
-        <Button
-          variant="link"
-          size="xs"
-          disabled={disabled || busy}
-          onClick={() => void run("choose_studio_install_location")}
-        >
-          Change
-        </Button>
-        {!location.is_default && (
-          <Button
-            variant="link"
-            size="xs"
-            disabled={disabled || busy}
-            onClick={() => void run("reset_studio_install_location")}
-          >
-            Use default
-          </Button>
-        )}
-      </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
-  );
-}
+// Loaded on use: only the Windows first-run screen shows it, so it stays out of the startup bundle.
+const InstallLocation = lazy(() => import("@/components/tauri/install-location"));
 
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
   const [starting, setStarting] = useState(false);
@@ -178,7 +104,9 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           Get Started
         </Button>
-        <InstallLocation disabled={starting} />
+        <Suspense fallback={null}>
+          <InstallLocation disabled={starting} />
+        </Suspense>
       </div>
     </div>
   );
