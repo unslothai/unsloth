@@ -63,8 +63,10 @@ test("a failed read cancels the send, and a textless tool-only type falls back t
   assert.doesNotMatch(adapter, /pending\.catch\(/);
   assert.match(
     adapter,
-    /cause instanceof NoDocumentTextError &&\s*isToolOnlyAttachmentName\(file\.name\) &&\s*pythonToolOpensAttachments\(\)/,
+    /cause instanceof NoDocumentTextError &&\s*\(isToolOnlyAttachmentName\(file\.name\) \|\| \/\\\.pdf\$\/i\.test\(file\.name\)\) &&\s*pythonToolOpensAttachments\(\)/,
   );
+  // Code can be turned off between attach and send; then the textless file is refused, not sent bare.
+  assert.match(adapter, /if \(text === null && !pythonToolOpensAttachments\(\)\) \{[\s\S]*?throw new Error/);
   assert.match(adapter, /only the python tool can read this file/);
   const preview = readFileSync(
     new URL("../src/components/assistant-ui/attachment-preview.tsx", import.meta.url),

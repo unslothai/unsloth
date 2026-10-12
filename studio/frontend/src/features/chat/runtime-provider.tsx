@@ -902,9 +902,10 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
 
   private read(file: File): Promise<string | null> {
     return extractServerDocumentText(file).catch((cause: unknown) => {
+      // A scanned PDF past the browser reader's ceiling keeps PDFAttachmentAdapter's textless rule.
       if (
         cause instanceof NoDocumentTextError &&
-        isToolOnlyAttachmentName(file.name) &&
+        (isToolOnlyAttachmentName(file.name) || /\.pdf$/i.test(file.name)) &&
         pythonToolOpensAttachments()
       ) {
         return null;
@@ -960,6 +961,13 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
       // never reaches the model in place of the document.
       toast.error((cause as Error).message);
       throw cause;
+    }
+    // Rechecked: without the python tool the original is not kept, so the placeholder would be all
+    // the model ever gets.
+    if (text === null && !pythonToolOpensAttachments()) {
+      const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
+      toast.error(error);
+      throw new Error(error);
     }
     return {
       id: attachment.id,

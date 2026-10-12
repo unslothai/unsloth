@@ -10,7 +10,12 @@ import {
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
 import { filesOpenInBrowser } from "@/features/browser";
-import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import {
+  DocumentView,
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import {
   type MediaViewerActions,
@@ -185,6 +190,11 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
+  // Same ceiling as the Library and browser views: past it the composer read the file on the server, and
+  // parsing it here would block the main thread.
+  if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
   return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
