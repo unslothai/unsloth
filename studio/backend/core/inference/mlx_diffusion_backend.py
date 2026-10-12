@@ -531,6 +531,7 @@ class MlxDiffusionBackend:
         _cancel_event: threading.Event,
     ) -> None:
         timings: dict[str, Any] = {}
+        model = state = displaced = None
         try:
             t0 = time.perf_counter()
             gguf_path = fetch_gguf(
@@ -642,6 +643,11 @@ class MlxDiffusionBackend:
             with self._lock:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
+        finally:
+            # This frame can outlive the call: anything below that caches an exception (the Hub
+            # download helpers memoize import failures) keeps the whole frame chain, locals included,
+            # and a model held here then survives unload(). Measured on a Mac: 6.3 GB stayed resident.
+            model = state = displaced = None
 
     def download_plan(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
         """The diffusers GGUF plan stages exactly the files this engine opens (the GGUF plus the base
@@ -840,6 +846,8 @@ class MlxDiffusionBackend:
                 drop_exception_frames(exc)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from None
             finally:
+                # Same reason as _run_load: never let a retained frame pin the model.
+                state = runtime = None
                 self._gen = None
                 with self._lock:
                     if self._active_generate_cancel is cancel:

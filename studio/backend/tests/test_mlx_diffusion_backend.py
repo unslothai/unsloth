@@ -427,3 +427,34 @@ def test_a_cancelled_run_releases_its_frames():
     gc.collect()
     assert ref() is None
     assert kept.__traceback__ is None
+
+
+def test_a_cached_exception_below_the_load_does_not_pin_the_model(env, monkeypatch):
+    # The Hub helpers memoize import failures, and a memoized traceback keeps every frame up the
+    # stack, the load worker's included. The worker must not leave the model in its locals.
+    import gc
+    import weakref
+
+    backend, runtime, _calls = env
+    cache = {}
+    real_fetch = mb.fetch_gguf
+
+    def _fetch(*a, **k):
+        try:
+            raise ModuleNotFoundError("No module named 'unsloth_zoo'")
+        except ModuleNotFoundError as exc:
+            cache["error"] = exc  # what hf_xet_fallback._load_shared does
+        return real_fetch(*a, **k)
+
+    class Model(dict):
+        pass
+
+    monkeypatch.setattr(mb, "fetch_gguf", _fetch)
+    real_build = runtime.build
+    runtime.build = lambda *a, **k: Model(real_build(*a, **k))
+    _load(backend)
+    ref = weakref.ref(backend._state.model)
+    backend.unload()
+    gc.collect()
+    assert "error" in cache
+    assert ref() is None
