@@ -313,8 +313,11 @@ def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, di
     if wanted.lower() in rows:
         row = rows[wanted.lower()]
         return row["id"], row, False
-    base, sep, _ = wanted.rpartition(":")
-    row = rows.get(base.strip().lower()) if sep else None
+    from core.inference.openai_auto_download import looks_like_quant
+
+    base, sep, suffix = wanted.rpartition(":")
+    # Only a quant: the resolver maps any other suffix (":latest", ":") back to the bare repo.
+    row = rows.get(base.strip().lower()) if sep and looks_like_quant(suffix) else None
     return (wanted, row, True) if row is not None else None
 
 

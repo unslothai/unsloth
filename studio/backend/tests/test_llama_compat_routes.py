@@ -1440,3 +1440,12 @@ def test_management_unload_never_reaches_another_accounts_resident(monkeypatch):
         r = c.post("/models/unload", json = {"model": QWEN})
     assert r.json() == {"success": True, "model": QWEN}
     assert calls == []
+
+
+@pytest.mark.parametrize("suffix", ["latest", ""])
+def test_management_refuses_a_suffix_that_is_not_a_quant(suffix):
+    mod, calls = _management()
+    with _client(mod) as c:
+        for path in ("/models/load", "/models/unload"):
+            assert c.post(path, json = {"model": f"{QWEN}:{suffix}"}).status_code == 404, path
+    assert calls == []
