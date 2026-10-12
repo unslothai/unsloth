@@ -69,10 +69,14 @@ def fake(monkeypatch):
     return registry
 
 
-def test_off_by_default(fake, monkeypatch):
-    monkeypatch.delenv(fi._ENV, raising = False)
-    assert fi.maybe_activate_flash_attention_impl(_model()) is None
-    assert fake.calls == [] and fake.probes == []
+@pytest.mark.parametrize("value", [None, ""])
+def test_on_by_default(fake, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv(fi._ENV, raising = False)
+    else:
+        monkeypatch.setenv(fi._ENV, value)
+    assert fi.maybe_activate_flash_attention_impl(_model()) == "FA4"
+    fi.deactivate_flash_attention_impl()
 
 
 def test_auto_activates_fa4_on_sm100(fake):
@@ -85,7 +89,7 @@ def test_auto_activates_fa4_on_sm100(fake):
     assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
 
 
-@pytest.mark.parametrize("value", ["off", "0", "false", "", "bogus"])
+@pytest.mark.parametrize("value", ["off", "0", "false", "OFF", "bogus"])
 def test_kill_switch_and_unknown_value_stay_off(fake, monkeypatch, value):
     monkeypatch.setenv(fi._ENV, value)
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
@@ -105,10 +109,17 @@ def test_unsupported_or_mixed_devices_stay_off(fake, monkeypatch, majors):
     assert fake.probes == [] and fake.current_impl is None
 
 
-def test_hopper_is_opt_in(fake, monkeypatch):
+def test_hopper_auto_prefers_fa3_then_fa4(fake, monkeypatch):
     monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    assert fi.maybe_activate_flash_attention_impl(_model()) == "FA3"
+    fi.deactivate_flash_attention_impl()
+    monkeypatch.setattr(fi, "_package_error", lambda impl: "missing" if impl == "FA3" else None)
+    assert fi.maybe_activate_flash_attention_impl(_model()) == "FA4"
+    fi.deactivate_flash_attention_impl()
+    monkeypatch.setattr(fi, "_package_error", lambda impl: "missing")
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
-    assert fake.probes == []
+    assert fake.current_impl is None
+    monkeypatch.setattr(fi, "_package_error", lambda impl: None)
     monkeypatch.setenv(fi._ENV, "fa3")
     assert fi.maybe_activate_flash_attention_impl(_model()) == "FA3"
     fi.deactivate_flash_attention_impl()

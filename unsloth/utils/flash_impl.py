@@ -5,7 +5,7 @@
 torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
 head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
 supported head dims, and a probe matching torch's bundled flash.
-UNSLOTH_FLASH_ATTENTION_IMPL = off (default) | auto (FA4 on sm100) | fa4 | fa3 (sm90).
+UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100, FA3 then FA4 on sm90) | fa4 | fa3 | off.
 """
 
 import contextlib
@@ -39,12 +39,12 @@ _logger = logging.getLogger(__name__)
 
 
 def _requested():
-    value = os.environ.get(_ENV, "off").strip().lower()
-    if value in ("auto", "1", "on", "true"):
+    value = os.environ.get(_ENV, "auto").strip().lower()
+    if value in ("", "auto", "1", "on", "true"):
         return "auto"
     if value in ("fa4", "fa3"):
         return value.upper()
-    if value not in ("", "0", "off", "false", "no", "none"):
+    if value not in ("0", "off", "false", "no", "none"):
         _log_once(
             f"Unsloth: {_ENV}={value!r} is not auto / fa4 / fa3 / off; leaving torch's flash kernels as they are."
         )
@@ -95,14 +95,14 @@ def _device_majors():
 
 
 def _candidates(requested, majors):
-    """auto only turns FA4 on for sm100 (measured); Hopper is opt-in until measured there."""
+    """auto: FA4 on sm100; FA3 (the mature Hopper kernel) then FA4 on sm90."""
     if not majors or len(majors) != 1:
         return []
     major = next(iter(majors))
     if major == 10:
         return ["FA4"] if requested in ("auto", "FA4") else []
-    if major == 9 and requested in ("FA3", "FA4"):
-        return [requested]
+    if major == 9:
+        return ["FA3", "FA4"] if requested == "auto" else [requested]
     return []
 
 
@@ -395,6 +395,9 @@ def maybe_activate_flash_attention_impl(model = None):
         FLASH_IMPL_STATE["reason"] = f"no supported impl for devices sm{sorted(majors or [])}"
         deactivate_flash_attention_impl()
         return None
+    if requested == "auto":
+        # Take the first impl whose kernels are installed; none installed leaves torch untouched.
+        candidates = [impl for impl in candidates if _package_error(impl) is None] or candidates
     impl, major = candidates[0], next(iter(majors))
     error = _package_error(impl)
     facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
