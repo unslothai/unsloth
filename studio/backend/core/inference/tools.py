@@ -1397,8 +1397,8 @@ def _blocked_program_path(word: str, program_slot: bool = False) -> str:
     as a command line splits `C:\Program Files\PowerShell\7\pwsh.exe` at the space. ntpath, not
     os.path, so the Linux test runner reads backslashes the way Windows does."""
     word = word.strip('"')
-    # ``program_slot``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too and
-    # an extensionless one resolves through PATHEXT.
+    # ``program_slot``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too.
+    # An extensionless path resolves through PATHEXT either way.
     if not (
         _WIN_PROGRAM_PATH_RE.fullmatch(word)
         or (program_slot and _WIN_RELATIVE_PROGRAM_PATH_RE.fullmatch(word))
@@ -1409,10 +1409,7 @@ def _blocked_program_path(word: str, program_slot: bool = False) -> str:
     if (
         not program_slot
         and any(char.isspace() for char in word)
-        and (
-            ext not in {".exe", ".com", ".bat", ".cmd"}
-            or any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
-        )
+        and any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
     ):
         # A rooted command line (`\Windows\System32\where.exe \src\rm`), not one path holding spaces.
         return ""
