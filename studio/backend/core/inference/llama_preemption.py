@@ -1340,6 +1340,9 @@ class PreemptionController:
                     participant.announce_prefill(participant.tokens)
                 elif growth > 0:
                     participant.announce_prefill(growth)
+                elif participant.pending_prefill > participant.tokens:
+                    # A fit that dropped messages: the prefill is no longer than the prompt.
+                    participant.pending_prefill = participant.tokens
                 if growth > 0:
                     # Same counter as `observe`, for the same reason: a waiter must see it.
                     self._progress_tokens += growth
@@ -1567,9 +1570,10 @@ class PreemptionController:
         has paused, finished, or declined. Blocking: never call it on the event loop."""
         deadline = time.monotonic() + max(0.0, float(timeout))
         pending = list(gen_ids or ())
-        seen = set(pending)
         while True:
             with self._lock:
+                # Per poll: a victim chosen again after it was replaced is examined again.
+                seen = set(pending)
                 # A victim revoked into a tool was replaced by the re-plan: wait on those too.
                 still: List[str] = []
                 work = list(pending)

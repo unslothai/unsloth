@@ -654,11 +654,20 @@ _TOOL_START_DEFERRED = object()
 _TOOL_CALL_REFUSED = object()
 
 
-def _drive_tool_stream(stream, out_queue) -> None:
+def _drive_tool_stream(
+    stream,
+    out_queue,
+    cancel_event = None,
+) -> None:
     """Read one tool's event generator to the end, on a thread of its own.
-    ``stream_tool_execution`` starts its worker inside the body, so nothing here overlaps two calls."""
+    ``stream_tool_execution`` starts its worker inside the body, so nothing here overlaps two calls.
+    Ends on a cancel, as the provider pump does, and closes the stream itself, the only thread
+    running it, so the wrapper's abnormal exit tells the tool to stop."""
     try:
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                out_queue.put(("error", _LlamaStreamCancelled()))
+                return
             try:
                 out_queue.put(("event", next(stream)))
             except StopIteration as stop:
@@ -666,6 +675,11 @@ def _drive_tool_stream(stream, out_queue) -> None:
                 return
     except BaseException as exc:  # noqa: BLE001 - replayed at the call's turn
         out_queue.put(("error", exc))
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
 
 
 def _start_tool_call(
@@ -674,13 +688,14 @@ def _start_tool_call(
     budget_cell,
     starved_cell,
     compact_flag = False,
+    cancel_event = None,
 ):
     """Put one call's tool in flight and return the entry its turn will be read from.
     ``compact_flag`` is the gate's promise for THIS call; the loop-scoped name has moved on by then."""
     out_queue: "queue.Queue" = queue.Queue()
     driver = threading.Thread(
         target = _drive_tool_stream,
-        args = (stream, out_queue),
+        args = (stream, out_queue, cancel_event),
         daemon = True,
         name = f"tool-drive-{getattr(decision, 'tool_name', '') or 'unknown'}",
     )
@@ -39876,7 +39891,9 @@ class LlamaCppBackend:
             preempt_policy.on_resumed()
             # Clears the paused line, paired with the yield above.
             yield {"type": "preempt", "state": "resumed"}
-            resumed = [dict(message) for message in messages]
+            # From the request this attempt sent, as the respawn replays it: rebuilt from the
+            # caller's messages, the fit ran again and reported the same evictions twice.
+            resumed = [dict(message) for message in retry_messages]
             continues = self._assemble_preempt_resume(
                 resumed, checkpoint, content_text, reasoning_text
             )
@@ -39900,8 +39917,8 @@ class LlamaCppBackend:
             # attempt that was itself a resume made the whole essay appear twice.
             _reissue_continues = continues or continue_final_message
             for _resumed_item in self.generate_chat_completion(
-                messages = resumed if continues else messages,
-                image_b64 = image_b64,
+                messages = resumed if continues else retry_messages,
+                image_b64 = retry_image_b64,
                 temperature = temperature,
                 top_p = top_p,
                 top_k = top_k,
@@ -39924,7 +39941,7 @@ class LlamaCppBackend:
                 promote_reasoning_only = promote_reasoning_only,
                 perf_callback = perf_callback,
                 reasoning_provenance = reasoning_provenance,
-                context_overflow = context_overflow,
+                context_overflow = retry_context_overflow,
                 context_policy = context_policy,
                 compaction_headroom_ratio = compaction_headroom_ratio,
                 thread_id = thread_id,
@@ -43807,7 +43824,12 @@ class LlamaCppBackend:
                     for _entry_index, _entry in enumerate(_pending_calls):
                         if _entry[0] is _TOOL_START_DEFERRED:
                             _pending_calls[_entry_index] = _start_tool_call(
-                                _entry[1], _entry[2], _entry[3], _entry[4], _entry[5]
+                                _entry[1],
+                                _entry[2],
+                                _entry[3],
+                                _entry[4],
+                                _entry[5],
+                                cancel_event = cancel_event,
                             )
 
                 # Empty unless `_parallel_round`, so the sequential path never reaches here.
