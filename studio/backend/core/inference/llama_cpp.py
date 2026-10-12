@@ -27919,8 +27919,22 @@ class LlamaCppBackend:
                             return False
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
+                        # The emitted --mmproj replaces an inherited path (argv after env).
+                        if effective_is_vision:
+                            _env_mmproj = None
+                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector
+                        # (arg.cpp sets mmproj_use_gpu), so a CPU pin beside one abstains.
+                        _mmproj_dev = _extra_args_device(
+                            _child_extras, {"--mmproj-device", "-mmdev"}
+                        )
+                        if _mmproj_dev is None:
+                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
+                        _mmproj_dev_gpu = bool(
+                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
+                        )
                         if _resolved_mmproj_offload(_child_extras, _child_env) is False:
-                            pass
+                            if _mmproj_dev_gpu:
+                                return False
                         elif disable_vision:
                             if _mmproj_env_is_audio_only(_env_mmproj):
                                 return False

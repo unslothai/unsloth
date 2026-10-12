@@ -4289,6 +4289,62 @@ def test_a_projector_kept_on_the_cpu_does_not_block_residency(
     assert seen == [False]
 
 
+@pytest.mark.parametrize(
+    "extra_args, env, expect_on_host",
+    [
+        (("--no-mmproj-offload", "--mmproj-device", "CUDA0"), {}, True),
+        (("--no-mmproj-offload", "-mmdev=CUDA0"), {}, True),
+        ((), {"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1", "MTMD_BACKEND_DEVICE": "CUDA0"}, True),
+        (("--no-mmproj-offload", "--mmproj-device", "none"), {}, False),
+    ],
+    ids = ["argv_device", "argv_inline_device", "env_device", "device_none"],
+)
+def test_an_mmproj_device_undoes_the_cpu_projector_fast_path(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_on_host
+):
+    """--mmproj-device sets mmproj_use_gpu again (common/arg.cpp), so a projector the
+    footprint priced as CPU-pinned may sit on the card: abstain rather than certify."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.invalid/mmproj.gguf")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)
+
+    assert seen == [expect_on_host]
+
+
+def test_an_inherited_projector_path_replaced_by_the_launch_does_not_block_residency(
+    tmp_path, _discrete_linux_host, monkeypatch
+):
+    """The emitted --mmproj is parsed after LLAMA_ARG_MMPROJ and replaces it; the
+    launched projector is already in the footprint."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "inherited-mmproj.gguf"))
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    mmproj = _write_gguf(tmp_path / "mmproj.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+    backend._mmproj_vram_bytes = lambda _path: 128 * 1024 * 1024
+    seen = []
+    eligible = backend._moe_cache_auto_eligible
+
+    def spy(**kwargs):
+        seen.append(kwargs["experts_on_host"])
+        return eligible(**kwargs)
+
+    backend._moe_cache_auto_eligible = spy
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, is_vision = True)["cmd"]
+
+    assert cmd[cmd.index("--mmproj") + 1] == str(mmproj), cmd
+    assert seen == [False]
+
+
 def test_an_unsized_drafter_keeps_a_fit_on_moe_counted_as_spilled(tmp_path, _discrete_linux_host):
     """An unsized draft KV has no term in the footprint, so the check abstains."""
     backend, gguf = _fit_on_moe(tmp_path, 88_000)
