@@ -3,6 +3,7 @@
 
 """Task-scoped pickers must show curated models on first paint, not wait on the Hugging Face listing."""
 
+import re
 from pathlib import Path
 
 
@@ -28,7 +29,12 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # Same format policy as the listing rows, so nothing vanishes when one lands.
     assert "taskCatalogFormatMatches(" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
-    assert "isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac)," in source
+    # The recommendable gate now runs in `keep`, over seeds and listing rows alike.
+    # A capable FP8 / NVFP4 checkpoint is also recommendable (runsCheckpointQuant).
+    assert re.search(
+        r"isRecommendable:\s*isRecommendableFormat\(r\.id, r\.isGguf, isMac\)( \|\|\s*runsCheckpointQuant\(r\))?,",
+        source,
+    )
     # Device fit reads the catalog size, not an id "<n>B" guess.
     assert "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined," in seed
 

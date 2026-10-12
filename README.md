@@ -110,9 +110,9 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | Claude Code | `unsloth start claude` |
 | OpenAI Codex | `unsloth start codex` |
 | DeepSeek Harness | `unsloth start dsh` |
-| Hermes Agent | `unsloth start hermes` |
-| Mistral Vibe | `unsloth start vibe` |
 | OpenCode | `unsloth start opencode` |
+| Hermes Agent | `unsloth start hermes` |
+| Pi | `unsloth start pi` |
 | OpenClaw | `unsloth start openclaw` |
 
 ## 📥 Install
