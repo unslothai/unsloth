@@ -42971,6 +42971,9 @@ class LlamaCppBackend:
         # The same mark for the thought. Cumulative like `reasoning_text`, so without it a
         # turn paused twice mid-thought sends the first half back a second time.
         _final_replayed_reasoning_chars = 0
+        # And for the raw answer a pause replays: `_last_emitted` is the display, which wraps
+        # the thought in `<think>` ahead of the answer, so it cannot go back as `content`.
+        _final_replayed_answer_chars = 0
         # Per ATTEMPT of the final pass, reported as the in-loop stream reports its own:
         # `on_tokens` is the only thing that calls `observe()`, so without it a long final
         # answer grew invisibly at its last round-boundary figure.
@@ -43336,6 +43339,8 @@ class LlamaCppBackend:
                             stream_payload["messages"] = _candidate_messages
                             _record_refit_tail(_candidate_messages, _continuation_tail, _merged_f)
                             _final_replayed_chars = len(_last_emitted)
+                            _final_replayed_answer_chars = len(answer_text)
+                            _final_replayed_reasoning_chars = len(reasoning_text)
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:
@@ -43605,7 +43610,7 @@ class LlamaCppBackend:
                     # already prefers cancel, and this catches a signal set between the two.
                     return
                 logger.info("llama preemption caught in the final answering pass")
-                _paused_visible = _last_emitted[_final_replayed_chars:]
+                _paused_visible = answer_text[_final_replayed_answer_chars:]
                 _paused_reasoning = reasoning_text[_final_replayed_reasoning_chars:]
                 _pre_charged_f = _preempt_charge(
                     _metadata_usage,
@@ -43744,6 +43749,7 @@ class LlamaCppBackend:
                     # Marked as replayed, so a second pause sends only what is new: both
                     # accumulators are cumulative across this pass's attempts.
                     _final_replayed_chars = len(_last_emitted)
+                    _final_replayed_answer_chars = len(answer_text)
                     _final_replayed_reasoning_chars = len(reasoning_text)
                     stream_payload["continue_final_message"] = True
                     stream_payload["add_generation_prompt"] = False
