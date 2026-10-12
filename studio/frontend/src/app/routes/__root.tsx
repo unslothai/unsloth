@@ -11,6 +11,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
+import { DownloadApprovalDialog } from "@/features/browser";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -34,9 +35,12 @@ import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
-import { SharedRunConfigLinkHandler } from "@/features/model-picker";
+import {
+  ManagedEngineOfferDialog,
+  SharedRunConfigLinkHandler,
+} from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
-import { hydratePins } from "@/features/model-picker/components/model-selector/pins-mirror";
+import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -682,7 +686,9 @@ function RootLayout() {
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
+      <DownloadApprovalDialog />
       <TransformersUpgradeDialog />
+      <ManagedEngineOfferDialog />
       <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />

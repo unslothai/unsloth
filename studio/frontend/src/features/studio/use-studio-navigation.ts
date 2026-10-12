@@ -148,6 +148,10 @@ export function useStudioNavigation() {
 
   useEffect(() => {
     return useTrainingRuntimeStore.subscribe((state, previousState) => {
+      if (state.configureRequest !== previousState.configureRequest) {
+        setRequestedTab("configure");
+        return;
+      }
       const nextTab = runtimeRequestedTab({
         jobId: state.jobId,
         previousJobId: previousState.jobId,

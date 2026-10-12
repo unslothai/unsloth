@@ -7,7 +7,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guid
 ## Quick start
 
 ```bash
-# use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000 for a public Cloudflare HTTPS link
+# for a public Cloudflare HTTPS link: use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000, and  -p 127.0.0.1:8888:8888  instead of -p 8888:8888
 docker run -d --name unsloth --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8000:8000 -p 8888:8888 \
@@ -82,7 +82,7 @@ The login token is printed in `docker logs`. With no command the image runs `pyt
 ### Scripts
 
 ```bash
-docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host \
+docker run --rm --gpus all --ipc=host -v "$PWD":/workspace/host -w /workspace/host \
   unsloth/unsloth:core python /workspace/host/train.py
 ```
 

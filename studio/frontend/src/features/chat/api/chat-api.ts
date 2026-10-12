@@ -24,6 +24,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
@@ -1138,6 +1139,14 @@ export async function getChatProject(
   );
   if (response.status === 404) return null;
   return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function getChatAgentsMd(
+  projectId: string | null,
+): Promise<AgentsMdRecord> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const response = await authFetch(`/api/chat/agents-md${query}`);
+  return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
 export async function saveChatProject(

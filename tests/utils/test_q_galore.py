@@ -202,6 +202,55 @@ def test_projected_step_preserves_full_rank_gradients(out_features, in_features)
         torch.testing.assert_close(model.weight.grad, expected_grad)
 
 
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("quant", [True, False])
+def test_resume_from_weights_only_checkpoint_matches_uninterrupted(quant):
+    """unslothai/unsloth#729: transformers resumes with torch.load(weights_only=True, map_location="cpu")."""
+    import io
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+
+    def make(weight, bias):
+        weight = nn.Parameter(weight.clone())
+        bias = nn.Parameter(bias.clone())
+        projected = {"params": [weight], "rank": 4, "update_proj_gap": 2, "quant": quant}
+        projected.update(queue_size = 2, cos_threshold = 0.0)
+        optimizer = _adamw_mod.QGaLoreAdamW8bit([projected, {"params": [bias]}], lr = 1e-2)
+        return weight, bias, optimizer
+
+    def step(weight, bias, optimizer, i):
+        # svd_lowrank draws from the global RNG, so each step reseeds it.
+        torch.manual_seed(i)
+        weight.grad = torch.randn(weight.shape, device = device)
+        bias.grad = torch.randn(bias.shape, device = device)
+        optimizer.step()
+
+    torch.manual_seed(0)
+    weight, bias, optimizer = make(
+        torch.randn(128, 64, device = device), torch.randn(64, device = device)
+    )
+    for i in range(3):
+        step(weight, bias, optimizer, i)
+    buffer = io.BytesIO()
+    torch.save(optimizer.state_dict(), buffer)
+    assert isinstance(optimizer.state[weight]["projector"], GaLoreProjector)
+    buffer.seek(0)
+    saved = torch.load(buffer, map_location = "cpu", weights_only = True)
+
+    weight2, bias2, resumed = make(weight.detach(), bias.detach())
+    resumed.load_state_dict(saved)
+    projector = resumed.state[weight2]["projector"]
+    assert projector.ortho_matrix.device == weight2.device
+    for i in range(3, 7):
+        step(weight, bias, optimizer, i)
+        step(weight2, bias2, resumed, i)
+    assert torch.equal(weight, weight2)
+    assert torch.equal(bias, bias2)
+    # The adaptive schedule widened the gap after resume, so its saved queue was used.
+    assert projector.update_proj_gap == optimizer.state[weight]["projector"].update_proj_gap == 4
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================

@@ -430,6 +430,11 @@ export function OnDeviceFoldersDialog({
                   Also scan sub-folders
                 </label>
               </div>
+              <p className="mt-2 text-ui-10p5 text-muted-foreground">
+                Adding a ComfyUI folder, or its models folder, lists the image
+                and video models in its diffusion_models, unet and checkpoints
+                folders, plus any extra_model_paths.yaml entries.
+              </p>
             </div>
 
             {error ? (

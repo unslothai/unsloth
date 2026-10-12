@@ -30,6 +30,10 @@ interface BackendTrainingDefaults {
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;
+  offload_layers?: number | "auto";
+  offload_vram_gb?: number | null;
+  offload_vram_gb_per_device?: Record<string, number | null> | (number | null)[] | null;
+  prefetch_depth?: number | "auto";
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
@@ -81,7 +85,7 @@ export interface ModelConfigResponse {
   is_embedding?: boolean;
   is_decision?: boolean;
   decision_checkpoints?: DecisionCheckpoint[] | null;
-  decision_layout?: "laya" | "clef" | null;
+  decision_layout?: DecisionLayout | null;
   is_audio: boolean;
   // False when the repo's tokenizer_config.json was unreadable (gated, offline,
   // upstream error), so is_audio false means unknown rather than "not audio".
@@ -93,9 +97,21 @@ export interface ModelConfigResponse {
   model_size_bytes?: number | null;
 }
 
+// laya: a Laya checkpoint. clef: Cloudflare Clef. llm: a text or vision LLM trained with a Clef decision head.
+export type DecisionLayout = "laya" | "clef" | "llm";
+
+/** Clef and LLM decision runs have an LLM backbone, so they take QLoRA and the recipe's context; Laya is 16-bit at 1024 tokens. */
+export function decisionLayoutHasLlmBackbone(
+  layout: DecisionLayout | null | undefined,
+): boolean {
+  return layout === "clef" || layout === "llm";
+}
+
 export interface ModelConfigRequestOptions {
   preferLocalCache?: boolean;
   localPath?: string | null;
+  // Ask for an LLM's defaults as a decision model; Laya and Clef are decision models anyway.
+  asDecision?: boolean;
 }
 
 export interface LocalModelInfo {
@@ -162,6 +178,9 @@ export async function getModelConfig(
   }
   if (options?.localPath) {
     params.set("local_path", options.localPath);
+  }
+  if (options?.asDecision) {
+    params.set("as_decision", "true");
   }
   const query = params.toString();
   const response = await authFetch(

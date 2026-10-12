@@ -59,9 +59,9 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
-  AudioWave01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -770,8 +770,22 @@ export function VoiceTab() {
         if (download.downloading) {
           // Adopt a transfer that outlived the page that started it, so it
           // still shows in the download panel.
-          if (download.model && !isTrackingSttDownload(download.model)) {
-            trackSttDownload(download.model);
+          if (
+            download.model &&
+            !isTrackingSttDownload(
+              download.model,
+              undefined,
+              download.download_id,
+            )
+          ) {
+            trackSttDownload(download.model, {
+              // Saved keys already encode their quant; only folder rows carry one.
+              ggufVariant: sttModelVariant(
+                download.model,
+                download.variant ?? "",
+              ),
+              downloadId: download.download_id,
+            });
           }
           watchedDownloadRef.current = download.model;
           // Keep the status line fresh.
@@ -910,13 +924,16 @@ export function VoiceTab() {
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      await startSttDownload(
+      const download = await startSttDownload(
         sttModel,
         hfApiToken(hfToken),
         undefined,
         sttVariant,
       );
-      trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      trackSttDownload(sttModel, {
+        ggufVariant: sttVariant,
+        downloadId: download.download_id,
+      });
       startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
@@ -1682,7 +1699,7 @@ export function VoiceTab() {
                     }}
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.openAudioAction")}

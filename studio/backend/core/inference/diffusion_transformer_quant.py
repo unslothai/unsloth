@@ -249,8 +249,13 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     "z-image": "unsloth/Z-Image-Turbo-FP8",
 }
 
+# Variant repos that also host a rotated build (``<Model>-INT8-ConvRot.safetensors``), listed for the same reason.
+_INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
+    "qwen-image-2.1": ("unsloth/Qwen-Image-2.1-Turbo-FP8",),
+}
+
 # Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
-_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"z-image"})
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
@@ -286,6 +291,17 @@ def convrot_prequant_repo(scheme: str, family: Optional[str] = None) -> Optional
     if scheme != TQ_INT8:
         return None
     return _INT8_FAMILY_CONVROT_REPO.get(str(family or "").strip().lower())
+
+
+def convrot_prequant_variant_repo(
+    scheme: str, family: Optional[str], repo_id: Optional[str]
+) -> bool:
+    """Whether ``repo_id`` is a variant repo that hosts the family's rotated int8 build under its own name."""
+    if scheme != TQ_INT8 or not repo_id:
+        return False
+    key = str(repo_id).strip().lower()
+    repos = _INT8_FAMILY_CONVROT_VARIANT_REPOS.get(str(family or "").strip().lower(), ())
+    return any(key == r.lower() for r in repos)
 
 
 def convrot_fqns(

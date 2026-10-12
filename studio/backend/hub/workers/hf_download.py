@@ -239,6 +239,52 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
     return info
 
 
+def _rebuild_header_only_ggufs(
+    repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
+) -> None:
+    """Rebuild each pending image / video GGUF whose new revision changed only its header from the older snapshot's
+    copy. Chat, audio and other GGUFs keep the plain download; the gate is read only when a rebuild is possible."""
+    try:
+        from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
+        from hub.utils.gguf_header_delta import (
+            _is_media_gguf,
+            delta_enabled,
+            hub_range_fetcher,
+            rebuild_from_older_snapshot,
+        )
+        from hub.utils.snapshot_reuse import repo_cache_dir
+
+        commit = normalized_commit_hash(commit_hash)
+        if not commit or not delta_enabled():
+            return
+        repo_dir = repo_cache_dir(repo_type, repo_id)
+        protected = _protected_blob_hashes()
+        for item in expected_files:
+            path = getattr(item, "path", None)
+            digest = getattr(item, "sha256", None)
+            size = int(getattr(item, "size", 0) or 0)
+            if not expected_path_is_safe(path) or not str(path).lower().endswith(".gguf"):
+                continue
+            result = rebuild_from_older_snapshot(
+                repo_dir,
+                commit,
+                path,
+                size,
+                digest or "",
+                hub_range_fetcher(repo_id, path, hf_token, repo_type = repo_type, revision = commit),
+                protected_blob_hashes = protected,
+                media_gate = lambda old, path = path: _is_media_gguf(old, repo_id, path),
+            )
+            if result.placed:
+                print(
+                    f"Rebuilt {path} from the cached older copy (only its header changed): fetched "
+                    f"{result.fetched_bytes / 1e6:.2f} MB instead of {result.size / 1e9:.2f} GB.",
+                    file = sys.stderr,
+                )
+    except Exception as exc:  # noqa: BLE001 - an optimisation only: snapshot_download fetches what is left
+        print(f"GGUF header reuse skipped for {repo_id}: {exc}", file = sys.stderr)
+
+
 def _reuse_unchanged_files(
     repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
 ) -> list:
@@ -261,6 +307,7 @@ def _reuse_unchanged_files(
             f"from an older snapshot of {repo_id} instead of downloading them again.",
             file = sys.stderr,
         )
+    _rebuild_header_only_ggufs(repo_type, repo_id, commit_hash, expected_files, hf_token)
     # Files an earlier attempt placed are skipped by snapshot_download and have no blob for the preflight to discount.
     present = paths_in_snapshot(
         repo_type, repo_id, commit_hash, [getattr(f, "path", None) for f in expected_files]

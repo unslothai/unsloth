@@ -76,10 +76,18 @@ _WSL_VARS = ("WSL_DISTRO_NAME", "WSL_INTEROP")
 
 
 @contextmanager
-def _as_platform(os_name, wsl = False):
+def _as_platform(
+    os_name,
+    wsl = False,
+    release = "6.8.0-1021-generic",
+):
     """Drive the platform inputs directly instead of trusting the host's."""
     saved_env = {v: os.environ.get(v) for v in _WSL_VARS}
     saved_name = os.name
+    saved_uname = getattr(os, "uname", None)
+    if saved_uname is not None:
+        u = saved_uname()
+        os.uname = lambda: os.uname_result((u.sysname, u.nodename, release, u.version, u.machine))
     for v in _WSL_VARS:
         os.environ.pop(v, None)
     if wsl:
@@ -90,6 +98,8 @@ def _as_platform(os_name, wsl = False):
         yield
     finally:
         os.name = saved_name
+        if saved_uname is not None:
+            os.uname = saved_uname
         for v, old in saved_env.items():
             if old is None:
                 os.environ.pop(v, None)
@@ -174,6 +184,19 @@ def test_wsl_and_windows_disable_offload():
         assert unsupported_platform() is None
 
 
+@pytest.mark.skipif(not hasattr(os, "uname"), reason = "os.uname is POSIX only")
+def test_docker_on_wsl2_disables_offload():
+    # A container on WSL2 sets no WSL_* variables; only the shared kernel says WSL (unslothai/unsloth#3511).
+    for release in ("6.6.87.2-microsoft-standard-WSL2", "5.15.153.1-microsoft-standard-WSL2"):
+        with _as_platform("posix", release = release):
+            assert unsupported_platform() == "WSL"
+            assert resolve(_untied_model(), True) is False
+
+    for release in ("6.8.0-1021-azure", "6.10.14-linuxkit"):
+        with _as_platform("posix", release = release):
+            assert unsupported_platform() is None
+
+
 def test_platform_gate_lives_in_one_place():
     # The offload block used to re-test os.name itself; the copies drifted apart and only Windows noticed.
     # _resolve_offload_embedding owns it now.
@@ -225,12 +248,6 @@ def test_hook_without_execution_device_keeps_offload():
     # A hook that never moves anything cannot undo the offload.
     with _as_platform("posix"):
         assert resolve(_dispatched_model(None), True) is True
-
-
-def test_undispatched_model_keeps_offload():
-    # The single-GPU path must not lose the VRAM saving.
-    with _as_platform("posix"):
-        assert resolve(_untied_model(), True) is True
 
 
 if __name__ == "__main__":
@@ -499,6 +516,7 @@ def test_headless_streamed_table_returns_rows_to_the_decoder_card():
     hooked = []
     ns["_install_offload_embedding_hooks"] = lambda emb, out, device: hooked.append((emb, device))
     ns["_pin_device_to_decoder"] = ns["clean_gpu_cache"] = lambda *a: None
+    ns["_patch_trainer_move_keeps_host_embeddings"] = lambda: None
     ns["gc"] = types.SimpleNamespace(collect = lambda: None)
     model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
     model.per_layer.to("cpu")

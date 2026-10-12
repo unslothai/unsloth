@@ -10,6 +10,7 @@ import pytest
 
 from core.inference import audio_cpp_server
 from routes import inference
+from utils import audio_cpp_update
 
 
 def _patch(
@@ -103,7 +104,7 @@ def _managed(
     (tmp_path / ".unsloth-studio-owned").touch()
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tmp_path)
-    monkeypatch.setattr(inference, "_audio_cpp_release_ladder", lambda: ladder)
+    monkeypatch.setattr(audio_cpp_update, "_release_ladder", lambda: ladder)
 
 
 def test_managed_install_of_the_pinned_release_is_current(monkeypatch, tmp_path):
@@ -221,7 +222,7 @@ def test_release_lookup_error_is_not_outdated(monkeypatch, tmp_path):
     def boom():
         raise ImportError("installer missing")
 
-    monkeypatch.setattr(inference, "_audio_cpp_release_ladder", boom)
+    monkeypatch.setattr(audio_cpp_update, "_release_ladder", boom)
     status = inference._audio_cpp_runtime_status()
     assert status["available"] is True and status["outdated"] is False
 
@@ -231,7 +232,7 @@ def test_release_ladder_comes_from_the_installer(monkeypatch):
     monkeypatch.delenv("UNSLOTH_AUDIO_CPP_TAG", raising = False)
     import install_audio_cpp_prebuilt as installer
 
-    ladder = inference._audio_cpp_release_ladder()
+    ladder = audio_cpp_update._release_ladder()
     assert ladder[0] == (installer.DEFAULT_REPO, installer.DEFAULT_TAG)
     assert (installer.UPSTREAM_FALLBACK_REPO, installer.UPSTREAM_FALLBACK_TAG) in ladder
 

@@ -226,33 +226,63 @@ test("a muted card stays muted for a job it never showed", () => {
 // Both components can be pending at once and the backend names only one, so the
 // switch of the one it did not name had nothing to answer for.
 test("the card shows the offer the switches allow", () => {
-  const on = { llama: true, whisper: true };
-  const bothStale = { llama: true, whisper: true };
+  const on = { llama: true, whisper: true, audio: false };
+  const bothStale = { llama: true, whisper: true, audio: false };
   assert.equal(updateBannerComponent("llama.cpp", bothStale, on), "llama.cpp");
   assert.equal(updateBannerComponent("whisper.cpp", bothStale, on), "whisper.cpp");
   // llama.cpp muted, whisper.cpp on, both pending: show the one asked for.
   assert.equal(
-    updateBannerComponent("llama.cpp", bothStale, { llama: false, whisper: true }),
+    updateBannerComponent("llama.cpp", bothStale, { llama: false, whisper: true, audio: false }),
     "whisper.cpp",
   );
   // And the reverse: a llama.cpp backend migration is named whisper.cpp when
   // whisper is stale as well, so it needs the same swap back.
   assert.equal(
-    updateBannerComponent("whisper.cpp", bothStale, { llama: true, whisper: false }),
+    updateBannerComponent("whisper.cpp", bothStale, { llama: true, whisper: false, audio: false }),
     "llama.cpp",
   );
   // Nothing to swap to when the other component has no offer.
   assert.equal(
     updateBannerComponent(
       "llama.cpp",
-      { llama: true, whisper: false },
-      { llama: false, whisper: true },
+      { llama: true, whisper: false, audio: false },
+      { llama: false, whisper: true, audio: false },
     ),
     "llama.cpp",
   );
   // Both muted: the name the backend gave stands, and the card stays hidden.
   assert.equal(
-    updateBannerComponent("llama.cpp", bothStale, { llama: false, whisper: false }),
+    updateBannerComponent("llama.cpp", bothStale, { llama: false, whisper: false, audio: false }),
+    "llama.cpp",
+  );
+});
+
+// audio.cpp is named only when llama.cpp and whisper.cpp are not pending.
+test("an audio.cpp offer joins the switch fallback", () => {
+  const allOn = { llama: true, whisper: true, audio: true };
+  const audioOnly = { llama: false, whisper: false, audio: true };
+  assert.equal(updateBannerComponent("audio.cpp", audioOnly, allOn), "audio.cpp");
+  // Its own switch off and nothing else pending: the name stands, the card stays hidden.
+  assert.equal(
+    updateBannerComponent("audio.cpp", audioOnly, { llama: true, whisper: true, audio: false }),
+    "audio.cpp",
+  );
+  // whisper.cpp named and muted, audio.cpp pending and allowed: show audio.cpp.
+  assert.equal(
+    updateBannerComponent(
+      "whisper.cpp",
+      { llama: false, whisper: true, audio: true },
+      { llama: true, whisper: false, audio: true },
+    ),
+    "audio.cpp",
+  );
+  // llama.cpp is preferred over audio.cpp when both could stand in.
+  assert.equal(
+    updateBannerComponent(
+      "whisper.cpp",
+      { llama: true, whisper: true, audio: true },
+      { llama: true, whisper: false, audio: true },
+    ),
     "llama.cpp",
   );
 });
@@ -265,8 +295,21 @@ test("a finished update reports the release its card advertised", () => {
     "v1.9.4-unsloth.4",
   );
   assert.equal(updateToastTag("llama.cpp", "b11100", "b11100"), "b11100");
+  assert.equal(
+    updateToastTag("audio.cpp", "b11100", "v0.9.0-unsloth.1"),
+    "v0.9.0-unsloth.1",
+  );
   // Either side falls back to the other rather than reporting nothing.
   assert.equal(updateToastTag("whisper.cpp", "b11100", null), "b11100");
   assert.equal(updateToastTag("llama.cpp", null, "b11100"), "b11100");
   assert.equal(updateToastTag("llama.cpp", null, null), null);
+});
+
+// The chat "Update llama.cpp" button rides the shared update item, whose
+// update_available is the union: a whisper.cpp or audio.cpp offer alone must not
+// show it for a llama.cpp build that is current.
+test("chat settings offer the llama.cpp update only for a llama.cpp release", () => {
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  assert.match(sheet, /mtpUpdatable && llamaUpdateStatus\?\.llama\.update_available/);
+  assert.doesNotMatch(sheet, /llamaUpdateStatus\?\.update_available/);
 });

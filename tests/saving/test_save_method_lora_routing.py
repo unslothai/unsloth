@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -254,6 +255,7 @@ def _routing_environment(monkeypatch, model):
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
+        os = os,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -358,6 +360,27 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
     assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
+
+
+@pytest.mark.parametrize(
+    "save_method, from_modelscope", [("merged_16bit", True), ("merged_4bit_forced", False)]
+)
+def test_modelscope_base_is_fetched_only_when_the_merge_reads_one(
+    monkeypatch, tmp_path, save_method, from_modelscope
+):
+    """#3726: an in-place 4bit merge folds into the loaded weights, so it downloads no 16bit base."""
+    monkeypatch.setenv("UNSLOTH_USE_MODELSCOPE", "1")
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    resolvers = []
+    sys.modules["unsloth_zoo.saving_utils"].merge_and_overwrite_lora = (
+        lambda resolve, **kwargs: resolvers.append(resolve)
+    )
+    namespace = generic_save.__globals__
+    namespace["_modelscope_base_model_name"] = lambda *args, **kwargs: None
+    generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    expected = "_modelscope_base_model_name" if from_modelscope else "get_model_name"
+    assert resolvers == [namespace[expected]]
 
 
 def test_a_model_with_no_adapter_is_unchanged(monkeypatch, tmp_path):

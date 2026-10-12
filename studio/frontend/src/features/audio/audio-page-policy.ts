@@ -45,6 +45,33 @@ export function audioCppRuntimeUpdate(
   return { installed: runtime.release_tag, expected: runtime.expected_tag };
 }
 
+export type AudioRuntimeNoticeMode =
+  | "update"
+  | "updating"
+  | "checking"
+  | "ask_owner"
+  | "cli";
+
+/** What the outdated-runtime notice offers. The in-app update is owner-only, and the backend
+ *  offers it only for a runtime it can replace; otherwise the notice keeps the CLI route. */
+export function audioRuntimeNoticeMode({
+  isOwner,
+  offered,
+  applying,
+  checked,
+}: {
+  isOwner: boolean;
+  offered: boolean;
+  applying: boolean;
+  /** The update status has loaded; before that the offer is unknown, not absent. */
+  checked: boolean;
+}): AudioRuntimeNoticeMode {
+  if (!isOwner) return "ask_owner";
+  if (applying) return "updating";
+  if (!checked) return "checking";
+  return offered ? "update" : "cli";
+}
+
 /** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
  *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
 const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
@@ -526,7 +553,8 @@ export function mergeGalleryPage<T extends { id: string }>(
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
-  const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
+  const scrollback =
+    oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(
     (clip) => !inPage.has(clip.id) && clip.id !== removedId,
   );

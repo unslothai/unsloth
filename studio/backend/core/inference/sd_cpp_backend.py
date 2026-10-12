@@ -50,11 +50,18 @@ from core.inference.diffusion_families import (
     legacy_source_repo,
     prefer_cached_legacy_source,
     prefer_ungated_mirror,
+    canonical_base,
+    named_variant_base,
     resolve_base_repo,
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
     _family_override_resolved,
+)
+from core.inference.diffusion_flow_shift import (
+    SAMPLE_SIGMAS_KEY,
+    sd_cpp_sample_sigmas,
+    valid_sample_sigmas,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -189,14 +196,101 @@ def _tree_reader(
 _MAX_SERVER_BATCH = 8
 
 
+# Families whose bases ship a model_index.json ``sample_sigmas`` grid; every other load skips the card and index reads.
+_SAMPLE_SIGMAS_FAMILIES = frozenset({"qwen-image-2.1"})
+
+
+def _base_sample_sigmas(
+    repo_id: str,
+    base: str,
+    hf_token: Optional[str],
+    *,
+    family: str,
+    explicit_base: bool,
+    local_files_only: bool,
+    named_base: Optional[str] = None,
+) -> tuple[Optional[tuple[float, ...]], str]:
+    """(the base's model_index.json grid or None, that base). Without an explicit base the card's ``base_model``
+    names it, as on the diffusers route, so a community Turbo GGUF does not read 2.1's index."""
+    if family not in _SAMPLE_SIGMAS_FAMILIES:
+        return None, base
+    try:
+        from core.inference.diffusion import (
+            _hf_base_model,
+            _is_trusted_diffusion_repo,
+            hub_cache_dir,
+        )
+        from core.inference.diffusion_comfy_components import read_model_index
+
+        if not explicit_base and not local_files_only:
+            tag = _hf_base_model(repo_id, hf_token)
+            # Same trust bar as the diffusers resolver: the tag is repo-author metadata.
+            if tag and _is_trusted_diffusion_repo(tag):
+                base = canonical_base(tag)
+            elif tag is None and named_base:
+                base = named_base
+        elif not explicit_base and named_base:
+            # Cache-only (e.g. the OpenAI route's auto-switch) reads no card: the pick's own name decides.
+            base = named_base
+        # Cache-only reads try both roots, as the plan's locality check and _fetch_assets do.
+        roots = (hub_cache_dir(), None) if local_files_only else (hub_cache_dir(),)
+        for i, root in enumerate(roots):
+            try:
+                index = read_model_index(
+                    base, hf_token = hf_token, local_files_only = local_files_only, cache_dir = root
+                )
+                break
+            except Exception:  # noqa: BLE001
+                if i == len(roots) - 1:
+                    raise
+    except Exception as exc:  # noqa: BLE001 - no grid is the pre-grid behaviour
+        logger.debug("sd_cpp.sample_sigmas_unavailable: %s", exc)
+        return None, base
+    grid = valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None)
+    if grid is not None:
+        logger.info(
+            "sd_cpp: %s ships a %d-step sampling grid; passing it as custom sigmas", base, len(grid)
+        )
+    return grid, base
+
+
+def _cgroup_cpu_limit(
+    root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> Optional[int]:
+    """Tightest cgroup v2 cpu.max over this cgroup and its parents, in whole CPUs; None if unreadable."""
+    try:
+        with open(proc_cgroup, encoding = "utf-8") as f:
+            rel = next(line.split("::", 1)[1].strip() for line in f if line.startswith("0::"))
+    except (OSError, StopIteration):
+        rel = "/"
+    limit: Optional[int] = None
+    path = os.path.normpath(os.path.join(root, rel.lstrip("/")))
+    while True:
+        try:
+            with open(os.path.join(path, "cpu.max"), encoding = "utf-8") as f:
+                quota, period = f.read().split()[:2]
+            if quota != "max":
+                cpus = max(1, -(-int(quota) // int(period)))
+                limit = cpus if limit is None else min(limit, cpus)
+        except (OSError, ValueError):
+            pass
+        if len(path) <= len(root.rstrip("/")) or path == os.path.dirname(path):
+            return limit
+        path = os.path.dirname(path)
+
+
 def _default_threads() -> int:
-    """Physical-core thread count for the sd.cpp CPU backend. ``threads = None`` lets sd.cpp pick
-    its own default, which is the logical-core count (all hyperthreads). For the compute-bound
-    GGML matmuls the diffusion CPU path runs, oversubscribing the hyperthreads adds scheduling
-    contention without extra throughput, so pin to physical cores instead. Falls back to 8 when
-    the count is unknown, and clamps to at least 1."""
+    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota ``os.cpu_count()`` ignores."""
+    try:
+        configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        configured = 0
+    if configured > 0:
+        return configured
     cpu = os.cpu_count()
-    return max(1, cpu // 2 if cpu else 8)
+    threads = cpu // 2 if cpu else 8
+    limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
+    return max(1, min(threads, limit) if limit else threads)
 
 
 def _server_binary_runnable(binary: str) -> bool:
@@ -2147,6 +2241,8 @@ class _SdState:
     threads: Optional[int] = None
     sampling_method: Optional[str] = None
     flow_shift: Optional[float] = None
+    # The base's shipped ``sample_sigmas`` grid, sent as custom sigmas; None keeps sd.cpp's own schedule.
+    sample_sigmas: Optional[tuple[float, ...]] = None
     server: Optional[SdCppServer] = None
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
@@ -2765,6 +2861,7 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
+                explicit_base = bool((base_repo or "").strip()),
                 fam = fam,
                 family_override = family_override,
                 hf_token = hf_token,
@@ -2788,6 +2885,7 @@ class SdCppDiffusionBackend:
         display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
+        explicit_base: bool = False,
         fam: DiffusionFamily,
         family_override: Optional[str] = None,
         hf_token: Optional[str],
@@ -2915,6 +3013,22 @@ class SdCppDiffusionBackend:
                 local_files_only = local_files_only,
                 vision_optional = not getattr(fam, "edit", False),
             )
+            sample_sigmas, grid_base = _base_sample_sigmas(
+                repo_id,
+                base,
+                hf_token,
+                family = fam.name,
+                explicit_base = explicit_base,
+                local_files_only = local_files_only,
+                named_base = named_variant_base(fam, repo_id, gguf_filename),
+            )
+            if grid_base != base:
+                # The card can name a base begin_load did not know; link it so the delete guard keeps its index.
+                try:
+                    from hub.utils.companion_assets import record_companion_link
+                    record_companion_link(repo_id, grid_base)
+                except Exception as exc:  # noqa: BLE001 -- bookkeeping never fails a load
+                    logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
 
             files = SdCppModelFiles(
                 diffusion_model = paths["diffusion_model"],
@@ -3130,7 +3244,8 @@ class SdCppDiffusionBackend:
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
-                    base_repo = base,
+                    # The card's base when it shipped the grid, as the diffusers route reports it.
+                    base_repo = grid_base if sample_sigmas else base,
                     family = fam,
                     device = device,
                     files = files,
@@ -3142,6 +3257,7 @@ class SdCppDiffusionBackend:
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
                     flow_shift = fam.sd_cpp_flow_shift,
+                    sample_sigmas = sample_sigmas,
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
@@ -3286,6 +3402,18 @@ class SdCppDiffusionBackend:
             into = merged.setdefault(fetch_repo[repo], [])
             into.extend(n for n in names if n not in into)
         by_repo = merged
+        # A named variant's load reads its model_index.json for the grid; planned so locality cannot skip it.
+        if base_repo:
+            explicit = resolve_base_repo(fam, base_repo)
+            variants = {b.lower() for b in getattr(fam, "named_variant_bases", ()) or ()}
+            # As given: that is the cache entry the load reads.
+            grid_base = explicit if explicit.lower() in variants else None
+        else:
+            grid_base = named_variant_base(fam, repo_id, gguf_filename)
+        if fam.name in _SAMPLE_SIGMAS_FAMILIES and grid_base:
+            names = by_repo.setdefault(grid_base, [])
+            if "model_index.json" not in names:
+                names.append("model_index.json")
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)
         # AFTER the swap: preflighting the upstream id would refuse the very picks the ungated mirror exists to rescue
         self._preflight_companion_repos(by_repo, fetch_repo_id, hf_token)
@@ -3542,6 +3670,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
                     # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can
@@ -4043,6 +4172,11 @@ class SdCppDiffusionBackend:
                     batch_count = count,
                     sample_method = state.sampling_method,
                     flow_shift = state.flow_shift,
+                    custom_sigmas = (
+                        sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
+                        if state.sample_sigmas
+                        else None
+                    ),
                     cfg_scale = cfg_scale,
                     distilled_guidance = flux_guidance,
                     lora = lora_payload,
@@ -4190,6 +4324,9 @@ class SdCppDiffusionBackend:
             extra_args += ["--vae-format", state.vae_format]
         if state.flow_shift is not None:
             extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+        if state.sample_sigmas:
+            sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
+            extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
 
         images = []
         seeds: list[int] = []

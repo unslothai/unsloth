@@ -68,49 +68,62 @@ export function llamaUpdatePresentation(
   };
 }
 
-export type UpdateComponent = "llama.cpp" | "whisper.cpp";
+export type UpdateComponent = "llama.cpp" | "whisper.cpp" | "audio.cpp";
 
 export interface UpdateComponentFlags {
   llama: boolean;
   whisper: boolean;
+  audio: boolean;
 }
+
+// In the order the backend names them, which is also the order the job installs them.
+const UPDATE_COMPONENT_KEYS: Record<
+  UpdateComponent,
+  keyof UpdateComponentFlags
+> = {
+  "llama.cpp": "llama",
+  "whisper.cpp": "whisper",
+  "audio.cpp": "audio",
+};
 
 /**
  * Which component's offer the single update card shows.
  *
- * Both can be pending at once and the backend names only one: llama.cpp when its
- * release is behind, whisper.cpp otherwise, so a llama.cpp backend migration is
- * named whisper.cpp when whisper is stale too. If the named one's switch is off
- * and the other has an offer the user does allow, the card shows that one rather
- * than nothing. Update installs everything pending either way.
+ * Several can be pending at once and the backend names only one: llama.cpp when its
+ * release is behind, then whisper.cpp, then audio.cpp, so a llama.cpp backend
+ * migration is named whisper.cpp when whisper is stale too. If the named one's
+ * switch is off and another has an offer the user does allow, the card shows that
+ * one rather than nothing. Update installs everything pending either way.
  */
 export function updateBannerComponent(
   named: UpdateComponent,
   pending: UpdateComponentFlags,
   allow: UpdateComponentFlags,
 ): UpdateComponent {
-  const key = named === "whisper.cpp" ? "whisper" : "llama";
-  if (allow[key]) {
+  if (allow[UPDATE_COMPONENT_KEYS[named]]) {
     return named;
   }
-  const other = key === "whisper" ? "llama" : "whisper";
-  return allow[other] && pending[other]
-    ? ((other === "whisper" ? "whisper.cpp" : "llama.cpp") as UpdateComponent)
-    : named;
+  const other = (Object.keys(UPDATE_COMPONENT_KEYS) as UpdateComponent[]).find(
+    (component) =>
+      component !== named &&
+      allow[UPDATE_COMPONENT_KEYS[component]] &&
+      pending[UPDATE_COMPONENT_KEYS[component]],
+  );
+  return other ?? named;
 }
 
 /**
  * The tag a finished update reports.
  *
  * The job's `to_tag` is the llama.cpp build by definition, so a card showing the
- * whisper.cpp offer reports the release it advertised instead of llama's.
+ * whisper.cpp or audio.cpp offer reports the release it advertised instead of llama's.
  */
 export function updateToastTag(
   component: UpdateComponent,
   jobTag: string | null | undefined,
   offerTag: string | null | undefined,
 ): string | null {
-  const preferred = component === "whisper.cpp" ? offerTag : jobTag;
+  const preferred = component === "llama.cpp" ? jobTag : offerTag;
   return preferred ?? offerTag ?? jobTag ?? null;
 }
 

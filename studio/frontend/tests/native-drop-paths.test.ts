@@ -110,7 +110,7 @@ const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const RTF_ADAPTER_RE =
   /class RtfAttachmentAdapter[^{]*\{\s*accept = RTF_ATTACHMENT_ACCEPT;[\s\S]*?readRtfAttachmentContent\(file, file\.name\)[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
 const TOOL_ONLY_ADAPTER_RE =
-  /function pythonToolRunsInStudio\(\)[\s\S]*?const codeToolsEnabled = codeToolsOn\(state\);[\s\S]*?if \(!external\) return state\.supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await this\.upload\(attachment\.file\)\);[\s\S]*?return original \? \(\{ \.\.\.complete, original \}[\s\S]*?new RtfAttachmentAdapter\(\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
+  /function pythonToolRunsInStudio\([\s\S]*?\): boolean \{[\s\S]*?const codeToolsEnabled = codeToolsOn\(state\);[\s\S]*?if \(!external\) return state\.supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await this\.upload\(attachment\.file\)\);[\s\S]*?return original \? \(\{ \.\.\.complete, original \}[\s\S]*?new RtfAttachmentAdapter\(\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -219,6 +219,29 @@ for (const [format, extensions, adapter, rustList] of [
     assert.deepEqual(rust.sort(), extensions.split(",").sort());
   });
 }
+
+test("Office, Outlook and web page drops index in chat with files and match the native allowlist", () => {
+  const office =
+    ".doc .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
+      " ",
+    );
+  for (const extension of office) {
+    const path = `/docs/Report${extension.toUpperCase()}`;
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.ok(!isComposerAttachmentName(path), path);
+    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+  }
+  // Types with a composer adapter keep going to the composer.
+  for (const ext of [".odt", ".rtf", ".epub", ".eml", ".docm"]) {
+    assert.ok(isComposerAttachmentName(`/docs/a${ext}`), ext);
+  }
+  const rust = [
+    ...(readText("../../src-tauri/src/native_path_policy.rs")
+      .match(/OFFICE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ].map((match) => `.${match[1]}`);
+  assert.deepEqual(rust.sort(), [...office].sort());
+});
 
 test("images route to chat vision attachments, one or many", () => {
   const dropped = classifyDropPaths([

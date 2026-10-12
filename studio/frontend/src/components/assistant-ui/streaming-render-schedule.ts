@@ -3,7 +3,10 @@
 
 import remend from "remend";
 import { type BlockProps } from "streamdown";
-import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four
@@ -212,6 +215,52 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
+  const labels = new Set<string>();
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined) {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -221,13 +270,28 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
+}
+
+function referenceProseOf(markdown: string): string {
+  blocksOf(markdown);
+  return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
 }
 
 // Which replies have to be lexed in one piece.
@@ -252,12 +316,9 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
-// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
-// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
-// the shape that separates them.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -265,7 +326,13 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) ||
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }

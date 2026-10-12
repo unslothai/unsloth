@@ -228,7 +228,15 @@ def test_named_checkpoint_swaps_the_resident_model(client, runtime):
             422,
             "invalid_request_error",
         ),
-        ({"images": ["data:image/png;base64,AAAA"]}, 400, "api_usage_error"),
+        (
+            {
+                "images": [
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                ]
+            },
+            400,
+            "api_usage_error",
+        ),
         (
             {"questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
             422,

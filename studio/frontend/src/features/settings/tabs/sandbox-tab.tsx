@@ -3,6 +3,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
@@ -24,12 +25,13 @@ import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
-import { Refresh01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
+  type SandboxMemoryStatus,
   type SandboxSettingsUpdate,
   type SandboxStatus,
   type SandboxToolStatus,
@@ -109,6 +111,98 @@ function ToolRow({
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
       </Badge>
+    </SettingsRow>
+  );
+}
+
+function MemoryLimitRow({
+  memory,
+  saving,
+  error,
+  onSave,
+}: {
+  memory: SandboxMemoryStatus;
+  saving: boolean;
+  error: string | null;
+  onSave: (memoryLimitGb: number) => void;
+}) {
+  const t = useT();
+  const shown = memory.lockedByEnvironment ? memory.limitGb : memory.savedGb;
+  const [draft, setDraft] = useState(shown === null ? "" : String(shown));
+  const [invalid, setInvalid] = useState(false);
+  const submit = () => {
+    const value = Number(draft.trim());
+    if (
+      !Number.isInteger(value) ||
+      value < memory.minGb ||
+      value > memory.maxGb
+    ) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    if (value !== memory.savedGb) onSave(value);
+  };
+  const note = memory.lockedByEnvironment
+    ? t("settings.sandbox.memoryLocked")
+    : invalid
+      ? t("settings.sandbox.memoryInvalid", {
+          min: String(memory.minGb),
+          max: String(memory.maxGb),
+        })
+      : error;
+  return (
+    <SettingsRow
+      label={t("settings.sandbox.memoryLabel")}
+      description={t("settings.sandbox.memoryDescription", {
+        defaultSize: String(memory.defaultGb),
+      })}
+      below={
+        note ? (
+          <span
+            className={cn(
+              NOTE_CLASS,
+              memory.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            min={memory.minGb}
+            max={memory.maxGb}
+            step={1}
+            value={draft}
+            disabled={memory.lockedByEnvironment}
+            aria-label={t("settings.sandbox.memoryLabel")}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            className="h-8 w-24"
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            GB
+          </span>
+        </div>
+        {memory.lockedByEnvironment ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={submit}
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        )}
+      </div>
     </SettingsRow>
   );
 }
@@ -231,18 +325,33 @@ function PermissionsSection() {
   );
 }
 
+const SANDBOX_DOCS_URL = "https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth";
+
 export function SandboxTab() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   return (
     <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.sandbox.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.sandbox.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.sandbox.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.sandbox.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={SANDBOX_DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={t("settings.sandbox.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.sandbox.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.sandbox.description")}
           className="text-xs text-muted-foreground"
@@ -630,6 +739,16 @@ function OsSandboxSections() {
                     </div>
                   </SettingsRow>
                 ) : null}
+                {status.memory ? (
+                  <MemoryLimitRow
+                    // A saved or reloaded value resets the draft.
+                    key={`${status.memory.savedGb}:${status.memory.limitGb}`}
+                    memory={status.memory}
+                    saving={saving}
+                    error={actionError}
+                    onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
+                  />
+                ) : null}
               </>
             ) : null}
             {error ? (
@@ -685,9 +804,27 @@ function OsSandboxSections() {
                 </div>
               ) : (
                 <>
+                  {view.builtinInUse ? (
+                    <SettingsRow
+                      label={t("settings.sandbox.builtinLabel")}
+                      description={t("settings.sandbox.builtinDescription")}
+                    >
+                      <Badge
+                        variant="outline"
+                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+                      >
+                        <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
+                        {t("settings.sandbox.builtinInUse")}
+                      </Badge>
+                    </SettingsRow>
+                  ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
-                    description={t("settings.sandbox.optInDescription")}
+                    description={
+                      view.builtinInUse
+                        ? t("settings.sandbox.optInNotNeeded")
+                        : t("settings.sandbox.optInDescription")
+                    }
                   >
                     <div className="flex flex-col items-end gap-1">
                       <Switch

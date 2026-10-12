@@ -76,9 +76,13 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  settleThreadScopedSettingsForCopy,
+  threadScopedDefault,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -95,6 +99,7 @@ import {
   ndjsonBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
+import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
@@ -231,33 +236,66 @@ async function loadConversationMessages(
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
   } = options;
-  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  // read before awaiting storage so a chat switch cannot redirect the lookup
   const liveBranch = liveThreadBranch(threadId);
-  const raw = await listStoredChatMessages(threadId);
+  const [raw, instructions] = await Promise.all([
+    listStoredChatMessages(threadId),
+    includeInstructions ? chatInstructionsTurn(threadId) : [],
+  ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
-  // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
+  // preserve DB order for legacy flat threads because parent-chain traversal would reverse it
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
-  const headId = liveBranchHeadId(liveBranch, raw);
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  if (!hasParentIds) return [...instructions, ...raw];
+  const headId = branchHeadId(threadId, liveBranch, raw);
+  return [
+    ...instructions,
+    ...orderByParentChain(raw, { includeSiblings, headId }),
+  ] as typeof raw;
 }
 
-// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-function liveBranchHeadId(
+async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  // pending instruction edits are absent from storage even though the next reply already uses them
+  await settleThreadScopedSettingsForCopy(threadId);
+  const thread = await getStoredChatThread(threadId);
+  if (!thread) return [];
+  const text = await resolveChatInstructions(
+    threadId,
+    thread.settings?.systemPrompt ?? threadScopedDefault("systemPrompt"),
+    thread.settings?.systemVariables ?? threadScopedDefault("systemVariables"),
+    async () => thread,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
+}
+
+// use the visible stored turn because a generating reply is absent and the newest leaf may replace it
+function branchHeadId(
+  threadId: string,
   liveBranch: string[] | null,
   raw: Array<{ id: string }>,
 ): string | null | undefined {
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  if (!liveBranch?.length) return undefined;
+  // an empty live branch means history has not refilled after a chat switch
+  // off-screen chats export the branch that reopening them would show
+  if (!liveBranch?.length) return savedBranchHead(threadId, raw);
   const storedIds = new Set(raw.map((m) => m.id));
   return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
@@ -266,7 +304,7 @@ function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
-// Attachments live in msg.attachments[].content, not msg.content, so flatten both here or they'd be dropped on export.
+// attachment content is separate from message content and must be flattened for export
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
   const main = contentBlocksToText(msg.content);
@@ -498,7 +536,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 // One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
@@ -526,6 +564,7 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
@@ -963,18 +1002,21 @@ export async function buildFineTuneJsonl(
   let skipped = 0;
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
-    const raw = await listStoredChatMessages(id);
+    const [raw, instructions] = await Promise.all([
+      listStoredChatMessages(id),
+      chatInstructionsTurn(id),
+    ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
-    // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
+    // exclude sibling retries because alternate replies would corrupt training targets
     const ordered = hasParentIds
       ? (orderByParentChain(raw, {
           includeSiblings: false,
-          headId: liveBranchHeadId(liveBranch, raw),
+          headId: branchHeadId(id, liveBranch, raw),
         }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
+    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
     if (converted.length === 0) {
       skipped += 1;

@@ -3,7 +3,12 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
 mod browser_downloads;
+#[cfg(target_os = "macos")]
+mod browser_layer;
+mod browser_open_with;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -2251,14 +2256,27 @@ fn main() {
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,
+            browser_webview::browser_view_annotate,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
+            browser_webview::browser_view_layered,
+            browser_webview::browser_view_input,
             browser_capture::browser_capture,
             browser_downloads::browser_download_save,
             browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
             browser_downloads::browser_download_exists,
             browser_downloads::browser_download_forget,
+            browser_downloads::browser_download_decide,
+            browser_downloads::browser_download_folder,
+            browser_downloads::browser_download_folder_pick,
+            browser_downloads::browser_download_folder_reset,
+            browser_open_with::browser_file_local_copy,
+            browser_open_with::browser_file_apps,
+            browser_open_with::browser_file_open,
+            browser_open_with::browser_file_path,
+            browser_open_with::browser_file_reveal,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,

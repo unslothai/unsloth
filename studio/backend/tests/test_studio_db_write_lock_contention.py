@@ -193,14 +193,29 @@ def test_concurrent_openers_all_get_normal(db):
 
 
 def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
-    """#10022: every studio.db opener shares one open/close gate (SQLite 3.51.0-3.51.1 deadlock)."""
-    from storage import credential_secrets, library_db, mcp_servers_db, providers_db
+    """#10022, #9008: every studio.db, auth.db and rag.db opener shares one open/close gate
+    (SQLite 3.51.0-3.51.1 deadlock wedges the process-wide VFS mutex, so every database hangs)."""
+    import auth.storage as auth_storage
+    from storage import (
+        credential_secrets,
+        library_db,
+        mcp_servers_db,
+        providers_db,
+        rag_db,
+        sqlite_gate,
+    )
 
     modules = (providers_db, mcp_servers_db, credential_secrets, library_db)
     for module in modules:
         monkeypatch.setattr(module, "studio_db_path", lambda db = db: db)
         monkeypatch.setattr(module, "_schema_ready", set())
+    monkeypatch.setattr(auth_storage, "DB_PATH", db.parent / "auth" / "auth.db")
+    monkeypatch.setattr(rag_db, "rag_db_path", lambda: db.parent / "rag.db")
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
     factories = [studio_db.get_connection] + [module.get_connection for module in modules]
+    factories += [auth_storage.get_connection, rag_db.get_metadata_connection]
+    if rag_db.rag_available():  # sqlite_vec can import while its vec0 library cannot load
+        factories.append(rag_db.get_connection)
 
     class TrackingLock:
         def __init__(self):
@@ -218,7 +233,7 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
             self._lock.release()
 
     gate = TrackingLock()
-    monkeypatch.setattr(studio_db, "_CONNECTION_GATE", gate)
+    monkeypatch.setattr(sqlite_gate, "_CONNECTION_GATE", gate)
     barrier = threading.Barrier(len(factories))
     errors = []
 

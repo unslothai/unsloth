@@ -98,7 +98,7 @@ def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
 def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     try:
         result = gpu_query.run_nvidia_smi(
-            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+            [_nvidia_smi_executable(), "--query-gpu=index,uuid", "--format=csv,noheader"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -123,11 +123,11 @@ def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     return sorted(visible_ordinals, key = visible_ordinals.__getitem__)
 
 
-def get_physical_gpu_count() -> Optional[int]:
-    """Return physical GPU count via nvidia-smi, or None on failure."""
+def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
+    """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
     try:
         result = gpu_query.run_nvidia_smi(
-            ["nvidia-smi", "-L"],
+            [_nvidia_smi_executable(), "-L"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -137,7 +137,10 @@ def get_physical_gpu_count() -> Optional[int]:
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
-            return len(result.stdout.strip().splitlines())
+            lines = result.stdout.strip().splitlines()
+            if gpu_rows_only:
+                return sum(1 for line in lines if line.startswith("GPU "))
+            return len(lines)
         logger.warning(
             "nvidia-smi -L returned code %d; caller should fall back to torch",
             result.returncode,
@@ -151,7 +154,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
         result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=utilization.gpu,temperature.gpu,"
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
@@ -200,7 +203,7 @@ def get_visible_gpu_utilization(
     try:
         result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 f"--query-gpu={query_fields}",
                 "--format=csv,noheader,nounits",
             ],

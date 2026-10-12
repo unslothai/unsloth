@@ -12,6 +12,8 @@
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
+    _has_active_dora_adapter,
+    _has_active_lora_bias,
     _has_multiple_active_adapters,
     addmm_,
     fast_dequantize,
@@ -25,7 +27,7 @@ from .utils import (
 
 _is_compiling = torch.compiler.is_compiling
 
-# Inductor before torch 2.11 miscompiles these Functions' traced backward (wrong LoRA gradients).
+# Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.
 TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
 
 
@@ -231,7 +233,7 @@ class LoRA_MLP(torch.autograd.Function):
             None,
             None,
             None,
-        )  # _backward and _forward and inplace
+        )
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
@@ -243,7 +245,10 @@ def apply_lora_mlp_swiglu(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
@@ -284,7 +289,10 @@ def apply_lora_mlp_geglu_exact(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
@@ -321,7 +329,10 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 def apply_lora_mlp_geglu_approx(self, X):
     if any(
-        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
@@ -544,7 +555,10 @@ def apply_lora_qkv(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_activation_fake_quantizer(proj)
         for proj in (self.q_proj, self.k_proj, self.v_proj)
     ):
         return self.q_proj(X), self.k_proj(X), self.v_proj(X)
@@ -639,7 +653,6 @@ class LoRA_W(torch.autograd.Function):
         d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
-        # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
@@ -649,7 +662,12 @@ class LoRA_W(torch.autograd.Function):
 
 
 def apply_lora_o(self, X):
-    if _has_multiple_active_adapters(self.o_proj) or _has_activation_fake_quantizer(self.o_proj):
+    if (
+        _has_multiple_active_adapters(self.o_proj)
+        or _has_active_dora_adapter(self.o_proj)
+        or _has_active_lora_bias(self.o_proj)
+        or _has_activation_fake_quantizer(self.o_proj)
+    ):
         return self.o_proj(X)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)

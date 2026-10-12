@@ -62,8 +62,10 @@ _INDUCTOR_FLAGS = (
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
     ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
+    ("memory_planning", "inductor_memory_planning"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
+_DYNAMO_FLAGS = (("suppress_errors", "dynamo_suppress_errors"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
 REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
@@ -190,6 +192,11 @@ def snapshot_backend_flags() -> Optional[dict]:
             for attr, key in _INDUCTOR_TRITON_FLAGS:
                 if hasattr(triton_cfg, attr):
                     state[key] = bool(compile_config.get_knob(_INDUCTOR_TRITON_MODULE, attr))
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None:
+        for attr, key in _DYNAMO_FLAGS:
+            if hasattr(dynamo_cfg, attr):
+                state[key] = bool(compile_config.get_knob(_DYNAMO_MODULE, attr))
     getter = getattr(torch, "get_float32_matmul_precision", None)
     if callable(getter):
         try:
@@ -254,6 +261,35 @@ def restore_backend_flags(state: Optional[dict]) -> None:
     triton_cfg = getattr(inductor_cfg, "triton", None) if inductor_cfg is not None else None
     for attr, key in _INDUCTOR_TRITON_FLAGS:
         _set_knob(triton_cfg, _INDUCTOR_TRITON_MODULE, attr, key)
+    dynamo_cfg = _dynamo_config()
+    for attr, key in _DYNAMO_FLAGS:
+        _set_knob(dynamo_cfg, _DYNAMO_MODULE, attr, key)
+
+
+def _gguf_dequant_compilable(is_gguf: bool, on_cuda: bool, family_allows_compile: bool) -> bool:
+    return is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available()
+
+
+def _pin_compile_defaults() -> None:
+    """torch's defaults for every diffusion compile, against Unsloth's training config, which sets both process-wide
+    on torch < 2.12 (#9897). ``memory_planning``: its pooled buffers come back from ``inductor::_alloc_from_pool`` as
+    views AOTAutograd's custom-op aliasing check rejects at the first call (every gfx1151 render under ``CI``, a
+    deprecation warning elsewhere). ``suppress_errors``: a failed compile would silently run eager; Studio's own
+    guards fall back with a warning instead, as on torch 2.12+ where the render thread never saw the training config."""
+    inductor_cfg = _inductor_config()
+    if inductor_cfg is not None and hasattr(inductor_cfg, "memory_planning"):
+        compile_config.set_knob(_INDUCTOR_MODULE, "memory_planning", False)
+    dynamo_cfg = _dynamo_config()
+    if dynamo_cfg is not None and hasattr(dynamo_cfg, "suppress_errors"):
+        compile_config.set_knob(_DYNAMO_MODULE, "suppress_errors", False)
+
+
+def _dynamo_config() -> Any:
+    try:
+        import torch
+        return getattr(getattr(torch, "_dynamo", None), "config", None)
+    except Exception:  # noqa: BLE001 - no dynamo -> nothing to snapshot/set
+        return None
 
 
 def _inductor_config() -> Any:
@@ -467,10 +503,14 @@ def apply_speed_optims(
             install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
         except Exception as exc:  # noqa: BLE001 - keep stock attention
             _warn(logger, "vae attention chunks", exc)
+    # Stability, not speed, so also before the `off` return.
+    _enable_miopen_immediate(logger)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+    if mode in (SPEED_DEFAULT, SPEED_MAX):
+        _pin_compile_defaults()
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -510,7 +550,7 @@ def apply_speed_optims(
     # of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
         # Asked directly: this arm never reaches compile_eligible(), unlike the dense arm below.
-        if is_gguf and on_cuda and family_allows_compile and torch_compile_runtime_available():
+        if _gguf_dequant_compilable(is_gguf, on_cuda, family_allows_compile):
             applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
         elif compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
             target, pipe, offload_active = offload_active
@@ -529,21 +569,25 @@ def apply_speed_optims(
                 onload_device = _onload_device(target) if stream_int8_gemm else None,
                 filter_reductions = filter_reductions,
             )
-    elif (
-        mode == SPEED_MAX
-        and compile_eligible(target, is_gguf = is_gguf, family = family)
-        and not fp16_unet_offloaded(target, pipe, offload_active = offload_active)
-    ):
-        applied["compiled"] = _compile_repeated_blocks(
-            pipe,
-            logger,
-            max_autotune = True,
-            cache_active = cache_active,
-            offload_active = offload_active,
-            denoiser_offloaded = denoiser_offloaded,
-            onload_device = _onload_device(target) if stream_int8_gemm else None,
-            filter_reductions = filter_reductions,
-        )
+    elif mode == SPEED_MAX:
+        if compile_eligible(target, is_gguf = is_gguf, family = family) and not fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
+            applied["compiled"] = _compile_repeated_blocks(
+                pipe,
+                logger,
+                max_autotune = True,
+                cache_active = cache_active,
+                offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
+                onload_device = _onload_device(target) if stream_int8_gemm else None,
+                filter_reductions = filter_reductions,
+            )
+        if not applied["compiled"] and _gguf_dequant_compilable(
+            is_gguf, on_cuda, family_allows_compile
+        ):
+            # No block compile (ROCm, or its setup failed): keep default's dequant compile rather than run slower.
+            applied["compiled_dequant"] = gguf_compile.install_compiled_dequant(logger)
 
     if applied["compiled"]:
         applied["int8_gemm"] = any(
@@ -1152,6 +1196,19 @@ def _compile_repeated_blocks(
                 install_zimage_fused(transformer, logger, offload_active = offload_active)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "z-image fused attention", exc)
+        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
+            # after the int8 GEMM swap, whose leftovers it reads
+            try:
+                from .diffusion_qwenimage21_fused import install as install_q21_fused
+                install_q21_fused(
+                    transformer,
+                    logger,
+                    offload_active = offload_active
+                    if denoiser_offloaded is None
+                    else bool(denoiser_offloaded),
+                )
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image-2.1 convrot sharing", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -1405,7 +1462,8 @@ def settle_compile_fallback(
     the recorded failure, or None when nothing fell back."""
     dit_error = compile_fallback_error(pipe)
     vae_error = _vae_compile_error(getattr(pipe, "vae", None))
-    fallback = dit_error or vae_error
+    dequant_error = gguf_compile.compile_error()
+    fallback = dit_error or vae_error or dequant_error
     if not fallback:
         return None
     optims = tuple(getattr(state, "speed_optims", None) or ())
@@ -1418,6 +1476,8 @@ def settle_compile_fallback(
         updated.remove("compiled")
     if vae_error and "compiled_vae_decode" in updated:
         updated.remove("compiled_vae_decode")
+    if dequant_error and "compiled_dequant" in updated:
+        updated.remove("compiled_dequant")
     if tuple(updated) != optims:
         # The load states are frozen dataclasses; the status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
@@ -1716,6 +1776,30 @@ def _enable_cudnn_benchmark(logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "cudnn_benchmark", exc)
+        return False
+
+
+def _enable_miopen_immediate(logger: Any) -> bool:
+    """ROCm: ask MIOpen for a conv solution instead of miopenFind*, whose trial launches on unseen shapes
+    are where #9130's uncatchable abort came from. MIOPEN_FIND_MODE / MIOPEN_FIND_ENFORCE keep Find. Not in
+    snapshot_backend_flags: an unload restoring it would reopen Find under a co-resident pipeline."""
+    if os.environ.get("MIOPEN_FIND_MODE") or os.environ.get("MIOPEN_FIND_ENFORCE"):
+        return False
+    try:
+        import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        miopen = getattr(torch.backends, "miopen", None)
+        if not _module_is_rocm(torch) or miopen is None or not hasattr(miopen, "immediate"):
+            return False
+        if not miopen.immediate:
+            miopen.immediate = True
+            if logger is not None:
+                logger.info("diffusion.speed: MIOpen immediate mode on (no Find trial launches)")
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep torch's Find path
+        _warn(logger, "miopen immediate", exc)
         return False
 
 

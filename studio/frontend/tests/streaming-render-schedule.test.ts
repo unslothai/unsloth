@@ -612,6 +612,28 @@ test("a bracket-dense reply does not stall the scan", () => {
   assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
 });
 
+test("malformed inline-link titles do not rescan the remaining reply", () => {
+  const reply = `${"[x](/url (".repeat(20_000)}\` [1] \`\n\n[1]: /one\n`;
+  const started = performance.now();
+  markdownRenderScope(reply);
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k malformed inline links took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
+test("unterminated HTML delimiters do not rescan the remaining reply", () => {
+  const reply = `${"<!--".repeat(20_000)}\` [1]\n\n[1]: /one\n`;
+  const started = performance.now();
+  assert.equal(markdownRenderScope(reply), "document");
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k unterminated HTML comments took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
 // Scope decides what is committed, so it cannot follow the reply's line ending.
 // This label is 999 normalised, 1000 raw under CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
@@ -978,6 +1000,24 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   const invalidMedian = invalidRuns.sort((a, b) => a - b)[2]!;
   assert.ok(invalidMedian < 100,
     `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
+});
+
+test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
+  // widths 1..800 expose lazy-regex tail rescans; 100ms is well below the ~900ms regression.
+  let runs = "";
+  for (let width = 1; width <= 800; width += 1) {
+    runs += `${"`".repeat(width)}a`;
+  }
+  const reply = `See [1]. ${runs}\n\n[1]: https://x.test\n`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(reply + " ");
+  const samples: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    assert.equal(markdownRenderScope(reply + " ".repeat(i)), "document");
+    samples.push(performance.now() - t0);
+  }
+  const median = samples.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100, `321k of backtick runs cost ${median.toFixed(1)}ms`);
 });
 
 test("a reference label past the old cap still resolves against its definition", () => {
