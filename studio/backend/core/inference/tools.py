@@ -21672,7 +21672,12 @@ def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrit
                 if not overwrite:
                     raise SandboxUploadExists(name) from None
             except OSError:
-                pass  # a volume without hard links: the name was free a moment ago
+                # A volume without hard links: claim the name exclusively, then rename onto the claim.
+                try:
+                    os.close(os.open(dest, flags, 0o600, **at))
+                except FileExistsError:
+                    if not overwrite:
+                        raise SandboxUploadExists(name) from None
         try:
             os.replace(tmp, dest, **pair)
         except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:

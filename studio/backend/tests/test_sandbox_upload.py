@@ -154,3 +154,28 @@ def test_a_sandbox_file_named_upload_is_still_served():
     scope["method"] = "POST"
     matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
     assert [r.endpoint.__name__ for r in matched] == ["upload_sandbox_file"]
+
+
+@pytest.mark.parametrize("dir_fd_writes", [True, False])
+def test_a_volume_without_hard_links_still_never_replaces_unless_asked(
+    tools, monkeypatch, dir_fd_writes
+):
+    monkeypatch.setattr(tools, "_DIR_FD_WRITES", tools._DIR_FD_WRITES and dir_fd_writes)
+    session = "__LOCALID_nolinks"
+    workdir = Path(tools.get_sandbox_workdir(session))
+
+    def link_refused(src, dst, **kwargs):
+        # A tool takes the name between the check and the install, on a volume refusing links.
+        (workdir / "report.xlsx").write_bytes(b"tool output")
+        raise PermissionError("hard links not supported")
+
+    monkeypatch.setattr(tools.os, "link", link_refused)
+    with pytest.raises(tools.SandboxUploadExists):
+        tools.save_sandbox_upload(session, "report.xlsx", [b"upload"])
+    assert (workdir / "report.xlsx").read_bytes() == b"tool output"
+    (workdir / "report.xlsx").unlink()
+    monkeypatch.setattr(
+        tools.os, "link", lambda *a, **k: (_ for _ in ()).throw(OSError("no links"))
+    )
+    assert tools.save_sandbox_upload(session, "report.xlsx", [b"upload"])["replaced"] is False
+    assert (workdir / "report.xlsx").read_bytes() == b"upload"

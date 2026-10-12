@@ -135,7 +135,8 @@ async function uploadToChatFolder(
     try {
       added.push((await uploadToSandbox(sessionId, file, overwrite)).name);
     } catch (error) {
-      if ((error as { status?: number } | null)?.status === 409) taken.push(file);
+      // A 409 on a replace is a folder holding the name: offering Replace again would loop.
+      if (!overwrite && (error as { status?: number } | null)?.status === 409) taken.push(file);
       else failed(error instanceof Error ? error.message : String(error));
     }
   }
