@@ -1039,7 +1039,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
     const refusal = !pythonToolRunsInStudio()
-      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      ? `Turn on Tools with a model that runs the python tool to attach ${file.name}.`
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES

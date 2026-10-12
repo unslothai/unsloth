@@ -1882,8 +1882,8 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Code,
-                    MCP and Docs tools. Those run on this machine, and their
+                    Models on this connection can use Unsloth&apos;s Search, Tools,
+                    MCP and Docs. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything
                     risky runs.
