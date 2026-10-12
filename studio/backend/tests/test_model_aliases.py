@@ -136,6 +136,7 @@ def test_alias_rows_follow_the_visible_catalog(store):
             {"name": "hidden", "model": "someone/not-on-disk"},
             {"name": "local-model", "model": "unsloth/Qwen3-4B-GGUF"},
             {"name": "dictate", "model": "unsloth/whisper-tiny"},
+            {"name": "clip", "model": "Wan-AI/Wan2.2-TI2V-5B"},
         ]
     )
     catalog = [
@@ -148,6 +149,7 @@ def test_alias_rows_follow_the_visible_catalog(store):
         },
         {"id": "local-model", "object": "model", "loaded": False},
         {"id": "unsloth/whisper-tiny", "object": "model", "task": "automatic-speech-recognition"},
+        {"id": "Wan-AI/Wan2.2-TI2V-5B", "object": "model", "task": "text-to-video"},
     ]
 
     def pinned(target, objects):
@@ -238,3 +240,18 @@ def test_main_app_registers_the_alias_middleware_inside_the_body_cap():
     import main
     classes = [m.cls for m in main.app.user_middleware]
     assert classes.index(main.MaxBodyMiddleware) < classes.index(ModelAliasMiddleware)
+
+
+def test_retrieve_prefers_an_alias_over_a_same_named_loaded_model(store, monkeypatch):
+    import routes.inference as inference
+
+    loaded = [{"id": "local-model", "object": "model"}]
+
+    async def catalog():
+        return [{"id": "unsloth/Qwen3-4B-GGUF", "object": "model", "loaded": False}, *loaded]
+
+    monkeypatch.setattr(inference, "_openai_model_objects", lambda: loaded)
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+    set_model_aliases([{"name": "local-model", "model": "unsloth/Qwen3-4B-GGUF"}])
+    got = asyncio.run(inference.openai_retrieve_model("local-model", current_subject = "owner"))
+    assert got["alias_for"] == "unsloth/Qwen3-4B-GGUF"

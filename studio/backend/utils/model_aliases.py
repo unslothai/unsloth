@@ -111,8 +111,8 @@ def alias_model_objects(
         listed = by_id.get(target.lower())
         if listed is None and ":" in target and pinned_object is not None:
             listed = pinned_object(target, objects)
-        # Speech-to-text takes ``model`` as a multipart field, which the rewrite never touches.
-        if listed is None or listed.get("task") == "automatic-speech-recognition":
+        # Chat models only: media routes take ``model`` in multipart or upload bodies the rewrite skips.
+        if listed is None or listed.get("task", "text-generation") != "text-generation":
             continue
         # The alias already names its quant; a listed one would invite an unresolvable "alias:Q4".
         row = {k: v for k, v in listed.items() if k not in ("display_name", "quant")}

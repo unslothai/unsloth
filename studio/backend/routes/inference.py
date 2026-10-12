@@ -36605,8 +36605,12 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
     # Off-loop like the catalog helper, and for the same sync resolver-index work.
+    from utils.model_aliases import resolve_model_alias
+
     _loaded = await asyncio.to_thread(_openai_model_objects)
-    for entry in _loaded:
+    # An alias wins over a same-named loaded model, as the request rewrite does.
+    aliased = await asyncio.to_thread(resolve_model_alias, model_id)
+    for entry in [] if aliased else _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
             return {**entry, "loaded": True}
