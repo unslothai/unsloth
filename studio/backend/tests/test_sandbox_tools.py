@@ -173,6 +173,8 @@ class TestLocalDatabaseFileIsNotAHost:
             'import sqlite3\ncon = sqlite3.connect("sales.db")\ncon.execute("select 1")',
             'import sqlite3\nsqlite3.connect(":memory:")',
             'import duckdb\nduckdb.connect("a.duckdb")',
+            'import sqlite3 as sql\nsql.connect("sales.db")',
+            'import duckdb as ddb\nddb.connect("a.duckdb")',
         ],
     )
     def test_local_database_file_opens(self, code):
@@ -185,6 +187,8 @@ class TestLocalDatabaseFileIsNotAHost:
             'import ftplib\nftp = ftplib.FTP()\nftp.connect("evil.example")',
             'import duckdb\nduckdb.connect("md:my_db")',
             'import duckdb\nduckdb.connect("https://evil.example/a.duckdb")',
+            'import ftplib\nsqlite3 = ftplib.FTP()\nsqlite3.connect("evil.example")',
+            'import psycopg2 as duckdb\nduckdb.connect("evil.example")',
         ],
     )
     def test_remote_connect_still_blocked(self, code):

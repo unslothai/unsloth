@@ -18615,7 +18615,7 @@ def _check_signal_escape_patterns(code: str):
         if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
     )
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
-    _LOCAL_DATABASE_CONNECTS = frozenset({"sqlite3.connect", "duckdb.connect"})
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
     _PROXY_KEYWORDS = ("proxy", "proxies")
     _DESTINATION_ATTRS = {
         "proxies": frozenset(
@@ -19193,6 +19193,19 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
+    def _local_database_names(nodes) -> frozenset:
+        imported: set[str] = set()
+        other: set[str] = set()
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.partition(".")[0]
+                    name = alias.asname or root
+                    (imported if root in _LOCAL_DATABASE_MODULES else other).add(name)
+            else:
+                other.update(_binding_names(node))
+        return frozenset(imported - other)
+
     # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
     # module path leading to it.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
@@ -19436,6 +19449,7 @@ def _check_signal_escape_patterns(code: str):
             # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
             # and overwriting the entry resolved the call to the unrecognised socket function.
             self.func_aliases: dict[str, set[str]] = {}
+            self.local_databases: "frozenset | None" = None
             # Name -> every string literal it can hold, None when unreadable. `url =
             # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
             # All three are read ONLY to answer a question about a recognised egress call, so
@@ -19827,6 +19841,13 @@ def _check_signal_escape_patterns(code: str):
             self.alias_lines.setdefault(name, []).append(
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
+
+        def _names_local_database(self, owner) -> bool:
+            if not isinstance(owner, ast.Name):
+                return False
+            if self.local_databases is None:
+                self.local_databases = _local_database_names(_tree_nodes(tree))
+            return owner.id in self.local_databases
 
         def _is_shadowed(
             self,
@@ -20564,7 +20585,7 @@ def _check_signal_escape_patterns(code: str):
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
                     target = a0.value.lower()
                     if not (
-                        any(c in _LOCAL_DATABASE_CONNECTS for c in fq_candidates)
+                        self._names_local_database(node.func.value)
                         and not target.startswith(("md:", "motherduck:"))
                         and ("://" not in target or target.startswith("file:"))
                     ):
