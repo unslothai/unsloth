@@ -4280,10 +4280,8 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* "Generating..." glint: a band of the page colour slides over the label. Only `transform`
-	   animates, so it runs on the compositor with no per-frame style or paint work (a
-	   background-clip: text sweep restyles every frame). Lighten in light mode and darken in dark
-	   are no-ops over the background, so only the letters dim as it passes. */
+	/* Transform-only so it stays on the compositor (a background-clip: text sweep restyles every
+	   frame); lighten/darken with the page colour are no-ops over the background. */
 	.generating-glint {
 		position: relative;
 		display: inline-block;
@@ -4297,8 +4295,7 @@ html[data-chat-font] .aui-root {
 		position: absolute;
 		inset: 0;
 		pointer-events: none;
-		/* Cosine falloff (stops at 1, 0.85, 0.5, 0.15, 0 of the peak): straight ramps leave
-		   visible edges. */
+		/* Cosine falloff; straight ramps leave visible edges. */
 		background: linear-gradient(
 			105deg,
 			transparent 20%,
@@ -4320,7 +4317,6 @@ html[data-chat-font] .aui-root {
 		mix-blend-mode: darken;
 	}
 
-	/* One pass, then rest past the end for the rest of the 5 s cycle. */
 	@keyframes generating-glint {
 		0% {
 			transform: translateX(-100%);
