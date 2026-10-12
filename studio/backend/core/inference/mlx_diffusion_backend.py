@@ -138,6 +138,8 @@ def _chip_name() -> str:
             ["sysctl", "-n", "machdep.cpu.brand_string"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         return (out.stdout or "").strip()
@@ -360,7 +362,9 @@ def _holds_base_components(snapshot: str) -> bool:
     root = Path(snapshot)
     if not all((root / sub).is_dir() for sub in _LINKED_SUBDIRS):
         return False
-    if not all((root / "tokenizer" / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")):
+    if not all(
+        (root / "tokenizer" / f).is_file() for f in ("tokenizer.json", "tokenizer_config.json")
+    ):
         return False
     for sub in ("text_encoder", "vae"):
         folder = root / sub

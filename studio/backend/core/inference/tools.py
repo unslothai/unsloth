@@ -40,6 +40,7 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
+from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -7277,6 +7278,9 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "deep_research",
         "mcp_tool_schema",
         "view_image",
+        # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
+        # purchases, sign-ins and new sites ask there, in every permission mode.
+        *BROWSER_TOOL_NAMES,
     }
 )
 
@@ -14194,6 +14198,16 @@ def execute_tool(
     effective_timeout = (
         timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
     )
+    if is_browser_tool(name):
+        return execute_browser_tool(
+            name,
+            arguments,
+            cancel_event = cancel_event,
+            output_callback = output_callback,
+            session_id = session_id,
+            website_policy = website_policy,
+            timeout = effective_timeout,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
