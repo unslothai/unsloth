@@ -72,13 +72,25 @@ def _host(
     )
 
 
+_GOOD_VERSIONS = {
+    "mflux": "0.22.0",
+    "mlx": "0.32.3",
+    "piexif": "1.1.3",
+    "platformdirs": "4.3.8",
+    "toml": "0.10.2",
+}
+
+
 def _runtime(
     monkeypatch,
     *,
     mlx = True,
     mflux = True,
+    versions = None,
 ):
     present = {"mlx": mlx, "mflux": mflux}
+    versions = {**_GOOD_VERSIONS, **(versions or {})}
+    monkeypatch.setattr(r, "_installed_version", versions.get)
     real_find_spec = r.importlib.util.find_spec
     monkeypatch.setattr(
         r,
@@ -267,6 +279,26 @@ def test_missing_runtime_falls_back(monkeypatch, mlx, mflux, needle):
     assert needle in (r.annotate_status({})["mlx_fallback_reason"] or "")
 
 
+@pytest.mark.parametrize(
+    "versions, needle",
+    [
+        ({"mflux": "0.17.0"}, "mflux==0.22.0 (found 0.17.0)"),
+        ({"mlx": "0.29.1"}, "mlx>=0.32.0,<0.33.0 (found 0.29.1)"),
+        ({"mlx": None}, "mlx>=0.32.0,<0.33.0 (found none)"),
+        ({"toml": None}, "toml>=0.10.2,<1 (found none)"),
+        ({"platformdirs": "5.0.0"}, "platformdirs>=4,<5 (found 5.0.0)"),
+    ],
+)
+def test_an_incompatible_installed_runtime_falls_back(monkeypatch, versions, needle):
+    # An older mflux left behind by a failed upgrade still imports; selection must read the installed versions.
+    _host(monkeypatch)
+    _device(monkeypatch, "mps")
+    _runtime(monkeypatch, versions = versions)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    assert _predict() == _select() == ENGINE_DIFFUSERS
+    assert needle in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
 @pytest.mark.parametrize("forced", ["diffusers", "sd_cpp"])
 def test_forced_engine_overrides_the_opt_in(monkeypatch, forced):
     _apple(monkeypatch)
@@ -369,3 +401,21 @@ def test_family_buildable_here_counts_mlx_only_with_a_convertible_gguf(monkeypat
     assert r.family_buildable_here(fam, model_kind = "gguf") is False
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX")
     assert r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = _Q4) is False
+
+
+def test_runtime_requirements_match_the_installer():
+    import ast
+    from pathlib import Path
+
+    from core.inference.mlx_diffusion_convert import MFLUX_VERSION
+
+    source = (Path(__file__).resolve().parents[2] / "install_python_stack.py").read_text()
+    literals = {
+        node.targets[0].id if isinstance(node, ast.Assign) else node.target.id: node.value
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and isinstance(node.targets[0] if isinstance(node, ast.Assign) else node.target, ast.Name)
+    }
+    assert ast.literal_eval(literals["_MLX_DIFFUSION_PINS"]) == (f"mflux=={MFLUX_VERSION}",)
+    deps = set(ast.literal_eval(literals["_MLX_DIFFUSION_DEPS"]))
+    assert deps == {s for s in r._MLX_RUNTIME_REQUIREMENTS if not s.startswith("mlx")}

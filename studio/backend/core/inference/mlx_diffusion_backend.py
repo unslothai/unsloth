@@ -25,10 +25,12 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     DiffusionModelReplacedError,
     LoadIdentity,
+    canonical_base,
     detect_family_for_pick,
     family_mlx_supported,
     load_identity,
     mlx_model_config_for,
+    named_variant_base,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -407,9 +409,13 @@ def resolve_variant_base(
     gguf_filename: Optional[str],
     *,
     fallback: str,
+    local_files_only: bool = False,
 ) -> str:
     """The diffusers loader's base resolution (trusted ``base_model`` card tag, then a named variant,
-    then the family default), so both engines read the same base for one pick."""
+    then the family default), so both engines read the same base for one pick. Cache-only reads no
+    card: the base an earlier online load recorded for this repo, else the name, else the default."""
+    if local_files_only:
+        return _cached_variant_base(repo_id, fam, gguf_filename, fallback)
     try:
         from core.inference.diffusion import _resolve_base_repo
     except Exception as exc:  # noqa: BLE001 -- no diffusers stack: the family default stands
@@ -420,6 +426,35 @@ def resolve_variant_base(
     except Exception as exc:  # noqa: BLE001 -- a metadata failure keeps the family default
         logger.debug("mlx_diffusion.base_resolve_failed: %s", exc)
         return fallback
+
+
+def _cached_variant_base(
+    repo_id: str,
+    fam: DiffusionFamily,
+    gguf_filename: Optional[str],
+    fallback: str,
+) -> str:
+    candidates = {
+        b.lower()
+        for b in (
+            fam.base_repo,
+            *(getattr(fam, "named_variant_bases", ()) or ()),
+            *(b for b, _name in getattr(fam, "mlx_model_config_by_base", ()) or ()),
+        )
+        if b
+    }
+    try:
+        from hub.utils.companion_assets import read_companion_links
+
+        recorded = read_companion_links().get(repo_id.strip().lower(), ())
+    except Exception as exc:  # noqa: BLE001 -- no record: the name decides
+        logger.debug("mlx_diffusion.companion_links_unreadable: %s", exc)
+        recorded = ()
+    for base in reversed(recorded):
+        upstream = canonical_base(base)
+        if upstream.lower() in candidates:
+            return upstream
+    return named_variant_base(fam, repo_id, gguf_filename) or fallback
 
 
 def _link_base_components(model_dir: Path, base_dir: str) -> None:
@@ -465,6 +500,7 @@ class MlxDiffusionBackend:
         self._active_generate_account: Optional[str] = None
         self._gen: Optional[_MlxGen] = None
         self._load_thread: Optional[threading.Thread] = None
+        self._unloading = 0
         self.last_timings: dict[str, Any] = {}
 
     def _rt(self) -> Any:
@@ -531,6 +567,8 @@ class MlxDiffusionBackend:
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
+            if self._unloading:
+                raise RuntimeError("A diffusion unload is in progress.")
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
             self._load_token += 1
@@ -593,7 +631,14 @@ class MlxDiffusionBackend:
             if not explicit_base:
                 # The repo's base_model card tag can name the undistilled base: resolve it the way the
                 # diffusers loader and the delegated download plan do, before picking the mflux config.
-                base = resolve_variant_base(repo_id, fam, hf_token, gguf_filename, fallback = base)
+                base = resolve_variant_base(
+                    repo_id,
+                    fam,
+                    hf_token,
+                    gguf_filename,
+                    fallback = base,
+                    local_files_only = local_files_only,
+                )
                 model_config = mlx_model_config_for(fam, base)
                 with self._lock:
                     if self._load_token == _load_token and self._loading is not None:
@@ -1000,15 +1045,21 @@ class MlxDiffusionBackend:
             self._loading = None
             worker = self._load_thread
             self._load_thread = None
-        # Barrier: on return the cancelled generation has released the model.
-        with self._generate_lock:
-            pass
-        # And a superseded load has stopped: a build in progress cannot be interrupted, and the
-        # caller treats this return as "memory is free" before activating another engine or load.
-        if worker is not None and worker is not threading.current_thread():
-            worker.join()
-        if had_model and self._runtime is not None:
-            self._runtime.free()
+            # Held until the join and free below: a load started meanwhile would build beside the superseded one.
+            self._unloading += 1
+        try:
+            # Barrier: on return the cancelled generation has released the model.
+            with self._generate_lock:
+                pass
+            # And a superseded load has stopped: a build in progress cannot be interrupted, and the
+            # caller treats this return as "memory is free" before activating another engine or load.
+            if worker is not None and worker is not threading.current_thread():
+                worker.join()
+            if had_model and self._runtime is not None:
+                self._runtime.free()
+        finally:
+            with self._lock:
+                self._unloading -= 1
         return self.status()
 
     def status(self) -> dict[str, Any]:

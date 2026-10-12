@@ -199,11 +199,43 @@ def _mlx_host_refusal() -> Optional[str]:
     return None
 
 
+# mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
+_MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
+    "mlx>=0.32.0,<0.33.0",
+    "piexif>=1.1.3,<2",
+    "platformdirs>=4,<5",
+    "toml>=0.10.2,<1",
+)
+
+
+def _installed_version(name: str) -> Optional[str]:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version(name)
+    except (PackageNotFoundError, ValueError):
+        return None
+
+
 def _mlx_runtime_refusal() -> Optional[str]:
-    """find_spec only: never import mlx / mflux here."""
+    """find_spec and distribution metadata only: never import mlx / mflux here."""
     missing = [name for name in ("mlx", "mflux") if importlib.util.find_spec(name) is None]
     if missing:
         return f"{' and '.join(missing)} not installed"
+    from core.inference.mlx_diffusion_convert import MFLUX_VERSION
+
+    try:
+        from packaging.requirements import Requirement
+
+        for spec in (f"mflux=={MFLUX_VERSION}", *_MLX_RUNTIME_REQUIREMENTS):
+            requirement = Requirement(spec)
+            installed = _installed_version(requirement.name)
+            if installed is None or not requirement.specifier.contains(
+                installed, prereleases = True
+            ):
+                return f"the MLX engine needs {spec} (found {installed or 'none'})"
+    except Exception as exc:  # noqa: BLE001 -- no packaging, or a version it cannot parse
+        return f"could not verify the MLX runtime versions ({exc})"
     return None
 
 

@@ -397,6 +397,60 @@ def test_unload_during_load_waits_for_the_build_and_discards_it(env, monkeypatch
     assert backend.load_progress()["phase"] is None
 
 
+def test_a_load_racing_unload_waits_until_the_superseded_build_is_gone(env):
+    backend, runtime, _calls = env
+    gate = threading.Event()
+    started = threading.Event()
+    real_build = runtime.build
+
+    def _slow_build(*a, **k):
+        started.set()
+        gate.wait(10)
+        return real_build(*a, **k)
+
+    runtime.build = _slow_build
+    backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+    assert started.wait(5)
+    unloader = threading.Thread(target = backend.unload)
+    unloader.start()
+    deadline = time.time() + 5
+    while backend.loading_repo_ids() and time.time() < deadline:
+        time.sleep(0.01)
+    try:
+        with pytest.raises(RuntimeError, match = "unload is in progress"):
+            backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+        assert len(runtime.builds) == 0
+    finally:
+        gate.set()
+        unloader.join(5)
+    assert len(runtime.builds) == 1  # the superseded build, discarded
+    runtime.build = real_build
+    assert _load(backend)["phase"] == "ready"
+    assert len(runtime.builds) == 2
+
+
+def test_a_cache_only_load_resolves_the_variant_without_the_hub(env, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import hub.utils.companion_assets as companion
+
+    backend, runtime, calls = env
+    monkeypatch.setattr(mb, "resolve_variant_base", _REAL_RESOLVE_VARIANT_BASE, raising = False)
+
+    def _no_hub(*_a, **_k):
+        raise AssertionError("a cache-only load read the model card")
+
+    monkeypatch.setattr(diffusion, "_hf_base_model", _no_hub)
+    links = {REPO.lower(): ["Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image", "Qwen/Qwen3-4B"]}
+    monkeypatch.setattr(companion, "read_companion_links", lambda: links)
+    _load(backend, local_files_only = True)
+    assert calls["fetch_base"][-1] == ("Tongyi-MAI/Z-Image", True)
+    assert runtime.builds[-1]["model_config"] == "z-image"
+    backend.unload()
+    links.clear()
+    _load(backend, local_files_only = True)
+    assert calls["fetch_base"][-1] == (BASE, True)
+
+
 def test_policy_helpers(monkeypatch):
     for name in (
         "UNSLOTH_DIFFUSION_MLX_TE_BITS",
