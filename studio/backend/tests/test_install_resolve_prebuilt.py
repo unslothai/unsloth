@@ -1731,19 +1731,6 @@ def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkey
     assert persist is None
 
 
-@pytest.mark.parametrize("gfx", sorted(ilp.VULKAN_PREFERRED_GFX_TARGETS))
-def test_the_integrated_archs_are_the_one_exception_to_that_sweep(gfx, monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
-    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", lambda: True)
-    assert gfx in ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS, "a preference, not a missing bundle"
-    host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
-    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert routed.has_rocm is False
-    assert (repo, tag) == (FORK, "pin")
-    assert persist == "auto"
-
-
 def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
     # Mixed-AMD Windows host: GPU 0 = gfx1100 (HIP prebuilt exists), GPU 1 = gfx1010 (none).
     # Under CUDA_VISIBLE_DEVICES=1 setup.ps1 still resolves GPU 0 and forwards gfx1100, but
@@ -1862,11 +1849,13 @@ def _amd_host(*, windows, **overrides):
     return _host(**defaults)
 
 
-@pytest.mark.parametrize("windows", [True, False])
+def _linux_amd_host(**overrides):
+    return _amd_host(windows = False, **overrides)
+
+
 @pytest.mark.parametrize("gfx", sorted(ilp.VULKAN_PREFERRED_GFX_TARGETS))
-def test_integrated_amd_prefers_vulkan_on_both_platforms(gfx, windows, amd_vulkan_icd):
-    # Not Windows-only, unlike the #7357 fallback: the Linux fault is the more severe.
-    host = _amd_host(windows = windows, rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
+def test_integrated_amd_prefers_vulkan_on_linux(gfx, amd_vulkan_icd):
+    host = _linux_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is True
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed.has_rocm is False
@@ -1876,10 +1865,25 @@ def test_integrated_amd_prefers_vulkan_on_both_platforms(gfx, windows, amd_vulka
     assert persist == "auto"
 
 
+@pytest.mark.parametrize("gfx", sorted(ilp.VULKAN_PREFERRED_GFX_TARGETS))
+def test_integrated_amd_keeps_rocm_on_windows(gfx, amd_vulkan_icd):
+    # #10656: the AMD Windows Vulkan driver prefills far slower than HIP past short prompts.
+    host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
+    assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert persist is None
+    route = ilp.route_backend_request(
+        backend = None, published_repo = FORK, published_release_tag = "pin", host = host
+    )
+    assert route.host.has_rocm is True
+    assert route.rocm_fallback_host is None
+
+
 def test_integrated_amd_keeps_rocm_without_an_amd_vulkan_driver(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
@@ -1890,7 +1894,7 @@ def test_integrated_amd_keeps_rocm_without_an_amd_vulkan_driver(monkeypatch):
 def test_only_the_integrated_archs_are_preferred_onto_vulkan(gfx, amd_vulkan_icd):
     # Why this is an allowlist: ROCm ships no Vulkan ICD, so CDNA would get a dead backend
     # rather than a slower one, and discrete RDNA is unmeasured.
-    host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
+    host = _linux_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
@@ -1900,7 +1904,7 @@ def test_only_the_integrated_archs_are_preferred_onto_vulkan(gfx, amd_vulkan_icd
 def test_a_discrete_card_beside_the_apu_keeps_the_whole_host_on_rocm(amd_vulkan_icd):
     # Judged over every physical gfx: Vulkan honours no HIP mask, so routing here would
     # hand the discrete card over too.
-    host = _windows_amd_host(
+    host = _linux_amd_host(
         rocm_gfx_target = "gfx1151",
         rocm_gfx_targets = ["gfx1151", "gfx1100"],
     )
@@ -1908,7 +1912,7 @@ def test_a_discrete_card_beside_the_apu_keeps_the_whole_host_on_rocm(amd_vulkan_
 
 
 def test_integrated_route_declines_beside_a_physical_nvidia_card(amd_vulkan_icd):
-    host = _windows_amd_host(
+    host = _linux_amd_host(
         rocm_gfx_target = "gfx1151",
         rocm_gfx_targets = ["gfx1151"],
         has_physical_nvidia = True,
@@ -1919,7 +1923,7 @@ def test_integrated_route_declines_beside_a_physical_nvidia_card(amd_vulkan_icd)
 def test_integrated_route_declines_under_a_vulkan_device_mask(amd_vulkan_icd, monkeypatch):
     # An ICD proves a driver, not that this process sees the device: a mask excluding the
     # APU enumerates nothing.
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
 
@@ -1933,13 +1937,13 @@ def test_integrated_route_declines_under_a_vulkan_device_mask(amd_vulkan_icd, mo
 def test_integrated_route_declines_under_a_hip_device_mask(mask_env, amd_vulkan_icd, monkeypatch):
     # Under a mask the inventory is unknowable, so "every GPU is integrated" is unprovable.
     monkeypatch.setenv(mask_env, "0")
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
 
 
 @pytest.mark.parametrize("backend", ["rocm", "cpu", "cuda"])
 def test_an_explicit_backend_opts_out_of_the_integrated_route(backend, amd_vulkan_icd):
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = backend
     )
@@ -1948,7 +1952,7 @@ def test_an_explicit_backend_opts_out_of_the_integrated_route(backend, amd_vulka
 
 
 def test_forced_vulkan_on_an_integrated_host_persists_as_automatic(amd_vulkan_icd):
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
     )
@@ -1956,7 +1960,7 @@ def test_forced_vulkan_on_an_integrated_host_persists_as_automatic(amd_vulkan_ic
 
 
 def test_force_cpu_wins_over_the_integrated_route(amd_vulkan_icd):
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = True)
     assert routed is host
     assert persist is None
@@ -1965,7 +1969,7 @@ def test_force_cpu_wins_over_the_integrated_route(amd_vulkan_icd):
 def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd_vulkan_icd):
     # Read before the route rewrites the host to Vulkan-only; after it the marker loses
     # the arch and the next update re-detects a ROCm-less host.
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
     )
@@ -1977,7 +1981,7 @@ def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd
 def test_route_backend_request_keeps_rocm_as_the_fallback_for_the_preference(amd_vulkan_icd):
     # _vulkan_only_host clears has_rocm, so uncarried the selectors read this box as CPU
     # and a bad Vulkan asset installs CPU inference.
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
     )
@@ -2003,7 +2007,7 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
 
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         plan_calls.append(bool(plan_host.has_rocm))
-        kinds = ["windows-hip"] if plan_host.has_rocm else ["windows-vulkan", "windows-cpu"]
+        kinds = ["linux-rocm"] if plan_host.has_rocm else ["linux-vulkan", "linux-cpu"]
         return "b1", [
             ilp.InstallReleasePlan(
                 requested_tag = "b1",
@@ -2025,7 +2029,7 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
         ]
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
 
     selection = ilp.select_backend_install(
         backend = None,
@@ -2035,9 +2039,9 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
         host = host,
     )
     assert [a.install_kind for a in selection.release_plans[0].attempts] == [
-        "windows-vulkan",
-        "windows-hip",
-        "windows-cpu",
+        "linux-vulkan",
+        "linux-rocm",
+        "linux-cpu",
     ]
     assert plan_calls == [False, True], "the ROCm plan is resolved from the pre-route host"
 
@@ -2049,7 +2053,7 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
         published_release_tag = "pin",
         host = host,
     )
-    assert [a.install_kind for a in named.release_plans[0].attempts] == ["windows-vulkan"]
+    assert [a.install_kind for a in named.release_plans[0].attempts] == ["linux-vulkan"]
 
 
 def _one_plan(*kinds, release_tag = "b1"):
@@ -2078,13 +2082,13 @@ def test_no_rocm_attempt_means_no_cpu_tail_either(monkeypatch, amd_vulkan_icd, r
     # insert the CPU tail is the very outcome the route exists to avoid.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
-            return "b1", [_one_plan("windows-vulkan", "windows-cpu")]
+            return "b1", [_one_plan("linux-vulkan", "linux-cpu")]
         if rocm_plans == "raises":
             raise RuntimeError("no ROCm asset for this release")
         return "b1", []
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     selection = ilp.select_backend_install(
         backend = None,
         llama_tag = "b1",
@@ -2092,7 +2096,7 @@ def test_no_rocm_attempt_means_no_cpu_tail_either(monkeypatch, amd_vulkan_icd, r
         published_release_tag = "pin",
         host = host,
     )
-    assert [a.install_kind for a in selection.release_plans[0].attempts] == ["windows-vulkan"]
+    assert [a.install_kind for a in selection.release_plans[0].attempts] == ["linux-vulkan"]
 
 
 @pytest.mark.parametrize("rocm_plans", ["raises", "empty"])
@@ -2103,13 +2107,13 @@ def test_a_release_that_is_nothing_but_cpu_fails_rather_than_installing_it(
     # install by another route.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
-            return "b1", [_one_plan("windows-cpu")]
+            return "b1", [_one_plan("linux-cpu")]
         if rocm_plans == "raises":
             raise RuntimeError("no ROCm asset for this release")
         return "b1", []
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     with pytest.raises(ilp.PrebuiltFallback):
         ilp.select_backend_install(
             backend = None,
@@ -2125,13 +2129,13 @@ def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
             return "b2", [
-                _one_plan("windows-vulkan", "windows-cpu", release_tag = "b2"),
-                _one_plan("windows-vulkan", "windows-cpu", release_tag = "b1"),
+                _one_plan("linux-vulkan", "linux-cpu", release_tag = "b2"),
+                _one_plan("linux-vulkan", "linux-cpu", release_tag = "b1"),
             ]
-        return "b2", [_one_plan("windows-hip", release_tag = "b1")]
+        return "b2", [_one_plan("linux-rocm", release_tag = "b1")]
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     selection = ilp.select_backend_install(
         backend = None,
         llama_tag = "b2",
@@ -2140,22 +2144,22 @@ def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
         host = host,
     )
     assert [p.release_tag for p in selection.release_plans] == ["b2", "b1"]
-    assert [a.install_kind for a in selection.release_plans[0].attempts] == ["windows-vulkan"]
+    assert [a.install_kind for a in selection.release_plans[0].attempts] == ["linux-vulkan"]
     assert [a.install_kind for a in selection.release_plans[1].attempts] == [
-        "windows-vulkan",
-        "windows-hip",
-        "windows-cpu",
+        "linux-vulkan",
+        "linux-rocm",
+        "linux-cpu",
     ]
 
 
 def test_a_plan_that_already_carries_rocm_keeps_its_cpu_tail(monkeypatch, amd_vulkan_icd):
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
-            return "b1", [_one_plan("windows-vulkan", "windows-hip", "windows-cpu")]
-        return "b1", [_one_plan("windows-hip")]
+            return "b1", [_one_plan("linux-vulkan", "linux-rocm", "linux-cpu")]
+        return "b1", [_one_plan("linux-rocm")]
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
-    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    host = _linux_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     selection = ilp.select_backend_install(
         backend = None,
         llama_tag = "b1",
@@ -2164,9 +2168,9 @@ def test_a_plan_that_already_carries_rocm_keeps_its_cpu_tail(monkeypatch, amd_vu
         host = host,
     )
     assert [a.install_kind for a in selection.release_plans[0].attempts] == [
-        "windows-vulkan",
-        "windows-hip",
-        "windows-cpu",
+        "linux-vulkan",
+        "linux-rocm",
+        "linux-cpu",
     ]
 
 

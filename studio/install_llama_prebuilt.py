@@ -125,8 +125,8 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
-# HIP builds these, but Vulkan measurably wins (gfx1151 prefill +22.9%, decode +8.3%) and
-# cannot reach the managed-memory faults. An allowlist because CDNA ships no Vulkan ICD.
+# HIP builds these, but on Linux Vulkan measurably wins (gfx1151 prefill +22.9%, decode +8.3%)
+# and cannot reach the managed-memory faults. An allowlist because CDNA ships no Vulkan ICD.
 VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
@@ -10589,10 +10589,13 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     """True when every AMD GPU here is an integrated part Vulkan serves better.
 
     A preference, not a fallback: unlike _should_auto_vulkan_for_amd_windows these archs
-    have a working HIP prebuilt, just slower. Both platforms, the Linux fault being worse.
-    Every guard that fallback applies is applied here for the same reasons, over every
-    PHYSICAL gfx so a masked-off discrete card is not moved.
+    have a working HIP prebuilt, just slower. Linux only: on Windows the AMD driver's Vulkan
+    prefill on gfx1151 is ~3.4x slower than HIP at 16k depth (#10656). Every guard that
+    fallback applies is applied here for the same reasons, over every PHYSICAL gfx so a
+    masked-off discrete card is not moved.
     """
+    if host.is_windows:
+        return False
     active = _active_rocm_gfx_target(host)
     if not active:
         return False
