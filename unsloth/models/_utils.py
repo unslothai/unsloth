@@ -3845,6 +3845,17 @@ except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
         print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
         print(str(e))
+    elif DEVICE_TYPE == "cuda":
+        # xformers' own warning is silenced above, so without this the banner's "Xformers = None" is the only trace. Usually a wheel built for another CUDA, e.g. PyPI's cu128 Windows wheel beside a cu130 torch (#4381).
+        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
+        print(
+            "Unsloth: xformers is installed but cannot load with torch "
+            f"{torch_version}{f' (it was built for {_built_for.group(1)})' if _built_for else ''}, "
+            "so PyTorch attention is used instead.\n"
+            "To install a matching xformers, run `unsloth install-kernels xformers`, "
+            "or `pip uninstall xformers` to hide this. UNSLOTH_ENABLE_LOGGING=1 shows the full error."
+        )
+        del _built_for
     xformers = None
     xformers_attention = None
     xformers_version = None
