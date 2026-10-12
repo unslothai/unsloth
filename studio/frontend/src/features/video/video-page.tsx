@@ -2870,10 +2870,7 @@ function VideoGenerator({
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          const entries = diffusionStagingEntries(plan.entries, repoId, {
-            ...opts,
-            checkpointBytes: plan.checkpoint_bytes,
-          });
+          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
           pendingStagedLoad.current = {
             repoId,
