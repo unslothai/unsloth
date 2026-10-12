@@ -327,3 +327,20 @@ def test_browser_tools_are_offered_only_when_the_tab_asks_for_them(monkeypatch):
     assert "browser_screenshot" in _selected(["browser_screenshot"], vision = True)
     # An API caller without UI frames has no tab to run them, so they'd only wait out the timeout.
     assert not _selected(["browser_navigate"], ui_events = False) & browser_agent.BROWSER_TOOL_NAMES
+
+
+def test_repeated_browser_calls_run_again_and_keep_the_tools():
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    # The page changes between calls: a second scroll down is new work, not a repeat to refuse,
+    # and two refused repeats used to strip the tools and end the turn mid-task.
+    controller = ToolLoopController(tools = browser_agent.BROWSER_TOOLS)
+    scroll = {
+        "id": "c1",
+        "function": {"name": "browser_scroll", "arguments": {"direction": "down"}},
+    }
+    for _ in range(3):
+        decision = controller.prepare_call(scroll)
+        assert decision.action == "execute"
+        controller.record_result(decision, "Done.")
+    assert not controller.force_final_answer and controller.active_tools()
