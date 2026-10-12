@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { FC, ReactNode } from "react";
+import { type FC, type ReactNode, useEffect, useState } from "react";
 
 type ResponseDetailsMetadata = {
   modelId?: string;
@@ -337,6 +337,26 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 };
 
 export const MessageResponseDetailsSheet: FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ open, onOpenChange }) => {
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  useEffect(() => {
+    if (open) return;
+    const timer = window.setTimeout(() => setMounted(false), 500);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+  if (!mounted && !open) return null;
+  return (
+    <MessageResponseDetailsSheetContent
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+};
+
+const MessageResponseDetailsSheetContent: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {

@@ -29,6 +29,7 @@ import { BulbIcon } from "@/lib/bulb-icon";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -2934,8 +2935,13 @@ export function SharedComposer({
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
+                {/* Browser use sits right under Chat with files, or leads this section without it. */}
+                {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
                 {pinnedPlusItems.map((id) => (
-                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                  <Fragment key={id}>
+                    {plusMenuNodes[id]}
+                    {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
+                  </Fragment>
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
@@ -3023,6 +3029,7 @@ export function SharedComposer({
               </PillGlyph>
               <span>Tools</span>
             </button>
+            <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
             {showImagePill && (
               <button
                 type="button"

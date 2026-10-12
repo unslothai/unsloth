@@ -1553,6 +1553,29 @@ def _run_server_load(
     )
 
 
+def test_paravirtual_mac_load_records_the_cpu_device(monkeypatch):
+    # The command builders force --backend cpu on a paravirtual Metal GPU, so state/status must say cpu, not mps.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    assert b._state.device == "cpu" and b.status()["device"] == "cpu"
+    # A CPU-backend abort is then not retried as a GPU-placement problem.
+    assert (
+        b._restart_server_on_cpu_backend(
+            b._state, "unsupported op 'MUL_MAT' ggml_abort", threading.Event()
+        )
+        is None
+    )
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "mps")
+    assert b._state.device == "mps"
+
+
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []

@@ -14,37 +14,20 @@ import {
   TEXT_ATTACHMENT_EXTENSIONS,
   isTextAttachmentName,
 } from "../chat/text-attachment-accept.ts";
-import {
-  RAG_DOCUMENT_UPLOAD_ACCEPT,
-  RAG_UPLOAD_ACCEPT,
-} from "../rag/types/rag.ts";
 import { MAX_AUDIO_FILES } from "../../lib/audio-utils.ts";
 
-const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
-  ext.trim().toLowerCase(),
-);
+const DOC_EXTS = [".pdf", ".html", ".htm", ".docx", ".xlsx", ".xlsm", ".pptx"];
+const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) => ext.toLowerCase());
 
-// RAG types are filtered out, so a dropped .txt/.md keeps being indexed.
-const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) =>
-  ext.toLowerCase(),
-).filter((ext) => !DOC_EXTS.includes(ext));
-
-/** Dropped paths with an inline adapter but no RAG parser. */
 export function isComposerAttachmentName(path: string): boolean {
   return (
+    DOC_EXTS.some((ext) => path.toLowerCase().endsWith(ext)) ||
     isOpenDocumentAttachmentName(path) ||
     isRtfAttachmentName(path) ||
     isToolOnlyAttachmentName(path) ||
     isTextDropName(path)
   );
 }
-
-/** Documents only chat with files reads; composer-handled types stay there. */
-const OFFICE_DOC_EXTS = RAG_DOCUMENT_UPLOAD_ACCEPT.split(",").filter(
-  (ext) => !isComposerAttachmentName(`file${ext}`),
-);
-
-const DROP_DOC_EXTS = [...DOC_EXTS, ...OFFICE_DOC_EXTS];
 
 function isTextDropName(path: string): boolean {
   const name = nativeFileName(path).toLowerCase();
@@ -81,7 +64,7 @@ const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${DROP_DOC_EXTS.join(",")}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Tools on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${DOC_EXTS.join(",")}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Tools on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -119,11 +102,7 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
       ? { kind: "model", path: ggufs[0] }
       : { kind: "unsupported" };
   }
-  const docs = paths.filter(
-    (path) =>
-      DROP_DOC_EXTS.some((ext) => hasExt(path, ext)) ||
-      isComposerAttachmentName(path),
-  );
+  const docs = paths.filter(isComposerAttachmentName);
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),
   );

@@ -183,7 +183,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
-import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
+import { MATCH_SOURCE_RESOLUTION, keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -245,26 +245,43 @@ function useVideoModels(
   );
 }
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
+// normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
+// and "wan2.1_t2v_14b" hit the same row.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
-  { match: "minimax_h3", steps: 30, guidance: 1 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
+  // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+  { match: "fusionx", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
-  { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
+  { match: "wan2-2-14b", steps: 20, guidance: 3.5 },
+  // Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+  { match: "wan2-1-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-", steps: 30, guidance: 6 },
+  { match: "wan21-", steps: 30, guidance: 6 },
   // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+  const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
+  const id = fold(repoId);
+  // The Wan and FusionX rows count only in the model / file name, as on the backend.
+  const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  return (
+    MODEL_DEFAULTS.find((d) =>
+      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+    ) ?? DEFAULT_GEN
+  );
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {
@@ -1295,9 +1312,13 @@ function VideoGenerator({
     );
   }, [resolutionPresets.length]);
 
-  const supportsKeyframes = status?.supports_keyframes === true;
+  const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
+  const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
   // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.
   const canvasKeyframe = firstFrame ?? lastFrame;
+  // Only MiniMax-H3 derives its canvas from the aspect itself and refuses ratios past 1:4 / 4:1;
+  // the preset families always find a nearest preset.
+  const canvasRefusesAspect = !status?.defaults?.canvas_from_presets;
 
   const supportsReferences = status?.supports_references === true;
   const hasReferenceRoom = hasReferenceCapacity(
@@ -1310,11 +1331,9 @@ function VideoGenerator({
 
   // Drop conditioning that the newly loaded partition cannot accept.
   useEffect(() => {
-    if (status?.loaded && !supportsKeyframes) {
-      setFirstFrame(null);
-      setLastFrame(null);
-    }
-  }, [status?.loaded, supportsKeyframes]);
+    if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
+    if (status?.loaded && !supportsLastFrame) setLastFrame(null);
+  }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -2853,10 +2872,7 @@ function VideoGenerator({
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          const entries = diffusionStagingEntries(plan.entries, repoId, {
-            ...opts,
-            checkpointBytes: plan.checkpoint_bytes,
-          });
+          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
           pendingStagedLoad.current = {
             repoId,
@@ -3448,8 +3464,8 @@ function VideoGenerator({
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
-        first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
-        last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
+        first_frame: supportsFirstFrame ? firstFrame ?? undefined : undefined,
+        last_frame: supportsLastFrame ? lastFrame ?? undefined : undefined,
         reference_images:
           supportsReferences && referenceImages.length > 0
             ? referenceImageDataUrls(referenceImages)
@@ -3505,7 +3521,8 @@ function VideoGenerator({
     fps,
     steps,
     status?.supports_cfg,
-    supportsKeyframes,
+    supportsFirstFrame,
+    supportsLastFrame,
     firstFrame,
     lastFrame,
     supportsReferences,
@@ -3841,9 +3858,11 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
-                  : supportsKeyframes
+                  : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
-                    : "Generate a video from a prompt"}
+                    : supportsFirstFrame
+                      ? "Generate a video from a prompt, or animate a start frame"
+                      : "Generate a video from a prompt"}
               </p>
             </div>
 
@@ -3875,37 +3894,40 @@ function VideoGenerator({
           </Field>
 
           {supportsKeyframes && (
-            <div className="grid gap-2">
+            <div className="grid gap-2" data-testid="video-keyframes">
               <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                Start and end frame
+                {supportsLastFrame ? "Start and end frame" : "Start frame"}
                 <InfoHint>
-                  Optional. A start frame animates that picture; an end frame makes the clip land
-                  on one; both make it travel between them. Text-to-video is what you get with
-                  neither. The start frame is stretched onto the canvas and the end frame is
-                  centre-cropped, which is how the model was conditioned.
+                  {supportsLastFrame
+                    ? "Optional. A start frame animates that picture; an end frame makes the clip land on one; both make it travel between them. Text-to-video is what you get with neither. The start frame is stretched onto the canvas and the end frame is centre-cropped, which is how the model was conditioned."
+                    : "Optional. The clip starts on this picture and animates it (image-to-video); without one it is text-to-video. Match source picks the resolution preset closest to the picture's shape, and the picture is centre-cropped onto it."}
                 </InfoHint>
               </span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
-                  <ImageDropzone
-                    value={firstFrame}
-                    onChange={setFirstFrame}
-                    label="Click or drop"
-                    removeLabel="Remove start frame"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">End frame</span>
-                  <ImageDropzone
-                    value={lastFrame}
-                    onChange={setLastFrame}
-                    label="Click or drop"
-                    removeLabel="Remove end frame"
-                  />
-                </div>
+              <div className={supportsLastFrame ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+                {supportsFirstFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
+                    <ImageDropzone
+                      value={firstFrame}
+                      onChange={setFirstFrame}
+                      label="Click or drop"
+                      removeLabel="Remove start frame"
+                    />
+                  </div>
+                )}
+                {supportsLastFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">End frame</span>
+                    <ImageDropzone
+                      value={lastFrame}
+                      onChange={setLastFrame}
+                      label="Click or drop"
+                      removeLabel="Remove end frame"
+                    />
+                  </div>
+                )}
               </div>
-              {canvasKeyframe && !matchedResolution && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between

@@ -156,6 +156,7 @@ import {
   createRecoveryPublishSchedule,
   registerRecoveredRunStop,
   threadHasDurableGenerationRun,
+  threadHasLiveGenerationRun,
   generationNeedsRecovery,
   requestParsesThinkTags,
   restoreCarriedPartsFromRaw,
@@ -3945,7 +3946,10 @@ function ThreadBackendAutosave({
   const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
   const checkpoints = useCallback((): RunCheckpointScheduler => {
     checkpointsRef.current ??= createRunCheckpointScheduler(
-      (threadId) => queueSaveRef.current(threadId),
+      (threadId) =>
+        threadHasLiveGenerationRun(threadId)
+          ? Promise.resolve()
+          : queueSaveRef.current(threadId),
       {
         isActive: (threadId) => isRunActiveRef.current(threadId),
         isBounded: (threadId) => threadHasDurableGenerationRun(threadId),

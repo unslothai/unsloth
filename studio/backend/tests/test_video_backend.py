@@ -637,6 +637,14 @@ def _load_h3_modular(backend, *, hf_token = None):
     return _FakeModularPipeline.instance
 
 
+class _FakeLtx25Encoder:
+    def wait_ready(self, cancel = None):
+        return {}
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -665,6 +673,11 @@ def fake_runtime(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setattr("core.inference.video.clear_gpu_cache", lambda: None)
+    # LTX-2.5's Gemma 4 encoder is a spawned worker on the transformers sidecar: never start one here.
+    monkeypatch.setattr(
+        "core.inference.video_ltx25.start_text_encoder", lambda **_kw: _FakeLtx25Encoder()
+    )
+    monkeypatch.setattr("core.inference.video_ltx25.attach_to_pipeline", lambda *_a, **_kw: None)
     # MP4 encode needs real frames + PyAV; the contract under test is the byte handoff, so stub the encoder.
     monkeypatch.setattr(
         VideoBackend, "_encode_mp4", staticmethod(lambda frames, fps, audio, pipe: b"MP4")
@@ -6645,13 +6658,203 @@ def test_a_cfg_free_family_records_the_guidance_it_actually_ran(monkeypatch):
 def test_keyframes_are_refused_by_a_family_that_has_none(fake_runtime, tmp_path):
     # Silently dropping the image would render a text-only clip with nothing to do with it.
     backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
     with pytest.raises(ValueError, match = "no first or last frame"):
         backend.begin_generate(prompt = "a sloth", first_frame = _data_url(64, 64))
     with pytest.raises(ValueError, match = "no first or last frame"):
         backend.generate(prompt = "a sloth", last_frame = _data_url(64, 64))
     # The refusal must not leave the busy flag set, or every later generation 409s.
     assert backend.generate_progress()["active"] is False
+    status = backend.status()
+    assert status["supports_first_frame"] is False and status["supports_last_frame"] is False
+
+
+def test_a_first_frame_only_family_refuses_a_last_frame(fake_runtime, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    with pytest.raises(ValueError, match = "first frame only"):
+        backend.begin_generate(prompt = "a sloth", last_frame = _data_url(64, 64))
+    with pytest.raises(ValueError, match = "first frame only"):
+        backend.generate(
+            prompt = "a sloth", first_frame = _data_url(64, 64), last_frame = _data_url(64, 64)
+        )
+    assert backend.generate_progress()["active"] is False
+
+
+# ── image-to-video through a declared i2v pipeline (video_i2v) ───────────────────────────────────
+
+
+class _FakeWanI2VPipe(_FakeWanPipeBase):
+    """WanImageToVideoPipeline fake. Constructed only as the template the swap reads its own
+    instance state from; the render then runs this __call__ on the LOADED pipe object."""
+
+    calls: list = []
+
+    def __init__(
+        self,
+        transformer = None,
+        vae = None,
+        image_encoder = None,
+        image_processor = None,
+    ):
+        self.transformer = transformer
+        self.vae = vae
+        self.image_encoder = image_encoder
+        self.image_processor = image_processor
+        self.video_processor = "i2v-video-processor"
+
+    def __call__(
+        self,
+        *,
+        image = None,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        generator = None,
+        callback_on_step_end = None,
+        explode = False,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "image": image,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            "guidance_scale": guidance_scale,
+            **kwargs,
+        }
+        _FakeWanI2VPipe.calls.append(
+            {
+                "self": self,
+                "class": type(self).__name__,
+                "video_processor": getattr(self, "video_processor", None),
+                "image_size": getattr(image, "size", None),
+            }
+        )
+        if explode:
+            raise RuntimeError("i2v render failed")
+        return self._finish(num_inference_steps, num_frames, callback_on_step_end)
+
+
+class _FakeLTX2I2VPipe(_FakePipe):
+    def __init__(self, vae = None):
+        self.vae = vae
+        self.video_processor = "bilinear"
+
+    def __call__(
+        self,
+        *,
+        image = None,
+        image_crf = None,
+        prompt = None,
+        num_frames = None,
+        frame_rate = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {"image": image, "image_crf": image_crf, "class": type(self).__name__}
+        frames = [[object() for _ in range(int(num_frames or 1))]]
+        return types.SimpleNamespace(frames = frames, audio = None)
+
+
+@pytest.fixture
+def fake_i2v(fake_runtime):
+    diffusers = sys.modules["diffusers"]
+    diffusers.WanImageToVideoPipeline = _FakeWanI2VPipe
+    diffusers.LTX2ImageToVideoPipeline = _FakeLTX2I2VPipe
+    _FakeWanI2VPipe.calls = []
+    yield
+
+
+def test_wan_first_frame_runs_the_i2v_pipeline_over_the_loaded_one(fake_i2v):
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["supports_first_frame"] is True
+    assert status["supports_last_frame"] is False
+    assert status["supports_keyframes"] is False  # the H3 contract older frontends read
+    pipe = backend._state.pipe
+    t2v_cls = type(pipe)
+    keys_before = set(pipe.__dict__)
+
+    result = backend.generate(prompt = "a car", steps = 2, first_frame = _data_url(1920, 1080))
+
+    call = _FakeWanI2VPipe.calls[-1]
+    # The loaded object ran the i2v __call__ with the i2v instance state, then got its own class back.
+    assert call["self"] is pipe and call["class"] == "_FakeWanI2VPipe"
+    assert call["video_processor"] == "i2v-video-processor"
+    assert type(pipe) is t2v_cls
+    assert "image_encoder" not in pipe.__dict__ and "video_processor" not in pipe.__dict__
+    assert set(pipe.__dict__) - keys_before <= {"last_kwargs"}
+    assert (result["width"], result["height"]) == (1280, 704)
+    assert call["image_size"] == (1280, 704)
+    assert result["conditioning"] == "i2va"
+
+    _FakeWanI2VPipe.calls.clear()
+    backend.generate(prompt = "a car", steps = 2)
+    assert _FakeWanI2VPipe.calls == []
+    assert "image" not in pipe.last_kwargs
+
+
+def test_wan_portrait_first_frame_takes_the_portrait_preset(fake_i2v):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    result = backend.generate(prompt = "p", steps = 2, first_frame = _data_url(832, 1104))
+    assert (result["width"], result["height"]) == (704, 1280)
+    result = backend.generate(
+        prompt = "p", steps = 2, width = 1280, height = 704, first_frame = _data_url(832, 1104)
+    )
+    assert (result["width"], result["height"]) == (1280, 704)
+    assert _FakeWanI2VPipe.calls[-1]["image_size"] == (1280, 704)
+
+
+def test_the_swap_is_undone_when_the_i2v_render_fails(fake_i2v, monkeypatch):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    t2v_cls = type(pipe)
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "video_i2v_call_kwargs", lambda fam, *ids: {"explode": True})
+    with pytest.raises(RuntimeError, match = "i2v render failed"):
+        backend.generate(prompt = "p", steps = 2, first_frame = _data_url(64, 64))
+    assert type(pipe) is t2v_cls
+    assert "image_encoder" not in pipe.__dict__
+    assert backend.generate_progress()["active"] is False
+
+
+def test_ltx23_first_frame_carries_comfyui_image_crf(fake_i2v, tmp_path):
+    backend = VideoBackend()
+    (tmp_path / "ltx-2.3-22b-distilled-Q4_K_M.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    pipe = backend._state.pipe
+    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(1920, 1080))
+    assert pipe.last_kwargs["class"] == "_FakeLTX2I2VPipe"
+    assert pipe.last_kwargs["image_crf"] == 18
+    assert pipe.last_kwargs["image"].size == (1216, 704)
+    assert type(pipe) is _FakePipe
+
+
+def test_ltx2_first_frame_keeps_the_pipeline_crf_default(fake_i2v, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    pipe = backend._state.pipe
+    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(512, 768))
+    assert pipe.last_kwargs["class"] == "_FakeLTX2I2VPipe"
+    assert pipe.last_kwargs["image_crf"] is None
+    assert pipe.last_kwargs["image"].size == (512, 768)
+    backend.generate(prompt = "p", steps = 2)
+    assert "image" not in pipe.last_kwargs and "class" not in pipe.last_kwargs
 
 
 def test_begin_generate_rejects_an_undecodable_keyframe(monkeypatch):
@@ -8718,8 +8921,12 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        # LTX-2.5's encoder runs in a second process; its CUDA context is priced on top of the table.
+        from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+        extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
         assert calls[0]["model_dense_mib"] == int(
-            sum(fam.bf16_components_gb) * _MIB_PER_GB
+            (sum(fam.bf16_components_gb) + extra_gb) * _MIB_PER_GB
         ), fam.name
 
 
@@ -8859,7 +9066,7 @@ def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch)
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
-    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    local = "/models/ltx/minimax_h3_fl2va-Q4_K_M.gguf"
     backend._state = dataclasses.replace(backend._state, repo_id = local)
 
     # Precondition: the identifier really does resolve to a different family's guidance, so the
@@ -9920,7 +10127,7 @@ def _stub_denoiser_seed(
         kind = "repo", location = repo, filename = "x.pt", fallback_filename = None
     )
     monkeypatch.setattr(
-        dq, "denoiser_prequant_sources", lambda fam, s, base: {c: source for c in components}
+        dq, "denoiser_prequant_sources", lambda fam, s, base, **_: {c: source for c in components}
     )
     modules = {c: object() for c in components}
     calls = []
@@ -10318,7 +10525,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
@@ -10379,7 +10586,7 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
     )
@@ -10477,7 +10684,7 @@ def _a14b_plan(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
@@ -11402,7 +11609,7 @@ def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
     import core.inference.video_denoiser_prequant as dq
 
     installs, listed, _ = _video_install_probe(monkeypatch)
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: None)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: None)
     _video_load_to_the_install_gate()
     assert installs == []
     assert listed == []
@@ -12856,11 +13063,14 @@ def test_cudnn_benchmark_opt_out_families():
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "ltx-2",
+        "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     } <= off
     assert all(
-        fam.vae_force_fp32 or fam.name == "ltx-2" or fam.name.startswith("hunyuanvideo-1.5")
+        fam.vae_force_fp32
+        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name.startswith("hunyuanvideo-1.5")
         for fam in _FAMILIES
         if not fam.cudnn_benchmark
     )
@@ -13101,3 +13311,14 @@ def test_untrusted_a14b_pair_checks_the_partner_files_header_too(
             base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
             family_override = "wan2.2-t2v-a14b",
         )
+
+
+def test_a_diffusers_without_the_i2v_class_reports_no_first_frame(fake_runtime):
+    # The fake diffusers has WanPipeline but no WanImageToVideoPipeline: the picker must not offer
+    # a start frame, and a request carrying one is refused before it reserves the backend.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["supports_first_frame"] is False
+    with pytest.raises(ValueError, match = "WanImageToVideoPipeline"):
+        backend.begin_generate(prompt = "p", first_frame = _data_url(64, 64))
+    assert backend.generate_progress()["active"] is False

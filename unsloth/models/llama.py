@@ -21,6 +21,7 @@ from typing import Optional, Tuple, List, Union
 
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
+from ._utils import _ignore_block_swap_params_for_ddp
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
@@ -57,6 +58,8 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
+    ddp_auto_block_swap_launch,
+    auto_offload_for_launch,
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -885,9 +888,11 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    use_varlen = seq_info is not None and past_key_value is None
+    use_varlen = seq_info is not None and not had_cache
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
 
     # Should dropout be hardcoded to 0.0?
@@ -3171,7 +3176,9 @@ class FastLlamaModel:
             offload_layers = refuse_block_swap_load(
                 offload_layers, "does not support fast_inference or classification heads."
             )
+        _ddp_auto_swap = False
         if offload_layers == "auto":
+            _ddp_auto_swap = ddp_auto_block_swap_launch(requested_device_map(device_map))
             offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
@@ -3203,6 +3210,10 @@ class FastLlamaModel:
                     extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
                 ),
             )
+            _ddp_auto_swap = _ddp_auto_swap and _embedding_needed is not None
+            if _ddp_auto_swap:
+                # DDP refuses a CPU parameter.
+                offload_embedding = _offload_embedding_mode = False
         # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
         # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
         device_map = resolve_unsloth_device_map(
@@ -3547,6 +3558,7 @@ class FastLlamaModel:
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
+        mark_auto_offload_for_ddp(model, _ddp_auto_swap)
         attach_offload_layers(
             model,
             _block_swap_saved,
@@ -3992,10 +4004,11 @@ class FastLlamaModel:
                 model = _exclude_rope_inv_freq_from_ddp(model)
                 install_block_swap(
                     model,
-                    offload_layers,
+                    auto_offload_for_launch(offload_layers),
                     prefetch_depth = prefetch_depth,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
+                _ignore_block_swap_params_for_ddp(model)
                 skip_checkpointing(model, checkpoint_skip_layers)
                 return model
             else:
@@ -4303,7 +4316,7 @@ class FastLlamaModel:
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
-            offload_layers,
+            auto_offload_for_launch(offload_layers),
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
@@ -4406,6 +4419,8 @@ class FastLlamaModel:
         # otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
+        _ignore_block_swap_params_for_ddp(model)
         return model
 
     @staticmethod

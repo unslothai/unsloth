@@ -2012,6 +2012,7 @@ _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
 

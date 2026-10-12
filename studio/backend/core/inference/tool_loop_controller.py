@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 
@@ -1254,7 +1255,13 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif self._deduplicate_tool_calls and key in self._successful_keys:
+        elif (
+            self._deduplicate_tool_calls
+            and key in self._successful_keys
+            and tool_name not in BROWSER_TOOL_NAMES
+        ):
+            # Not the browser tools: each acts on or reads the page as it is now, so a second
+            # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

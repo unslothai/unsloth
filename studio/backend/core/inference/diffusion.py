@@ -2921,8 +2921,22 @@ class DiffusionBackend:
                 scheme,
                 path_override = kwargs.get("transformer_prequant_path"),
                 base_repo = kwargs.get("base_repo"),
+                local_files_only = bool(kwargs.get("local_files_only")),
+                hf_token = kwargs.get("hf_token"),
+                cache_dir = hub_cache_dir(),
             )
-            if source is None or getattr(source, "kind", None) != "repo":
+            if source is None:
+                # With the load's token the loader would refuse it, so stage dense; only if a source resolves at all.
+                return (
+                    resolve_prequant_source(
+                        fam,
+                        scheme,
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        base_repo = kwargs.get("base_repo"),
+                    )
+                    is None
+                )
+            if getattr(source, "kind", None) != "repo":
                 return True
             if prequant_checkpoint_cached(
                 source,
@@ -3371,7 +3385,7 @@ class DiffusionBackend:
         # same predicate. Imported here, not at module import, because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
-        if not family_buildable_here(fam, model_kind = kind):
+        if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
@@ -4292,6 +4306,8 @@ class DiffusionBackend:
                         rung,
                         base_repo = base,
                         path_override = transformer_prequant_path,
+                        local_files_only = local_files_only,
+                        cache_dir = hub_cache_dir(),
                     )
                     if source is None:
                         continue
@@ -4382,6 +4398,9 @@ class DiffusionBackend:
                         planned,
                         base_repo = kwargs.get("base_repo"),
                         path_override = kwargs.get("transformer_prequant_path"),
+                        local_files_only = bool(kwargs.get("local_files_only")),
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
                     )
                 return self._prequant_source_hub_entry(source, hf_token, scheme = planned)
             raw = kwargs.get("transformer_quant")
@@ -4437,6 +4456,9 @@ class DiffusionBackend:
                     scheme,
                     path_override = kwargs.get("transformer_prequant_path"),
                     base_repo = kwargs.get("base_repo"),
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                    hf_token = hf_token,
+                    cache_dir = hub_cache_dir(),
                 )
 
                 if source is None and auto:
@@ -4455,6 +4477,9 @@ class DiffusionBackend:
                             retry,
                             path_override = kwargs.get("transformer_prequant_path"),
                             base_repo = kwargs.get("base_repo"),
+                            local_files_only = bool(kwargs.get("local_files_only")),
+                            hf_token = hf_token,
+                            cache_dir = hub_cache_dir(),
                         )
                         # The retry REPLACED the pick, so the readability question below is about
                         # the rung actually being planned, not the one the ladder started on.
@@ -4552,7 +4577,13 @@ class DiffusionBackend:
             if _has_active_lora(loras):
                 return False
             source = usable_prequant_source(
-                fam, TQ_NVFP4, path_override = path_override, base_repo = base
+                fam,
+                TQ_NVFP4,
+                path_override = path_override,
+                base_repo = base,
+                local_files_only = local_files_only,
+                hf_token = hf_token,
+                cache_dir = hub_cache_dir(),
             )
             if source is None:
                 return False
@@ -4788,6 +4819,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         allow_device_probe: bool = True,
         memory_verdict: bool = True,
+        discover_text_encoders: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, so the Hub download manager can fetch them with the
@@ -4806,6 +4838,7 @@ class DiffusionBackend:
         verdict while training owns the GPU. It is not free: the pre-cast encoder and the DiT
         prequant need a target to resolve, so clearing it also changes WHICH FILES the plan counts.
         ``memory_verdict=False`` suppresses only the oversized-unified-memory refusal.
+        ``discover_text_encoders=False`` keeps the base repo's encoder for an engine that never opens a single-file one.
         """
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         kind = resolve_model_kind(gguf_filename, model_kind)
@@ -4828,7 +4861,11 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         component_overrides = None
-        if not load_kwargs.get("text_encoder_files") and not load_kwargs.get("vae_file"):
+        if (
+            discover_text_encoders
+            and not load_kwargs.get("text_encoder_files")
+            and not load_kwargs.get("vae_file")
+        ):
             # The same pick the load makes, so the plan stages no encoder the load will not open.
             load_kwargs["text_encoder_files"] = (
                 self._comfy_text_encoders(
@@ -5081,9 +5118,6 @@ class DiffusionBackend:
                 entry["bytes"] += int(
                     sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
                 )
-                entry["file_bytes"].update(
-                    {n: int(declared_sizes.get(n, 0)) for n in newly_missing if n not in reusable}
-                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -5097,11 +5131,6 @@ class DiffusionBackend:
                     "bytes": int(
                         sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
                     ),
-                    "file_bytes": {
-                        name: int(declared_sizes.get(name, 0))
-                        for name in missing
-                        if name not in reusable
-                    },
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }
@@ -6377,6 +6406,9 @@ class DiffusionBackend:
                             TQ_NVFP4,
                             path_override = transformer_prequant_path,
                             base_repo = base,
+                            local_files_only = local_files_only,
+                            hf_token = hf_token,
+                            cache_dir = hub_cache_dir(),
                         )
                         is None,
                     )
@@ -6712,6 +6744,9 @@ class DiffusionBackend:
                                 scheme,
                                 path_override = transformer_prequant_path,
                                 base_repo = base,
+                                local_files_only = local_files_only,
+                                hf_token = hf_token,
+                                cache_dir = hub_cache_dir(),
                             )
                             if scheme is not None
                             else None
@@ -7229,6 +7264,9 @@ class DiffusionBackend:
                                                 pipeline_seed_scheme,
                                                 base_repo = base,
                                                 path_override = transformer_prequant_path,
+                                                local_files_only = local_files_only,
+                                                hf_token = hf_token,
+                                                cache_dir = hub_cache_dir(),
                                             ),
                                             next(iter(seeded.values()), None),
                                         )
@@ -7967,6 +8005,10 @@ class DiffusionBackend:
                         getattr(target, "dtype", None),
                         logger = logger,
                     )
+                    # After quantization, so int8 weight-only layers keep their storage.
+                    from .diffusion_mps_fp16 import install_mps_fp16
+
+                    install_mps_fp16(getattr(pipe, "transformer", None), target, logger = logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
