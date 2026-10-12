@@ -57,3 +57,16 @@ class TestTheParkingBudgetIsReadHoweverSpelled:
         env: dict = {}
         llama_mod._stand_down_child_parking(env, args, server_supports = True)
         assert args == ["--preempt_ram", "0"]
+
+
+def test_a_launch_line_count_overrides_the_inherited_ffn_variable():
+    # llama.cpp reads the environment first and the argv after it: the line's zero wins.
+    from core.inference import llama_exact as exact
+
+    env = {"LLAMA_ARG_N_CPU_FFN": "4"}
+    assert exact.contradicting_env(env) == ["LLAMA_ARG_N_CPU_FFN=4"]
+    for args in (["--n-cpu-ffn", "0"], ["-ncffn", "0"], ["--n_cpu_ffn=0"]):
+        assert exact.contradicting_env(env, args) == [], args
+        assert exact.contradicting_args(args) == [], args
+    # The expert count accumulates instead, so its variable still counts beside a line zero.
+    assert exact.contradicting_env({"LLAMA_ARG_N_CPU_MOE": "4"}, ["--n-cpu-moe", "0"])

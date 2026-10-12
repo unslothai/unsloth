@@ -219,12 +219,24 @@ def _positive_count(value: Optional[str]) -> bool:
     return leading is not None and int(leading.group(0)) > 0
 
 
-def contradicting_env(env: Optional[Mapping[str, str]]) -> list[str]:
-    """The inherited variables exact mode cannot run with, spelled as ``NAME=value``."""
+# A replaceable option the launch line overrides: llama.cpp reads the environment first and the
+# argv after it, so a `--n-cpu-ffn` on the line decides, whatever the variable says.
+_ENV_REPLACED_BY_ARGV = {"LLAMA_ARG_N_CPU_FFN": "--n-cpu-ffn"}
+
+
+def contradicting_env(
+    env: Optional[Mapping[str, str]], args: Optional[Sequence[str]] = None
+) -> list[str]:
+    """The inherited variables exact mode cannot run with, spelled as ``NAME=value``. ``args``,
+    when given, drops a replaceable one the launch line names again (`contradicting_args`
+    judges that spelling)."""
+    named = {_OPTION_FAMILY.get(_flag_name(str(a)), _flag_name(str(a))) for a in (args or ())}
     found: list[str] = []
     for name in _CPU_PLACEMENT_ENV:
         value = str((env or {}).get(name) or "").strip()
         if not value:
+            continue
+        if _ENV_REPLACED_BY_ARGV.get(name) in named:
             continue
         if name == "LLAMA_ARG_CPU_MOE":
             # llama.cpp's is_truthy spellings, so `enabled` places the experts on the CPU too.

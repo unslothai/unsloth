@@ -94,14 +94,14 @@ def _relaunch(
         _finish_cancelled_health_wait = lambda message: False,
         _preemption = _Parking(),
     )
-    relaunch = _lift("_relaunch_with_bounded_parking", namespace)
+    relaunch = _lift("_relaunch_as_ordinary", namespace)
     return relaunch, launched, namespace
 
 
 def test_the_child_is_launched_again_on_the_bounded_budget(host):
     backend = _Backend()
     relaunch, launched, namespace = _relaunch(backend)
-    assert relaunch((8192, 3000)) is True
+    assert relaunch((8192, 3000), True) is True
     bounded = llama_mod._host_bounded_parking_mib(8192, backend)
     assert 0 < bounded < 8192
     assert backend.killed == 1 and len(launched) == 1, launched
@@ -113,22 +113,34 @@ def test_the_child_is_launched_again_on_the_bounded_budget(host):
 
 
 def test_nothing_is_relaunched_without_a_shortfall_or_for_a_bounded_launch(host):
-    for args, kwargs in (((None,), {}), (((8192, 3000),), {"wanted": False})):
+    # The child runs no exact kernels here, so nothing else would call for a relaunch either.
+    for args, kwargs in (((None, False), {}), (((8192, 3000), False), {"wanted": False})):
         backend = _Backend()
         relaunch, launched, _ = _relaunch(backend, **kwargs)
         assert relaunch(*args) is True
         assert backend.killed == 0 and launched == []
 
 
+def test_a_child_still_running_exact_kernels_is_relaunched_without_them(host):
+    # Unavailable for another reason (parking it cannot confirm): no shortfall and no budget to
+    # bound, but the child still runs exact mode, which the published state says it does not.
+    backend = _Backend()
+    relaunch, launched, namespace = _relaunch(backend)
+    assert relaunch(None, True) is True
+    assert backend.killed == 1 and len(launched) == 1, launched
+    assert launched[0][-2:] == ["--preempt-ram", "8192"]
+    assert llama_mod._exact.CHILD_ENV not in namespace["env"], namespace["env"]
+
+
 def test_a_budget_the_user_named_is_kept(host):
     backend = _Backend()
     relaunch, launched, _ = _relaunch(backend, named = 12000)
-    assert relaunch((12000, 3000)) is True
+    assert relaunch((12000, 3000), False) is True
     assert launched == []
 
 
 def test_auto_relaunches_before_it_publishes():
     source = inspect.getsource(LlamaCppBackend.load_model)
     warning = source.index("\" Set exact concurrency to 'on' to fail the load instead.\"")
-    call = source.index("_relaunch_with_bounded_parking(_exact_host_short)", warning)
+    call = source.index("_relaunch_as_ordinary(_exact_host_short, _exact_running)", warning)
     assert call < source.index("if not self._publish_healthy():", warning)
