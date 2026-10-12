@@ -8614,7 +8614,8 @@ def _ensure_ssm_kernels() -> None:
             except Exception as exc:
                 status = 1
                 buffer.write(f"{type(exc).__name__}: {exc}")
-        for line in buffer.getvalue().splitlines():
+        # install_kernel redacts only the wheel URL; uv / pip failure text can name another index.
+        for line in _redact_install_output(buffer.getvalue()).splitlines():
             if line.strip():
                 _note(line.removeprefix("Unsloth: "))
         if status or f"Unsloth: installed {name} " in buffer.getvalue():

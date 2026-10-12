@@ -207,6 +207,18 @@ def test_an_uninstall_that_cannot_launch_warns_instead_of_aborting():
     ]
 
 
+def test_captured_failure_text_is_redacted():
+    host = _Host()
+
+    def leaks(name, env, **kwargs):
+        raise RuntimeError("index https://user:s3cret@mirror.example/simple?token=abc failed")
+
+    r = _run(host, leaks)
+    joined = "\n".join(r.notes)
+    assert "s3cret" not in joined and "token=abc" not in joined
+    assert "<redacted>" in joined
+
+
 def test_a_failure_warns_and_the_next_kernel_still_runs():
     host = _Host()
     install = _installer(host)
