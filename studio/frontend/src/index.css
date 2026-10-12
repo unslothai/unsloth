@@ -4297,15 +4297,23 @@ html[data-chat-font] .aui-root {
 		position: absolute;
 		inset: 0;
 		pointer-events: none;
+		/* Cosine falloff (stops at 1, 0.85, 0.5, 0.15, 0 of the peak): straight ramps leave
+		   visible edges. */
 		background: linear-gradient(
-			100deg,
-			transparent 30%,
-			color-mix(in oklab, var(--background) 60%, transparent) 50%,
-			transparent 70%
+			105deg,
+			transparent 20%,
+			color-mix(in oklab, var(--background) 8%, transparent) 27.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 35%,
+			color-mix(in oklab, var(--background) 46%, transparent) 42.5%,
+			color-mix(in oklab, var(--background) 54%, transparent) 50%,
+			color-mix(in oklab, var(--background) 46%, transparent) 57.5%,
+			color-mix(in oklab, var(--background) 27%, transparent) 65%,
+			color-mix(in oklab, var(--background) 8%, transparent) 72.5%,
+			transparent 80%
 		);
 		mix-blend-mode: lighten;
 		transform: translateX(-100%);
-		animation: generating-glint 5s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+		animation: generating-glint 5s cubic-bezier(0.37, 0, 0.63, 1) infinite;
 	}
 
 	.dark .generating-glint::after {
