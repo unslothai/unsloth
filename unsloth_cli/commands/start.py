@@ -6119,11 +6119,11 @@ def _vscode_models_path() -> Path:
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
         code = _wsl_windows_executable(["code"])
-        if code and not (root / "Code").exists() and not (root / "Code - Insiders").exists():
+        if code and not any((root / app / "User").is_dir() for app in ("Code", "Code - Insiders")):
             # Under WSL, Windows VS Code reads its own user dir, not the distro's.
             root = _wsl_windows_user_profile(code, "VS Code") / "AppData" / "Roaming"
     app = "Code"
-    if not (root / "Code").exists() and (root / "Code - Insiders").exists():
+    if not (root / "Code" / "User").is_dir() and (root / "Code - Insiders" / "User").is_dir():
         app = "Code - Insiders"
     return root / app / "User" / "chatLanguageModels.json"
 
@@ -6159,6 +6159,7 @@ def _vscode_models_text(
     tool_calling: bool = True,
     vision: bool = False,
     replaced: frozenset = frozenset(),
+    thinking: bool = False,
 ) -> Optional[str]:
     groups = _vscode_groups(path, text)
     window = int(
@@ -6173,6 +6174,8 @@ def _vscode_models_text(
         # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
         "toolCalling": tool_calling,
         "vision": vision,
+        # Without it VS Code drops reasoning_content when it replays an agent tool round.
+        "thinking": thinking,
         "contextWindow": window,
         "maxInputTokens": window - output,
         "maxOutputTokens": output,
@@ -6200,7 +6203,12 @@ def _vscode_models_text(
 
 
 def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
-    status = _inference_status(base, key)
+    # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
+    try:
+        query = urlencode({"model": entry["id"]})
+        status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
+    except Exception:
+        status = {}
     resident = any(
         _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
         for status_id in (status.get("active_model"), status.get("model_identifier"))
@@ -6208,8 +6216,12 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
     if not resident:
         # Only a status about this model can vouch for it; an older server reports nothing.
-        return True, False
-    return status.get("supports_tools") is not False, status.get("is_vision") is True
+        return True, False, False
+    return (
+        status.get("supports_tools") is not False,
+        status.get("is_vision") is True,
+        status.get("supports_reasoning") is True,
+    )
 
 
 def _add_vscode_provider(
@@ -6219,6 +6231,7 @@ def _add_vscode_provider(
     max_tokens: Optional[int] = None,
     tool_calling: bool = True,
     vision: bool = False,
+    thinking: bool = False,
 ) -> None:
     target = _AppTarget("vscode", "VS Code", _vscode_models_path())
     state, key_id = {}, None
@@ -6236,6 +6249,7 @@ def _add_vscode_provider(
             tool_calling,
             vision,
             frozenset(state.get("models") or ()),
+            thinking,
         )
         new_state = {
             "path": str(target.path),
@@ -7239,7 +7253,7 @@ def vscode(
         launch = launch,
         server_options = server_options,
     )
-    tool_calling, vision = _vscode_capabilities(base, key, entry)
+    tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
     # An explicit key _connect rejected for a server it just started must not be saved.
     explicit = api_key if key == api_key else None
-    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision)
+    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)

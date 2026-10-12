@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -692,38 +693,65 @@ def test_vscode_settings_path_per_platform(monkeypatch, tmp_path, platform, part
 def test_vscode_uses_insiders_only_without_stable(monkeypatch, tmp_path):
     monkeypatch.setattr(start.sys, "platform", "linux")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    (tmp_path / "Code - Insiders").mkdir()
+    (tmp_path / "Code - Insiders" / "User").mkdir(parents = True)
     insiders = tmp_path / "Code - Insiders" / "User" / "chatLanguageModels.json"
     assert start._vscode_models_path() == insiders
 
+    # A leftover stable dir without a user dir does not count as stable VS Code.
     (tmp_path / "Code").mkdir()
+    assert start._vscode_models_path() == insiders
+
+    (tmp_path / "Code" / "User").mkdir()
     assert start._vscode_models_path() == tmp_path / "Code" / "User" / "chatLanguageModels.json"
 
 
 @pytest.mark.parametrize(
-    "status, tools, vision",
+    "status, tools, vision, thinking",
     [
-        ({"model_identifier": MODEL["id"], "supports_tools": False}, False, False),
-        ({"model_identifier": MODEL["id"], "supports_tools": True, "is_vision": True}, True, True),
+        ({"model_identifier": MODEL["id"], "supports_tools": False}, False, False, False),
         (
-            {"model_identifier": "unsloth/other-GGUF", "supports_tools": False, "is_vision": True},
+            {
+                "model_identifier": MODEL["id"],
+                "supports_tools": True,
+                "is_vision": True,
+                "supports_reasoning": True,
+            },
+            True,
+            True,
+            True,
+        ),
+        (
+            {
+                "model_identifier": "unsloth/other-GGUF",
+                "is_vision": True,
+                "supports_reasoning": True,
+            },
             True,
             False,
+            False,
         ),
-        ({}, True, False),
+        ({}, True, False, False),
     ],
 )
-def test_vscode_reads_tool_and_vision_support_from_the_served_model(
-    studio, monkeypatch, status, tools, vision
+def test_vscode_reads_model_capabilities_from_the_served_model(
+    studio, monkeypatch, status, tools, vision, thinking
 ):
     config = _vscode_config(studio, monkeypatch)
-    monkeypatch.setattr(start, "_inference_status", lambda base, key: status)
+    real_http_json = start._http_json
+
+    def http_json(method, url, token, *args, **kwargs):
+        if "/api/inference/status?" in url:
+            assert parse_qs(urlparse(url).query) == {"model": [MODEL["id"]]}
+            return status
+        return real_http_json(method, url, token, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
 
     result = CliRunner().invoke(start.start_app, ["vscode"])
 
     assert result.exit_code == 0, result.output
     (model,) = json.loads(config.read_text())[0]["models"]
-    assert (model["toolCalling"], model["vision"]) == (tools, vision)
+    assert (model["toolCalling"], model["vision"], model["thinking"]) == (tools, vision, thinking)
     assert ("Ask mode" in result.output) is not tools
 
 
@@ -779,6 +807,6 @@ def test_vscode_under_wsl_writes_the_windows_vscode_config(monkeypatch, tmp_path
     assert start._vscode_models_path() == windows
 
     # A VS Code installed inside the distro keeps its own user dir.
-    (tmp_path / "linux" / "Code").mkdir(parents = True)
+    (tmp_path / "linux" / "Code" / "User").mkdir(parents = True)
     linux = tmp_path / "linux" / "Code" / "User" / "chatLanguageModels.json"
     assert start._vscode_models_path() == linux
