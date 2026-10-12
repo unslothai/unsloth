@@ -290,6 +290,148 @@ def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
 
 
+_MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
+    {
+        "audio",
+        "audios",
+        "audio_values",
+        "input_features",
+        "input_features_mask",
+        "pixel_values_images",
+    }
+)
+_MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
+# Media-named keys (image_path, audio_url, ...) may be loaded by the processor even as strings.
+_MEDIA_NAME_PARTS = ("image", "audio", "video", "pixel", "input_values", "input_features")
+
+
+def _is_media_name(name) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _MULTIMODAL_DATASET_KEYS or any(part in lowered for part in _MEDIA_NAME_PARTS)
+
+
+def _features_have_media(features) -> bool:
+    stack = [(features, False)]
+    seen = 0
+    while stack:
+        node, nested = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True  # pathological schema: assume media rather than guess
+        if type(node).__name__ in _MULTIMODAL_FEATURE_TYPES:
+            return True
+        if isinstance(node, dict):
+            if any(_is_media_name(key) for key in node):
+                return True
+            # Only {"type", "text"} content parts are provably text.
+            if nested and "type" in node and set(node) - {"type", "text"}:
+                return True
+            stack.extend((value, True) for value in node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend((value, True) for value in node)
+        else:
+            inner = getattr(node, "feature", None)  # Sequence / List / LargeList
+            if inner is not None:
+                stack.append((inner, True))
+    return False
+
+
+def _is_text_only_dataset(dataset) -> bool:
+    """Positively text-only: unknown schemas (lists, feature-less streams) count as media."""
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return False
+    if any(_is_media_name(name) for name in column_names):
+        return False
+    # with_transform / set_transform rows can carry images the stored columns do not show.
+    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
+        return False
+    features = getattr(dataset, "features", None)
+    if features is None:
+        # Streaming datasets lack types, so embedded images cannot be ruled out.
+        return False
+    return not _features_have_media(features)
+
+
+def _is_text_only_eval_dataset(dataset) -> bool:
+    if dataset is None:
+        return True
+    if isinstance(dataset, dict):
+        return all(_is_text_only_dataset(split) for split in dataset.values())
+    return _is_text_only_dataset(dataset)
+
+
+def _uses_multimodal_rope(model_config) -> bool:
+    """mRoPE models build a packed mask only from 4-row position_ids; 2D ids leak across docs."""
+    if model_config is None:
+        return True  # unknown: assume the worst
+    try:
+        stack = [model_config.to_dict()]
+    except Exception:
+        return True
+    seen = 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > 10_000:
+            return True
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("mrope_section", "mrope_interleaved"):
+                    return True
+                if key in ("rope_type", "type") and value == "mrope":
+                    return True
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(x for x in node if isinstance(x, (dict, list, tuple)))
+    return False
+
+
+_PROCESSOR_TEXT_PACKING_MODELS = frozenset(
+    {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+)
+
+
+def _processor_text_only(
+    processing_class, data_collator, train_dataset, eval_dataset, model_config
+) -> bool:
+    """A processor on text-only rows tokenizes like its tokenizer, so packing is safe."""
+    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    # Only families whose packed text rows are verified to equal each document alone.
+    if getattr(model_config, "model_type", None) not in _PROCESSOR_TEXT_PACKING_MODELS:
+        return False
+    # TRL < 1.10 refuses packing / padding-free for any processor; skip a doomed __init__.
+    if Version(trl.__version__) < Version("1.10.0"):
+        return False
+    if data_collator is not None:
+        return False
+    if _uses_multimodal_rope(model_config):
+        return False
+    if getattr(processing_class, "tokenizer", None) is None:
+        return False
+    return _is_text_only_dataset(train_dataset) and _is_text_only_eval_dataset(eval_dataset)
+
+
+# TRL < 1.10 raises the first two for any processor; 1.10+ the last two when a sample holds images.
+_TRL_VLM_PACKING_REJECTIONS = (
+    "packing is not supported for vision-language models",
+    "padding-free training is yet not supported for vision-language models",
+    "packing is not supported for vision datasets",
+    "padding-free training is yet not supported for vision datasets",
+)
+
+
+def _is_trl_vlm_packing_rejection(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(msg in message for msg in _TRL_VLM_PACKING_REJECTIONS)
+
+
 _HYBRID_CONFIG_MARKERS = (
     "linear_conv_kernel_dim",
     "linear_key_head_dim",
@@ -1577,6 +1719,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
+        processor_text_only = is_processor and _processor_text_only(
+            processing_class, data_collator, train_dataset, eval_dataset, model_config
+        )
         is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
             data_collator is None
@@ -1609,7 +1754,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # condition the post-init check skips on, so leaving it armed is free.
         blocked = (
             (data_collator is not None)
-            or is_processor
+            or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
@@ -1676,7 +1821,23 @@ def _patch_sft_trainer_auto_packing(trl_module):
         try:
             original_init(self, *args, **kwargs)
         except ValueError as exc:
-            if packing_active and _should_skip_auto_packing_error(exc):
+            if processor_text_only and not blocked and _is_trl_vlm_packing_rejection(exc):
+                if requested_pack:
+                    logger.warning(
+                        "Unsloth: packing=True ignored (this TRL version refuses it for processors)."
+                    )
+                else:
+                    logger.info("Unsloth: padding-free disabled for the processor (%s).", exc)
+                for _attr in ("packing", "padding_free"):
+                    if hasattr(config_arg, _attr):
+                        setattr(config_arg, _attr, False)
+                packing_active = False
+                auto_padding_free_active = False
+                blocked = True
+                # Release the failed attempt's frames (may hold a loaded model) before retrying.
+                exc.__traceback__ = None
+                original_init(self, *args, **kwargs)
+            elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(
                     "Unsloth: Auto sample packing failed because trainer reported an incompatible setup (%s).",
                     exc,
