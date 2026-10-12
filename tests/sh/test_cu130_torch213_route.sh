@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
+    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _cu130_torch213_host_ok _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin _dir_has_entries; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -21,11 +21,15 @@ unset UNSLOTH_TORCH_UPGRADE
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
-# Answers the -c version probe with $1; anything else runs on a real python.
+# Answers the GIL probe with $2 (default gil-enabled), the version probe (-c) with $1, and runs
+# anything else (the PyPI gate) on a real python.
 _stub_python() {
-    printf '#!/bin/sh\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "$1" > "$VENV_DIR/bin/python"
+    printf '#!/bin/sh\ncase "$2" in *Py_GIL_DISABLED*) echo %s; exit 0 ;; esac\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "${2:-gil-enabled}" "$1" > "$VENV_DIR/bin/python"
     chmod +x "$VENV_DIR/bin/python"
 }
+# The host's glibc minor; empty = not a readable glibc (musl).
+GLIBC_MINOR=35
+_uv_glibc_minor() { [ -n "$GLIBC_MINOR" ] || return 1; echo "$GLIBC_MINOR"; }
 CU130="https://download.pytorch.org/whl/cu130"
 _pypi_fixture() {
     printf '{"info": {"requires_dist": ["numpy", "%s", "torchvision"]}}' "$1" > "$VENV_DIR/pypi.json"
@@ -33,7 +37,7 @@ _pypi_fixture() {
 }
 _pypi_fixture "torch<2.15.0,>=2.4.0"
 
-echo "=== route: only cu130 + Linux/WSL + x86_64 + Python 3.13 ==="
+echo "=== route: only cu130 + Linux/WSL + x86_64/aarch64 + Python 3.13 ==="
 _stub_python 3.13
 OS=linux; _ARCH=x86_64
 assert_eq "linux x86_64 cu130 py3.13"      "yes" "$(_cu130_torch213_route "$CU130")"
@@ -47,12 +51,31 @@ done
 OS=macos
 assert_eq "macOS never"                    "no" "$(_cu130_torch213_route "$CU130")"
 OS=linux; _ARCH=aarch64
-assert_eq "aarch64 never (no wheels)"      "no" "$(_cu130_torch213_route "$CU130")"
+assert_eq "linux aarch64 cu130 py3.13"     "yes" "$(_cu130_torch213_route "$CU130")"
+_ARCH=armv7l
+assert_eq "32-bit ARM never"               "no" "$(_cu130_torch213_route "$CU130")"
 _ARCH=x86_64
 for py in 3.11 3.12 3.14; do
     _stub_python "$py"
     assert_eq "Python $py never (cp313 wheels only)" "no" "$(_cu130_torch213_route "$CU130")"
 done
+_stub_python 3.13 gil-disabled
+assert_eq "free-threaded 3.13 never (no cp313t torch 2.13)" "no" "$(_cu130_torch213_route "$CU130")"
+assert_eq "free-threaded 3.13 keeps the preservation window" "yes" "$(_cu130_torch213_platform "$CU130")"
+_stub_python 3.13
+for minor in 28 31 34; do
+    GLIBC_MINOR=$minor
+    for arch in x86_64 aarch64; do
+        _ARCH=$arch
+        assert_eq "glibc 2.$minor $arch never (wheels need 2.35)" "no" "$(_cu130_torch213_route "$CU130")"
+        assert_eq "glibc 2.$minor $arch keeps the preservation window" "yes" "$(_cu130_torch213_platform "$CU130")"
+    done
+done
+GLIBC_MINOR=""
+assert_eq "musl / unreadable glibc never"  "no" "$(_cu130_torch213_route "$CU130")"
+GLIBC_MINOR=39
+assert_eq "glibc 2.39 aarch64"             "yes" "$(_cu130_torch213_route "$CU130")"
+GLIBC_MINOR=35; _ARCH=x86_64
 rm -f "$VENV_DIR/bin/python"
 assert_eq "no venv python never"           "no" "$(_cu130_torch213_route "$CU130")"
 
