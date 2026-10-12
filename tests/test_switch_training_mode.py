@@ -159,16 +159,23 @@ def test_pretrained_model_recasts_kernels_only_when_they_are_on(switch, monkeypa
             super().__init__(config)
             self.lin = nn.Linear(2, 2)
 
-    model = _Model(_Config())
-    model.__dict__["_use_kernels"] = use_kernels
     recasts = []
-    monkeypatch.setattr(
-        _Model, "set_use_kernels", lambda self, *a, **k: recasts.append(a), raising = False
-    )
-    model.train(True)
-    switch(model, False)
-    assert not model.training and not model.lin.training
-    assert recasts == ([(True,)] if use_kernels else [])
+    # transformers <= 5.5 re-kernelizes with kernelize(), later ones with set_use_kernels(True).
+    for hook in ("set_use_kernels", "kernelize"):
+        monkeypatch.setattr(_Model, hook, lambda self, *a, **k: recasts.append(1), raising = False)
+
+    def run(step):
+        model = _Model(_Config())
+        model.__dict__["_use_kernels"] = use_kernels
+        model.train(True)
+        recasts.clear()
+        step(model)
+        assert not model.training and not model.lin.training
+        return len(recasts)
+
+    expected = run(lambda model: model.eval())
+    assert run(lambda model: switch(model, False)) == expected
+    assert (expected > 0) is use_kernels
 
 
 def _reference_and_ours(build, switch, training):
@@ -255,7 +262,7 @@ def test_pretrained_train_override_only_recasts_kernels():
         pytest.skip("this transformers has no PreTrainedModel.train override")
     tree = ast.parse(inspect.cleandoc("\n" + inspect.getsource(train)))
     attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-    assert attrs <= {"training", "train", "use_kernels", "set_use_kernels"}, attrs
+    assert attrs <= {"training", "train", "use_kernels", "set_use_kernels", "kernelize"}, attrs
     assert transformers.PreTrainedModel.eval is nn.Module.eval or "train" in inspect.getsource(
         transformers.PreTrainedModel.eval
     )
