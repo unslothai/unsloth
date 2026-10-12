@@ -402,6 +402,14 @@ def _ignored_adapter_settings(
     return ignored
 
 
+def _tokenizer_is_empty(tokenizer) -> bool:
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    try:
+        return len(inner) <= 1
+    except TypeError:
+        return False
+
+
 def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
     """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
     to the base it names, as Unsloth's own adapter loader does (#13140)."""
@@ -565,6 +573,17 @@ class UnslothTrainer:
                     # Spark-TTS keeps its tokenizer under LLM/; reading the root finds no vocab and fails blaming a
                     # missing sentencepiece that is installed and irrelevant.
                     **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+            # Transformers 5 builds a one-token tokenizer from a snapshot without vocab files instead of raising, which
+            # skipped the incomplete-cache Hub retry and trained to NaN loss (#6958).
+            if local_files_only and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"The cached snapshot of {model_name} has no tokenizer files."
+                )
+            if model_revision and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"{model_name} has no tokenizer files at revision {model_revision}, the revision of "
+                    "its cached copy. Delete the cached model and retry to use the latest revision."
                 )
 
         # The probe and the tokenizer load are separate reads of the same repo, so a transient 5xx can leave the probe
