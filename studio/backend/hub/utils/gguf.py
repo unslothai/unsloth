@@ -453,12 +453,44 @@ def _listed_identity(members: Sequence[str]) -> Optional[str]:
     return _checkpoint_identity((selectable or members)[0])
 
 
-def gguf_listed_checkpoints(snapshots: Iterable[Iterable[str]]) -> dict[str, Optional[str]]:
-    """lowercase variant key -> checkpoint identity its row lists, from snapshots ordered newest first."""
-    listed: dict[str, Optional[str]] = {}
-    for paths in snapshots:
-        for key, members in _paths_by_variant_key(paths).items():
-            listed.setdefault(key, _listed_identity(members))
+def gguf_listed_checkpoints(
+    snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
+) -> dict[str, Optional[str]]:
+    """map variant keys to the checkpoint chosen by the cross-snapshot lister."""
+    groups = [_paths_by_variant_key(paths) for paths in snapshots]
+    if completed is None:
+        listed: dict[str, Optional[str]] = {}
+        for snapshot in groups:
+            for key, members in snapshot.items():
+                listed.setdefault(key, _listed_identity(members))
+        return listed
+
+    whole = [{key.lower() for key in keys} for keys in completed]
+    if len(whole) < len(groups):
+        whole.extend(set() for _ in range(len(groups) - len(whole)))
+    selected = next(
+        (
+            index
+            for index, snapshot in enumerate(groups)
+            if snapshot and any(key in whole[index] for key in snapshot)
+        ),
+        next((index for index, snapshot in enumerate(groups) if snapshot), None),
+    )
+    if selected is None:
+        return {}
+
+    listed = {key: _listed_identity(members) for key, members in groups[selected].items()}
+    complete_keys = set(whole[selected])
+    for index, snapshot in enumerate(groups):
+        if index == selected:
+            continue
+        for key, members in snapshot.items():
+            if key in complete_keys:
+                continue
+            if key not in listed or key in whole[index]:
+                listed[key] = _listed_identity(members)
+            if key in whole[index]:
+                complete_keys.add(key)
     return listed
 
 

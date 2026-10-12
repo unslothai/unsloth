@@ -184,6 +184,21 @@ def test_a_build_alone_in_an_older_snapshot_is_not_the_rows(tmp_path):
     assert (snapshots / "old" / SWIFT).is_symlink()
 
 
+def test_an_incomplete_newer_build_does_not_replace_the_complete_rows_build(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+
+    old = "old-Q4_K_M.gguf"
+    partial = "new-Q4_K_M-00001-of-00002.gguf"
+    repo, snapshots = _revisioned_repo(tmp_path, (("old", [old]), ("new", [partial])))
+
+    selected = select_gguf_cache_snapshot_for_repo_dir(repo.repo_path)
+    assert selected is not None and selected[3] == snapshots / "old"
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snapshots / "old" / old).is_symlink()
+    assert (snapshots / "new" / partial).is_symlink()
+
+
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,

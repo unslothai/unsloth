@@ -269,7 +269,13 @@ def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
     )
     matches = [_revision_file_matches(revision, _is_main_gguf_filename) for revision in revisions]
     names = [[name for _snap, _blob, name in revision] for revision in matches]
-    listed = gguf_listed_checkpoints(names)
+    complete = []
+    for revision in revisions:
+        snapshot = getattr(revision, "snapshot_path", None)
+        complete.append(
+            hf_cache_scan.complete_snapshot_variants(str(snapshot)) if snapshot else set()
+        )
+    listed = gguf_listed_checkpoints(names, complete)
     keys: dict[Path, str] = {}
     for revision, revision_names in zip(matches, names):
         revision_keys = gguf_variant_keys_by_checkpoint(revision_names, listed)
