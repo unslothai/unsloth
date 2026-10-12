@@ -36,6 +36,10 @@ export async function buildPreviewDocument({
   });
 }
 
+export function unknownImportDiagnostics(deps: readonly string[]): CompileDiagnostic[] {
+  return runtimeLoader.unknownImports(deps).map((message) => ({ message, line: 0, column: 0 }));
+}
+
 export function buildCompileErrorDocument(diagnostics: readonly CompileDiagnostic[], title: string): string {
   return buildCompileErrorHtml(diagnostics, title);
 }

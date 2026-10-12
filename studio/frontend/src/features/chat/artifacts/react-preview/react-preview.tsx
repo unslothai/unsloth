@@ -36,6 +36,11 @@ export async function prepareReactPreview({
     if (result.status === "error") {
       return { status: "compile-error", html: document.buildCompileErrorDocument(result.diagnostics, title) };
     }
+    // Refused here, not only in the frame: the default-browser page has no error UI.
+    const unknown = document.unknownImportDiagnostics(result.deps);
+    if (unknown.length > 0) {
+      return { status: "compile-error", html: document.buildCompileErrorDocument(unknown, title) };
+    }
     const html = await document.buildPreviewDocument({ code: result.code, deps: result.deps, source, lang, title });
     return { status: "ready", html };
   } catch {

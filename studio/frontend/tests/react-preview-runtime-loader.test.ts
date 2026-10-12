@@ -86,3 +86,12 @@ test("an HTML fallback or a wrong length is refused, and a failed file is retrie
   assert.equal(net.calls.length, 2);
   await assert.rejects(loader.load("nope"), /Unknown preview library/);
 });
+
+test("imports no file provides are named up front, worded like the frame's error", () => {
+  const loader = createRuntimeLoader(MANIFEST, async () => new Uint8Array());
+  assert.deepEqual(loader.unknownImports(["react", "lucide-react"]), []);
+  const [message, ...rest] = loader.unknownImports(["react", "@/components/ui/button", "@/components/ui/button"]);
+  assert.equal(rest.length, 0);
+  assert.match(message, /^"@\/components\/ui\/button" isn't available in previews\. Available: /);
+  assert.ok(message.includes("lucide-react"));
+});
