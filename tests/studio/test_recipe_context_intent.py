@@ -38,7 +38,7 @@ def _harness_source() -> str:
     return "// @ts-nocheck\nexport " + slice_between(
         read(RECIPES),
         "function contextIntent(",
-        "\nasync function isLocalModelAlreadyLoaded(",
+        "\nexport async function isLocalModelAlreadyLoaded(",
     )
 
 

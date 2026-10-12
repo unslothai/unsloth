@@ -3,11 +3,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const processStreamingText = (text: string): string =>
@@ -97,7 +99,7 @@ test("a CRLF reply matches a whole-document split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoBlocks(remend(asLf(input))),
+        parseMarkdownIntoBlocks(repairStreamingMarkdown(asLf(input))),
         `block mismatch at prefix ${length} of ${JSON.stringify(source.slice(0, 60))}`,
       );
     }
@@ -117,7 +119,7 @@ test("an LF reply is untouched by the line-ending handling", () => {
     const render = cache.update(input);
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(input)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
       `block mismatch at prefix ${length}`,
     );
   }

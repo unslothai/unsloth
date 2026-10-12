@@ -422,9 +422,24 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     start = text.index("$UseUv = $false")
     probe = text[start : start + 700]
     assert (
-        "Get-UvInstallDir" in probe
+        "Find-InstalledUv" in probe
     ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
-    assert 'Join-Path (Get-UvInstallDir) "uv.exe"' in probe
+    # The finder replaced the inline `Test-Path (Join-Path (Get-UvInstallDir) "uv.exe")`, which
+    # saw one destination and never ran what it found: a uv.exe that could not run was put on
+    # PATH anyway. It must still start from the installer's destination, or the two can disagree.
+    finder = text[text.index("function Find-InstalledUv {") :]
+    finder = finder[: finder.index("\n}\n") + 3]
+    assert "Get-UvInstallDir" in finder, (
+        "the uv probe no longer starts from the installer's destination helper; the probe and "
+        "the installer can now disagree about where uv lives"
+    )
+    assert 'Combine($dir, "uv.exe")' in finder, "the probe stopped looking for uv.exe itself"
+    # Join-Path terminates on a missing drive under ErrorActionPreference Stop, and this runs
+    # outside the installation branch's try, so XDG_DATA_HOME=Z:\xdg ended setup.
+    body = finder[finder.index("$candidates") :]
+    assert (
+        "Join-Path" not in body
+    ), "the candidate paths are built with Join-Path again; one missing drive ends setup"
     # And the run that installs uv has to use it, or it records a manifest with no uv_version and
     # the next run rewrites it: a no-op update that is not one.
     install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]
@@ -464,9 +479,15 @@ def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
     assert result.returncode == expected, result.stderr.decode()
 
 
-def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
+def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, monkeypatch):
     """A shell that decides "online" while the installer decides "offline" declines a repair
-    with a message contradicting the user. `off` and `no` are the spellings that did it."""
+    with a message contradicting the user. `off` and `no` are the spellings that did it.
+
+    ``_uv_is_offline`` reads ``os.environ``, so the loop below has to set it for real. It
+    does that through ``monkeypatch`` rather than assigning ``os.environ`` directly: a bare
+    assignment survives the test and leaves the LAST value in the loop set for the rest of
+    the session, which is a resolver policy every other suite in this directory inherits.
+    """
     import ast as _ast
     import os
     import subprocess
@@ -480,13 +501,17 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
     )
 
     stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    node = next(
-        n
-        for n in _ast.parse(stack).body
-        if isinstance(n, _ast.FunctionDef) and n.name == "_uv_is_offline"
-    )
+    # `_uv_is_offline` is one caller of `_uv_env_flag`, which is where the boolish set
+    # actually lives, so both are lifted. Naming the callee here rather than lifting the
+    # whole module keeps the test reading the real source instead of an import with side
+    # effects, and a callee that goes missing is a NameError, not a wrong answer.
+    wanted = ("_uv_env_flag", "_uv_is_offline")
+    nodes = [
+        n for n in _ast.parse(stack).body if isinstance(n, _ast.FunctionDef) and n.name in wanted
+    ]
+    assert {n.name for n in nodes} == set(wanted), sorted(n.name for n in nodes)
     namespace: dict = {"os": os}
-    exec(compile(_ast.Module(body = [node], type_ignores = []), "<stack>", "exec"), namespace)
+    exec(compile(_ast.Module(body = nodes, type_ignores = []), "<stack>", "exec"), namespace)
 
     for value in (
         "1",
@@ -521,7 +546,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
             ).stdout.strip()
             == "yes"
         )
-        os.environ["UV_OFFLINE"] = value
+        monkeypatch.setenv("UV_OFFLINE", value)
         assert (
             shell == namespace["_uv_is_offline"]()
         ), f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"

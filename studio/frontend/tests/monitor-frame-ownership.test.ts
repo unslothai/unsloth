@@ -21,7 +21,7 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-const PANEL_SOURCE = readSrc("components/floating-monitor.tsx");
+const PANEL_SOURCE = readSrc("hooks/use-floating-panel-layout.ts");
 
 const ROOT_SOURCE = readSrc("app/routes/__root.tsx");
 const SETTINGS_MOUNT_SOURCE = readSrc(

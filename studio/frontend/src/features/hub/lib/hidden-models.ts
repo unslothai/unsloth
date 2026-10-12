@@ -33,6 +33,9 @@ const HIDDEN_STT_REPOS = new Set([
   "unslothai/whisper-large-v3-gguf",
   "unslothai/qwen3-asr-0.6b-gguf",
   "unslothai/qwen3-asr-1.7b-gguf",
+  // audio.cpp's umbrella repo: every speech, music and ASR package is a subfolder, reached through
+  // the audio.cpp catalog ids, never as a llama.cpp chat GGUF.
+  "audio-cpp/audio.cpp-gguf",
 ]);
 const HIDDEN_STT_CACHE_NAMES = [...HIDDEN_STT_REPOS].map((repo) =>
   repo.replace("/", "--"),

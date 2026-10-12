@@ -304,18 +304,47 @@ async (timeoutMs) => {
 }
 """
 
+# Delete is the last item of the reply's More menu (#12735 took it off the action bar). The menu is
+# opened and the item found before the clock starts, so the number is still what selecting Delete
+# costs. The trigger opens on `pointerdown`; an item selects on `click`.
 DELETE_JS = """
 async (timeoutMs) => {
   const api = window.__threadWeight;
-  const button = api.actionButton("Delete message");
-  if (!button) return null;
+  const trigger = api.actionButton("More");
+  if (!trigger) return null;
+  const content = () => document.querySelector(".aui-action-bar-more-content");
+  let menu = content();
+  const watcher = new MutationObserver(() => { menu = content(); });
+  watcher.observe(document.body, { childList: true, subtree: false });
+  const pointer = {
+    bubbles: true, cancelable: true, composed: true,
+    button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
+  };
+  trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+  trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+  const opening = performance.now();
+  while (!menu && performance.now() - opening < timeoutMs) await window.__nextPaint();
+  watcher.disconnect();
+  const item = menu
+    ? Array.from(menu.querySelectorAll(".aui-action-bar-more-item")).find(
+        (candidate) => (candidate.textContent ?? "").trim() === "Delete",
+      )
+    : null;
+  if (!item) {
+    if (menu) {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    }
+    return null;
+  }
   // The last assistant message. That is the cheapest delete on the React side -- one subtree
   // unmounts -- so this column under-measures reconciliation, though the export/rebuild/import
   // half is O(messages) wherever the target sits.
   const target = api.lastAssistantMessage();
   const before = api.messageCount();
   const started = performance.now();
-  button.click();
+  item.click();
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
   // O(messages) query inside the window being timed, growing like the signal.
   while (performance.now() - started < timeoutMs) {

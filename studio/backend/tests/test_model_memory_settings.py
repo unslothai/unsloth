@@ -1039,6 +1039,27 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
             },
         )()
 
+    def test_a_discrete_full_offload_reports_not_applicable(self, monkeypatch):
+        backend = self._backend(True, False, state = (False, True))
+        resp = self._response(True, False, backend, monkeypatch)
+        assert resp.mlock_applicable is False
+        assert resp.mlock_active is False
+        assert resp.reload_required is False
+
+    def test_a_host_resident_load_reports_applicable(self, monkeypatch):
+        resp = self._response(True, False, self._backend(True, True), monkeypatch)
+        assert resp.mlock_applicable is True
+        assert resp.mlock_active is True
+
+    def test_nothing_loaded_reports_applicable(self, monkeypatch):
+        resp = self._response(True, False, self._backend(False, False), monkeypatch)
+        assert resp.mlock_applicable is True
+
+    def test_applicability_is_reported_with_residency_off(self, monkeypatch):
+        resp = self._response(False, False, self._backend(True, False), monkeypatch)
+        assert resp.mlock_applicable is False
+        assert resp.mlock_active is False
+
     def test_a_gated_load_reports_no_active_lock_and_no_limit(self, monkeypatch):
         resp = self._response(True, False, self._backend(True, False), monkeypatch)
         assert resp.mlock_active is False
@@ -1656,11 +1677,30 @@ class TestCpuMoeCountIsParsed:
             (["-cmoe"], True),
             (["-ot", "blk.*=CPU"], True),
             (["--override-tensor", "x"], True),
+            # The dense-model count: common/arg.cpp turns it into CPU FFN overrides.
+            (["-ncffn", "0"], False),
+            (["-ncffn", "4"], True),
+            (["--n-cpu-ffn", "4"], True),
+            (["--n-cpu-ffn=4"], True),
+            (["--n_cpu_ffn", "4"], True),
         ],
     )
     def test_the_predicate(self, extras, expected):
         from core.inference.llama_cpp import _args_place_tensors_on_cpu
         assert _args_place_tensors_on_cpu(extras) is expected
+
+    @pytest.mark.parametrize(
+        ("env", "expected"),
+        [
+            ({}, False),
+            ({"LLAMA_ARG_N_CPU_MOE": "4"}, True),
+            ({"LLAMA_ARG_N_CPU_FFN": "0"}, False),
+            ({"LLAMA_ARG_N_CPU_FFN": "4"}, True),
+        ],
+    )
+    def test_the_env_predicate(self, env, expected):
+        from core.inference.llama_cpp import _env_places_tensors_on_cpu
+        assert _env_places_tensors_on_cpu(env) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
         import ast

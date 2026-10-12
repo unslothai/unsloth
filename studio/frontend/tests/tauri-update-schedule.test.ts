@@ -30,6 +30,7 @@ interface HookHarnessOptions {
   tauri?: boolean;
   /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
   backendUpdate?: "completes" | "fails";
+  updateConfirmed?: boolean;
   /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
   bundleStates?: BundleState[];
 }
@@ -239,6 +240,7 @@ function hookHarness(
     noUpdateAt,
     tauri = true,
     backendUpdate = "fails",
+    updateConfirmed = true,
     bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
 ) {
@@ -251,6 +253,7 @@ function hookHarness(
   let checks = 0;
   let polls = 0;
   let relaunches = 0;
+  let backendUpdates = 0;
   const events = new Map<string, Set<(event: { payload: unknown }) => void>>();
   const emit = (name: string, payload?: unknown) => {
     for (const callback of events.get(name) ?? []) callback({ payload });
@@ -322,7 +325,9 @@ function hookHarness(
           };
         }
         if (command === "desktop_update_cleanup_armed") return true;
+        if (command === "confirm_backend_update") return updateConfirmed;
         if (command === "start_backend_update") {
+          backendUpdates += 1;
           // The command itself decides the backend step, rather than a stub that happens to throw.
           if (backendUpdate === "fails")
             throw new Error("backend update failed");
@@ -365,6 +370,7 @@ function hookHarness(
     polls: () => polls,
     progressUpdates: host.progressUpdates,
     relaunches: () => relaunches,
+    backendUpdates: () => backendUpdates,
     statusUpdates: host.statusUpdates,
   };
 }
@@ -459,6 +465,17 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.checks(), 1);
   assert.equal(hook.statusUpdates.at(-1), "error");
+});
+
+test("keeping training at the update prompt keeps the update on offer", async (t) => {
+  const hook = hookHarness(t, { updateConfirmed: false });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  assert.equal(hook.backendUpdates(), 0);
+  assert.deepEqual(hook.statusUpdates, ["checking", "available"]);
 });
 
 test("a bundle download the update did not start reports its progress", async (t) => {

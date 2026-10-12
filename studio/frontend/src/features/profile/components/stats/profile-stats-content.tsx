@@ -51,7 +51,7 @@ export function ProfileStatsContent() {
       <header className="flex flex-col gap-0.5">
         <h2
           data-settings-label={t("settings.profile.stats.title")}
-          className="text-base font-semibold font-heading text-foreground"
+          className="settings-heading text-base font-semibold font-heading"
         >
           {t("settings.profile.stats.title")}
         </h2>

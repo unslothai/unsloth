@@ -16,7 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from auth import policy
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import gpu_arbiter
 from hub.services.models import account_access as access
 from models.inference import LoadRequest
@@ -40,6 +40,7 @@ def client_for(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(inference.router, prefix = "/api/inference")
     return TestClient(app)
 
@@ -76,12 +77,6 @@ class FakeLlama(FakeLlamaCppBackend):
         self._openai_gguf_companion_roots = ()
         self._openai_gguf_companion_state = ()
         self.unloaded = False
-
-    def __getattr__(self, name):
-        # Status reads many optional runtime fields; an unset one reads as the real backend's None.
-        if name.startswith("__"):
-            raise AttributeError(name)
-        return None
 
     def adopt_load_intent_if_matched(self, intent):
         return True

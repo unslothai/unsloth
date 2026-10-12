@@ -403,3 +403,27 @@ def test_stop_matching_decodes_a_bounded_window_per_token():
     assert wrapped.matched.is_set()
     wrapped.end()
     assert "".join(wrapped) == "word " * words
+
+
+@pytest.mark.parametrize("stop", [None, ["never"]])
+def test_harmony_stream_waits_for_split_multibyte_characters(stop):
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+    body = "饺子 🦥"
+    split = [bytes([b]) for b in body.encode()]
+    parts = [b"<|channel|>analysis<|message|>", *split, b"\xf0"]
+    parts += [b"<|end|><|start|>assistant<|channel|>final<|message|>", *split, b"\xf0", b"\x9f"]
+
+    class Tokenizer(_Tokenizer):
+        pieces = dict(enumerate(parts, start = 2))
+
+        def decode(self, ids, **kwargs):
+            return b"".join(self.pieces[int(i)] for i in ids).decode("utf-8", errors = "replace")
+
+    streamer = inf.HarmonyTextStreamer(Tokenizer(), skip_prompt = False)
+    if stop:
+        streamer = inf._StopSequenceStreamer(streamer, stop)
+    for token in Tokenizer.pieces:
+        streamer.put(torch.tensor([token]))
+    streamer.end()
+    assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"

@@ -16,7 +16,8 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
+from tests.version_compat._rl_anchors import _reject_aux_loss_opt_in, _rl_py_constant
 
 
 # Every stable TRL release from 0.18.2 (pyproject floor) onwards, plus `main`.
@@ -84,7 +85,7 @@ def test_trl_top_level_grpo_sft(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
     assert src is not None, f"trl/__init__.py missing in {tag}"
     for name in ("GRPOTrainer", "GRPOConfig", "SFTTrainer", "SFTConfig"):
-        assert name in src, (
+        assert is_bound(src, name), (
             f"{tag}: `from trl import {name}` will fail; "
             f"unsloth/trainer.py + unsloth/models/rl.py rely on this re-export"
         )
@@ -122,9 +123,9 @@ def test_data_collator_for_preference_resolvable(tag: str):
     new_path = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     old_path = fetch_text("huggingface/trl", tag, "trl/trainer/utils.py")
     have = []
-    if new_path is not None and "DataCollatorForPreference" in new_path:
+    if new_path is not None and is_bound(new_path, "DataCollatorForPreference"):
         have.append("trl.trainer.dpo_trainer")
-    if old_path is not None and "DataCollatorForPreference" in old_path:
+    if old_path is not None and is_bound(old_path, "DataCollatorForPreference"):
         have.append("trl.trainer.utils")
     assert have, (
         f"{tag}: DataCollatorForPreference defined in NEITHER "
@@ -140,7 +141,7 @@ def test_trl_trainer_utils_pad(tag: str):
         # Some TRL versions split utils into a package.
         src = fetch_text("huggingface/trl", tag, "trl/trainer/utils/__init__.py")
     assert src is not None, f"{tag}: trl/trainer/utils[.py|/__init__.py] both missing"
-    assert has_def(src, "pad", "func") or "def pad(" in src, (
+    assert is_bound(src, "pad"), (
         f"{tag}: trl.trainer.utils.pad missing — "
         f"unsloth/models/rl_replacements.py:326 emits `from trl.trainer.utils "
         f"import pad as _unsloth_trl_pad` into the GRPO compile cell"
@@ -159,7 +160,7 @@ def test_unwrap_model_for_generation_either_path(tag: str):
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
-        if "unwrap_model_for_generation" in src:
+        if is_bound(src, "unwrap_model_for_generation"):
             return
     pytest.fail(
         f"{tag}: trl.unwrap_model_for_generation not in any known path "
@@ -330,8 +331,8 @@ def test_trl_openenv_utils_generators(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/utils.py")
     if src is None:
         pytest.skip(f"{tag}: openenv.utils not present (gated optional)")
-    legacy = "generate_rollout_completions" in src
-    new = "_generate_rollout_completions_colocate" in src
+    legacy = is_bound(src, "generate_rollout_completions")
+    new = is_bound(src, "_generate_rollout_completions_colocate")
     assert legacy or new, (
         f"{tag}: openenv.utils has neither `generate_rollout_completions` "
         f"nor `_generate_rollout_completions_colocate`; "
@@ -533,19 +534,28 @@ def test_trl_grpo_quantized_model_cast_contract(tag: str):
 
 
 def test_trl_grpo_aux_loss_enabled_contract(tag: str):
-    """rl.py (trl>=1.7.0) appends a fail-fast after
-    `self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0` so an
-    explicit MoE router-aux opt-in errors instead of silently training without
-    the penalty (the optimized forward cannot compute it). A change to this
-    line drops the guard silently (PR #6904)."""
+    """rl.py (trl>=1.7.0) appends a fail-fast after GRPOTrainer's one
+    `self.aux_loss_enabled = ...` assignment, so an MoE router-aux opt-in errors
+    instead of silently training without the penalty (the optimized forward
+    cannot compute it; PR #6904). It anchors on the assignment, not its
+    expression: TRL #7248 rewrote the expression to read the coefficient from
+    the model config, and the exact-text anchor then no-oped on TRL main."""
     if not _tag_ge(tag, "1.7.0"):
         pytest.skip(f"{tag}: aux_loss_enabled / router_aux_loss_coef added in TRL 1.7.0")
     src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
     assert src is not None
-    assert "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0" in src, (
-        f"{tag}: `aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0` "
-        f"changed; unsloth/models/rl.py's fail-fast .replace() anchor no-ops"
+    hits = re.findall(_rl_py_constant("_GRPO_AUX_LOSS_ENABLED_LINE"), src, flags = re.MULTILINE)
+    assert len(hits) == 1, (
+        f"{tag}: expected one `self.aux_loss_enabled = ...` assignment in GRPOTrainer, found "
+        f"{len(hits)}; unsloth/models/rl.py's fail-fast anchor is ambiguous or gone"
     )
+    patched = _reject_aux_loss_opt_in(src)
+    line = next(l for l in patched.splitlines() if "self.aux_loss_enabled = " in l)
+    after = patched.splitlines()[patched.splitlines().index(line) + 1]
+    assert after.strip() == _rl_py_constant(
+        "_GRPO_AUX_LOSS_REJECT"
+    ), f"{tag}: the fail-fast did not land directly after the assignment: {after!r}"
+    assert after[: len(after) - len(after.lstrip())] == line[: len(line) - len(line.lstrip())]
 
 
 def test_trl_grpo_per_token_logps_aux_arity_contract(tag: str):

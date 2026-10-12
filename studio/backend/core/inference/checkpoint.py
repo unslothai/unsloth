@@ -40,6 +40,7 @@ from core.inference.context_window import (
 )
 from core.inference.instruction_pin import is_substantive
 from core.inference import self_note as self_note_module
+from utils.current_date_prompt_settings import strip_current_date_update_note
 
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is both the A/B arm and the
 # escape hatch for a template family that misbehaves.
@@ -80,16 +81,18 @@ _NOT_SEARCHABLE = (
     "Everything else that was dropped is still stored, but you cannot retrieve it on this "
     "turn, so answer from what you have rather than saying you will look it up."
 )
-# Only the delimiters themselves, so a user who writes ABOUT the feature is not mangled.
-# `self_note` is included alongside `carried_forward` -- and must stay in step with the
-# identical pattern in `self_note.py` -- because the note section renders INSIDE this
-# block, so its tags are an escape route out of the marked region too. Without it a user
-# who typed a literal `<self_note>` had it quoted verbatim into a bullet, and
-# `_SELF_NOTE_SECTION` (unterminated-tolerant by design) then deleted from that bullet to
-# the end of the block on the NEXT compaction -- silent loss of the user's own
-# instructions, on the default-OFF path. Defanged here, a real `<self_note>` can only be
-# one Unsloth rendered.
+# only the delimiters themselves; `self_note` too, since that section renders inside this block
 _DELIMITERS = re.compile(r"</?(?:self_note|carried_forward)>", re.IGNORECASE)
+# How the composer starts each attachment it appends after the typed words.
+_ATTACHMENT = re.compile(
+    r"^(?:\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n"
+    r"|<(attachment|pasted_text) name=[^\n]*>\n(?s:.*?)\n</\1>"
+    r"|\[[^\n]* is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory[^\n]*\]$"
+    r"|\[[^\n]*: its text is below, so answer from it\. For calculations, the python tool has the file at "
+    r"path = \"\.unsloth_attachments/[0-9a-f]{12}/[^\n]*\]$"
+    r"|\[[^\n]*(?:: only the python tool can read this file| could not be uploaded, so it cannot be read)\]$)",
+    re.MULTILINE,
+)
 
 
 def enabled() -> bool:
@@ -287,7 +290,9 @@ def _select_items(
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             return None
-        text = _text_of(head).strip()
+        text = strip_current_date_update_note(_text_of(head))
+        attachment = _ATTACHMENT.search(text)
+        text = (text[: attachment.start()] if attachment else text).strip()
         if not text:
             return None
         # Judged AND priced on the BULLET, the only part of the turn that reaches the

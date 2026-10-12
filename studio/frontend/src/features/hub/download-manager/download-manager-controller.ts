@@ -28,6 +28,7 @@ import {
 export type { DownloadKind } from "./constants";
 export {
   clearCompletedInventoryHint,
+  findActiveScopedJobForRepo,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,
@@ -35,6 +36,7 @@ export {
   useDownloadManagerStore,
 } from "./download-manager-state";
 export type {
+  DownloadPresentation,
   DownloadRequest,
   JobListeners,
   ManagedDownload,

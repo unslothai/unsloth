@@ -50,7 +50,6 @@ def isolated(monkeypatch, tmp_path):
                     quant = "Q4_K_M",
                     display_label = "Q4_K_M",
                     size_bytes = 1234,
-                    shard_count = 0,
                 )
             ],
             False,

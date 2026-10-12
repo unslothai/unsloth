@@ -92,7 +92,10 @@ def test_an_existing_outputs_mode_is_preserved(runner, monkeypatch, tmp_path, no
     ), f"re-running replaced the existing output's mode with {oct(_mode(out))}"
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason = "chown to another uid needs root")
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() != 0,
+    reason = "chown to another uid needs POSIX and root",
+)
 def test_an_existing_outputs_ownership_is_preserved(runner, monkeypatch, tmp_path, notebook):
     out = tmp_path / "out.ipynb"
     out.write_text("{}", encoding = "utf-8")
@@ -141,7 +144,10 @@ def test_the_ancestor_is_the_nearest_one_that_exists(runner, monkeypatch, tmp_pa
     assert chowned == [str(base / "a"), str(base / "a" / "b")]
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason = "chown to another uid needs root")
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() != 0,
+    reason = "chown to another uid needs POSIX and root",
+)
 def test_the_output_in_a_created_directory_is_not_root_owned(
     runner, monkeypatch, tmp_path, notebook
 ):

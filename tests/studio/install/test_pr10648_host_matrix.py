@@ -423,6 +423,8 @@ def assert_reinstall_forced(monkeypatch, install_dir: Path) -> None:
     assert check(install_dir) is False
     recorded = marker_of(install_dir)["host_profile"]
     monkeypatch.setattr(ILP, "host_profile", lambda _host: recorded)
+    # The SM / gfx coverage guard behind it catches the same card swaps; neutralised too.
+    monkeypatch.setattr(ILP, "_kept_install_covers_host", lambda *_: True)
     assert check(install_dir) is True, (
         "the install was refused by some other guard, so this case does not show the "
         "host profile closing anything"

@@ -7,6 +7,7 @@ pair weights and projectors via ``general.base_model.0.repo_url``."""
 from __future__ import annotations
 
 import os
+import re
 import struct
 import threading
 from pathlib import Path
@@ -60,6 +61,8 @@ _NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
+_N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
@@ -176,6 +179,26 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
             except StopIteration:
                 break
         _DIMS_CACHE[key] = result
+    return result
+
+
+def read_gguf_embedding_length(path: str) -> Optional[int]:
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _N_EMBD_CACHE:
+            return _N_EMBD_CACHE[key]
+    parsed = _parse_gguf_arch_uints(path, frozenset({"embedding_length"}))
+    result = (parsed or {}).get("embedding_length")
+    with _CACHE_LOCK:
+        while len(_N_EMBD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _N_EMBD_CACHE.pop(next(iter(_N_EMBD_CACHE)))
+            except StopIteration:
+                break
+        _N_EMBD_CACHE[key] = result
     return result
 
 
@@ -609,6 +632,17 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                         if len(bbyte) < 1:
                             break
                         return bbyte[0] != 0
+                    if key == wanted_key and vtype == 9:  # BOOL array: whether any is set
+                        head = f.read(12)
+                        if len(head) < 12:
+                            break
+                        atype, alen = struct.unpack("<IQ", head)
+                        if atype != 7 or alen > 1 << 20:
+                            break
+                        values = f.read(alen)
+                        if len(values) < alen:
+                            break
+                        return any(values)
                     if not _skip_gguf_value(f, vtype):
                         break
                 except (struct.error, UnicodeDecodeError):
@@ -866,6 +900,13 @@ def read_mmproj_projector_type(path: str) -> Optional[str]:
     return _read_gguf_string(path, "clip.projector_type")
 
 
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """Return the image tower family, falling back to the single-tower key."""
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
+
+
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:
     """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
     present, ``None`` if absent/unreadable."""
@@ -885,9 +926,15 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename."""
+    """True/False from ``general.type``; None means fall back to filename.
+
+    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
+    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
+    """
     if not meta:
         return None
+    if (meta.get("general.architecture") or "").lower() == "clip":
+        return True
     t = meta.get("general.type")
     if t is None:
         return None
@@ -910,7 +957,11 @@ def _normalize_url(url: str) -> Optional[str]:
     if not has_url_host:
         return value
     host, separator, path = value.partition("/")
-    return host.lower() + (separator + path if separator else "")
+    host = host.lower()
+    # Hugging Face owner/repo IDs are case-insensitive, but arbitrary host, file, and revision paths are not.
+    if host == "huggingface.co" and len(path.split("/")) == 2:
+        path = path.casefold()
+    return host + (separator + path if separator else "")
 
 
 def _repo_path_from_url(url: str) -> Optional[str]:
@@ -935,7 +986,13 @@ def _same_repo_reference(left: str, right: str) -> bool:
         return False
     hosted = left_normalized if left_is_url else right_normalized
     host, _, _ = hosted.partition("/")
-    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
+    if host != "huggingface.co":
+        return False
+    left_path = _repo_path_from_url(left)
+    right_path = _repo_path_from_url(right)
+    if left_path and right_path and len(left_path.split("/")) == len(right_path.split("/")) == 2:
+        return left_path.casefold() == right_path.casefold()
+    return left_path == right_path
 
 
 def _hf_repo_slug_from_url(url: str) -> Optional[str]:
@@ -978,6 +1035,61 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     if not weight_slug or not projector_slug:
         return False
     return _slug_extends_base(weight_slug, projector_slug)
+
+
+# Finetunes inherit the vision tower, so these pair by projector type + width, not branding.
+_FUNCTIONAL_PROJECTOR_TYPES = {
+    "gemma4": "gemma4v",
+    "qwen35": "qwen3vl_merger",
+    "qwen35moe": "qwen3vl_merger",
+}
+
+
+def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
+    """Gemma 4 and Qwen3.5 / 3.6: pair by projector type + projection dim, not branding. None = unknown."""
+    arch = read_gguf_architecture(weight_path)
+    expected_type = _FUNCTIONAL_PROJECTOR_TYPES.get(arch or "")
+    if expected_type is None:
+        return None, ""
+    projector_type = read_mmproj_vision_projector_type(mmproj_path)
+    if projector_type != expected_type:
+        return None, ""
+    if expected_type == "qwen3vl_merger" and _read_gguf_bool(
+        mmproj_path, "clip.vision.is_deepstack_layers"
+    ):
+        # Qwen3-VL shares the type and width, but its deepstack output is wider and llama-server refuses it.
+        return False, "Qwen3-VL deepstack projector"
+    embedding_length = read_gguf_embedding_length(weight_path)
+    dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
+    projection_dim = dims.get("vision.projection_dim")
+    if not embedding_length or not projection_dim:
+        return None, ""
+    if embedding_length != projection_dim:
+        return False, (
+            f"{arch}.embedding_length {embedding_length} != "
+            f"clip.vision.projection_dim {projection_dim}"
+        )
+    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers, so a
+    # size conflict withholds the rescue and leaves the verdict to the identity metadata.
+    weight_sizes = _model_size_tokens(weight_path)
+    projector_sizes = _model_size_tokens(mmproj_path)
+    if weight_sizes and projector_sizes and weight_sizes.isdisjoint(projector_sizes):
+        return None, ""
+    return True, ""
+
+
+_SIZE_TOKEN_RE = re.compile(r"[ae]?\d+(?:\.\d+)?b", re.IGNORECASE)
+
+
+def _model_size_tokens(path: str) -> frozenset[str]:
+    """Parameter-count tokens (``35b``, ``a3b``, ``e4b``) in the name, basename and filename."""
+    meta = read_gguf_general_metadata(path) or {}
+    text = " ".join(
+        (meta.get("general.name") or "", meta.get("general.basename") or "", Path(path).stem)
+    )
+    return frozenset(
+        token.lower() for token in re.split(r"[\s_\-]+", text) if _SIZE_TOKEN_RE.fullmatch(token)
+    )
 
 
 def pairing_score(

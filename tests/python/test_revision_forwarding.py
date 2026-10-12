@@ -174,6 +174,10 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
+def test_revision_survives_a_spelling_only_change():
+    assert _load_gate()("release", "unsloth/Qwen3-30B-A3B", "unsloth/qwen3-30b-a3b") == "release"
+
+
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
@@ -462,6 +466,12 @@ def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
     the ref mismatch the gate exists to prevent. Only a PEFT adapter is a separate repo."""
     gate = _load_tokenizer_gate()
     assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
+
+
+def test_a_case_only_tokenizer_name_keeps_the_model_ref():
+    gate = _load_tokenizer_gate()
+    requested, resolved = "unsloth/qwen3-30b-a3b", "unsloth/Qwen3-30B-A3B"
+    assert gate(requested, resolved, requested, "v2", "v2") == "v2"
 
 
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():

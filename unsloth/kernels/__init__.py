@@ -44,6 +44,7 @@ from .fast_lora import (
 from .fp8 import *  # Patch FbgmemFP8Linear/FP8Linear forwards before model creation, so compiled non-fast-inference
 
 # models are covered too
+from .nvfp4 import *
 from .utils import (
     fast_dequantize,
     fast_gemv,

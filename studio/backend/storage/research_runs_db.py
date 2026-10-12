@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from core.inference.web_access_policy import check_url_access
+from core.inference.web_access_policy import check_url_access, normalize_website_policy
 from storage.studio_db import get_connection as _studio_connection
 
 ACTIVE_STATUSES = frozenset(
@@ -479,6 +479,7 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
             for r in conn.execute(
                 "SELECT id, step_position AS stepPosition, document_id AS documentId, "
                 "chunk_id AS chunkId, filename, page, score, snippet, "
+                "COALESCE(kind, 'knowledge_base') AS kind, "
                 "fetched_at AS fetchedAt FROM research_document_sources "
                 "WHERE run_id = ? ORDER BY id",
                 (run_id,),
@@ -786,12 +787,18 @@ def request_cancel(run_id: str) -> str:
         conn.close()
 
 
-def retry(run_id: str, max_retries: int = 3) -> str:
+def retry(
+    run_id: str,
+    max_retries: int = 3,
+    *,
+    model_timeout_seconds: int | None = None,
+    website_policy: dict[str, list[str]] | None = None,
+) -> str:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT status, retry_count, plan_json, owner_subject, thread_id "
+            "SELECT status, retry_count, plan_json, owner_subject, thread_id, config_json "
             "FROM research_runs WHERE id = ?",
             (run_id,),
         ).fetchone()
@@ -840,16 +847,29 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             if row["plan_json"]
             else "planning"
         )
+        config = _loads(row["config_json"], {})
+        policy_changed = website_policy is not None and website_policy != normalize_website_policy(
+            config.get("websitePolicy")
+        )
+        if model_timeout_seconds is not None:
+            config.setdefault("budgets", {})["modelTimeoutSeconds"] = int(model_timeout_seconds)
+        if website_policy is not None:
+            config["websitePolicy"] = website_policy
         conn.execute(
             "UPDATE research_runs SET status = ?, cancel_requested = 0, retry_count = retry_count + 1, "
             "error_message = NULL, report_text = NULL, completed_at = NULL, lease_owner = NULL, "
-            "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
-            (status, now_ms(), run_id),
+            "lease_expires_at = NULL, config_json = ?, updated_at = ? WHERE id = ?",
+            (status, json.dumps(config, ensure_ascii = False), now_ms(), run_id),
         )
-        if status != "awaiting_approval":
-            conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
-        conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
-        conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
+        # Only a failed run keeps evidence, and only completed steps, so a transiently failed search runs again.
+        keep_evidence = row["status"] == "failed" and status == "queued" and not policy_changed
+        if keep_evidence:
+            _drop_unfinished_steps_locked(conn, run_id, ("completed",))
+        else:
+            if status != "awaiting_approval":
+                conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
         _event_locked(conn, run_id, "run.retried", {"status": status})
         _commit_event(conn)
         return status
@@ -998,8 +1018,9 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
+        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
-        if actual_status == "completed" and event_payload:
+        if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")
             if isinstance(candidate, str):
                 report_text = candidate
@@ -1099,24 +1120,7 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         if not _worker_can_write_locked(conn, run_id, worker_id, {"running"}):
             conn.commit()
             return False
-        interrupted = conn.execute(
-            "SELECT position FROM research_plan_steps WHERE run_id = ? "
-            "AND status NOT IN ('completed','failed')",
-            (run_id,),
-        ).fetchall()
-        conn.executemany(
-            "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
-            [(run_id, int(row["position"])) for row in interrupted],
-        )
-        conn.executemany(
-            "DELETE FROM research_document_sources WHERE run_id = ? AND step_position = ?",
-            [(run_id, int(row["position"])) for row in interrupted],
-        )
-        conn.execute(
-            "DELETE FROM research_plan_steps WHERE run_id = ? "
-            "AND status NOT IN ('completed','failed')",
-            (run_id,),
-        )
+        _drop_unfinished_steps_locked(conn, run_id)
         conn.commit()
         return True
     except Exception:
@@ -1124,6 +1128,30 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         raise
     finally:
         conn.close()
+
+
+def _drop_unfinished_steps_locked(
+    conn: sqlite3.Connection,
+    run_id: str,
+    keep: tuple[str, ...] = ("completed", "failed"),
+) -> None:
+    marks = ",".join("?" for _ in keep)
+    interrupted = conn.execute(
+        f"SELECT position FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
+    ).fetchall()
+    conn.executemany(
+        "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
+        [(run_id, int(row["position"])) for row in interrupted],
+    )
+    conn.executemany(
+        "DELETE FROM research_document_sources WHERE run_id = ? AND step_position = ?",
+        [(run_id, int(row["position"])) for row in interrupted],
+    )
+    conn.execute(
+        f"DELETE FROM research_plan_steps WHERE run_id = ? AND status NOT IN ({marks})",
+        (run_id, *keep),
+    )
 
 
 def upsert_execution_step(
@@ -1287,12 +1315,13 @@ def upsert_document_source(
         conn.execute(
             """INSERT INTO research_document_sources
                (run_id, step_position, source_key, document_id, chunk_id, filename,
-                page, score, snippet, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                page, score, snippet, fetched_at, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(run_id, source_key) DO UPDATE SET
                step_position=excluded.step_position, document_id=excluded.document_id,
                chunk_id=excluded.chunk_id, filename=excluded.filename, page=excluded.page,
-               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at""",
+               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at,
+               kind=excluded.kind""",
             (
                 run_id,
                 position,
@@ -1304,6 +1333,7 @@ def upsert_document_source(
                 float(source["score"]) if isinstance(source.get("score"), (int, float)) else None,
                 str(source.get("text") or source.get("snippet") or "")[:4000],
                 fetched_at,
+                "mcp" if source.get("kind") == "mcp" else None,
             ),
         )
         conn.commit()

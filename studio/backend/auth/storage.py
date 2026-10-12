@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -19,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import uuid
 from typing import Iterator, Optional, Tuple
 
+from storage import sqlite_gate
 from utils.paths import auth_db_path, ensure_dir
 
 DB_PATH = auth_db_path()
@@ -265,7 +267,7 @@ _auth_schema_ready: set[tuple[str, int, int, int]] = set()
 
 def get_connection() -> sqlite3.Connection:
     ensure_dir(DB_PATH.parent)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite_gate.connect(DB_PATH)
     # sqlite3.connect would create the DB 0644 under a 022 umask, exposing identity secrets and password hashes.
     for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
         try:
@@ -377,6 +379,8 @@ _ACCOUNT_COLUMNS = (
     ("account_password_salt", "TEXT"),
     ("account_password_hash", "TEXT"),
     ("account_jwt_secret", "TEXT"),
+    # JSON list of repo ids / ``org/*`` patterns; NULL = every model (#11650).
+    ("model_allowlist", "TEXT"),
 )
 
 
@@ -613,6 +617,48 @@ def validate_account_username(username: str) -> str:
     return username
 
 
+MAX_MODEL_ALLOWLIST_ENTRIES = 500
+# ``org/name``, ``org/*``, or a legacy top-level id such as ``gpt2``.
+_MODEL_ALLOWLIST_ENTRY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9._*-]{1,96})?")
+_HUB_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?(?:hf\.co|huggingface\.co)/", re.IGNORECASE)
+
+
+def normalize_model_allowlist(entries) -> Optional[list[str]]:
+    """Repo ids or ``org/*`` patterns, lowercased and deduplicated; empty means unrestricted."""
+    if entries is None:
+        return None
+    normalized: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ValueError("Model access entries must be strings")
+        entry = _HUB_URL_PREFIX.sub("", entry.strip()).split(":", 1)[0].strip("/")
+        if not entry:
+            continue
+        if _MODEL_ALLOWLIST_ENTRY.fullmatch(entry) is None:
+            raise ValueError(
+                f"{entry!r} is not a Hugging Face model id such as unsloth/Qwen3-4B-GGUF or unsloth/*"
+            )
+        entry = entry.lower()
+        if entry not in normalized:
+            normalized.append(entry)
+    if len(normalized) > MAX_MODEL_ALLOWLIST_ENTRIES:
+        raise ValueError(f"At most {MAX_MODEL_ALLOWLIST_ENTRIES} models can be listed")
+    return normalized or None
+
+
+def _decode_model_allowlist(raw) -> Optional[list[str]]:
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        # A corrupt row must not silently grant every model.
+        return []
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str)]
+
+
 def _public_account(row) -> dict:
     return {
         "account_id": row["account_id"],
@@ -621,6 +667,11 @@ def _public_account(row) -> dict:
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
         "setup_code_pending": bool(row["setup_code_hash"]),
+        "model_allowlist": (
+            _decode_model_allowlist(row["model_allowlist"])
+            if "model_allowlist" in row.keys()
+            else None
+        ),
     }
 
 
@@ -815,6 +866,42 @@ def set_account_active(account_id: str, is_active: bool) -> dict:
         finally:
             conn.close()
     return result
+
+
+def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]]) -> dict:
+    from auth.policy import account_mutation
+
+    allowlist = normalize_model_allowlist(allowlist)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _managed_account(conn, account_id)
+                conn.execute(
+                    "UPDATE auth_user SET model_allowlist = ? WHERE account_id = ?",
+                    (None if allowlist is None else json.dumps(allowlist), account_id),
+                )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
+def account_model_allowlist(account_id: str) -> Optional[tuple[str, ...]]:
+    """``None`` = every model. The owner is never restricted."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT role, model_allowlist FROM auth_user WHERE account_id = ?", (account_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    # A deleted account is fenced by credential revocation, not here.
+    if row is None or row["role"] == "owner":
+        return None
+    allowlist = _decode_model_allowlist(row["model_allowlist"])
+    return None if allowlist is None else tuple(allowlist)
 
 
 def delete_account(account_id: str, retire) -> None:
@@ -1029,6 +1116,24 @@ _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 _DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+# `token_urlsafe(48)` is exactly 64 unpadded URL-safe characters, and no other shape can be behind a
+# stored hash. Keep in sync with the CLI minter (unsloth_cli/commands/studio.py) and the `desktop-`
+# alternation in core/inference/tool_loop_controller.py.
+_DESKTOP_SECRET_BODY = re.compile(r"\A[A-Za-z0-9_-]{64}\Z")
+
+
+def desktop_secret_is_well_formed(raw_secret: str) -> bool:
+    """Whether a candidate has the one shape :func:`create_desktop_secret` mints.
+
+    Syntactic only: a candidate that passes this still has to match the stored hash. It is separate
+    from validation, and cheap, because the desktop shell posts a deliberately invalid secret to
+    /api/auth/desktop-login to learn from the 401 that the backend is one it can manage. That probe
+    must cost no KDF and no rate-limit budget, or a live app throttles itself out of its own
+    backend.
+    """
+    if not isinstance(raw_secret, str) or not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+        return False
+    return _DESKTOP_SECRET_BODY.match(raw_secret[len(DESKTOP_SECRET_PREFIX) :]) is not None
 
 
 def _pbkdf2_api_key(raw_key: str) -> str:
@@ -1226,9 +1331,24 @@ def load_jwt_secret() -> str:
         conn.close()
 
 
+_admin_created_this_process = False
+
+
+def admin_created_this_process() -> bool:
+    """Whether this process seeded the admin account, whoever called first.
+
+    run_server's pre-bind password gate calls ensure_default_admin() itself on a tunnel
+    launch, so by the time the lifespan calls it the answer is already False and a
+    first-boot check keyed on that return value silently does nothing.
+    """
+    return _admin_created_this_process
+
+
 def ensure_default_admin() -> bool:
     """Seed the default admin account on first startup, using a randomly generated diceware passphrase
     as the bootstrap password. Returns True when it was created in this call."""
+    global _admin_created_this_process
+
     if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is not None:
         _load_bootstrap_password()
         return False
@@ -1241,6 +1361,7 @@ def ensure_default_admin() -> bool:
             jwt_secret = secrets.token_urlsafe(64),
             must_change_password = True,
         )
+        _admin_created_this_process = True
         return True
     except sqlite3.IntegrityError:
         return False
@@ -1463,7 +1584,9 @@ def validate_desktop_secret_with_credential(raw_secret: str) -> Optional[Tuple[s
     transaction so the returned secret is the credential version the desktop secret was checked
     against; a reset landing mid-request then invalidates the tokens minted from it rather than
     blessing them."""
-    if not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+    # Shape before KDF: this runs for unauthenticated callers, so anything spent before an
+    # attacker-chosen string can be rejected is theirs to spend.
+    if not desktop_secret_is_well_formed(raw_secret):
         return None
 
     secret_hash = _pbkdf2_desktop_secret(raw_secret)
@@ -1781,6 +1904,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "username": row["username"],
             "role": row["role"],
             "is_active": int(row["account_active"]),
+            "expires_at": row["expires_at"],
         }
         return record, secret
     finally:

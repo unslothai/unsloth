@@ -8,7 +8,7 @@ import {
   shouldAbortPendingQueueForSettingsChange,
 } from "../src/features/chat/utils/prompt-queue-model-boundary.ts";
 
-test("a local model stop preserves an active external item", () => {
+test("a local model stop preserves an active external item and holds local follow-ups", () => {
   assert.deepEqual(
     planLocalPromptQueueStop(
       [
@@ -20,9 +20,8 @@ test("a local model stop preserves an active external item", () => {
     ),
     {
       cancelActiveItem: false,
-      activeItemRemoved: false,
-      refreshTargetIdleWait: false,
-      retainedItemIndexes: [0, 2],
+      retainedItemIndexes: [0, 1, 2],
+      heldItemIndexes: [1],
     },
   );
 });
@@ -38,14 +37,48 @@ test("a dispatched local item is cancelled without losing external follow-ups", 
     ),
     {
       cancelActiveItem: true,
-      activeItemRemoved: true,
-      refreshTargetIdleWait: false,
       retainedItemIndexes: [1],
+      heldItemIndexes: [],
     },
   );
 });
 
-test("an undispatched local item is dropped without losing external follow-ups", () => {
+test("a reload mid-reply drops only the reply in flight and holds the queued prompts (#10428)", () => {
+  assert.deepEqual(
+    planLocalPromptQueueStop(
+      [
+        { usesLocalModel: true, dispatched: true },
+        { usesLocalModel: true, dispatched: false },
+        { usesLocalModel: true, dispatched: false },
+      ],
+      0,
+    ),
+    {
+      cancelActiveItem: true,
+      retainedItemIndexes: [1, 2],
+      heldItemIndexes: [1, 2],
+    },
+  );
+});
+
+test("a paused queue keeps every prompt across a reload (#10428)", () => {
+  assert.deepEqual(
+    planLocalPromptQueueStop(
+      [
+        { usesLocalModel: true, dispatched: false },
+        { usesLocalModel: true, dispatched: false },
+      ],
+      0,
+    ),
+    {
+      cancelActiveItem: false,
+      retainedItemIndexes: [0, 1],
+      heldItemIndexes: [0, 1],
+    },
+  );
+});
+
+test("a queue waiting on a direct send is held, not dropped", () => {
   assert.deepEqual(
     planLocalPromptQueueStop(
       [
@@ -56,14 +89,13 @@ test("an undispatched local item is dropped without losing external follow-ups",
     ),
     {
       cancelActiveItem: false,
-      activeItemRemoved: true,
-      refreshTargetIdleWait: true,
-      retainedItemIndexes: [1],
+      retainedItemIndexes: [0, 1],
+      heldItemIndexes: [0],
     },
   );
 });
 
-test("completed queue history is preserved when pending local work is dropped", () => {
+test("completed queue history is preserved and only pending local work is held", () => {
   assert.deepEqual(
     planLocalPromptQueueStop(
       [
@@ -76,9 +108,8 @@ test("completed queue history is preserved when pending local work is dropped", 
     ),
     {
       cancelActiveItem: false,
-      activeItemRemoved: false,
-      refreshTargetIdleWait: false,
-      retainedItemIndexes: [0, 1, 3],
+      retainedItemIndexes: [0, 1, 2, 3],
+      heldItemIndexes: [2],
     },
   );
 });
@@ -91,7 +122,6 @@ test("a local model boundary invalidates only pending local factories", () => {
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration,
       usesLocalModel: true,
-      modelLoading: false,
     }),
     true,
   );
@@ -99,20 +129,18 @@ test("a local model boundary invalidates only pending local factories", () => {
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration,
       usesLocalModel: false,
-      modelLoading: false,
     }),
     false,
   );
 });
 
-test("a pending local factory cannot materialize during a model load", () => {
+test("a new local factory is accepted within the current model boundary", () => {
   assert.equal(
     shouldAbortPendingQueueForModelBoundary({
       capturedGeneration: localPromptQueueModelBoundary.capture(),
       usesLocalModel: true,
-      modelLoading: true,
     }),
-    true,
+    false,
   );
 });
 

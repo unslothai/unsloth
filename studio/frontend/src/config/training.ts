@@ -53,6 +53,13 @@ export function getCptUiTargetModules(): readonly string[] {
   return CPT_UI_TARGET_MODULES;
 }
 
+/** all-linear is a chip outside CPT too: model defaults (Qwen3-VL, Qwen3.5, LFM2, ...) ship it. */
+const UI_TARGET_MODULES = ["all-linear", ...TARGET_MODULES] as const;
+
+export function getUiTargetModules(isCpt: boolean): readonly string[] {
+  return isCpt ? CPT_UI_TARGET_MODULES : UI_TARGET_MODULES;
+}
+
 export function isCptTargetModuleActive(
   targetModules: readonly string[],
   module: string,
@@ -132,6 +139,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
+export const LR_DEFAULT_DECISION_FULL = 2.5e-5;
 
 // Also the advanced-settings summary's "unchanged" reference while CPT is selected.
 export const CPT_LORA_HYPERPARAMS = {
@@ -163,6 +171,10 @@ export const DEFAULT_HYPERPARAMS = {
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,
+  offloadLayers: 0 as number | "auto",
+  offloadVramGb: null as number | null,
+  offloadVramGbPerDevice: {} as Record<string, number | null>,
+  prefetchDepth: 2 as number | "auto",
   randomSeed: 3407,
   enableWandb: false,
   wandbToken: "",
@@ -198,6 +210,7 @@ export const MODEL_TYPE_TO_HF_TASKS: Record<
     "text-to-audio",
   ],
   embeddings: ["feature-extraction"],
+  decision: ["text-classification"],
 };
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
@@ -212,6 +225,7 @@ export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/Qwen3-0.6B",
   "unsloth/gemma-3-4b-it",
   "unsloth/embeddinggemma-300m",
+  "convaiinnovations/laya",
   "unsloth/orpheus-3b-0.1-ft",
   "unsloth/Llama-3.1-8B-Instruct",
   "unsloth/Llama-3.2-3B-Instruct",

@@ -504,6 +504,330 @@ marker_case "a committed first install keeps its marker when a later step fails"
     "/previous/install/cache" "/tmp/this-attempt-cache" commit
 commit_flag_case
 
+echo "=== --no-rollback discards the old environment instead of keeping a copy (#11313) ==="
+# The rename still has to happen first -- uv creates only into a path that is absent or empty --
+# so what the flag changes is what survives the rename, not whether there is one.
+no_rollback_case() {  # label  flag_line  expect_copy(yes|no)
+    _nr_label="$1"
+    _nr_flag="$2"
+    _nr_expect="$3"
+    _nr_dir="$WORK/no-rollback-$(printf '%s' "$_nr_label" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "$_nr_dir/unsloth_studio"
+    printf 'old\n' > "$_nr_dir/unsloth_studio/generation"
+    _nr_harness="$_nr_dir/harness.sh"
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { printf "SUBSTEP %s\n" "$*"; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
+        printf '%s\n' 'C_WARN=""'
+        printf "STUDIO_HOME='%s'\n" "$_nr_dir"
+        printf "VENV_DIR='%s/unsloth_studio'\n" "$_nr_dir"
+        printf '%s\n' "$_nr_flag"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    } > "$_nr_harness"
+    set +e
+    _nr_out=$(dash "$_nr_harness" 2>&1)
+    _nr_status=$?
+    set -e
+    if [ "$_nr_status" -ne 0 ]; then
+        bad "$_nr_label: harness exited $_nr_status"
+        return
+    fi
+    if find "$_nr_dir" -maxdepth 1 -name 'unsloth_studio.rollback.*' -print -quit | grep -q .; then
+        _nr_got=yes
+    else
+        _nr_got=no
+    fi
+    if [ "$_nr_got" = "$_nr_expect" ]; then
+        ok "$_nr_label"
+    else
+        bad "$_nr_label (rollback copy present: $_nr_got, expected $_nr_expect)"
+    fi
+    # The old venv is gone from its original place either way: the rename is unconditional.
+    if [ ! -e "$_nr_dir/unsloth_studio" ]; then
+        ok "$_nr_label: the old environment was moved aside"
+    else
+        bad "$_nr_label: the old environment is still in place"
+    fi
+    case "$_nr_expect" in
+        no)
+            if printf '%s\n' "$_nr_out" | grep -q 'discarded (--no-rollback)'; then
+                ok "$_nr_label: says the old environment was discarded"
+            else
+                bad "$_nr_label: said nothing about discarding it"
+            fi
+            ;;
+        yes)
+            if printf '%s\n' "$_nr_out" | grep -q 'preserved for rollback'; then
+                ok "$_nr_label: says the old environment was preserved"
+            else
+                bad "$_nr_label: said nothing about preserving it"
+            fi
+            ;;
+    esac
+}
+no_rollback_case "default keeps the rollback copy" "_NO_ROLLBACK=false" yes
+no_rollback_case "flag drops the rollback copy" "_NO_ROLLBACK=true" no
+# Unset is the shape the extracted block sees when the flag parser is not spliced in; it must
+# read as "keep", never as an error under set -e.
+no_rollback_case "an unset flag still keeps the copy" "# no flag set" yes
+
+echo "=== --no-rollback clears the restore state, so a later signal cannot resurrect it ==="
+NR_SIGNAL_DIR="$WORK/no-rollback-signal"
+mkdir -p "$NR_SIGNAL_DIR/unsloth_studio"
+printf 'old\n' > "$NR_SIGNAL_DIR/unsloth_studio/generation"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
+    printf '%s\n' 'C_WARN=""'
+    printf "STUDIO_HOME='%s'\n" "$NR_SIGNAL_DIR"
+    printf "VENV_DIR='%s/unsloth_studio'\n" "$NR_SIGNAL_DIR"
+    printf '%s\n' '_NO_ROLLBACK=true'
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    printf '%s\n' 'mkdir -p "$VENV_DIR"'
+    printf '%s\n' 'printf "partial\n" > "$VENV_DIR/generation"'
+    printf '%s\n' 'kill -TERM $$'
+    printf '%s\n' 'exit 99'
+} > "$NR_SIGNAL_DIR/harness.sh"
+set +e
+dash "$NR_SIGNAL_DIR/harness.sh" >/dev/null 2>&1
+_nr_signal_status=$?
+set -e
+if [ "$_nr_signal_status" -eq 143 ]; then
+    ok "a signal after --no-rollback still exits 143"
+else
+    bad "a signal after --no-rollback exited $_nr_signal_status"
+fi
+# There is nothing to restore, and the half-built environment is what is left. The point is that
+# the restore path does not fail or put back a tree that was deleted.
+if [ ! -e "$NR_SIGNAL_DIR/unsloth_studio" ] \
+   || [ "$(cat "$NR_SIGNAL_DIR/unsloth_studio/generation" 2>/dev/null)" != "old" ]; then
+    ok "--no-rollback does not resurrect the discarded environment"
+else
+    bad "--no-rollback restored an environment it had deleted"
+fi
+
+echo "=== a discard that could not delete says so instead of reporting success (#11313) ==="
+# rm -rf exempts a missing path from its exit status, not a real unlink failure: an immutable
+# entry, a busy mount point, a sticky-bit parent. Shadowing rm is how that is reached portably.
+DISCARD_FAIL_DIR="$WORK/no-rollback-undeletable"
+mkdir -p "$DISCARD_FAIL_DIR/unsloth_studio"
+printf 'old\n' > "$DISCARD_FAIL_DIR/unsloth_studio/generation"
+{
+    printf '%s\n' 'set -e'
+    printf '%s\n' 'substep() { printf "SUBSTEP %s\n" "$1"; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
+    printf '%s\n' 'C_WARN=""'
+    printf "STUDIO_HOME='%s'\n" "$DISCARD_FAIL_DIR"
+    printf "VENV_DIR='%s/unsloth_studio'\n" "$DISCARD_FAIL_DIR"
+    printf '%s\n' '_NO_ROLLBACK=true'
+    printf '%s\n' "$ROLLBACK_BLOCK"
+    printf '%s\n' 'rm() { return 1; }'
+    printf '%s\n' '_start_studio_venv_replacement "$VENV_DIR"'
+    printf '%s\n' 'echo INSTALL_CONTINUED'
+} > "$DISCARD_FAIL_DIR/harness.sh"
+set +e
+DISCARD_FAIL_OUT=$(dash "$DISCARD_FAIL_DIR/harness.sh" 2>&1)
+DISCARD_FAIL_STATUS=$?
+set -e
+if [ "$DISCARD_FAIL_STATUS" -eq 0 ] && printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q INSTALL_CONTINUED; then
+    ok "a failed discard never aborts the install"
+else
+    bad "a failed discard exited $DISCARD_FAIL_STATUS"
+fi
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q 'could not discard the previous environment'; then
+    ok "a failed discard says the environment is still there"
+else
+    bad "a failed discard said nothing about the tree it could not remove"
+fi
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q 'discarded (--no-rollback)'; then
+    bad "a failed discard still claimed the environment was discarded"
+else
+    ok "a failed discard does not claim success"
+fi
+# Naming the leftover is the whole point: the user came here to reclaim space.
+if printf '%s\n' "$DISCARD_FAIL_OUT" | grep -q "$DISCARD_FAIL_DIR/unsloth_studio.rollback."; then
+    ok "a failed discard names the path left on disk"
+else
+    bad "a failed discard did not name the path left on disk"
+fi
+
+echo "=== a disk that fills before studio setup is still diagnosed (#11313) ==="
+# The venv and the torch install are the biggest writes and both exit long before the studio-setup
+# branch, so the diagnosis has to hang off the exit trap every failure passes through.
+DISK_DIR="$WORK/diskfull"
+mkdir -p "$DISK_DIR"
+DISK_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf '%s\n' '_restore_studio_venv_replacement() { :; }'
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "STUDIO_HOME='%s'\n" "$DISK_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # Stubbed after the extraction, so it shadows the real one: filling a disk is not
+        # something this suite can do, and df's own number is whatever the runner happens to have.
+        printf '%s\n' '_free_space_kb() { echo 1024; }'
+        # install.sh defines tauri_log hundreds of lines above this block; the slice starts below it.
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        # Any failure at all, standing in for the venv or torch install exiting early.
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$DISK_OUT" | grep -q "the disk is full"; then
+    ok "an early failure names the full disk instead of a bare exit code"
+else
+    bad "an early failure still reports only its exit code: $DISK_OUT"
+fi
+if printf '%s\n' "$DISK_OUT" | grep -q "ERROR_DEFAULT"; then
+    ok "and the diagnosis reaches the Tauri marker the desktop UI reads"
+else
+    bad "the diagnosis never reached the Tauri marker"
+fi
+# A healthy disk must stay silent: the trap runs on every non-zero exit there is.
+DISK_OK_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf '%s\n' '_restore_studio_venv_replacement() { :; }'
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "STUDIO_HOME='%s'\n" "$DISK_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        printf '%s\n' '_free_space_kb() { echo 104857600; }'
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$DISK_OK_OUT" | grep -q "the disk is full"; then
+    bad "a failure with plenty of room blamed the disk: $DISK_OK_OUT"
+else
+    ok "a failure with room to spare does not blame the disk"
+fi
+
+echo "=== a diagnostic write that fails must not cost the rollback (#11313) ==="
+# The trap runs under set -e, so a write to a closed --tauri stdout or a redirected stderr used to
+# abort it before the restore ran, leaving the previous environment moved aside and the install
+# gone. The restore has to happen first and the writes have to be best-effort.
+TRAP_DIR="$WORK/trapsafe"
+mkdir -p "$TRAP_DIR"
+TRAP_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf "STUDIO_HOME='%s'\n" "$TRAP_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # After the extraction, so these shadow the real ones rather than being shadowed by them.
+        printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$TRAP_DIR"
+        printf "_restore_uv_cache_marker() { : > '%s/marker'; }\n" "$TRAP_DIR"
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf '%s\n' '_free_space_kb() { echo 1024; }'
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        # Both streams closed, so every diagnostic write below fails the way a closed Tauri pipe does.
+        printf '%s\n' 'exec 1>&- 2>&-'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if [ -f "$TRAP_DIR/restored" ]; then
+    ok "the environment is restored even when the diagnostic cannot be written"
+else
+    bad "a failed diagnostic write aborted the trap before the restore"
+fi
+if [ -f "$TRAP_DIR/marker" ]; then
+    ok "and so is the uv cache marker"
+else
+    bad "a failed diagnostic write aborted the trap before the marker restore"
+fi
+
+echo "=== the restore frees space, so the measurement has to precede it (#11313) ==="
+# The restore deletes the half-built replacement. On the failure this diagnosis exists for that
+# tree is gigabytes, so asking the filesystem afterwards reports a disk that is no longer full and
+# the failure it just caused goes back to being a bare exit code.
+FREED_DIR="$WORK/freed"
+mkdir -p "$FREED_DIR"
+FREED_OUT=$(
+    {
+        printf '%s\n' 'set -e'
+        printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'step() { :; }'
+        printf '%s\n' 'C_WARN=""'
+        printf '%s\n' 'TAURI_MODE=true'
+        printf "STUDIO_HOME='%s'\n" "$FREED_DIR"
+        printf '%s\n' "$ROLLBACK_BLOCK"
+        # Stubbed after the extraction so these shadow the real ones. The restore is what frees
+        # the space, exactly as deleting the partial venv does on a real failure.
+        printf "_restore_studio_venv_replacement() { : > '%s/restored'; }\n" "$FREED_DIR"
+        printf '%s\n' '_restore_uv_cache_marker() { :; }'
+        printf '%s\n' '_cleanup_install_temporaries() { :; }'
+        printf "_free_space_kb() { if [ -f '%s/restored' ]; then echo 104857600; else echo 1024; fi; }\n" "$FREED_DIR"
+        printf '%s\n' 'tauri_log() { echo "[TAURI:$1] $2"; }'
+        printf '%s\n' 'exit 3'
+    } | dash 2>&1
+) || true
+if printf '%s\n' "$FREED_OUT" | grep -q "the disk is full"; then
+    ok "the full disk is still named after the restore has freed the space"
+else
+    bad "the restore hid the full disk from the diagnosis: $FREED_OUT"
+fi
+
+echo "=== the disk-full remedy describes what happened, not what was asked for (#11313) ==="
+# A discard that failed left a tree on disk, and deleting it is very likely what makes the retry
+# fit. Telling that user there is nothing left to reclaim points them away from the one thing that
+# would help, which is the worst of the four answers to give in the one case it is given.
+remedy_case() {  # label  state_lines  expected_grep  unexpected_grep
+    _rc_label="$1"; _rc_state="$2"; _rc_want="$3"; _rc_not="$4"
+    _rc_out=$(
+        {
+            printf '%s\n' 'substep() { :; }'
+            printf '%s\n' 'step() { :; }'
+            printf '%s\n' 'C_WARN=""'
+            printf "STUDIO_HOME='%s'\n" "$WORK"
+            printf '%s\n' "$ROLLBACK_BLOCK"
+            printf '%s\n' '_free_space_kb() { echo 1024; }'
+            printf '%s\n' "$_rc_state"
+            printf '%s\n' '_set_disk_full_suffix'
+            printf '%s\n' 'printf "%s\n" "$_DISK_FULL_REMEDY"'
+        } | dash 2>&1
+    )
+    if printf '%s\n' "$_rc_out" | grep -q "$_rc_want"; then
+        ok "$_rc_label names the right remedy"
+    else
+        bad "$_rc_label said: $_rc_out"
+    fi
+    if [ -n "$_rc_not" ]; then
+        if printf '%s\n' "$_rc_out" | grep -q "$_rc_not"; then
+            bad "$_rc_label still says the wrong thing: $_rc_out"
+        else
+            ok "$_rc_label does not say the wrong thing"
+        fi
+    fi
+}
+remedy_case "a discard that left a tree behind" \
+    '_NO_ROLLBACK=true; _VENV_DISCARD_LEFTOVER="/tmp/left-behind"' \
+    "still at /tmp/left-behind" "nothing further"
+remedy_case "a discard that really happened" \
+    '_NO_ROLLBACK=true; _VENV_DISCARDED=true' \
+    "nothing further of its own to reclaim" ""
+remedy_case "the flag with nothing to discard" \
+    '_NO_ROLLBACK=true' \
+    "Free some space and re-run." "already discarded"
+remedy_case "an install that never passed the flag" \
+    '_NO_ROLLBACK=false' \
+    "drops the previous environment" "already discarded"
+
 echo ""
 echo "  PASS: $PASS"
 echo "  FAIL: $FAIL"

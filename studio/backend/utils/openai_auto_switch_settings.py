@@ -5,13 +5,15 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
 import time
 from typing import Any, Mapping, Optional
 
-from utils.account_context import OWNER, run_as
+from utils.reasoning_budget import validate_reasoning_budget_message
+from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
@@ -61,9 +63,13 @@ def _apply_idle_floor(seconds: int) -> int:
     return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
-def _cached_setting(key: str, default: Any) -> Any:
+def _cached_setting(
+    key: str,
+    default: Any,
+    account: AccountContext = OWNER,
+) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
-    cache_key = (OWNER.account_id, key)
+    cache_key = (account.account_id, key)
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(cache_key)
@@ -71,7 +77,7 @@ def _cached_setting(key: str, default: Any) -> Any:
             return hit[1]
     try:
         from storage.studio_db import get_app_setting
-        stored = run_as(OWNER, get_app_setting, key, None)
+        stored = run_as(account, get_app_setting, key, None)
     except Exception:
         stored = None
     value = default if stored is None else stored
@@ -80,8 +86,8 @@ def _cached_setting(key: str, default: Any) -> Any:
     return value
 
 
-def _invalidate(key: str) -> None:
-    cache_key = (OWNER.account_id, key)
+def _invalidate(key: str, account: AccountContext = OWNER) -> None:
+    cache_key = (account.account_id, key)
     with _cache_lock:
         _cache.pop(cache_key, None)
 
@@ -330,7 +336,9 @@ def set_openai_auto_switch(
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
-VALID_SPECULATIVE_TYPES = frozenset(
+# The GGUF control never offers these, and a GGUF load drops them.
+MLX_ONLY_SPEC_TYPES = frozenset({"eagle3"})
+VALID_SPECULATIVE_TYPES = MLX_ONLY_SPEC_TYPES | frozenset(
     {
         "auto",
         "mtp",
@@ -354,7 +362,9 @@ VALID_SPECULATIVE_TYPES = frozenset(
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
+    | MLX_ONLY_SPEC_TYPES
 )
+DRAFTER_MODEL_SPEC_TYPES = DRAFT_N_MAX_SPEC_TYPES | {"auto", "default"}
 # Only these load a separate draft model, and so a draft context for the dtype to apply to. Mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI.
 SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
 # Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp default and is not stored: an entry holding it would pin what a build may redefine.
@@ -364,8 +374,8 @@ CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MIN_MIB = -1
 CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
-# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
-VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
+# Mirrors MLX_KV_QUANT_CHOICES in core/inference/mlx_inference.py; a set, not a range.
+VALID_MLX_KV_QUANT = frozenset({"8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py.
 PARALLEL_SLOTS_MIN = 1
@@ -383,6 +393,20 @@ MAX_GPU_ID = 1024
 # Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
 VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
 LEGACY_GPU_INDEX_KIND = "physical"
+
+
+def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
+    """This entry's cache quantization, reading the width it superseded when that is all it
+    holds. Only an entry omitting the field predates the setting."""
+    if "mlx_kv_quant" in entry:
+        return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
+    bits = entry.get("mlx_kv_bits")
+    # Only a number: a hand-edited string or a bool must drop the width, not abort the whole override.
+    if isinstance(bits, bool) or not isinstance(bits, (int, float)):
+        return None
+    from core.inference.mlx_inference import encode_mlx_kv_quant
+
+    return _clean_str(encode_mlx_kv_quant(bits), VALID_MLX_KV_QUANT)
 
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
@@ -406,11 +430,22 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
     return parsed
 
 
+_ENGINE_DEFAULTS = {"engine_parallelism": "tensor", "engine_precision": "auto"}
+
+
 def normalize_model_override(
     payload: dict[str, Any], *, keep_empty_extra_args: bool = False
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
+    # The defaults ("tensor", "auto") are not stored: a default-only row would count as an
+    # override, shadow a repository row in auto-switch, and re-tick Remember.
+    if payload.get("engine_parallelism") in ("pipeline", "data"):
+        entry["engine_parallelism"] = payload["engine_parallelism"]
+    if payload.get("engine_precision") in ("bf16", "fp16", "int4", "int8", "fp8"):
+        entry["engine_precision"] = payload["engine_precision"]
+    if payload.get("engine") in ("vllm", "sglang"):
+        entry["engine"] = payload["engine"]
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
@@ -427,10 +462,9 @@ def normalize_model_override(
     if kv_cache_dtype:
         entry["kv_cache_dtype"] = kv_cache_dtype
 
-    # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
-    mlx_kv_bits = payload.get("mlx_kv_bits")
-    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
-        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+    mlx_kv_quant = _mlx_kv_quant_of(payload)
+    if mlx_kv_quant:
+        entry["mlx_kv_quant"] = mlx_kv_quant
 
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
@@ -440,6 +474,10 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        spec_draft_model = payload.get("spec_draft_model")
+        if speculative_type in DRAFTER_MODEL_SPEC_TYPES and isinstance(spec_draft_model, str):
+            if 0 < len(spec_draft_model.strip()) <= 1024:
+                entry["spec_draft_model"] = spec_draft_model.strip()
         # Same rule, narrower set: the dtype needs a separate draft model, and only the sidecar modes always load one.
         if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
             spec_draft_cache_type = _clean_str(
@@ -454,6 +492,21 @@ def normalize_model_override(
     if n_parallel:
         entry["n_parallel"] = n_parallel
 
+    reasoning_budget = _bounded_int(
+        payload.get("reasoning_budget"), minimum = -1, maximum = 2_147_483_647
+    )
+    # Keep defaults as tombstones: a qualified override must remain present after resetting a legacy
+    # passthrough flag, or a bare/legacy fallback can revive it.
+    if reasoning_budget is not None:
+        entry["reasoning_budget"] = reasoning_budget
+    reasoning_budget_message = payload.get("reasoning_budget_message")
+    if isinstance(reasoning_budget_message, str):
+        try:
+            entry["reasoning_budget_message"] = validate_reasoning_budget_message(
+                reasoning_budget_message
+            )
+        except ValueError:
+            pass
     for key in ("n_batch", "n_ubatch"):
         parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
         if parsed:
@@ -478,6 +531,9 @@ def normalize_model_override(
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
+
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
 
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
@@ -520,7 +576,34 @@ def normalize_model_override(
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
+    tensor_split = normalize_tensor_split(payload.get("tensor_split"), gpu_ids)
+    if tensor_split is not None and entry.get("gpu_ids") == list(gpu_ids):
+        entry["tensor_split"] = tensor_split
+
     return entry
+
+
+def normalize_tensor_split(value: Any, gpu_ids: Any) -> Optional[list[float]]:
+    """Keep a finite positive ratio only with its unmodified ordered GPU IDs."""
+    if not isinstance(gpu_ids, (list, tuple)) or len(gpu_ids) < 2:
+        return None
+    if any(
+        isinstance(gid, bool) or not isinstance(gid, int) or not 0 <= gid <= MAX_GPU_ID
+        for gid in gpu_ids
+    ):
+        return None
+    if len(set(gpu_ids)) != len(gpu_ids):
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != len(gpu_ids):
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in value):
+        return None
+    try:
+        total = sum(value)
+        valid = all(math.isfinite(v) for v in value) and math.isfinite(total) and total > 0
+    except OverflowError:
+        return None
+    return list(value) if valid else None
 
 
 def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
@@ -542,10 +625,21 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
 
 
 def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
-    """Map a stored per-model config onto ``LoadRequest`` keyword arguments. Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API auto-switch load and a picker load of the same model produce the same command line. GPU placement is GGUF-only there, so it is gated the same way here: a safetensors model loads through HF auto-placement and must not inherit a hidden GGUF GPU pin."""
+    """Map remembered settings onto the same load options used by the picker.
+
+    GGUF and optional engines accept explicit GPU selection. The default
+    safetensors backend uses automatic placement and must not inherit that pin.
+    """
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
+    if not is_gguf and override.get("engine") in ("vllm", "sglang"):
+        kwargs["engine"] = override["engine"]
+        kwargs["engine_parallelism"] = override.get("engine_parallelism", "tensor")
+        kwargs["engine_precision"] = override.get("engine_precision", "auto")
+        kwargs["load_in_4bit"] = False
+        if override.get("gpu_ids") is not None:
+            kwargs["gpu_ids"] = override["gpu_ids"]
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
@@ -562,22 +656,34 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             )
         override = {**override, "llama_extra_args": kept}
 
+    # MLX drafter settings; a GGUF load reads an MLX-only mode as no stored mode, keeping its launch flags.
+    gguf_drops = set()
+    if is_gguf:
+        gguf_drops.add("spec_draft_model")
+        if override.get("speculative_type") in MLX_ONLY_SPEC_TYPES:
+            gguf_drops.update(("speculative_type", "spec_draft_n_max"))
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
-        ("mlx_kv_bits", "mlx_kv_bits"),
+        ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
+        ("spec_draft_model", "spec_draft_model"),
+        ("reasoning_budget", "reasoning_budget"),
+        ("reasoning_budget_message", "reasoning_budget_message"),
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
-        if override.get(source) is not None:
+        if override.get(source) is not None and source not in gguf_drops:
             kwargs[target] = override[source]
 
+    mlx_kv_quant = _mlx_kv_quant_of(override)
+    if mlx_kv_quant:
+        kwargs["mlx_kv_quant"] = mlx_kv_quant
+
     if is_gguf:
-        if override.get("n_parallel") is not None:
-            kwargs["n_parallel"] = override["n_parallel"]
         if override.get("n_batch") is not None:
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
@@ -593,6 +699,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_cpu_moe"] = override["n_cpu_moe"]
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+            tensor_split = normalize_tensor_split(override.get("tensor_split"), override["gpu_ids"])
+            if tensor_split is not None:
+                kwargs["tensor_split"] = tensor_split
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
@@ -613,6 +722,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
+            strip_reasoning_budget = "reasoning_budget" in kwargs,
+            strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
             # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
@@ -689,9 +800,20 @@ def _fold_posix_path_variant(value: str) -> str:
 
 
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch configs keyed by model id (see normalize_model_override)."""
-    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
-    return raw if isinstance(raw, dict) else {}
+    """Per-model launch configs keyed by model id (see normalize_model_override), from the acting account's studio.db."""
+    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
+    if not isinstance(raw, dict):
+        return {}
+    # Rows saved before engine defaults were dropped (see normalize_model_override) read as
+    # what they mean: those fields unset, and a row holding nothing else absent.
+    cleaned = {}
+    for key, entry in raw.items():
+        if isinstance(entry, dict):
+            entry = {k: v for k, v in entry.items() if _ENGINE_DEFAULTS.get(k, object()) != v}
+            if not entry:
+                continue
+        cleaned[key] = entry
+    return cleaned
 
 
 def get_model_override(model_id: str) -> dict:
@@ -764,11 +886,13 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
             return resolve_model_override_key(key) or key, override
+    if not is_owner_context():
+        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant)
     return None, {}
 
 
@@ -859,8 +983,11 @@ def set_model_override(
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
-        # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-        coupled_fields = (("gpu_ids", "gpu_index_kind"),),
+        coupled_fields = (
+            # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
+            ("gpu_ids", "gpu_index_kind", "tensor_split"),
+            ("mlx_kv_quant", "mlx_kv_bits"),
+        ),
     )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY, current_account())
     return entry

@@ -129,6 +129,43 @@ def seed_legacy_install(home: Path) -> dict[str, bytes]:
     }
 
 
+def legacy_studio_columns() -> dict[str, tuple[str, ...]]:
+    """Every table in the frozen studio.db schema, with the columns it had then."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(
+            Path(__file__).with_name("legacy_studio_schema.sql").read_text(encoding = "utf-8")
+        )
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name"
+            )
+        ]
+        return {
+            table: tuple(row[1] for row in conn.execute(f'PRAGMA table_info("{table}")'))
+            for table in tables
+        }
+
+
+def legacy_studio_rows(path: Path) -> dict[str, list[tuple]]:
+    """Every row of every legacy table, read through its legacy columns only.
+
+    A current build adds columns to studio.db as it opens it (`ALTER TABLE ... ADD COLUMN`), which
+    changes the file's bytes but not a byte of what the old build wrote. This is the part an upgrade
+    has to preserve, and the part an old build reading its own named columns would see. A dropped or
+    renamed legacy column raises here rather than comparing equal.
+    """
+    rows = {}
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri = True)) as conn:
+        for table, columns in legacy_studio_columns().items():
+            quoted = ", ".join(f'"{column}"' for column in columns)
+            rows[table] = sorted(
+                conn.execute(f'SELECT {quoted} FROM "{table}"').fetchall(), key = repr
+            )
+    return rows
+
+
 def old_auth_row(path: Path) -> tuple:
     with closing(sqlite3.connect(path)) as conn:
         return conn.execute(

@@ -60,8 +60,6 @@ test("toggle on with a reserve set sends self_note_enabled true and the sanitize
   const fields = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
     selfNoteEnabled: true,
     selfNoteReserveTokens: 512,
   });
@@ -73,8 +71,6 @@ test("toggle off sends self_note_enabled false and no reserve", () => {
   const fields = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
     selfNoteEnabled: false,
     selfNoteReserveTokens: 512,
   });
@@ -88,8 +84,6 @@ test("an out-of-range reserve is clamped before it reaches the request body", ()
   const tooLow = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
     selfNoteEnabled: true,
     selfNoteReserveTokens: 1,
   });
@@ -99,8 +93,6 @@ test("an out-of-range reserve is clamped before it reaches the request body", ()
   const tooHigh = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
     selfNoteEnabled: true,
     selfNoteReserveTokens: 999999,
   });
@@ -112,8 +104,6 @@ test("selfNoteEnabled undefined omits both fields, leaving the server env defaul
   const fields = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
-    contextPolicy: "inherit",
-    compactionHeadroomRatio: 0.25,
   });
   assert.equal("self_note_enabled" in fields, false);
   assert.equal("self_note_reserve_tokens" in fields, false);

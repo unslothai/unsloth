@@ -20,6 +20,7 @@ from utils.security.remote_code_scan import (
     HIGH,
     MEDIUM,
     RemoteCodeUnscannable,
+    config_declares_auto_map,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -90,9 +91,19 @@ def _config_has_auto_map(
     configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
-    if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
+    # Every nesting level, not just the top: a composite model declares auto_map on a
+    # sub-config, and the loader resolves it from there, so a top-level-only read
+    # returned "ships no remote code" for a repo whose code the load would run.
+    if not any(
+        config_declares_auto_map(cfg or {}) or _config_declares_model_file(cfg) for cfg in configs
+    ):
         return False
     return True
+
+
+def _config_declares_model_file(cfg) -> bool:
+    """MLX loaders exec a config's ``model_file`` like an ``auto_map`` entry."""
+    return isinstance(cfg, dict) and bool(cfg.get("model_file"))
 
 
 def _is_direct_gguf_file_ref(model_name: str) -> bool:
@@ -133,6 +144,9 @@ def _load_remote_code_configs(
             return configs
 
         from huggingface_hub import hf_hub_download
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent

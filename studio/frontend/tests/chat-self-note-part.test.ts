@@ -150,18 +150,10 @@ test("the self_note branch sits before the unconditional closeReasoningContent()
 // materialize in the FINAL content, never in an interim streamed yield).
 // --------------------------------------------------------------------------
 
-test("the final yielded content splices in the self_note part, mirroring documentCitationParts", () => {
-  const finalContentAt = adapter.indexOf(
-    "...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),",
-  );
+test("the final yielded content splices in the self_note part", () => {
+  const finalContentAt = adapter.indexOf("            ...finalContent,\n");
   assert.ok(finalContentAt > 0);
-  // Widened from 400: the splice carries an explanatory comment about the cast that
-  // `self_note` needs (it is not an assistant-ui part variant), which pushed the spread
-  // itself past a 400-char window.
-  const region = adapter.slice(finalContentAt, finalContentAt + 900);
-  assert.match(region, /\.\.\.documentCitationParts,/);
-  // Matched loosely around the cast, so a change to HOW the part is typed does not fail a
-  // test whose subject is WHETHER the part reaches the final content.
+  const region = adapter.slice(finalContentAt, finalContentAt + 400);
   assert.match(region, /\.\.\.\(selfNotePart\s*\?\s*\[selfNotePart[\s\S]*?\]\s*:\s*\[\]\),/);
 });
 

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { create } from "zustand";
+import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
+
+type Place = { id: string; name: string };
+
+/** The open chat and its menu's handlers, published by the sidebar so the header's menu shares them. */
+export interface ActiveChatMenu {
+  item: SidebarItem;
+  pinned: boolean;
+  unread: boolean;
+  /** Off for a comparison, while generating, or while another fork runs. */
+  canFork: boolean;
+  projects: Place[];
+  sections: Place[];
+  /** Where the chat is now, offered as "Remove from"; null when it is in none. */
+  project: Place | null;
+  section: Place | null;
+  rename: () => void;
+  /** Off while generating: the reply is still changing the topic. */
+  canRegenerateTitle: boolean;
+  regenerateTitle: () => void;
+  togglePin: () => void;
+  toggleUnread: () => void;
+  fork: () => void;
+  moveToProject: (id: string | null) => void;
+  newProject: () => void;
+  moveToSection: (id: string | null) => void;
+  newSection: () => void;
+  copyMarkdown: () => void;
+  copySessionId: () => void;
+  archive: () => void;
+  remove: () => void;
+}
+
+export const useActiveChatMenuStore = create<{ menu: ActiveChatMenu | null }>(() => ({
+  menu: null,
+}));

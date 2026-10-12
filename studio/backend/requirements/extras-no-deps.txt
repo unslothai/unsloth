@@ -41,7 +41,8 @@ transformers==4.57.6; python_version < "3.10"
 # this file is written to avoid. The cap keeps the resolver's fallback while
 # bounding it at the newest audited release.
 pytorch_tokenizers<=1.4.1; sys_platform != "darwin" or platform_machine == "arm64"
-kernels==0.12.1
+# 0.12.3: diffusers flash_4_hub refuses older kernels; same dependencies as 0.12.1.
+kernels==0.12.3
 # kernels<3.11 imports tomli as its tomllib fallback; --no-deps skips its own
 # marker dep, so list it here (no-op on the 3.12/3.13 default installs).
 tomli==2.4.1; python_version < "3.11"

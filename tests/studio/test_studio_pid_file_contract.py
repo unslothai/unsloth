@@ -51,6 +51,33 @@ def test_stop_finds_a_pid_file_named_the_way_the_backend_writes_it(tmp_path, mon
     assert [pid for pid, _times, _files in cli._pid_file_entries()] == [os.getpid()]
 
 
+def test_discovery_reads_the_bind_addresses_the_backend_records(tmp_path, monkeypatch):
+    """Discovery probes a recorded port on the addresses _write_pid_file put in the record, not an
+    assumed 127.0.0.1 that reaches a stranger."""
+    from unsloth_cli import _inference
+    from unsloth_cli.commands import studio as cli
+
+    ns = {
+        "os": os,
+        "Path": Path,
+        "_studio_root": lambda: tmp_path,
+        "_PID_FILE": tmp_path / "studio.pid",
+        "_pid_file_for_port": lambda port: _backend_pid_path(tmp_path, port),
+        "_process_create_time": lambda pid: None,
+        "_bind_addresses": lambda host, port: {"::1"},
+        "_read_pid_record": lambda path: None,
+        "_pid_alive": lambda pid: False,
+        "_OWN_PID_FILE": None,
+    }
+    exec(_func_source(_RUN_SRC, "_write_pid_file"), ns)
+    ns["_write_pid_file"](8901, "localhost")
+
+    monkeypatch.setattr(cli, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(cli, "_pid_alive", lambda pid: True)
+
+    assert list(_inference._recorded_studio_bases([])) == ["http://[::1]:8901"]
+
+
 def test_the_legacy_file_stays_a_bare_pid_an_older_cli_can_parse(tmp_path, monkeypatch):
     # An older `unsloth studio stop` reads studio.pid and requires str.isdigit(), so the compatibility file must never
     # gain the extra metadata lines.

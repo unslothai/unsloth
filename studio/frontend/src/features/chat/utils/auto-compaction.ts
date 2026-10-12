@@ -1,97 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Local GGUF auto-compaction preferences. Default follows the server policy. */
+/** Local GGUF and MLX auto-compaction. On or off; how it compacts is the server's call.
+ *
+ *  Studio used to offer the policy as a setting, but the choice needed the reader to know what a
+ *  checkpoint epoch and a rolling window were before it meant anything, and both sides of it were
+ *  already the server's to configure. It now always follows the server, which is what the setting
+ *  shipped as anyway (UNSLOTH_CONTEXT_POLICY, default "checkpoint"). */
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
-export const DEFAULT_CONTEXT_POLICY = "inherit" as const;
-export const DEFAULT_COMPACTION_HEADROOM_RATIO = 0.25;
 
-export type LocalContextPolicy = "inherit" | "checkpoint" | "rolling";
-
-export const COMPACTION_HEADROOM_CHOICES = [0.25, 0.1, 0.05, 0] as const;
-
-export type CompactionStyleValue =
-  | "inherit"
-  | "checkpoint"
-  | "rolling:0.25"
-  | "rolling:0.1"
-  | "rolling:0.05"
-  | "rolling:0";
-
-export function sanitizeContextPolicy(
-  value: unknown,
-): LocalContextPolicy | undefined {
-  return value === "inherit" || value === "checkpoint" || value === "rolling"
-    ? value
-    : undefined;
-}
-
-export function sanitizeCompactionHeadroomRatio(
-  value: unknown,
-): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const clamped = Math.max(0, Math.min(0.9, Math.round(value * 100) / 100));
-  let nearest: (typeof COMPACTION_HEADROOM_CHOICES)[number] =
-    COMPACTION_HEADROOM_CHOICES[0];
-  let best = Math.abs(clamped - nearest);
-  for (const choice of COMPACTION_HEADROOM_CHOICES) {
-    const distance = Math.abs(clamped - choice);
-    if (distance < best) {
-      nearest = choice;
-      best = distance;
-    }
-  }
-  return nearest;
-}
-
-export function compactionStyleValue(
-  policy: LocalContextPolicy,
-  ratio: number,
-): CompactionStyleValue {
-  if (policy === "inherit") return "inherit";
-  if (policy !== "rolling") return "checkpoint";
-  const rounded =
-    sanitizeCompactionHeadroomRatio(ratio) ?? DEFAULT_COMPACTION_HEADROOM_RATIO;
-  if (rounded === 0) return "rolling:0";
-  if (rounded === 0.05) return "rolling:0.05";
-  if (rounded === 0.1) return "rolling:0.1";
-  return "rolling:0.25";
-}
-
-export function parseCompactionStyle(value: string): {
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
-} {
-  switch (value) {
-    case "inherit":
-      return {
-        contextPolicy: "inherit",
-        compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
-      };
-    case "rolling:0":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0 };
-    case "rolling:0.05":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.05 };
-    case "rolling:0.1":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.1 };
-    case "rolling:0.25":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.25 };
-    default:
-      return {
-        contextPolicy: "checkpoint",
-        compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
-      };
-  }
-}
-
-/** The self-note request fields, or {} when the request has nothing to say about them.
- *
- *  Omitted rather than defaulted when the setting is undefined, so the server`s
- *  UNSLOTH_SELF_NOTE stays in force and an install that never touched the toggle keeps
- *  exactly the behaviour it had. The reserve rides along only when the feature is ON:
- *  sending a budget for a disabled feature is noise.
- */
+// omitted when unset so the server-side UNSLOTH_SELF_NOTE default applies
 function selfNoteRequestFields(options: {
   selfNoteEnabled?: boolean;
   selfNoteReserveTokens?: number;
@@ -111,53 +30,57 @@ function selfNoteRequestFields(options: {
 
 export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
+  isMlx?: boolean;
   autoCompactEnabled: boolean;
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
   selfNoteEnabled?: boolean;
   selfNoteReserveTokens?: number;
 }): {
   context_overflow?: "error" | "truncate_oldest";
-  context_policy?: Exclude<LocalContextPolicy, "inherit">;
-  compaction_headroom_ratio?: number;
   self_note_enabled?: boolean;
   self_note_reserve_tokens?: number;
 } {
-  if (!options.isGguf) return {};
-  // The note is carried by the compaction block, so it only means anything once
-  // compaction can fire at all. Computed up front so every return below carries it.
-  const selfNote = selfNoteRequestFields(options);
+  if (!options.isGguf && !options.isMlx) return {};
   if (!options.autoCompactEnabled) {
-    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
-    // explicit refusal of that fallback.
+    // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
   }
-  if (options.contextPolicy === "rolling") {
-    return {
-      context_overflow: "truncate_oldest",
-      context_policy: "rolling",
-      compaction_headroom_ratio:
-        sanitizeCompactionHeadroomRatio(options.compactionHeadroomRatio) ??
-        DEFAULT_COMPACTION_HEADROOM_RATIO,
-      ...selfNote,
-    };
-  }
-  if (options.contextPolicy === "inherit") {
-    return { context_overflow: "truncate_oldest", ...selfNote };
-  }
+  // omit context_policy so the server applies UNSLOTH_CONTEXT_POLICY
+  return { context_overflow: "truncate_oldest", ...selfNoteRequestFields(options) };
+}
+
+// leaves 25% of the window free, matching _EXTERNAL_COMPACTION_HEADROOM for self-hosted servers
+const API_COMPACTION_HEADROOM = 0.25;
+// request schema ceiling for compaction_threshold
+const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
+
+export function apiCompactionRequestFields(options: {
+  autoCompactEnabled: boolean;
+  contextLength: number | null | undefined;
+}): {
+  context_overflow?: "truncate_oldest";
+  compaction_threshold?: number;
+  context_window?: number;
+} {
+  const { autoCompactEnabled, contextLength } = options;
+  if (!autoCompactEnabled) return {};
+  // without a catalogued window, the backend reads the self-hosted server's reported window
+  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest" };
   return {
     context_overflow: "truncate_oldest",
-    context_policy: "checkpoint",
-    ...selfNote,
+    compaction_threshold: Math.min(
+      API_COMPACTION_THRESHOLD_MAX,
+      Math.floor(contextLength * (1 - API_COMPACTION_HEADROOM)),
+    ),
+    context_window: contextLength,
   };
 }
 
-/** The model's self-note across a compaction. Off by default, like the server. */
 export const DEFAULT_SELF_NOTE_ENABLED = false;
 export const DEFAULT_SELF_NOTE_RESERVE_TOKENS = 256;
-/** Mirrors the backend's ge/le, which 400s the whole save on one bad field. */
+// mirrors the backend ge/le bounds
 export const SELF_NOTE_RESERVE_MIN = 64;
 export const SELF_NOTE_RESERVE_MAX = 4096;
+export const SELF_NOTE_RESERVE_CHOICES = [128, 256, 512, 1024] as const;
 
 export function sanitizeSelfNoteEnabled(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;

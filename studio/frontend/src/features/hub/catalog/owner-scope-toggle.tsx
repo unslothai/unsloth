@@ -29,7 +29,7 @@ export function OwnerScopeToggle({
       ariaLabel="Publisher scope"
       align="end"
       // Extra gap before the chevron; min-width keeps the pill readable.
-      className="h-8 min-w-[96px] gap-1.5 text-ui-11p5"
+      className="h-8 min-w-[calc(96px*var(--ui-space-scale,1))] gap-1.5 text-ui-11p5"
     />
   );
 }

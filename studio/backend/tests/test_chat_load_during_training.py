@@ -59,6 +59,7 @@ def _model_cfg(**overrides):
             "is_vision": False,
             "path": None,
             "base_model": None,
+            "gguf_file": None,
             **overrides,
         }
     )
@@ -894,12 +895,91 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "meta/Llama-3-8B")
             self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
 
+    def test_legacy_cpt_method_non_bnb_base_keeps_request(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._write_adapter(d, {"unsloth_training_method": "CPT"})
+            cfg = SimpleNamespace(is_lora = True, path = d, base_model = "unsloth/Qwen3-4B")
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_cpt_method_bnb_base_keeps_4bit(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self._write_adapter(d, {"unsloth_training_method": "CPT"})
+            cfg = SimpleNamespace(
+                is_lora = True, path = d, base_model = "unsloth/Qwen3-4B-unsloth-bnb-4bit"
+            )
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_recorded_precision_wins(self):
+        import tempfile
+        for recorded in (True, False):
+            for requested in (True, False):
+                with tempfile.TemporaryDirectory() as d:
+                    self._write_adapter(
+                        d, {"unsloth_training_method": "CPT", "unsloth_load_in_4bit": recorded}
+                    )
+                    cfg = SimpleNamespace(is_lora = True, path = d, base_model = "unsloth/Qwen3-4B")
+                    self.assertIs(self.route._effective_load_in_4bit(cfg, requested), recorded)
+
     def test_malformed_adapter_config_returns_request(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "adapter_config.json").write_text("[1, 2, 3]")  # not a dict
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
             self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
+
+    def _model_dir(
+        self,
+        root,
+        name,
+        config = None,
+        adapter = None,
+    ):
+        import json
+
+        d = Path(root) / name
+        d.mkdir(parents = True)
+        (d / "config.json").write_text(json.dumps(config or {"model_type": "llama"}))
+        (d / "model.safetensors").write_bytes(b"")
+        if adapter is not None:
+            (d / "adapter_config.json").write_text(json.dumps(adapter))
+        return str(d)
+
+    def _studio_home(self):
+        import os
+        import tempfile
+
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        patcher = patch.dict(os.environ, {"UNSLOTH_STUDIO_HOME": home.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Path(home.name)
+
+    def test_full_finetune_output_loads_16bit(self):
+        home = self._studio_home()
+        path = self._model_dir(home / "outputs", "unsloth_Qwen3-0.6B_1771227800")
+        cfg = SimpleNamespace(is_lora = False, path = path, base_model = None)
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+        ckpt = self._model_dir(Path(path), "checkpoint-10")
+        cfg = SimpleNamespace(is_lora = False, path = ckpt, base_model = None)
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
+    def test_quantized_or_foreign_models_keep_4bit(self):
+        home = self._studio_home()
+        outputs = home / "outputs"
+        quantized = self._model_dir(
+            outputs, "q", {"quantization_config": {"quant_method": "bitsandbytes"}}
+        )
+        adapter = self._model_dir(outputs, "a", adapter = {})
+        outside = self._model_dir(home / "exports", "merged")
+        for path in (quantized, adapter, outside, "unsloth/Qwen3-0.6B"):
+            cfg = SimpleNamespace(is_lora = False, path = path, base_model = None)
+            self.assertTrue(self.route._effective_load_in_4bit(cfg, True), path)
+        qlora = self._model_dir(outputs, "qlora", adapter = {"unsloth_training_method": "qlora"})
+        cfg = SimpleNamespace(is_lora = True, path = qlora, base_model = "x")
+        self.assertTrue(self.route._effective_load_in_4bit(cfg, True))
 
     def test_native_audio_uses_full_precision_for_admission(self):
         cfg = SimpleNamespace(
@@ -1305,12 +1385,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 
 
 class TestRemoteGgufComputeReserve(unittest.TestCase):
-    """The compute reserve a remote GGUF estimate carries.
-
-    Every other caller here patches it to zero to assert exact GB totals, so its arithmetic goes
-    unasserted even though it decides whether a load is refused. These pin the shape, not the
-    magnitude: retuning a safety factor keeps them passing, dropping a term does not.
-    """
+    """Check the remote GGUF compute reserve without the other tests' zero-cost stub."""
 
     @classmethod
     def setUpClass(cls):
@@ -1328,26 +1403,55 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
         with patch.dict(os.environ, env, clear = True):
             return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
 
-    def test_a_single_slot_still_reserves_an_output_buffer(self):
-        """llama-server allocates an output buffer for its one slot, but the old
-        max(0, n_parallel - 1) count reserved nothing there.
-
-        The total is spelled out absolutely rather than compared against a neighbouring call: the
-        reserve is linear in slot count, so any two samples are one buffer apart under both the
-        old formula and the new one, and only an absolute anchor sees the floor.
-        """
-        from core.inference.llama_cpp import LlamaCppBackend
+    def test_reserve_is_the_mask_plus_an_activation_ceiling(self):
+        """Charge the activation ceiling once per micro-batch and output rows per slot."""
+        from core.inference.llama_cpp import (
+            _ASSUMED_MAX_ACTIVATION_WIDTH,
+            _ASSUMED_MAX_VOCAB,
+            LlamaCppBackend,
+        )
 
         ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
-        mask = 4096 * ubatch * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-        per_slot = (
-            self.route._ASSUMED_MAX_VOCAB * ubatch * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        mask = 4096 * ubatch * 2
+
+        def expected(slots):
+            rows = min(ubatch, slots * (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX))
+            flat = _ASSUMED_MAX_ACTIVATION_WIDTH * ubatch * 4 + _ASSUMED_MAX_VOCAB * rows * 4
+            return (mask + flat * LlamaCppBackend._COMPUTE_BUFFER_SAFETY) / (1024**3)
+
+        self.assertAlmostEqual(self._reserve(n_parallel = 1), expected(1), places = 6)
+        self.assertAlmostEqual(self._reserve(n_parallel = 2), expected(2), places = 6)
+        # A second slot costs rows, far less than a second activation reserve.
+        self.assertLess(
+            self._reserve(n_parallel = 2) - self._reserve(n_parallel = 1),
+            _ASSUMED_MAX_ACTIVATION_WIDTH * ubatch * 4 / (1024**3) / 4,
         )
-        self.assertAlmostEqual(self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6)
-        # One more buffer for a second slot, pinning the count as well as the floor.
+
+    def test_an_older_build_reserves_a_row_per_micro_batch_token(self):
+        """Before ggml-org/llama.cpp#23861 the output rows cover the whole micro-batch,
+        which the remote guard charges when the binary reports such a build."""
+        from core.inference.llama_cpp import _ASSUMED_MAX_VOCAB, LlamaCppBackend
+
+        ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+        with patch.object(LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, **k: False):
+            current = self._reserve(n_parallel = 1)
+        with patch.object(LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, **k: True):
+            older = self._reserve(n_parallel = 1)
+        rows = (ubatch - (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX)) * _ASSUMED_MAX_VOCAB * 4
         self.assertAlmostEqual(
-            self._reserve(n_parallel = 2), (mask + 2 * per_slot) / (1024**3), places = 6
+            older - current, rows * LlamaCppBackend._COMPUTE_BUFFER_SAFETY / (1024**3), places = 6
         )
+
+    def test_tensor_mode_replicates_the_whole_buffer_on_every_device(self):
+        """Tensor mode reserves the mask, activations and output rows on each device."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        for older_build in (False, True):
+            with patch.object(
+                LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, _o = older_build, **k: _o
+            ):
+                single = self._reserve(n_parallel = 2)
+                tensor = self._reserve(n_parallel = 2, n_devices = 2, tensor_parallel = True)
+            self.assertAlmostEqual(tensor, 2 * single, places = 6)
 
     def test_diffusion_reserves_nothing(self):
         """The default micro-batch is a llama-server notion: a diffusion estimate has no ubatch to
@@ -1539,6 +1643,80 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             "probe_server_capabilities",
             classmethod(lambda cls, binary = None: {"supports_dflash": supported}),
         )
+
+    def test_auto_prices_the_mtp_sidecar_under_tensor_split(self):
+        """#11308: Auto on tensor split launches the loadable MTP sidecar, so it is the one charged."""
+        import tempfile
+
+        import core.inference.llama_cpp as llama_cpp_module
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            mtp = p / "MTP" / "mtp-model.gguf"
+            mtp.parent.mkdir()
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            mtp.write_bytes(b"z" * 5000)
+            cfg = _gguf_cfg(
+                gguf_file = str(target),
+                gguf_dflash_file = str(sidecar),
+                gguf_mtp_file = str(mtp),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _caps(mtp_token = "draft-mtp"):
+                return patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {"supports_dflash": True, "mtp_token": mtp_token}
+                    ),
+                )
+
+            def _estimate(
+                loads,
+                mtp_token = "draft-mtp",
+                **kw,
+            ):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: loads
+                    ),
+                    _caps(mtp_token),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto", **kw)
+
+            def _resident(**kw):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: True
+                    ),
+                    _caps(),
+                ):
+                    return self.route._gguf_resident_file_gb(cfg, speculative_type = "auto", **kw)
+
+            resident_tensor = _resident(tensor_parallel = True)
+            resident_layer = _resident()
+            tensor = _estimate(True, tensor_parallel = True)
+            tensor_extras = _estimate(True, llama_extra_args = ["-sm", "tensor"])
+            layer = _estimate(True)
+            unloadable = _estimate(False, tensor_parallel = True)
+            no_mtp_binary = _estimate(True, mtp_token = None, tensor_parallel = True)
+        self.assertAlmostEqual(tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(tensor_extras, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(layer, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(unloadable, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(no_mtp_binary, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
 
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """--model-draft usually names the very sidecar discovery already found,
@@ -2828,6 +3006,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 n_ubatch = None,
                 n_parallel = 1,
                 per_device_tensor = False,
+                vocab_ceiling = None,
             ):
                 seen["compute_n_ubatch"] = n_ubatch
                 return 0
@@ -2839,6 +3018,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 cache_type_kv = None,
                 *,
                 layer_split = False,
+                flash_attn = True,
+                n_parallel = 1,
             ):
                 return 0
 
