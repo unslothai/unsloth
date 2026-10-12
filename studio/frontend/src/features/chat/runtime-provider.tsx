@@ -3663,13 +3663,15 @@ function VisibleAnswerRecomputeSync({
   // An answer with no usage (interrupted, or a server that sent none) still has its details,
   // and an interrupted one the model its recompute was recorded on. None known: keep the
   // note, which can only add a caveat, never claim exact.
+  // The recompute's own model first: a Continue on another checkpoint stamps the joined answer's
+  // usage with that one, while the re-prefill happened on the first.
   const answerModelId =
-    typeof usage?.modelId === "string"
-      ? usage.modelId
-      : typeof details?.modelId === "string" && details.modelId
-        ? details.modelId
-        : typeof recomputedOn === "string" && recomputedOn
-          ? recomputedOn
+    typeof recomputedOn === "string" && recomputedOn
+      ? recomputedOn
+      : typeof usage?.modelId === "string"
+        ? usage.modelId
+        : typeof details?.modelId === "string" && details.modelId
+          ? details.modelId
           : null;
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const recomputed =

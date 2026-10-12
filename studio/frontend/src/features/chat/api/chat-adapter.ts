@@ -5901,6 +5901,11 @@ export function createOpenAIStreamAdapter(
       // Seeded from the answer this continues, so a later round that was not recomputed does
       // not clear it off the joined answer.
       let sawPreemptRecompute = continuation?.preemptRecomputed === true;
+      // Where that recompute happened: a Continue on another checkpoint keeps it, and only a
+      // recompute of its own moves it to this one.
+      let preemptRecomputedOn =
+        continuation?.preemptRecomputedModelId ??
+        (sawPreemptRecompute ? params.checkpoint : undefined);
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5934,7 +5939,7 @@ export function createOpenAIStreamAdapter(
         contextTruncation,
         preemptRecomputed: sawPreemptRecompute || undefined,
         // Live yields carry no response details, and an interrupted answer persists from here.
-        preemptRecomputedModelId: sawPreemptRecompute ? params.checkpoint : undefined,
+        preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -7257,6 +7262,7 @@ export function createOpenAIStreamAdapter(
                   // Qualifies the resume before it, so the status line stays as it is.
                   // Reaches the chip through the message metadata below, per branch.
                   sawPreemptRecompute = true;
+                  preemptRecomputedOn = params.checkpoint;
                   continue;
                 }
                 runtime.setToolStatus(
@@ -8831,7 +8837,7 @@ export function createOpenAIStreamAdapter(
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               preemptRecomputed: sawPreemptRecompute || undefined,
-              preemptRecomputedModelId: sawPreemptRecompute ? params.checkpoint : undefined,
+              preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,

@@ -220,16 +220,17 @@ test("the recompute note is persisted with the answer and read from the answer o
   );
   // An answer with no usage record still names its model in its details.
   assert.match(PROVIDER, /custom\?\.responseDetails as \{ modelId\?: unknown \}/);
-  assert.match(PROVIDER, /: typeof details\?\.modelId === "string" && details\.modelId\s+\? details\.modelId/);
+  assert.match(PROVIDER, /typeof details\?\.modelId === "string" && details\.modelId\s+\? details\.modelId/);
   // An interrupted answer persists from a live yield, which carries no details, so the
   // recompute records the model it happened on itself.
   assert.equal(
-    ADAPTER.match(/preemptRecomputedModelId: sawPreemptRecompute \? params\.checkpoint : undefined,/g)
+    ADAPTER.match(/preemptRecomputedModelId: sawPreemptRecompute \? preemptRecomputedOn : undefined,/g)
       ?.length,
     2,
     "the live and the final metadata both name the recompute's model",
   );
-  assert.match(PROVIDER, /: typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);
+  // Read before usage: a Continue on another checkpoint stamps the joined usage with that one.
+  assert.match(PROVIDER, /const answerModelId =\s+typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);
   // And the durable follower, whose interrupted answers persist without details either.
   assert.match(
     PROVIDER,

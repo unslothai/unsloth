@@ -195,7 +195,7 @@ import {
   providerCompactionContinuationFields,
   readContinuationSource,
   readIncompleteInfo,
-  readPreemptRecomputed,
+  readPreemptRecomputedFields,
   readTextThoughtSignature,
   resumesWithoutText,
   claimAutoContinue,
@@ -7622,7 +7622,7 @@ function useContinuation() {
       ...(answerParts.length > 0 ? { answerParts } : {}),
       ...(geminiReplayTurns.length > 0 ? { geminiReplayTurns } : {}),
       ...providerCompactionContinuationFields(metadata),
-      ...(readPreemptRecomputed(metadata) ? { preemptRecomputed: true } : {}),
+      ...readPreemptRecomputedFields(metadata),
     };
     return aui.thread().startRun({
       parentId: parent,

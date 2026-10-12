@@ -451,6 +451,8 @@ export type ContinuationRequest = {
   providerCompactionConnectionKey?: string;
   /** The answer being continued was re-prefilled after a park, so the joined answer was too. */
   preemptRecomputed?: boolean;
+  /** The model that re-prefill happened on, kept when Continue runs on another. */
+  preemptRecomputedModelId?: string;
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -572,10 +574,24 @@ export function readContinuationRequest(
   };
 }
 
-function preemptRecomputedField(value: unknown): { preemptRecomputed?: true } {
-  return (value as { preemptRecomputed?: unknown } | undefined)?.preemptRecomputed === true
-    ? { preemptRecomputed: true }
-    : {};
+function preemptRecomputedField(
+  value: unknown,
+): { preemptRecomputed?: true; preemptRecomputedModelId?: string } {
+  const fields = value as
+    | { preemptRecomputed?: unknown; preemptRecomputedModelId?: unknown }
+    | undefined;
+  if (fields?.preemptRecomputed !== true) return {};
+  const modelId = fields.preemptRecomputedModelId;
+  return typeof modelId === "string" && modelId
+    ? { preemptRecomputed: true, preemptRecomputedModelId: modelId }
+    : { preemptRecomputed: true };
+}
+
+/** The recompute fields a Continue carries forward, read off the message being continued. */
+export function readPreemptRecomputedFields(
+  metadata: unknown,
+): { preemptRecomputed?: true; preemptRecomputedModelId?: string } {
+  return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom);
 }
 
 /** Whether a message's answer was re-prefilled after a park, as its metadata records it. */

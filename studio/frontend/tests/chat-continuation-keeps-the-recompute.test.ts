@@ -14,8 +14,7 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-const SENDS_IT =
-  /readPreemptRecomputed\(metadata\) \? \{ preemptRecomputed: true \} : \{\}/;
+const SENDS_IT = /\.\.\.readPreemptRecomputedFields\(metadata\),/;
 const SEEDS_IT =
   /let sawPreemptRecompute = continuation\?\.preemptRecomputed === true;/;
 
@@ -32,6 +31,23 @@ test("the request carries the recompute and only a true one", () => {
   assert.equal(carried(true), true);
   assert.equal(carried(undefined), undefined);
   assert.equal(carried("yes"), undefined);
+});
+
+test("the request keeps the model the recompute happened on", () => {
+  const request = readContinuationRequest({
+    custom: {
+      [CONTINUATION_RUN_CONFIG_KEY]: {
+        partial: "Half an answer",
+        preemptRecomputed: true,
+        preemptRecomputedModelId: "model-a",
+      },
+    },
+  });
+  assert.equal(request?.preemptRecomputedModelId, "model-a");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  // Seeded from the request, moved only by a recompute of the continuation's own.
+  assert.match(adapter, /continuation\?\.preemptRecomputedModelId \?\?/);
+  assert.match(adapter, /sawPreemptRecompute = true;\s+preemptRecomputedOn = params\.checkpoint;/);
 });
 
 test("the metadata reader reads what the adapter writes", () => {
