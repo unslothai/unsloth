@@ -1057,14 +1057,17 @@ def _detect_load_family(
     gguf_filename: Optional[str],
     family_override: Optional[str],
     display_repo_id: Optional[str] = None,
+    model_kind: Optional[str] = None,
 ) -> Optional[VideoFamily]:
     """Family detection shared by validate_load_request and the load worker: the
     repo id first, then the picked filename -- a local directory or generically
     named repo often carries the family token only in the checkpoint filename,
     and the worker must resolve the same family the validator accepted."""
     # Before the override: family_override="ltx-2" must not load LTX-2.5.
-    assert_supported_ltx_version(repo_id, gguf_filename, display_repo_id)
-    _refuse_local_ltx25_pipeline(repo_id, gguf_filename)
+    # An explicit pipeline load never opens the filename, so it must not vouch for the repo.
+    ltx_file = None if str(model_kind or "").strip().lower() == "pipeline" else gguf_filename
+    assert_supported_ltx_version(repo_id, ltx_file, display_repo_id)
+    _refuse_local_ltx25_pipeline(repo_id, ltx_file)
     if family_override:
         return detect_video_family(repo_id, family_override)
     fam = (
@@ -2691,7 +2694,7 @@ class VideoBackend:
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
         _refuse_non_dit_pick(repo_id, gguf_filename, "video")
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id, model_kind)
         if fam is None:
             raise ValueError(
                 f"'{repo_id}' is not a supported text-to-video model. Supported families: "
@@ -3080,6 +3083,7 @@ class VideoBackend:
                 kwargs.get("gguf_filename"),
                 kwargs.get("family_override"),
                 kwargs.get("display_repo_id"),
+                kwargs.get("model_kind"),
             )
             # Also on the worker, which a direct begin_load reaches without a plan. Here rather than in
             # validate_load_request, which is network-free by contract.
@@ -4996,7 +5000,7 @@ class VideoBackend:
         download manager."""
         from huggingface_hub import HfApi
 
-        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
+        fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id, model_kind)
         # _detect_load_family resolves from the REPO id first, so a mixed repo answers its media family for every file
         # in it, a csm quant included. Refuse before the plan stages a byte.
         _assert_pick_is_not_speech(repo_id, gguf_filename, hf_token)

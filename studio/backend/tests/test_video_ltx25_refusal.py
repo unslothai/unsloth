@@ -283,3 +283,39 @@ def test_training_refuses_renamed_local_ltx25_pipeline(tmp_path):
     index["text_encoder"] = ["transformers", "Gemma3ForConditionalGeneration"]
     (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
     assert resolve_trainable_family(str(folder), "ltx-2") == "ltx-2"
+
+
+def test_explicit_pipeline_load_ignores_the_unused_filename(tmp_path):
+    from core.inference.video import _detect_load_family, get_video_backend
+
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        get_video_backend().validate_load_request(
+            "Lightricks/LTX-2.5",
+            gguf_filename = "ltx-2.3-22b-dev.safetensors",
+            model_kind = "pipeline",
+            family_override = "ltx-2",
+        )
+    folder = tmp_path / "opaque"
+    folder.mkdir()
+    index = {
+        "_class_name": "LTX2Pipeline",
+        "text_encoder": ["transformers", "Gemma4UnifiedForConditionalGeneration"],
+    }
+    (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
+    with pytest.raises(ValueError, match = "model_index.json"):
+        _detect_load_family(str(folder), "ltx-2.3.safetensors", "ltx-2", None, "pipeline")
+    # A real single-file pick still lets its own ltx-2.3 file decide.
+    assert _detect_load_family(str(folder), "ltx-2.3.safetensors", "ltx-2", None, "single_file").name == "ltx-2"
+
+
+def test_training_name_guard_is_scoped_to_ltx(tmp_path):
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    folder = tmp_path / "sdxl-ltx-2.5-style"
+    folder.mkdir()
+    (folder / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionXLPipeline"}), encoding = "utf-8"
+    )
+    assert resolve_trainable_family(str(folder), "sdxl") == "sdxl"
+    with pytest.raises(ValueError, match = "LTX-2.5"):
+        resolve_trainable_family(str(folder), "ltx-2")

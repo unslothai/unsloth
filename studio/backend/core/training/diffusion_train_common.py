@@ -280,6 +280,16 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    family = _resolve_trainable_family(base_model, model_family)
+    if family == "ltx-2":
+        # Name guard only for LTX: "sdxl-ltx-2.5-style" with model_family="sdxl" is not LTX.
+        from core.inference.video_families import assert_supported_ltx_version
+
+        assert_supported_ltx_version(base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
     Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
     base; an explicit ``model_family`` must name a registry family, and that family must be
@@ -313,10 +323,9 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
-    # Before either branch: model_family="ltx-2" must not train LTX-2.5.
-    from core.inference.video_families import assert_local_pipeline_not_ltx25, assert_supported_ltx_version
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
 
-    assert_supported_ltx_version(base_model)
     assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
