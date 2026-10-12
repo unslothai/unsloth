@@ -270,6 +270,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
           formHasPassword: info.formHasPassword === true,
           submits: info.submits === true,
           ...(typeof info.option === "string" ? { option: info.option.slice(0, 200) } : {}),
+          ...(typeof info.submitter === "string" ? { submitter: info.submitter.slice(0, 200) } : {}),
         }
       : undefined,
   };
@@ -520,6 +521,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
+    // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
+    if (info.role === "combobox") gates.push(gateElement("type", info, before, action.policy, permissions()));
     gates.push(gateElement("select", chosen, before, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.

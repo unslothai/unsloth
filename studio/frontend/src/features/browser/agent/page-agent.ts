@@ -29,6 +29,8 @@ export type ElementInfo = {
   formHasPassword: boolean;
   /** For a dropdown described with a value: the label of the option that value selects. */
   option?: string;
+  /** For Enter in a field: the label of the button that will submit its form. */
+  submitter?: string;
   submits: boolean;
 };
 
@@ -527,6 +529,7 @@ export function installPageAgent(): PageAgent {
       ...(el instanceof HTMLSelectElement && typeof value === "string"
         ? { option: clean(findOption(el, value)?.text ?? "", 200) }
         : {}),
+      ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
     return { ok: true, info };
   };
