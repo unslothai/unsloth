@@ -723,10 +723,16 @@ export function installPageAgent(): PageAgent {
       return { ok: false, error: `${ref} is disabled or read-only.` };
     }
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
-      setValue(field, text);
-      // A date or time field drops a value it can't parse: say so, not "typed".
+      // A date or time field drops a value it can't parse: tried on a detached field of the same
+      // type first, so a bad value never blanks the page's field or fires its change handlers.
       const format = DATE_FORMATS[field.type.toLowerCase()];
-      if (format && text && !field.value) return { ok: false, error: `${ref} takes a value like ${format}.` };
+      if (format && text) {
+        const probe = document.createElement("input");
+        probe.type = field.type;
+        probe.value = text;
+        if (!probe.value) return { ok: false, error: `${ref} takes a value like ${format}.` };
+      }
+      setValue(field, text);
     } else if ((el as HTMLElement).isContentEditable) {
       const selection = window.getSelection();
       const range = document.createRange();
