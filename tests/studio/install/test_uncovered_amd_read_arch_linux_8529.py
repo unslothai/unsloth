@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -209,8 +210,17 @@ def _setup_report(
     gfx: str,
     gfx_all: str,
     mkt: str = "",
+    torch_version: str = "",
 ) -> str:
     src = _SETUP_SH.read_text(encoding = "utf-8")
+    venv = tempfile.mkdtemp(dir = os.environ.get("TMPDIR"))
+    if torch_version:
+        tv = Path(venv) / "lib" / "python3.12" / "site-packages" / "torch"
+        tv.mkdir(parents = True)
+        hip = "'7.1.0'" if "rocm" in torch_version else "None"
+        (tv / "version.py").write_text(
+            f"__version__ = '{torch_version}'\nhip: Optional[str] = {hip}\n", encoding = "utf-8"
+        )
     start = src.index("    # An arch READ as uncovered on every probed GPU")
     end = src.index('        step "gpu" "AMD ROCm"\n    fi\n', start) + len(
         '        step "gpu" "AMD ROCm"\n    fi\n'
@@ -223,12 +233,13 @@ def _setup_report(
         'step() { echo "STEP: $2"; }\nsubstep() { echo "  $1"; }\n'
         '_setup_unsupported_gfx_any() { _setup_unsupported_gfx_from_name "$1"; }\n'
         f"{funcs}\n_setup_gfx='{gfx}'\n_setup_gfx_all='{gfx_all}'\n_setup_mkt='{mkt}'\n"
-        + src[start:end]
+        f"VENV_DIR='{venv}'\n" + src[start:end]
     )
     env = {k: v for k, v in os.environ.items() if not k.startswith("UNSLOTH_TORCH_INDEX")}
     out = subprocess.run(
         ["bash", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30, env = env
     )
+    shutil.rmtree(venv, ignore_errors = True)
     return out.stdout
 
 
@@ -398,3 +409,18 @@ def test_setup_sh_a_declared_arch_outranks_the_rocr_mask(monkeypatch):
 def test_install_summary_an_hsa_spoof_is_judged_by_its_target(monkeypatch, hsa, step):
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", hsa)
     assert f"STEP: {step}" in _install_summary_gpu_step("gfx1012")
+
+
+@_POSIX
+@pytest.mark.parametrize("torch_version", ["2.10.0a0+rocm7.10.0", "2.9.1+rocm6.4"])
+def test_setup_sh_a_kept_rocm_torch_is_not_called_cpu_only(torch_version):
+    """studio update keeps an existing ROCm build (TheRock, hand-installed)."""
+    out = _setup_report("gfx1010", "gfx1010", "AMD Radeon RX 5700 XT", torch_version)
+    assert "STEP: AMD Radeon RX 5700 XT (gfx1010)" in out, out
+    assert "CPU-only" not in out, out
+
+
+@_POSIX
+def test_setup_sh_a_cpu_torch_still_gets_the_warning():
+    out = _setup_report("gfx1010", "gfx1010", "AMD Radeon RX 5700 XT", "2.10.0+cpu")
+    assert "STEP: AMD GPU detected (gfx1010) -- no ROCm PyTorch wheels" in out, out

@@ -4366,8 +4366,18 @@ EOF
         _setup_unsup_cur="$_setup_unsup_hsa"
         _setup_unsup_inv=""
     fi
+    # A ROCm torch already in the venv is kept by the update (a TheRock or hand-installed build
+    # may run here), so only a non-ROCm one is reported as CPU-only. Read off disk, no import.
+    _setup_unsup_torch_rocm=false
+    for _setup_unsup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_unsup_tv" ] || continue
+        grep -qE "^hip(: [^=]*)? = '|^__version__ = '[^']*\+rocm" "$_setup_unsup_tv" 2>/dev/null \
+            && _setup_unsup_torch_rocm=true
+        break
+    done
     _setup_unsup_gfx=""
-    if [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; then
+    if [ "$_setup_unsup_torch_rocm" = false ] && \
+       { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
         _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
