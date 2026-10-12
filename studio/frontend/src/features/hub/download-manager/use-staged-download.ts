@@ -26,7 +26,6 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
-  /** Per-file sizes from the plan; with them the panel colours the bar by part. */
   fileBytes?: Record<string, number>;
   cachedCheckpointBytes?: number;
   earlierBytes?: Record<string, number>;

@@ -4922,7 +4922,6 @@ class DiffusionBackend:
                     "bytes": int(
                         sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
                     ),
-                    # Per file, so the download panel can show what the bytes are for.
                     "file_bytes": {
                         name: int(declared_sizes.get(name, 0))
                         for name in missing
