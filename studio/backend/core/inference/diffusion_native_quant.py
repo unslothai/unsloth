@@ -41,9 +41,8 @@ def mps_int8pack_disabled() -> bool:
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
-    """``scale`` rounded up to the nearest ``dtype``-exact value, as fp32. The Metal kernel takes scales in the
-    activation dtype; casting fp32 scales at call time would add a per-row gain error (up to 2**-9 in bf16).
-    Rounding up never clips a code."""
+    """``scale`` rounded up to a ``dtype``-exact fp32 value: the Metal kernel takes ``dtype`` scales, so a call-time
+    cast would add per-row gain error (up to 2**-9 in bf16); rounding up never clips a code."""
     import torch
 
     # nextafter is not implemented on every backend.
