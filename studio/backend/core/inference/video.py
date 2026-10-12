@@ -5254,6 +5254,7 @@ class VideoBackend:
                 "repo_id": repo,
                 "files": names,
                 "bytes": sum(size for _name, size in staged),
+                "file_bytes": {name: int(size) for name, size in staged},
                 "gguf_filename": gguf,
                 # Describes the ENTRY, not the pick: a 2.3 repo whose checkpoint is already cached stages companion
                 # files only, and calling that "Model file" misdescribes what is downloading. A pipeline pick has no

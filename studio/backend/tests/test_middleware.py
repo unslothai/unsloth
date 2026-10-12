@@ -397,6 +397,28 @@ class TestMaxBodyMiddleware:
         ):
             assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
+    def test_llama_passthrough_posts_are_capped(self, main_module):
+        from fastapi import Request
+        from fastapi.testclient import TestClient
+
+        for path in ("/tokenize", "/tokenize/", "/detokenize", "/detokenize/"):
+            assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
+
+        app = FastAPI()
+        app.add_middleware(
+            main_module.MaxBodyMiddleware,
+            max_bytes_getter = lambda: 64,
+            protected_prefixes = main_module._BODY_PROTECTED_PREFIXES,
+        )
+
+        @app.post("/tokenize")
+        async def _tokenize(request: Request):
+            return {"n": len(await request.body())}
+
+        with TestClient(app) as c:
+            assert c.post("/tokenize", content = b"x" * 64).status_code == 200
+            assert c.post("/tokenize", content = b"x" * 65).status_code == 413
+
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,
@@ -1655,6 +1677,24 @@ def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeyp
         "/api/rag/knowledge-bases/kb1/linked-folders",
     ):
         assert not pattern.match(path), path
+
+
+def test_sandbox_uploads_pass_through_on_their_own_cap(main_module):
+    from utils.upload_limits import SANDBOX_UPLOAD_MAX_BYTES, upload_request_limit_bytes
+
+    pattern = main_module._UPLOAD_PASSTHROUGH_RE
+    for path in (
+        "/api/inference/sandbox/thread-1/upload",
+        "/api/inference/sandbox/_/upload/",
+        "/v1/sandbox/thread-1/upload",
+    ):
+        assert pattern.match(path), path
+        assert main_module._get_upload_passthrough_request_max_bytes(
+            path
+        ) == upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
+    for path in ("/api/inference/sandbox/thread-1/reveal", "/api/inference/sandbox/a/b/upload"):
+        assert not pattern.match(path), path
+    assert pattern.match("/api/rag/threads/t1/documents")
 
 
 def test_pattern_passthrough_streams_and_refuses_oversized_declared_bodies(main_module):

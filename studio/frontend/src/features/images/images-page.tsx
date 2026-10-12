@@ -1550,6 +1550,11 @@ export function ImagesPage({
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
+  const sortedLoras = useMemo(
+    () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
+    [availableLoras],
+  );
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
@@ -3345,7 +3350,10 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          const entries = diffusionStagingEntries(plan.entries, repoId, {
+            ...opts,
+            checkpointBytes: plan.checkpoint_bytes,
+          });
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;
@@ -5466,13 +5474,11 @@ export function ImagesPage({
                   {availableLoras.length > 0 && (
                     <datalist id="diffusion-lora-suggestions">
                       {/* A datalist has no groups, so the label carries the fine-tuned mark. */}
-                      {[...availableLoras]
-                        .sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned)))
-                        .map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.fine_tuned ? `${a.display_name} (fine-tuned)` : a.display_name}
-                          </option>
-                        ))}
+                      {sortedLoras.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.fine_tuned ? `${a.display_name} (fine-tuned)` : a.display_name}
+                        </option>
+                      ))}
                     </datalist>
                   )}
                   {loras.map((sel, i) => (
@@ -5531,7 +5537,7 @@ export function ImagesPage({
                         onClick={() => {
                           // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
                           const taken = new Set(loras.map((l) => l.id));
-                          const next = availableLoras.find((a) => !taken.has(a.id));
+                          const next = sortedLoras.find((a) => !taken.has(a.id));
                           setLoras((prev) => [
                             ...prev,
                             next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },

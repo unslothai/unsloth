@@ -84,6 +84,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
     install_wheel,
+    is_windows_wheel_env,
     probe_torch_wheel_env,
     url_exists,
 )
@@ -145,11 +146,59 @@ def _dataset_local_files_only(config: dict) -> bool:
     return bool(config.get("dataset_snapshot_path"))
 
 
+def _uses_mlx_training_backend() -> bool:
+    from core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
+
+
+def _adapter_trains_embeddings(model) -> bool:
+    """Whether a loaded adapter already trains embed_tokens or lm_head in full (#13140)."""
+    for adapter in (getattr(model, "peft_config", None) or {}).values():
+        saved = list(getattr(adapter, "modules_to_save", None) or [])
+        saved += list(getattr(adapter, "modules_to_tie", None) or [])
+        if any(str(m).rsplit(".", 1)[-1] in ("embed_tokens", "lm_head") for m in saved):
+            return True
+    return False
+
+
+def _adapter_base_changed_error(config: dict) -> str | None:
+    """Refuse when the adapter now names a different base than the one checked at start (#13140)."""
+    # None: no adapter was admitted. "": an adapter that named no base, which must stay that way.
+    pinned = config.get("adapter_base_pin")
+    if pinned is None:
+        return None
+    from utils.models.model_config import get_base_model_from_lora
+
+    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+        return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
         return "GGUF models are inference-only and cannot be trained."
     if model_format == "adapter":
+        # LoRA / CPT may continue from a saved adapter; full finetune still cannot (#13140).
+        # The embedding, decision and MLX runners wrap a fresh adapter; only the CUDA trainer continues one.
+        if config.get("training_type") in ("LoRA/QLoRA", "Continued Pretraining") and not (
+            config.get("is_embedding", False)
+            or config.get("is_decision", False)
+            or _uses_mlx_training_backend()
+        ):
+            from utils.paths import is_local_path
+
+            if not is_local_path(str(config.get("model_name") or "")):
+                return (
+                    "Continuing from a Hugging Face adapter repository is not supported yet. "
+                    "Download it to a local folder and select that folder."
+                )
+            if config.get("is_dataset_image") or config.get("is_dataset_audio"):
+                return (
+                    "Continuing a saved adapter on an image or audio dataset is not supported "
+                    "yet. Start from its base model instead."
+                )
+            return None
         return "Adapter models are inference-only and cannot be trained as base models."
     return None
 
@@ -453,7 +502,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
     if not _verify_config_pins(config, event_queue):
         return False
-    format_error = _untrainable_model_format_error(config)
+    format_error = _untrainable_model_format_error(config) or _adapter_base_changed_error(config)
     if format_error:
         event_queue.put(
             {
@@ -1345,7 +1394,9 @@ def _attempt_package_install(
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
-    env = probe_torch_wheel_env(timeout = 30)
+    env = probe_torch_wheel_env(timeout = 30, include_windows = True)
+    # Windows is wheel-only: a PyPI fallback there is a source build needing MSVC + the CUDA toolkit.
+    wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
     else:
@@ -1381,17 +1432,23 @@ def _attempt_package_install(
             return True
         if outcome == "rejected":
             logger.warning(
-                "%s wheel installed but is not importable; falling back to PyPI",
+                "%s wheel installed but is not importable; %s",
                 display_name,
+                "removing it" if wheel_only else "falling back to PyPI",
             )
             wheel_rejected = True
     elif wheel_available is None:
         _send_status(
             event_queue,
-            f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",
+            f"Could not check the {display_name} prebuilt wheel; "
+            + ("skipping it." if wheel_only else "installing from PyPI."),
         )
     else:
         logger.info("No published %s wheel found: %s", display_name, wheel_url)
+
+    if wheel_only:
+        logger.info("%s: no usable prebuilt wheel for Windows; skipping", display_name)
+        return False
 
     is_hip = env and env.get("hip_version")
     if is_hip and not shutil.which("hipcc"):
@@ -1484,20 +1541,11 @@ def _attempt_package_install(
                 f"{snippet}",
             )
         else:
-            if sys.platform == "win32":
-                # No prebuilt wheel and no source toolchain on Windows -- expected for packages like causal-conv1d.
-                # Log at info so users aren't alarmed by what looks like an error.
-                logger.info(
-                    "%s is not available on Windows (no prebuilt wheel); skipping",
-                    display_name,
-                )
-                logger.debug("Install output:\n%s", result.stdout)
-            else:
-                logger.error(
-                    "Failed to install %s from PyPI:\n%s",
-                    display_name,
-                    result.stdout,
-                )
+            logger.error(
+                "Failed to install %s from PyPI:\n%s",
+                display_name,
+                result.stdout,
+            )
         return False
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without installing anything.
@@ -1536,9 +1584,6 @@ def _ensure_causal_conv1d_fast_path(
         required = _model_wants_causal_conv1d(model_name)
     if not required:
         return
-    if sys.platform == "win32":
-        logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-        return
 
     _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
 
@@ -1559,6 +1604,11 @@ def _flash_linear_attention_importable() -> bool:
 
 def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+        return
+
+    if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
+        # mamba_ssm imports triton at load and the wheel goes in --no-deps.
+        _send_status(event_queue, "mamba-ssm needs Triton on Windows (triton-windows); skipping it")
         return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
@@ -1977,9 +2027,6 @@ def _install_fast_path_hooks(
         return wrapper
 
     def _causal_conv1d_install(eq: Any) -> bool:
-        if sys.platform == "win32":
-            logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
-            return False
         ok = _install_package_wheel_first(event_queue = eq, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
         return bool(ok)
 
@@ -2010,7 +2057,7 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
         return False
     if max_seq_length < _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN:
         return False
-    return sys.platform.startswith("linux")
+    return sys.platform.startswith("linux") or sys.platform == "win32"
 
 
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
@@ -4565,6 +4612,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 
+        # Recheck right before the load: the adapter folder may have been edited since start (#13140).
+        base_error = _adapter_base_changed_error(config)
+        if base_error:
+            event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
+            return
+
         event_queue.put({"type": "model_load_started", "ts": time.time()})
         _load_watchdog_stop = start_watchdog(
             repo_ids = [model_name],
@@ -4793,6 +4846,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if is_cpt and not cpt_trains_embeddings:
+            # A continued adapter keeps its own modules_to_save, so it may train them anyway.
+            cpt_trains_embeddings = _adapter_trains_embeddings(getattr(trainer, "model", None))
 
         lr_default = "5e-5" if is_cpt else "2e-4"
         try:
