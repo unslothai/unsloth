@@ -1783,6 +1783,7 @@
       "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
       "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
+      "_GEMMA_JSON_NUMBER_RE": "'-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?' flags=256",
       "_GEMMA_KEY_RE": "'\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:' flags=32",
       "_GEMMA_TC_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
@@ -1838,6 +1839,7 @@
       "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
+      "re.compile('-?(?:0|[1-9]\\\\d*)(\\\\.\\\\d+)?([eE][+-]?\\\\d+)?', re.ASCII)": 1,
       "re.compile('-?(?:\\\\d+(?:\\\\.\\\\d*)?|\\\\.\\\\d+)(?:[eE][+-]?\\\\d+)?(?![\\\\w.])')": 1,
       "re.compile('-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?')": 1,
       "re.compile('<(?:parameter|param)(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>[^\\\\S\\\\n]*')": 1,
@@ -2054,6 +2056,9 @@
         "kind": "assign"
       },
       "_GEMMA_BARE_TC_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_JSON_NUMBER_RE": {
         "kind": "assign"
       },
       "_GEMMA_KEY_RE": {

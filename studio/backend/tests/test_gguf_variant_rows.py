@@ -148,6 +148,8 @@ def test_packed_and_grouped_quants_keep_their_own_key_in_both_copies():
         "Ternary-Bonsai-8B-PQ2_0.gguf": "PQ2_0",
         "Ternary-Bonsai-8B-Q2_0.gguf": "Q2_0",
         "Ternary-Bonsai-8B-Q2_0_g64.gguf": "Q2_0_g64",
+        # prism-ml/Ternary-Bonsai-27B-gguf spells its group-64 pack without the "_0".
+        "Ternary-Bonsai-27B-Q2_g64.gguf": "Q2_g64",
         "Ternary-Bonsai-2-27B-PTQ1_0.gguf": "PTQ1_0",
     }
     for path, key in files.items():

@@ -194,6 +194,8 @@ class MusicSpec:
     # The runtime's default seed is fixed, so repeat runs would be identical.
     fixed_seed: bool = True
     rtf: float = 4.0
+    # Token budget as a multiple of the asked length, for a model that ends the song itself.
+    overrun: float = 1.0
 
     def mode(self, mode_id: Optional[str]) -> Optional[MusicMode]:
         return next((m for m in self.modes if m.id == mode_id), None)
@@ -263,6 +265,8 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         # Empty lyrics still sing; only this tag stays wordless.
         instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
+        # 1.0x cut long lyrics mid-song (#13337); 240 s x 1.5 = the runtime's 9000-token default.
+        overrun = 1.5,
     ),
 }
 
