@@ -495,7 +495,11 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
       if (!moved.ok) return { ok: false, error: moved.error };
       const after = await settle(ready.id, before, signal);
-      return after ? observe(after, moved.note) : { ok: false, error: "the browser tab closed." };
+      if (!after) return { ok: false, error: "the browser tab closed." };
+      // A page can navigate on scroll: the new address is checked like any other arrival.
+      const now = tabUrl(after);
+      if (now && now !== before) return arrive(after, before, action, context, moved.note);
+      return observe(after, moved.note);
     }
     case "screenshot":
       return screenshot(ready);
