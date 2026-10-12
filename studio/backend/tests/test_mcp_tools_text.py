@@ -97,6 +97,16 @@ def test_a_prompt_becomes_one_user_turn(monkeypatch):
     assert body["cancel_id"].startswith("mcp-") and len(body["cancel_id"]) > 20
 
 
+def test_a_caller_chosen_cancel_id_is_sent_so_another_call_can_stop_the_reply(monkeypatch):
+    result, studio = _chat(monkeypatch, {"prompt": "a", "cancel_id": "agent-run-0001"})
+    assert bodies(studio, "/v1/chat/completions")[0]["cancel_id"] == "agent-run-0001"
+    assert result["structuredContent"]["cancel_id"] == "agent-run-0001"
+    for bad in ("short", "has space in it", "x" * 65):
+        refused, studio = _chat(monkeypatch, {"prompt": "a", "cancel_id": bad})
+        assert refused["isError"] is True
+        assert bodies(studio, "/v1/chat/completions") == []
+
+
 def test_messages_are_sent_as_given(monkeypatch):
     messages = [
         {"role": "user", "content": "Hi"},

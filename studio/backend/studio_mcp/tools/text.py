@@ -66,8 +66,11 @@ async def chat(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     model: Optional[str] = None,
+    cancel_id: Annotated[
+        Optional[str], Field(min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
+    ] = None,
 ) -> ChatResult:
-    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. A thinking model spends tokens on reasoning before the reply, so leave ``max_tokens`` unset or give it a few hundred or more. Unsloth Studio's server-side tools are not used."""
+    """Chat with the model loaded in Unsloth Studio and return its reply. Send either ``prompt`` (one user turn) or ``messages`` (the whole conversation), plus an optional ``system`` prompt. ``images`` go with the last user turn and need a vision model. ``model`` names which loaded model should answer; without it the active one does. Load a model with load_model first. A thinking model spends tokens on reasoning before the reply, so leave ``max_tokens`` unset or give it a few hundred or more. Unsloth Studio's server-side tools are not used. To be able to stop a long reply from another call, pass your own ``cancel_id`` (8-64 letters, digits, - or _) and call cancel(kind="chat", id=cancel_id)."""
     if (messages is None) == (prompt is None):
         raise ToolError("Send either prompt or messages, not both and not neither.")
     turns = (
@@ -79,14 +82,14 @@ async def chat(
         raise ToolError("messages is empty.")
     if images:
         await _attach_images(turns, images)
-    cancel_id = f"mcp-{uuid.uuid4().hex}"
+    cancel_id = cancel_id or f"mcp-{uuid.uuid4().hex}"
     if system:
         turns.insert(0, {"role": "system", "content": system})
     body = {
         "model": model or "default",
         "messages": turns,
         "stream": False,
-        # Our own id, so this run never matches a cancel aimed at another chat.
+        # Per-run id (the route scopes it to the caller's account), so only a cancel aimed at this chat stops it.
         "cancel_id": cancel_id,
         **present(max_tokens = max_tokens, temperature = temperature),
     }
