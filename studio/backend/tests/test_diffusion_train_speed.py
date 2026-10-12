@@ -291,7 +291,9 @@ def test_auto_keeps_a_short_nf4_run_eager(monkeypatch):
     monkeypatch.setattr(dit, "_nf4_compile_supported", lambda: True)
     short = replace(_ccfg(), train_steps = dit.NF4_COMPILE_MIN_STEPS - 1)
     assert dit._should_compile(short, True, "cuda", "nf4") is False
-    assert dit._should_compile(replace(short, compile_transformer = "on"), True, "cuda", "nf4") is True
+    assert (
+        dit._should_compile(replace(short, compile_transformer = "on"), True, "cuda", "nf4") is True
+    )
     # bf16 compiled before nf4 did and keeps compiling at any length.
     assert dit._should_compile(short, False, "cuda", "bf16") is True
     at_floor = replace(_ccfg(), train_steps = dit.NF4_COMPILE_MIN_STEPS)
