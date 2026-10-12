@@ -77,3 +77,42 @@ class TestARevokedVictimIsReplaced:
         assert controller.note_state("a", ParticipantState.TOOLS_RUNNING) is True
         assert controller.note_state("a", ParticipantState.TOOLS_RUNNING) is False
         assert planned == []
+
+
+class _Backend:
+    base_url = BASE
+    _kv_cache_unified = True
+    _kv_cache_context_total = 16384
+    context_length = 16384
+
+
+def test_a_pending_prompt_reclaims_idle_residue_before_the_plan(monkeypatch):
+    controller = PreemptionController(BASE)
+    controller.configure(budget = 16384, kv_unified = True, slots = 4)
+    controller.register("live", lease = _Lease(), tokens = 2500)
+    controller.note_measured("live")
+    # Registered and announced, not yet in the cache: no reading can see it.
+    controller.register("fresh", lease = _Lease(), tokens = 8000, prompt_tokens = 8000)
+    occupancy = {"idle": [(3, 6000)], "resident": 8500, "idle_tokens": 6000}
+    monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
+    monkeypatch.setattr(inference, "fetch_llama_slots", lambda base, headers = None: [])
+    monkeypatch.setattr(inference, "read_slot_occupancy", lambda scrape: dict(occupancy))
+    erased: list = []
+
+    def reclaim(occupancy, erase, *, needed = 0):
+        erased.append(needed)
+        return 6000
+
+    monkeypatch.setattr(inference, "reclaim_idle_slots", reclaim)
+    refresh, _observe, _note = inference._openai_llama_residency_observer(
+        llama_backend = _Backend(), completion_id = "live"
+    )
+    snapshot = controller.snapshot()
+    ceiling = snapshot.budget - snapshot.buffer
+    # The reading alone is under the ceiling; with the pending prompt on top it is over.
+    assert occupancy["resident"] < ceiling < occupancy["resident"] + 8000
+    refresh(controller, force = True)
+    assert erased and erased[0] > 0, (
+        "the reading sat under the ceiling, so the idle residue stayed while the plan "
+        "counted the pending prompt"
+    )

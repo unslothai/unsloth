@@ -2968,7 +2968,10 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # cache belongs to a finished request, so freeing it early costs a prefix hit.
         snapshot = controller.snapshot()
         ceiling = max(0, snapshot.budget - snapshot.buffer)
-        over = int(occupancy.get("resident") or 0) - ceiling
+        # Against the committed figure, not the reading alone: a prompt registered or replaying
+        # is not in the cache yet, and the plan that follows counts it, so with the reading
+        # under the ceiling a live chat was paused for room this erase would have given.
+        over = max(int(occupancy.get("resident") or 0), int(snapshot.committed or 0)) - ceiling
         # A pause that frees nothing is a stall, not a preemption: aborting the upstream
         # request stops the decode, but llama-server keeps the slot's prompt cache, so three
         # paused chats can hold the whole cache while all three wait for it. So once anyone
