@@ -151,3 +151,20 @@ def test_packed_collation_yields_to_eval_logits_and_context_parallelism(monkeypa
     assert "prediction row" in _collator_packing_conflict(_trainer(), True)
     assert "context parallelism" in _collator_packing_conflict(_trainer(cp_enabled = True), False)
     assert _collator_packing_conflict(SimpleNamespace(), False) is None
+
+
+def test_a_forward_without_packed_seq_lengths_turns_the_collator_off(monkeypatch):
+    from unsloth.trainer import _collator_packing_conflict
+    assert "packed_seq_lengths" in _collator_packing_conflict(_trainer(), False, True)
+
+
+def test_predict_builds_its_dataloader_from_an_unpacked_collator():
+    from unsloth.trainer import _unpacked_for_predict
+
+    collator = _collator()
+    trainer = SimpleNamespace(data_collator = collator)
+    trainer.get_test_dataloader = lambda dataset: trainer.data_collator
+    _unpacked_for_predict(trainer, collator)
+    used = trainer.get_test_dataloader([])
+    assert used is not collator and used.padding_free is False
+    assert trainer.data_collator is collator and collator.padding_free is True

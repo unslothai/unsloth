@@ -145,14 +145,37 @@ def _stack_rows(docs):
     return labels, attention_mask
 
 
-def _collator_packing_conflict(trainer, wants_eval_logits):
+def _collator_packing_conflict(
+    trainer,
+    wants_eval_logits,
+    forward_rejects_packing = False,
+):
     """Why a packing collator must fall back to padded rows, else None (the args-level gates miss it)."""
+    if forward_rejects_packing:
+        return "the model's forward() does not accept packed_seq_lengths"
     if wants_eval_logits:
         return "evaluation needs one prediction row per example"
     parallelism_config = getattr(getattr(trainer, "accelerator", None), "parallelism_config", None)
     if getattr(parallelism_config, "cp_enabled", False):
         return "context parallelism drops the per-document attention mask"
     return None
+
+
+def _unpacked_for_predict(trainer, collator):
+    """predict() needs one row per example: build its dataloader from an unpacked copy of the collator."""
+    unpacked = copy.copy(collator)
+    unpacked._padding_free = False
+    original = trainer.get_test_dataloader
+
+    @wraps(original)
+    def get_test_dataloader(*args, **kwargs):
+        packed, trainer.data_collator = trainer.data_collator, unpacked
+        try:
+            return original(*args, **kwargs)
+        finally:
+            trainer.data_collator = packed
+
+    trainer.get_test_dataloader = get_test_dataloader
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -1969,12 +1992,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         collator = getattr(self, "data_collator", None)
         if getattr(collator, "padding_free", False):
-            reason = _collator_packing_conflict(self, eval_logits_wanted)
+            reason = _collator_packing_conflict(self, eval_logits_wanted, forward_rejects_packing)
             if reason is not None:
                 collator._padding_free = False
                 logger.warning(
                     f"Unsloth: UnslothVisionDataCollator(padding_free=True) ignored ({reason})."
                 )
+            else:
+                _unpacked_for_predict(self, collator)
 
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
