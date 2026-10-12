@@ -140,13 +140,37 @@ _MEMO_PUTS = frozenset(("PUT", "BINPUT", "LONG_BINPUT"))
 _MEMO_GETS = frozenset(("GET", "BINGET", "LONG_BINGET"))
 
 
+# The only opcodes the inert unpickle accepts: what torch.save writes for a metadata+state_dict checkpoint
+# (the cached hosted Z-Image-Turbo FP8/INT8 headers use 30 of these), plus the plain data opcodes any
+# protocol could use for the same values. Anything else is "unknown". This shuts out EXT1/EXT2/EXT4
+# above all: they fetch a callable from ``copyreg``'s extension cache WITHOUT ``find_class``, so a REDUCE
+# after one would call a real function. Also INST/OBJ and the out-of-band buffer opcodes.
+_ALLOWED_OPS = frozenset(
+    (
+        "PROTO", "FRAME", "STOP", "MARK", "POP", "POP_MARK", "DUP",
+        "NONE", "NEWTRUE", "NEWFALSE",
+        "INT", "BININT", "BININT1", "BININT2", "LONG", "LONG1", "LONG4", "FLOAT", "BINFLOAT",
+        "STRING", "BINSTRING", "SHORT_BINSTRING", "UNICODE", "BINUNICODE", "SHORT_BINUNICODE",
+        "BINUNICODE8", "BINBYTES", "SHORT_BINBYTES", "BINBYTES8",
+        "EMPTY_TUPLE", "TUPLE", "TUPLE1", "TUPLE2", "TUPLE3",
+        "EMPTY_LIST", "LIST", "APPEND", "APPENDS",
+        "EMPTY_DICT", "DICT", "SETITEM", "SETITEMS",
+        "EMPTY_SET", "ADDITEMS", "FROZENSET",
+        "PUT", "BINPUT", "LONG_BINPUT", "MEMOIZE", "GET", "BINGET", "LONG_BINGET",
+        "GLOBAL", "STACK_GLOBAL", "REDUCE", "BUILD", "NEWOBJ", "NEWOBJ_EX",
+        "PERSID", "BINPERSID",
+    )
+)  # fmt: skip
+
+
 def _pickle_ops_within(raw: bytes, limit: Optional[int] = None) -> bool:
     """Whether ``raw`` holds at most ``limit`` (default ``MAX_PICKLE_OPS``) opcodes and only memo indices
     a real pickler would write. Only walks the bytes (nothing is built), and stops at the first breach,
     so a hostile pickle costs a bounded scan rather than an unbounded unpickle.
 
     The memo check matters because ONE opcode can be enough: the C unpickler grows its memo table to
-    the index a ``LONG_BINPUT`` names (2**31 is tens of GB) before any opcode budget could apply."""
+    the index a ``LONG_BINPUT`` names (2**31 is tens of GB) before any opcode budget could apply. Any
+    opcode outside ``_ALLOWED_OPS`` fails the scan too."""
     limit = MAX_PICKLE_OPS if limit is None else limit
     count = 0
     writes = 0
@@ -155,6 +179,8 @@ def _pickle_ops_within(raw: bytes, limit: Optional[int] = None) -> bool:
         if count > limit:
             return False
         name = opcode.name
+        if name not in _ALLOWED_OPS:
+            return False
         if name == "MEMOIZE":
             writes += 1
         elif name in _MEMO_PUTS or name in _MEMO_GETS:
@@ -202,7 +228,47 @@ def _plain(value: Any, budget: Optional[list] = None) -> Any:
     return None
 
 
+# ``zipfile.ZipFile`` builds a ZipInfo per central-directory entry before anything can be filtered, so the
+# directory is bounded from its end record first. A torch archive holds one entry per storage plus a few:
+# the cached hosted Z-Image-Turbo FP8/INT8 files have 766 entries in a ~0.1 MB directory, and the largest
+# hosted denoisers a few thousand. 50k entries / 8 MiB is >= 10x that; over either is "unknown".
+MAX_ZIP_ENTRIES = 50_000
+MAX_ZIP_DIRECTORY_BYTES = 8 * 1024 * 1024
+_EOCD = b"PK\x05\x06"
+_ZIP64_LOCATOR = b"PK\x06\x07"
+_ZIP64_EOCD = b"PK\x06\x06"
+
+
+def _zip_directory_within(handle: Any) -> bool:
+    """Whether the archive's central directory (from its end record, ZIP64 included) is small enough to
+    hand to ``zipfile``. Reads only the tail and, for ZIP64, one 56-byte record. Unparseable is False."""
+    handle.seek(0, 2)
+    size = handle.tell()
+    tail_len = min(size, 22 + 65535)
+    handle.seek(size - tail_len)
+    tail = handle.read(tail_len)
+    at = tail.rfind(_EOCD)
+    if at < 0 or len(tail) - at < 22:
+        return False
+    entries, directory = struct.unpack("<HI", tail[at + 10 : at + 16])
+    locator = at - 20
+    if locator >= 0 and tail[locator : locator + 4] == _ZIP64_LOCATOR:
+        (offset,) = struct.unpack("<Q", tail[locator + 8 : locator + 16])
+        if offset >= size:
+            return False
+        handle.seek(offset)
+        record = handle.read(56)
+        if len(record) < 56 or record[:4] != _ZIP64_EOCD:
+            return False
+        entries64, directory64 = struct.unpack("<QQ", record[32:48])
+        entries, directory = max(entries, entries64), max(directory, directory64)
+    handle.seek(0)
+    return entries <= MAX_ZIP_ENTRIES and directory <= MAX_ZIP_DIRECTORY_BYTES
+
+
 def _from_pickle_zip(handle: Any) -> Optional[dict]:
+    if not _zip_directory_within(handle):
+        return None
     with zipfile.ZipFile(handle) as archive:
         names = [n for n in archive.namelist() if n == "data.pkl" or n.endswith("/data.pkl")]
         if len(names) != 1:

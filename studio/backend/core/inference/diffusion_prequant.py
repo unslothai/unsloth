@@ -1941,6 +1941,17 @@ def hosted_prequant_refusal(
         _LAST_FAILURE.text = saved_failure
 
 
+def _planning_min_features(min_features: Optional[int]) -> Optional[int]:
+    if min_features is not None:
+        return min_features
+    try:
+        from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+
+        return DEFAULT_MIN_LINEAR_FEATURES
+    except Exception:  # noqa: BLE001 - no quant module: skip the check, as before
+        return None
+
+
 def usable_prequant_source(
     fam: Any,
     scheme: str,
@@ -1950,6 +1961,7 @@ def usable_prequant_source(
     local_files_only: bool = False,
     hf_token: Optional[str] = None,
     cache_dir: Optional[str] = None,
+    min_features: Optional[int] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would accept it:
     inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise resolves to None
@@ -1973,7 +1985,9 @@ def usable_prequant_source(
     ``local_files_only`` / ``hf_token`` / ``cache_dir`` are the load's own, handed to the hosted header
     probe so planning asks exactly what the loader will: an offline load makes no Hub request here
     either, and a gated repo is read with the caller's token. ``base_repo`` doubles as the base the
-    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does.
+    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does. ``min_features``
+    defaults to ``DEFAULT_MIN_LINEAR_FEATURES``, the Linear filter every loader of these checkpoints
+    enforces, so a header baked under another filter is refused here rather than after its download.
     """
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
@@ -2032,6 +2046,7 @@ def usable_prequant_source(
             src,
             scheme,
             base = base_repo,
+            min_features = _planning_min_features(min_features),
             hf_token = hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,

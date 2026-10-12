@@ -1043,3 +1043,113 @@ def test_a_video_plan_drops_a_hosted_denoiser_its_loader_would_refuse(hub, base_
     # Refused: the dense shards stay in the plan, and the prefetch has nothing to download.
     assert VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V) is usable
     assert hub.downloads == [] and hub.server.full_gets == 0
+
+
+# -- round 4: gated video headers, extension opcodes, the Linear filter, and the zip directory --
+
+
+def _gated_hub(monkeypatch):
+    """The fake Hub answers 401 to any HEAD without a token, as a gated repo does."""
+    import huggingface_hub
+
+    real = huggingface_hub.get_hf_file_metadata
+
+    def gated(url, token = None, **kwargs):
+        if not token:
+            err = Exception("401")
+            err.response = types.SimpleNamespace(status_code = 401)
+            raise err
+        return real(url, token = token, **kwargs)
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", gated)
+
+
+def test_a_gated_stale_video_denoiser_is_refused_with_the_plan_token(hub, monkeypatch):
+    from core.inference.video import VideoBackend
+
+    _gated_hub(monkeypatch)
+    fam = _wan_int8(hub, "Other/Model")
+    # Anonymous: the header is unreadable, so unknown keeps today's answer.
+    assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V)
+    # With the token the plan stages under, the stale header is read and refused.
+    assert VideoBackend._denoiser_prequant_source_list(fam, "int8", _WAN_TI2V, hf_token = "hf_x") == []
+    assert not VideoBackend._denoiser_prequant_covered(fam, "int8", _WAN_TI2V, hf_token = "hf_x")
+    listed: list = []
+    api = types.SimpleNamespace(
+        token = "hf_x", model_info = lambda *a, **k: listed.append(a) or types.SimpleNamespace(siblings = [])
+    )
+    assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", _WAN_TI2V, api) == (None, [])
+    assert listed == [] and hub.downloads == []
+
+
+def test_an_extension_opcode_never_reaches_a_registered_callable(tmp_path):
+    import copyreg
+
+    from core.inference.prequant_header_probe import _pickle_ops_within, read_local_checkpoint_header
+
+    called: list = []
+
+    def sentinel(*args):
+        called.append(args)
+        return "ran"
+
+    code = 0x7FFF_FF01
+    key = ("tests.prequant_probe", "sentinel")
+    copyreg._extension_registry[key] = code
+    copyreg._inverted_registry[code] = key
+    copyreg._extension_cache[code] = sentinel
+    try:
+        import struct
+
+        # EXT4 <code>, EMPTY_TUPLE, REDUCE: a cached extension resolves WITHOUT find_class.
+        payload = b"\x84" + struct.pack("<i", code) + b")R"
+        assert _pickle_ops_within(b"\x80\x02" + payload + b".") is False
+        path = _pickle_zip(tmp_path / "ext.pt", _metadata_pickle(payload))
+        assert read_local_checkpoint_header(str(path)) is None
+        assert called == []
+    finally:
+        copyreg._extension_registry.pop(key, None)
+        copyreg._inverted_registry.pop(code, None)
+        copyreg._extension_cache.pop(code, None)
+
+
+def test_planning_refuses_a_header_baked_under_another_linear_filter(hub):
+    fam, base = _hosted_qwen_int8(hub, _current_int8_meta(min_features = 256))
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base) is None
+    assert hub.downloads == []
+
+
+def test_planning_keeps_a_header_with_the_runtime_linear_filter(hub):
+    fam, base = _hosted_qwen_int8(hub, _current_int8_meta(min_features = 512))
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base) is not None
+
+
+def _many_entry_archive(path, entries):
+    import pickle
+    import zipfile
+
+    payload = pickle.dumps({"format": PREQUANT_FORMAT, "metadata": {"a": 1}}, protocol = 2)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("archive/data.pkl", payload)
+        for i in range(entries):
+            archive.writestr(f"archive/data/{i}", b"")
+    return path
+
+
+def test_a_zip_directory_with_too_many_entries_is_unknown_and_small(tmp_path):
+    from core.inference import prequant_header_probe as probe
+
+    count = getattr(probe, "MAX_ZIP_ENTRIES", 50_000) + 10_000
+    path = _many_entry_archive(tmp_path / "many.pt", count)
+    header, peak, took = _traced(lambda: probe.read_local_checkpoint_header(str(path)))
+    assert header is None
+    assert peak < 8 * 1024 * 1024, peak
+    assert took < 10
+
+
+def test_a_real_sized_zip_directory_still_reads(tmp_path):
+    from core.inference.prequant_header_probe import read_local_checkpoint_header
+
+    path = _many_entry_archive(tmp_path / "ok.pt", 5_000)
+    header = read_local_checkpoint_header(str(path))
+    assert header is not None and header["metadata"] == {"a": 1}

@@ -116,7 +116,7 @@ def denoiser_prequant_pipe_kwargs(
     try:
         import gc
 
-        sources = denoiser_prequant_sources(fam, scheme, base_repo)
+        sources = denoiser_prequant_sources(fam, scheme, base_repo, hf_token = hf_token)
         if not sources:
             return {}
         if target is not None:
