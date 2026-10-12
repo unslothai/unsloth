@@ -36,14 +36,23 @@ export function hostOfUrl(url: string): string {
   }
 }
 
+// As web_access_policy._matches_domain: whole hostnames, so www.example.com covers only itself.
 const matches = (host: string, domain: string) => {
-  const bare = domain.toLowerCase().replace(/^\*?\./, "").replace(/^www\./, "");
+  const bare = domain.toLowerCase().replace(/^\*?\./, "").replace(/\.+$/, "");
   return host === bare || host.endsWith(`.${bare}`);
 };
 
+function policyHost(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
+  } catch {
+    return "";
+  }
+}
+
 /** The request's website policy, applied to every page the agent opens or submits to. */
 export function policyBlocks(url: string, policy: SitePolicy): string | null {
-  const host = hostOfUrl(url);
+  const host = policyHost(url);
   if (!host) return "that is not a web address";
   if (policy.blockedDomains.some((domain) => matches(host, domain))) return `the website policy blocks ${host}`;
   if (policy.allowedDomains.length && !policy.allowedDomains.some((domain) => matches(host, domain))) {

@@ -42,10 +42,13 @@ export type AgentAnswer = {
   title?: string;
 };
 
-export function installPageAgent(): void {
+export type PageAgent = { run: (command: Record<string, unknown>) => Record<string, unknown> };
+
+/** Returns the agent it built, so the proxied frame keeps its own reference rather than trusting
+ *  KEY, which a page script can define before the agent arrives. */
+export function installPageAgent(): PageAgent {
   const KEY = Symbol.for("unsloth.agent");
   const host = window as unknown as Record<symbol, unknown>;
-  if (host[KEY]) return;
 
   const VIEW_CHARS = 8000;
   const PAGE_CHARS = 24000;
@@ -169,9 +172,15 @@ export function installPageAgent(): void {
     if (aria?.trim()) return clean(aria);
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
+      // Read as the user sees it: a hidden or 1px element must not name the control.
       const text = labelledBy
         .split(/\s+/)
-        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .map((id) => {
+          const label = document.getElementById(id);
+          if (!label) return "";
+          if (getComputedStyle(label).display !== "contents" && !sized(label.getBoundingClientRect())) return "";
+          return visibleText(label);
+        })
         .join(" ");
       if (text.trim()) return clean(text);
     }
@@ -261,7 +270,9 @@ export function installPageAgent(): void {
       }
     } else if (role === "textbox" && (el as HTMLElement).isContentEditable) {
       const value = clean((el as HTMLElement).innerText, 60);
-      if (value) parts.push(`value=${quoted(value)}`);
+      const secret = SECRET.test(el.getAttribute("autocomplete") ?? "") || SECRET_NAME.test(nameOf(el));
+      if (secret) parts.push(value ? "filled" : "empty");
+      else if (value) parts.push(`value=${quoted(value)}`);
     } else if (role === "link") {
       const href = el.getAttribute("href") ?? "";
       if (href && !href.startsWith("javascript:")) parts.push(`-> ${shortHref(href)}`);
@@ -453,7 +464,9 @@ export function installPageAgent(): void {
 
   /** No ref: the focused element, which a key press would act on. */
   const describe = (ref: string): Record<string, unknown> => {
-    const el = ref ? lookup(ref) : (document.activeElement ?? document.body);
+    const found = ref ? lookup(ref) : (document.activeElement ?? document.body);
+    // Clicking a label clicks its control, which may be a submit button.
+    const el = found instanceof HTMLLabelElement && found.control ? found.control : found;
     const field = el as HTMLInputElement;
     const form = (field.form ?? el.closest("form")) as HTMLFormElement | null;
     const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
@@ -723,9 +736,11 @@ export function installPageAgent(): void {
     }
   };
 
-  // Not writable or configurable once installed, but a page that defines KEY first still wins: the
-  // agent shares the page's world in the frame and native views alike, so its answers are untrusted.
-  Object.defineProperty(host, KEY, { value: { run }, enumerable: false });
+  // For native views, which look it up on every call. A page that defines KEY first still wins
+  // there: the agent shares the page's world, so its answers are untrusted.
+  const agent: PageAgent = { run };
+  if (!Object.prototype.hasOwnProperty.call(host, KEY)) Object.defineProperty(host, KEY, { value: agent, enumerable: false });
+  return agent;
 }
 
 export function pageAgentSource(): string {

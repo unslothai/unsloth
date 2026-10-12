@@ -316,8 +316,17 @@ async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
   const allowed = await askInPanel({ ask, host, name, detail }, signal);
-  return allowed ? null : `The user declined: ${gate.prompt.replace(/\?$/, "")}. Do something else, or ask them.`;
+  // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
+  return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
+
+const DECLINED: Record<Question["ask"], string> = {
+  open: "opening a page",
+  signIn: "signing in",
+  submit: "sending a form",
+  click: "that click",
+  history: "sharing their browsing history",
+};
 
 /** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
 function askInPanel(question: Question, signal?: AbortSignal): Promise<boolean> {
@@ -409,6 +418,21 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {
     const native = useNativeBrowser.getState().enabled;
     const store = useBrowserStore.getState();
+    // A native view's own history doesn't say where it leads; arrive() checks those on landing.
+    const nativeMove = native && (action.op === "reload" || Boolean(tab.nativeHistory?.[action.op]));
+    const step = action.op === "back" ? -1 : action.op === "forward" ? 1 : 0;
+    const target = nativeMove ? null : tab.history[tab.index + step];
+    if (target?.kind === "web") {
+      const blocked = navigationBlocks(target.url, action.policy, permissions());
+      const gate: Gate = blocked
+        ? { kind: "block", reason: blocked }
+        : hostOfUrl(target.url) === hostOfUrl(before)
+          ? { kind: "allow" }
+          : gateNavigation(target.url, navigationContext(action, context));
+      const refused = await pass(gate, signal);
+      if (refused) return { ok: false, error: refused };
+      admit(target.url, gate);
+    }
     if (native && action.op !== "reload" && tab.nativeHistory?.[action.op]) nativeAction(tab.id, action.op);
     else if (native && action.op === "reload") nativeAction(tab.id, "reload");
     else if (action.op === "back") store.goBack(tab.id);
@@ -465,6 +489,14 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     (action.op === "type" && action.submit) ||
     (action.op === "press" && action.key === "Enter" && TEXT_ROLES.has(info.role)) ||
     ((action.op === "click" || activates) && info.submits);
+  // A link the page follows itself (a native view's click, Enter on a link) is gated before it
+  // loads; the proxied frame's clicks come back as `navigate` and are gated below.
+  const followsLink =
+    /^https?:/i.test(info.href) &&
+    info.href.split("#")[0] !== before.split("#")[0] &&
+    ((action.op === "click" && useNativeBrowser.getState().enabled) || (activates && info.role === "link"));
+  const linkGate = followsLink ? gateNavigation(info.href, navigationContext(action, context)) : null;
+  if (linkGate) gates.push(linkGate);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
@@ -480,6 +512,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   if (formGate) admit(formAction, formGate);
+  if (linkGate) admit(info.href, linkGate);
 
   let note: string | undefined;
   if (action.op === "click") {

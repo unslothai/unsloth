@@ -79,6 +79,10 @@ test("non-web schemes and the website policy are refused outright", () => {
   assert.equal(gateNavigation("https://example.com/", navigation({ policy, userText: "example.com" })).kind, "block");
   assert.equal(policyBlocks("https://de.wikipedia.org/", policy), null);
   assert.match(policyBlocks("https://x.evil.example/", { allowedDomains: [], blockedDomains: ["evil.example"] }) ?? "", /blocks/);
+  // Whole hostnames, as the server matches them: www.example.com does not allow its siblings.
+  const www = { allowedDomains: ["www.example.com"], blockedDomains: [] };
+  assert.equal(policyBlocks("https://www.example.com/a", www), null);
+  assert.match(policyBlocks("https://attacker.example.com/", www) ?? "", /only allows/);
   // A trailing dot is the same host to DNS.
   assert.match(policyBlocks("https://evil.example./", { allowedDomains: [], blockedDomains: ["evil.example"] }) ?? "", /blocks/);
   const never = permissions({ "never.example": rule("block") });

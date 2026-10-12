@@ -667,7 +667,8 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "agent" && typeof data.id === "string") {
             // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
             if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
-              try { compile(data.code)(); agent = window[Symbol.for("unsloth.agent")] || null; } catch {}
+              // Its own return value, not window's key: a page script can set that key first.
+              try { agent = compile("return " + data.code)() || null; } catch {}
             }
             post({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
           }
