@@ -16,9 +16,12 @@ from core.inference import mlx_diffusion_backend as mb
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
+    _FAMILIES,
     DiffusionModelReplacedError,
     load_identity,
 )
+
+ZIMAGE = next(f for f in _FAMILIES if f.name == "z-image")
 
 REPO = "unsloth/Z-Image-Turbo-GGUF"
 GGUF = "z-image-turbo-Q4_0.gguf"
@@ -449,6 +452,77 @@ def test_a_cache_only_load_resolves_the_variant_without_the_hub(env, monkeypatch
     links.clear()
     _load(backend, local_files_only = True)
     assert calls["fetch_base"][-1] == (BASE, True)
+
+
+def test_a_cache_only_undistilled_pick_with_no_record_builds_the_base_config(env, monkeypatch):
+    import hub.utils.companion_assets as companion
+
+    backend, runtime, calls = env
+    monkeypatch.setattr(mb, "resolve_variant_base", _REAL_RESOLVE_VARIANT_BASE, raising = False)
+    monkeypatch.setattr(companion, "read_companion_links", lambda: {})
+    backend.begin_load(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "z-image-Q4_0.gguf",
+        model_kind = "gguf",
+        local_files_only = True,
+    )
+    assert _wait_loaded(backend)["phase"] == "ready"
+    assert calls["fetch_base"][-1] == ("Tongyi-MAI/Z-Image", True)
+    assert runtime.builds[-1]["model_config"] == "z-image"
+
+
+@pytest.mark.parametrize(
+    "repo_id, gguf_filename, expected",
+    [
+        ("unsloth/Z-Image-GGUF", "z-image-Q4_K_M.gguf", "Tongyi-MAI/Z-Image"),
+        ("unsloth/Z-Image-GGUF", "z-image-BF16.gguf", "Tongyi-MAI/Z-Image"),
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", BASE),
+        ("unsloth/Z-Image-GGUF", "z-image-turbo-Q4_0.gguf", BASE),
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-Q4_0.gguf", "Tongyi-MAI/Z-Image"),
+        ("leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q4_K.gguf", BASE),
+        ("someone/my-gguf-models", "model-Q4_K_M.gguf", BASE),
+        ("someone/Z-Image-GGUF", "model-Q4_K_M.gguf", "Tongyi-MAI/Z-Image"),
+        ("someone/z-image-turbo", "model-Q4_K_M.gguf", BASE),
+    ],
+)
+def test_the_name_resolves_the_z_image_variant_offline(monkeypatch, repo_id, gguf_filename, expected):
+    import hub.utils.companion_assets as companion
+
+    fam = ZIMAGE
+    monkeypatch.setattr(companion, "read_companion_links", lambda: {})
+    assert mb._cached_variant_base(repo_id, fam, gguf_filename, BASE) == expected
+    assert mb.mlx_model_config_for(fam, expected) == (
+        "z-image" if expected != BASE else "z-image-turbo"
+    )
+
+
+def test_a_recorded_default_does_not_overrule_an_undistilled_name(monkeypatch):
+    import hub.utils.companion_assets as companion
+
+    fam = ZIMAGE
+    links = {"unsloth/z-image-gguf": [BASE]}
+    monkeypatch.setattr(companion, "read_companion_links", lambda: links)
+    assert mb._cached_variant_base("unsloth/Z-Image-GGUF", fam, "z-image-Q4_K_M.gguf", BASE) == (
+        "Tongyi-MAI/Z-Image"
+    )
+    links["unsloth/z-image-turbo-gguf"] = ["Tongyi-MAI/Z-Image"]
+    assert mb._cached_variant_base(
+        "unsloth/Z-Image-Turbo-GGUF", fam, "z-image-turbo-Q4_0.gguf", BASE
+    ) == "Tongyi-MAI/Z-Image"
+
+
+def test_a_local_undistilled_gguf_resolves_without_the_hub(tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    fam = ZIMAGE
+    monkeypatch.setattr(diffusion, "_remember_companion_base", lambda *a: None)
+    (tmp_path / "z-image-Q4_K_M.gguf").write_bytes(b"x")
+    (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"x")
+    resolve = _REAL_RESOLVE_VARIANT_BASE
+    assert resolve(str(tmp_path), fam, None, "z-image-Q4_K_M.gguf", fallback = BASE) == (
+        "Tongyi-MAI/Z-Image"
+    )
+    assert resolve(str(tmp_path), fam, None, "z-image-turbo-Q4_K_M.gguf", fallback = BASE) == BASE
 
 
 def test_policy_helpers(monkeypatch):

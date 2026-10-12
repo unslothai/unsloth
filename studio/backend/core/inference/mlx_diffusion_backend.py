@@ -416,6 +416,10 @@ def resolve_variant_base(
     card: the base an earlier online load recorded for this repo, else the name, else the default."""
     if local_files_only:
         return _cached_variant_base(repo_id, fam, gguf_filename, fallback)
+    if Path(repo_id).expanduser().exists():
+        named = _named_mlx_base(fam, repo_id, gguf_filename)
+        if named:
+            return named
     try:
         from core.inference.diffusion import _resolve_base_repo
     except Exception as exc:  # noqa: BLE001 -- no diffusers stack: the family default stands
@@ -450,11 +454,34 @@ def _cached_variant_base(
     except Exception as exc:  # noqa: BLE001 -- no record: the name decides
         logger.debug("mlx_diffusion.companion_links_unreadable: %s", exc)
         recorded = ()
+    named = _named_mlx_base(fam, repo_id, gguf_filename)
     for base in reversed(recorded):
         upstream = canonical_base(base)
-        if upstream.lower() in candidates:
+        # A recorded family default may be an earlier offline fallback, so it cannot overrule a name.
+        if upstream.lower() in candidates and not (named and upstream.lower() == fam.base_repo.lower()):
             return upstream
-    return named_variant_base(fam, repo_id, gguf_filename) or fallback
+    return named or named_variant_base(fam, repo_id, gguf_filename) or fallback
+
+
+def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str]:
+    """The ``mlx_model_config_by_base`` base the last name naming one spells, or None. The longest spelling wins, so
+    a Turbo name (which also spells the undistilled ``Z-Image``) keeps the family default."""
+
+    def fold(text: str) -> str:
+        return "".join(c for c in text.lower() if c.isalnum())
+
+    keyed = [
+        (b, fold(b.rsplit("/", 1)[-1]))
+        for b in (fam.base_repo, *(b for b, _name in getattr(fam, "mlx_model_config_by_base", ()) or ()))
+        if b
+    ]
+    for name in reversed([n for n in names if n]):
+        identity = fold(name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
+        hits = [(len(key), b) for b, key in keyed if key and key in identity]
+        if hits:
+            best = max(hits)[1]
+            return None if best == fam.base_repo else best
+    return None
 
 
 def _link_base_components(model_dir: Path, base_dir: str) -> None:

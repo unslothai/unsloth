@@ -664,7 +664,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # The attention / FFN branches overflow float16 before their post-norm.
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
-        mlx_model_config_by_base = (("tongyi-mai/z-image", "z-image"),),
+        mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
