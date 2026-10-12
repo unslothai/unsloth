@@ -34218,14 +34218,49 @@ async def produce_openai_chat_completions(
             conversation = gguf_messages,
         )
 
+        def _gguf_prompt_estimate(conversation) -> int:
+            return int(
+                _openai_llama_admission_charged_prompt_tokens(
+                    payload,
+                    conversation = conversation,
+                    image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+                    markup = _openai_llama_admission_markup(llama_backend),
+                )
+                or 0
+            )
+
         def _gguf_refit_allowance(fitted) -> Optional[int]:
-            """Reprice after truncation so the plain path does not retain the pre-fit one-token floor."""
-            return _openai_llama_admission_enforced_max_tokens(
+            """Reprice after truncation so the plain path does not retain the pre-fit one-token floor.
+
+            A fit that dropped messages is also told to the preemptor, which still holds the
+            pre-fit prompt: it would pause a small chat for room it never takes, then refuse
+            its resume as too large. Only when the fit shrank it, so a fit that kept everything
+            costs no tokenizer call."""
+            allowance = _openai_llama_admission_enforced_max_tokens(
                 payload,
                 request = request,
                 llama_backend = llama_backend,
                 conversation = fitted,
             )
+            if _plain_observe_tokens is not None:
+                try:
+                    if _gguf_prompt_estimate(fitted) < _gguf_prompt_estimate(gguf_messages):
+                        counted, exact = _count_gguf_admission_prompt_detail(
+                            llama_backend, payload, fitted, cancel_event = cancel_event
+                        )
+                        _openai_llama_publish_round_charge(
+                            llama_backend = llama_backend,
+                            gen_id = completion_id,
+                            reservation = reservation,
+                            payload = payload,
+                            conversation = fitted,
+                            rendered_tools = None,
+                            observe_tokens = _plain_observe_tokens,
+                            counted_prompt_tokens = counted if exact else None,
+                        )
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("fitted prompt publication failed", exc_info = True)
+            return allowance
 
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)

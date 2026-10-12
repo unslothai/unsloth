@@ -1232,6 +1232,9 @@ class PreemptionController:
                     participant.announce_prefill(participant.tokens)
                 elif growth > 0:
                     participant.announce_prefill(growth)
+                elif participant.pending_prefill > participant.tokens:
+                    # A fit that dropped messages: the prefill is no longer than the prompt.
+                    participant.pending_prefill = participant.tokens
                 if growth > 0:
                     # Same counter as `observe`: a waiter must be able to see a tool
                     # result land.
