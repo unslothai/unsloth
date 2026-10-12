@@ -2257,6 +2257,13 @@ export const sv = {
         noGpu: "Ingen synlig GPU",
         gpuUnusable: "GPU oanvändbar",
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
+        detailedView: "Detaljerad vy",
+        detailedViewDescription:
+          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret och här.",
+        cpuLoad: "CPU-belastning",
+        gpuLoad: "GPU-belastning",
+        temperature: "Temperatur",
+        power: "Effekt",
       },
       gpu: {
         title: "GPU-enheter",

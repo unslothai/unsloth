@@ -2093,6 +2093,13 @@ export const it = {
         noGpu: "Nessuna GPU visibile",
         gpuUnusable: "GPU non utilizzabile",
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
+        detailedView: "Vista dettagliata",
+        detailedViewDescription:
+          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile e qui.",
+        cpuLoad: "Carico CPU",
+        gpuLoad: "Carico GPU",
+        temperature: "Temperatura",
+        power: "Consumo",
       },
       gpu: {
         title: "Dispositivi GPU",

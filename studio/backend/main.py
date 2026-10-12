@@ -2308,6 +2308,7 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        LIVE_GPU_TELEMETRY_KEYS,
         amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
@@ -2382,6 +2383,7 @@ def _get_cached_system_gpu_info(
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")
             )
+            enriched_dev.update({k: util[k] for k in LIVE_GPU_TELEMETRY_KEYS if k in util})
             enriched_devices.append(enriched_dev)
 
         # The tile divides the aggregate by the SUMMED per-device totals, so both must describe the same cards. The

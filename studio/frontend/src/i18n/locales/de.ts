@@ -2134,6 +2134,13 @@ export const de = {
         noGpu: "Keine sichtbare GPU",
         gpuUnusable: "GPU nicht nutzbar",
         gpuUnusableDetail: "Erkannt, aber PyTorch kann sie nicht nutzen",
+        detailedView: "Detailansicht",
+        detailedViewDescription:
+          "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster und hier.",
+        cpuLoad: "CPU-Last",
+        gpuLoad: "GPU-Last",
+        temperature: "Temperatur",
+        power: "Leistung",
       },
       gpu: {
         title: "GPU-Geräte",

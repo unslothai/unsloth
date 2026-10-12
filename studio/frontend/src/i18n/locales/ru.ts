@@ -2112,6 +2112,13 @@ export const ru = {
         noGpu: "GPU не обнаружен",
         gpuUnusable: "GPU недоступен",
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
+        detailedView: "Подробный вид",
+        detailedViewDescription:
+          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне и здесь.",
+        cpuLoad: "Загрузка CPU",
+        gpuLoad: "Загрузка GPU",
+        temperature: "Температура",
+        power: "Мощность",
       },
       gpu: {
         title: "Устройства GPU",

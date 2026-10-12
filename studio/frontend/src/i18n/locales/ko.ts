@@ -2102,6 +2102,13 @@ export const ko = {
         noGpu: "인식되는 GPU 없음",
         gpuUnusable: "GPU 사용 불가",
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
+        detailedView: "자세히 보기",
+        detailedViewDescription:
+          "플로팅 창과 여기에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
+        cpuLoad: "CPU 부하",
+        gpuLoad: "GPU 부하",
+        temperature: "온도",
+        power: "전력",
       },
       gpu: {
         title: "GPU 장치",

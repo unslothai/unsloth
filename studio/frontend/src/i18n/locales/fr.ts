@@ -2133,6 +2133,13 @@ export const fr = {
         noGpu: "Aucun GPU visible",
         gpuUnusable: "GPU inutilisable",
         gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
+        detailedView: "Vue détaillée",
+        detailedViewDescription:
+          "Affiche la charge du CPU ainsi que la charge, la température et la consommation de chaque GPU dans la fenêtre flottante et ici.",
+        cpuLoad: "Charge CPU",
+        gpuLoad: "Charge GPU",
+        temperature: "Température",
+        power: "Puissance",
       },
       gpu: {
         title: "Périphériques GPU",
