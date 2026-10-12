@@ -78,6 +78,23 @@ def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resi
         assert mod._cuda_repair_torch_specs(CU130, default) is default
 
 
+@pytest.mark.parametrize("machine", ["aarch64", "arm64"])
+def test_aarch64_torch_2_9_repairs_to_the_default_range(monkeypatch, mod, machine):
+    # cu130 serves aarch64 torch 2.9 but no torchvision 0.24 / torchaudio 2.9 for it.
+    _route(monkeypatch, mod, torch = "2.9.1", machine = machine)
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(CU130, default) is default
+
+
+def test_x86_64_torch_2_9_is_kept(monkeypatch, mod):
+    _route(monkeypatch, mod, torch = "2.9.1")
+    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
+        "torch==2.9.1",
+        "torchvision==0.24.*",
+        "torchaudio==2.9.*",
+    )
+
+
 @pytest.mark.parametrize(
     "index_url, kwargs",
     [

@@ -568,6 +568,14 @@ _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
 
 
+def _cu130_first_torch_minor() -> int:
+    """The oldest minor cu130 serves the whole trio for: aarch64 has torch 2.9 but no
+    torchvision 0.24 / torchaudio 2.9, so it starts at 2.10."""
+    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64"):
+        return 10
+    return _CU130_FIRST_TORCH_MINOR
+
+
 def _is_cu130_route_machine() -> bool:
     """Linux x86_64 or aarch64, or Windows x64 on an x64 machine. An emulated x64 Python on Windows
     on ARM is excluded: install.ps1 keys its torch 2.13 route on the machine as well as the interpreter."""
@@ -609,7 +617,7 @@ def _cuda_repair_torch_specs(
     release = _resident_torch_release()
     if release is not None:
         minor = int(release.split(".")[1])
-        if _CU130_FIRST_TORCH_MINOR <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+        if _cu130_first_torch_minor() <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
             # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
             audio_minor = min(minor, 11)
             return (
