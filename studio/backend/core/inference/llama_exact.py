@@ -227,7 +227,8 @@ def contradicting_env(env: Optional[Mapping[str, str]]) -> list[str]:
         if not value:
             continue
         if name == "LLAMA_ARG_CPU_MOE":
-            hit = value.lower() in ("1", "on", "true", "yes")
+            # llama.cpp's is_truthy spellings, so `enabled` places the experts on the CPU too.
+            hit = value.lower() in ("1", "on", "true", "enabled")
         elif name in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN"):
             hit = _positive_count(value)
         else:

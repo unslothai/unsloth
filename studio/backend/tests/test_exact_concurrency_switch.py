@@ -238,6 +238,7 @@ class TestTheLaunchArgs:
             ({}, []),
             ({"LLAMA_ARG_CPU_MOE": "1"}, ["LLAMA_ARG_CPU_MOE=1"]),
             ({"LLAMA_ARG_CPU_MOE": "true"}, ["LLAMA_ARG_CPU_MOE=true"]),
+            ({"LLAMA_ARG_CPU_MOE": "enabled"}, ["LLAMA_ARG_CPU_MOE=enabled"]),
             ({"LLAMA_ARG_CPU_MOE": "0"}, []),
             ({"LLAMA_ARG_N_CPU_MOE": "8"}, ["LLAMA_ARG_N_CPU_MOE=8"]),
             ({"LLAMA_ARG_N_CPU_MOE": "0"}, []),
