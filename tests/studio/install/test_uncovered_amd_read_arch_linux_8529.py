@@ -110,25 +110,34 @@ def test_a_covered_card_alone_is_unchanged():
     assert "download.pytorch.org/whl/rocm6.4" in calls, calls
 
 
-def test_an_hsa_spoof_keeps_the_generic_install():
-    """amd-smi and KFD read the physical gfx1010 under HSA_OVERRIDE_GFX_VERSION=10.3.0, while
-    the runtime runs gfx1030 kernels from the generic wheel."""
+@pytest.mark.parametrize(
+    "devices,hsa,generic",
+    [
+        # amd-smi / KFD read the physical gfx1010; the runtime runs the spoofed arch.
+        (("gfx1010",), "10.3.0", True),
+        (("gfx1030",), "10.3.0", True),
+        # A spoof onto another uncovered arch still has no wheels (RX 5500 posing as gfx1010).
+        (("gfx1012",), "10.1.0", False),
+        # Unreadable: ROCr ignores it and runs the physical arch.
+        (("gfx1010",), "ten", False),
+    ],
+)
+def test_an_hsa_spoof_is_judged_by_its_target(devices, hsa, generic):
     calls = routing._run_install(
-        gfx_devices = ("gfx1010",),
-        rocm_version = (6, 4),
-        env = {"HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
+        gfx_devices = devices, rocm_version = (6, 4), env = {"HSA_OVERRIDE_GFX_VERSION": hsa}
     )
-    assert "download.pytorch.org/whl/rocm6.4" in calls, calls
+    assert ("download.pytorch.org/whl/rocm6.4" in calls) is generic, calls
 
 
-def test_an_hsa_spoof_keeps_the_update_preflight(monkeypatch):
+@pytest.mark.parametrize("hsa,needs", [("10.3.0", True), ("10.1.0", False)])
+def test_an_hsa_spoof_decides_the_update_preflight(monkeypatch, hsa, needs):
     fastpath._host(
         monkeypatch,
         torch = ("2.10.0+cpu", ""),
         gfx = ("gfx1010",),
-        env = {"HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
+        env = {"HSA_OVERRIDE_GFX_VERSION": hsa},
     )
-    assert fastpath._needs_pass() is True
+    assert fastpath._needs_pass() is needs
 
 
 def test_an_existing_rocm_build_is_left_alone():
@@ -285,7 +294,10 @@ def _install_summary_gpu_step(probe: str, pinned: bool = False) -> str:
         'step() { echo "STEP: $2"; }\n_has_amd_rocm_gpu() { return 0; }\n'
         f"_probe_amd_gfx_arch() {{ printf '%s\\n' '{probe}'; }}\n"
         f"_torch_index_pinned={'true' if pinned else 'false'}\n_torch_index_leaf=cpu\n"
-        "if false; then :\nelif _has_amd_rocm_gpu; then\n" + src[start:end] + "fi\n"
+        + guards._sh_function_body(src, "_hsa_override_gfx_arch")
+        + "\nif false; then :\nelif _has_amd_rocm_gpu; then\n"
+        + src[start:end]
+        + "fi\n"
     )
     out = subprocess.run(["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30)
     return out.stdout
@@ -312,11 +324,31 @@ def test_install_summary_a_pin_still_wins():
     assert "STEP: AMD GPU (torch index pinned: cpu)" in out, out
 
 
+def _amd_smi_probe_harness(monkeypatch, physical: str):
+    """The stub probe answers like amd-smi: the physical arch, whatever the spoof says."""
+    real = guards._INDEX_URL_STUBS
+    monkeypatch.setattr(
+        guards,
+        "_INDEX_URL_STUBS",
+        real.replace(
+            "_probe_amd_gfx_arch() { printf '%s\\n' \"${UNSLOTH_ROCM_GFX_ARCH:-}\" "
+            "| tr '[:upper:]' '[:lower:]'; }",
+            f"_probe_amd_gfx_arch() {{ echo {physical}; }}",
+        ),
+    )
+    assert guards._INDEX_URL_STUBS != real, "probe stub not found"
+
+
 @_POSIX
-def test_install_sh_an_hsa_spoof_keeps_the_generic_tag(monkeypatch):
-    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
-    url, err = guards._run_sh_get_torch_index_url("gfx1010", rocm_tag = "rocm6.4")
-    assert url.endswith("/rocm6.4"), (url, err)
+@pytest.mark.parametrize(
+    "physical,hsa,tail",
+    [("gfx1010", "10.3.0", "/rocm6.4"), ("gfx1012", "10.1.0", "/cpu"), ("gfx1010", "ten", "/cpu")],
+)
+def test_install_sh_an_hsa_spoof_is_judged_by_its_target(monkeypatch, physical, hsa, tail):
+    _amd_smi_probe_harness(monkeypatch, physical)
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", hsa)
+    url, err = guards._run_sh_get_torch_index_url("", rocm_tag = "rocm6.4")
+    assert url.endswith(tail), (url, err)
 
 
 @_POSIX
@@ -324,6 +356,13 @@ def test_install_sh_the_warning_names_the_spoof_escape(monkeypatch):
     monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
     _url, err = guards._run_sh_get_torch_index_url("gfx1010", rocm_tag = "rocm6.4")
     assert "HSA_OVERRIDE_GFX_VERSION, export it and re-run" in err, err
+
+
+@_POSIX
+def test_setup_sh_a_spoof_onto_an_uncovered_arch_still_warns(monkeypatch):
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.1.0")
+    out = _setup_report("gfx1012", "gfx1012", "AMD Radeon RX 5500 XT")
+    assert "STEP: AMD GPU detected (gfx1010) -- no ROCm PyTorch wheels" in out, out
 
 
 @_POSIX
@@ -349,6 +388,13 @@ def test_setup_sh_a_declared_arch_outranks_the_rocr_mask(monkeypatch):
 
 
 @_POSIX
-def test_install_summary_an_hsa_spoof_keeps_the_old_line(monkeypatch):
-    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
-    assert "STEP: AMD GPU (no usable ROCm -- CPU fallback)" in _install_summary_gpu_step("gfx1010")
+@pytest.mark.parametrize(
+    "hsa,step",
+    [
+        ("10.3.0", "AMD GPU (no usable ROCm -- CPU fallback)"),
+        ("10.1.0", "AMD GPU (gfx1010, no ROCm PyTorch wheels -- CPU fallback)"),
+    ],
+)
+def test_install_summary_an_hsa_spoof_is_judged_by_its_target(monkeypatch, hsa, step):
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", hsa)
+    assert f"STEP: {step}" in _install_summary_gpu_step("gfx1012")

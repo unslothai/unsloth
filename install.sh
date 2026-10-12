@@ -5915,10 +5915,12 @@ get_torch_index_url() {
         # RDNA 1 / Polaris read fine and still have no wheels: no pytorch.org tag and no AMD
         # per-arch index carries their kernels, so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
-        # a covered peer keeps its wheels. A set HSA_OVERRIDE_GFX_VERSION keeps the old route too:
-        # amd-smi reads the physical arch under it while the runtime runs the spoofed one.
-        _amd_unsup_all=""
-        [ -n "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ] || _amd_unsup_all=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+        # a covered peer keeps its wheels. A readable HSA_OVERRIDE_GFX_VERSION is the arch the
+        # runtime runs, whatever amd-smi reads, so it alone is judged unless an arch is declared.
+        _amd_unsup_src="$_amd_gfx_probe"
+        _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
+        [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_src="$_amd_hsa_gfx"
+        _amd_unsup_all=$(printf '%s\n' "$_amd_unsup_src" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
         if [ -n "$_amd_unsup_all" ]; then
@@ -7494,8 +7496,11 @@ elif _has_amd_rocm_gpu; then
     # The arch read fine and get_torch_index_url sent it to CPU for having no wheels (#8529),
     # so "no usable ROCm" would blame a working install. Same filter as that function.
     _amd_unsup_read=""
-    if [ "$_torch_index_pinned" != true ] && [ -z "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ]; then
-        _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+    if [ "$_torch_index_pinned" != true ]; then
+        _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null) || _amd_unsup_read=""
+        _amd_hsa_gfx=$(_hsa_override_gfx_arch "${HSA_OVERRIDE_GFX_VERSION:-}" 2>/dev/null) || _amd_hsa_gfx=""
+        [ -n "$_amd_hsa_gfx" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _amd_unsup_read="$_amd_hsa_gfx"
+        _amd_unsup_read=$(printf '%s\n' "$_amd_unsup_read" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""
     fi

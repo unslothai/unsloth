@@ -4351,13 +4351,24 @@ EOF
     # install.sh's get_torch_index_url holds the same list. A declared arch is all the
     # installers route on, so the physical inventory is not consulted beside it. The
     # installers probe with ROCR_VISIBLE_DEVICES stripped, rocminfo here does not, so a mask
-    # could hide the covered peer; an HSA_OVERRIDE_GFX_VERSION spoof keeps the old route.
+    # could hide the covered peer. A readable HSA_OVERRIDE_GFX_VERSION is the arch the runtime
+    # runs, so it alone is judged (same triple parse as install.sh's _hsa_override_gfx_arch).
+    _setup_unsup_cur="$_setup_gfx"
     _setup_unsup_inv="$_setup_gfx_all"
     [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
+    _setup_unsup_hsa=$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+          if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+          split($0, p, "."); maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+          if (maj <= 0 || min > 9 || step > 15) exit
+          printf "gfx%d%d%x", maj, min, step }')
+    if [ -n "$_setup_unsup_hsa" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_unsup_cur="$_setup_unsup_hsa"
+        _setup_unsup_inv=""
+    fi
     _setup_unsup_gfx=""
-    if [ -z "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ] && \
-       { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
-        _setup_unsup_gfx=$(printf '%s\n' "$_setup_gfx" "$_setup_unsup_inv" | sed 's/:.*$//' \
+    if [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; then
+        _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')

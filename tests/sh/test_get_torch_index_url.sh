@@ -53,6 +53,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo
     sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_hsa_override_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
