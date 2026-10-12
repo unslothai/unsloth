@@ -61,8 +61,7 @@ pub fn studio_dir() -> PathBuf {
         .unwrap_or_else(|| crate::studio_home::default_root_for_home(&home))
 }
 
-/// Where this machine's Desktop logs can be: the default root too while a chosen root is in
-/// use, since a first install logs there until the chosen folder exists.
+/// Plus the default root while a chosen one is in use: a first install logs there until it exists.
 pub fn log_roots() -> Vec<PathBuf> {
     let current = studio_dir();
     let mut roots = vec![current.clone()];
