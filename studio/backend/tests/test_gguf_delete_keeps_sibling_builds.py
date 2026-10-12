@@ -198,6 +198,36 @@ def test_an_incomplete_newer_build_does_not_replace_the_complete_rows_build(tmp_
     assert (snapshots / "new" / partial).is_symlink()
 
 
+def test_a_hidden_only_newer_snapshot_does_not_replace_the_visible_rows_build(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    partial = "model-Q4_K_M-00001-of-00002.gguf"
+    hidden = "model-Q4_K_M-be.gguf"
+    repo, snapshots = _revisioned_repo(
+        tmp_path, (("old", [partial]), ("new", [hidden]))
+    )
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snapshots / "old" / partial).is_symlink()
+    assert (snapshots / "new" / hidden).is_symlink()
+
+
+def test_each_rows_build_is_selected_independently_across_snapshots(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    alpha = "alpha-Q4_K_M-00001-of-00002.gguf"
+    beta = "beta-Q4_K_M-00001-of-00002.gguf"
+    repo, snapshots = _revisioned_repo(
+        tmp_path,
+        (("old", [alpha, "model-Q6_K.gguf"]), ("new", [beta])),
+    )
+
+    _delete_gguf_variant_from_repos(repo.repo_id, "Q4_K_M", [repo], None, root = tmp_path)
+    assert not (snapshots / "new" / beta).is_symlink()
+    assert (snapshots / "old" / alpha).is_symlink()
+    assert (snapshots / "old/model-Q6_K.gguf").is_symlink()
+
+
 def test_the_delete_preview_counts_only_the_listed_build(tmp_path):
     from hub.services.models.companion_cleanup import (
         _remaining_main_gguf_variants,

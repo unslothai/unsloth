@@ -456,13 +456,17 @@ def _paths_by_variant_key(paths: Iterable[str]) -> dict[str, list[str]]:
     return by_key
 
 
-def _listed_identity(members: Sequence[str]) -> Optional[str]:
-    """use the first lister-visible file, ignoring hidden big-endian files."""
+def _loader_visible_members(members: Sequence[str]) -> list[str]:
     from utils.models.model_config import _extract_quant_label as _loader_quant
 
-    selectable = [
+    return [
         path for path in members if not is_big_endian_gguf_path(path, _loader_quant(path))
     ]
+
+
+def _listed_identity(members: Sequence[str]) -> Optional[str]:
+    """use the first lister-visible file, ignoring hidden big-endian files."""
+    selectable = _loader_visible_members(members)
     return _checkpoint_identity((selectable or members)[0])
 
 
@@ -470,38 +474,25 @@ def gguf_listed_checkpoints(
     snapshots: Iterable[Iterable[str]], completed: Optional[Iterable[Iterable[str]]] = None
 ) -> dict[str, Optional[str]]:
     groups = [_paths_by_variant_key(paths) for paths in snapshots]
-    if completed is None:
-        listed: dict[str, Optional[str]] = {}
-        for snapshot in groups:
-            for key, members in snapshot.items():
-                listed.setdefault(key, _listed_identity(members))
-        return listed
-
-    whole = [{key.lower() for key in keys} for keys in completed]
+    whole = (
+        [{key.lower() for key in keys} for keys in completed]
+        if completed is not None
+        else []
+    )
     if len(whole) < len(groups):
         whole.extend(set() for _ in range(len(groups) - len(whole)))
-    selected = next(
-        (
-            index
-            for index, snapshot in enumerate(groups)
-            if snapshot and any(key in whole[index] for key in snapshot)
-        ),
-        next((index for index, snapshot in enumerate(groups) if snapshot), None),
-    )
-    if selected is None:
-        return {}
 
-    listed = {key: _listed_identity(members) for key, members in groups[selected].items()}
-    complete_keys = set(whole[selected])
+    listed: dict[str, Optional[str]] = {}
+    complete_keys: set[str] = set()
     for index, snapshot in enumerate(groups):
-        if index == selected:
-            continue
         for key, members in snapshot.items():
-            if key in complete_keys:
+            selectable = _loader_visible_members(members)
+            if not selectable:
                 continue
-            if key not in listed or key in whole[index]:
-                listed[key] = _listed_identity(members)
-            if key in whole[index]:
+            complete = key in whole[index]
+            if key not in listed or (complete and key not in complete_keys):
+                listed[key] = _checkpoint_identity(selectable[0])
+            if complete:
                 complete_keys.add(key)
     return listed
 
