@@ -417,6 +417,7 @@ async def load_video_model_gated(
 
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
+        from core.inference.sd_cpp_args import forces_cpu_backend
         from core.inference.video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -425,8 +426,19 @@ async def load_video_model_gated(
             if getattr(images, "runs_off_torch_device", False) is True:
                 # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
                 await asyncio.to_thread(images.unload)
-        if device != "cpu":
-            # Register UNDER the arbiter lock, or a competing acquire evicts VIDEO before it is marked.
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
+        # worker tears the old model down and releases it.
+        forced_cpu = (
+            is_h3_native(fam, kind)
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        )
+        if forced_cpu:
+            status_dict = await asyncio.to_thread(_begin_load)
+        elif device != "cpu":
+            # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
+            # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
+            # the same span.
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():

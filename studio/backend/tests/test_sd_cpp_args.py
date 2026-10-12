@@ -48,6 +48,30 @@ def test_te_flags_by_family():
     assert text_encoder_flags_for_family("unknown") == ()
 
 
+# ── Metal text-encoder placement ────────────────────────────────────────────
+
+
+import core.inference.sd_cpp_args as _sd_cpp_args_module
+
+_REAL_PARAVIRTUAL_PROBE = _sd_cpp_args_module.metal_is_paravirtual
+
+
+@pytest.fixture(autouse = True)
+def _physical_metal(monkeypatch):
+    # The paravirtual probe shells out on darwin; every test here runs as physical Apple Silicon unless it says so.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
+    import platform
+
+    monkeypatch.setattr(
+        sd_cpp_args,
+        "apple_silicon_machine",
+        lambda: platform.machine().lower() in ("arm64", "aarch64"),
+    )
+
+
 def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
     # ggml Metal aborts on non-contiguous RMS_NORM with no CPU fallback (exits -6 on macOS).
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
@@ -98,6 +122,248 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
     monkeypatch.setattr("sys.platform", "linux")
     assert "--clip-on-cpu" not in build_sd_cpp_server_command(
         binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
+
+
+def test_paravirtual_metal_runs_the_whole_graph_on_the_cpu_backend(monkeypatch):
+    # The bundled ggml segfaults on a paravirtual Metal GPU, so a VM gets --backend cpu.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert metal_text_encoder_flags() == ["--backend", "cpu"]
+    # The encoder kill switch does not put a VM back on its GPU.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", "1")
+    assert metal_text_encoder_flags() == ["--backend", "cpu"]
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU")
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
+    )
+    cli = build_sd_cpp_command(
+        binary = "sd-cli", files = files, params = SdCppGenParams(prompt = "x"), output_path = "/o/x.png"
+    )
+    for argv in (server, cli):
+        i = argv.index("--backend")
+        assert argv[i + 1] == "cpu"
+        assert argv.count("--backend") == 1
+        assert "--clip-on-cpu" not in argv
+    # A low_vram policy that already offloads keeps its flags and still gets the CPU backend exactly once.
+    model = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, offload = offload_flags("model")
+    )
+    assert model.count("--backend") == 1 and model[model.index("--backend") + 1] == "cpu"
+    # An explicit --backend pin in the offload flags wins; no dangling "cpu" argument is appended.
+    pinned = sd_cpp_args.metal_placement_flags(["--backend", "diffusion=MTL0,te=cpu,vae=MTL0"])
+    assert pinned == []
+    monkeypatch.setattr("sys.platform", "linux")
+    assert metal_text_encoder_flags() == []
+
+
+def test_paravirtual_probe_is_darwin_only_and_survives_a_missing_probe(monkeypatch):
+    import builtins
+
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    probe = _REAL_PARAVIRTUAL_PROBE
+    probe.cache_clear()
+    monkeypatch.setattr("sys.platform", "linux")
+    assert probe() is False
+    probe.cache_clear()
+    monkeypatch.setattr("sys.platform", "darwin")
+    orig_import = builtins.__import__
+
+    def _no_llama(name, *args, **kwargs):
+        if name == "core.inference.llama_cpp":
+            raise ImportError("probe unavailable")
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_llama)
+    assert probe() is False
+    probe.cache_clear()
+    assert sd_cpp_args.metal_is_paravirtual is not probe
+
+
+# ── offload policy -> sd-cli flags ──────────────────────────────────────────
+
+
+def test_native_speed_on_apple_metal_drops_direct_conv(monkeypatch):
+    # ggml-metal's direct CONV_2D trips the GPU watchdog; flash attention stays.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    assert native_speed_flags("max") == ["--diffusion-fa"]
+    assert native_speed_flags("off") == []
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, native_speed = "default"
+    )
+    assert "--diffusion-fa" in server and "--diffusion-conv-direct" not in server
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+    # Intel Macs ship a CPU-only build.
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+
+
+def test_native_speed_keeps_direct_conv_on_a_forced_cpu_backend(monkeypatch):
+    # The CPU-backend restart and an explicit --backend cpu run on the CPU, where direct conv is the profile's win.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    assert native_speed_flags("default", ["--backend", "cpu"]) == full
+    assert native_speed_flags("default", ["--backend", "diffusion=MTL0"]) == ["--diffusion-fa"]
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    restart = build_sd_cpp_server_command(
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
+        native_speed = "default",
+        extra_args = ["--backend", "cpu"],
+    )
+    assert "--diffusion-conv-direct" in restart
+
+
+def test_engine_generate_keeps_direct_conv_on_a_forced_cpu_backend(monkeypatch):
+    from core.inference.sd_cpp_engine import SdCppEngine
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    captured = {}
+    eng = SdCppEngine(binary = "/x/sd-cli")
+    monkeypatch.setattr(eng, "_require_binary", lambda: "/x/sd-cli")
+    monkeypatch.setattr(eng, "_prepare_out", lambda p: p)
+    monkeypatch.setattr(eng, "_run", lambda cmd, *a, **k: captured.setdefault("cmd", cmd))
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    eng.generate(
+        files,
+        SdCppGenParams(prompt = "x"),
+        output_path = "/o/x.png",
+        native_speed = "default",
+        extra_args = ["--backend", "cpu"],
+    )
+    assert "--diffusion-conv-direct" in captured["cmd"]
+
+
+def test_native_speed_honours_an_explicit_metal_pin_on_a_paravirtual_gpu(monkeypatch):
+    # An offload --backend pin suppresses the paravirtual CPU placement, so the graph is on Metal again.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    pin = ["--backend", "diffusion=MTL0,te=cpu,vae=MTL0"]
+    assert native_speed_flags("default", pin) == ["--diffusion-fa"]
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu,te=cpu,vae=cpu"]) == [
+        "--diffusion-fa",
+        "--diffusion-conv-direct",
+    ]
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(
+        binary = "sd-server",
+        files = files,
+        host = "127.0.0.1",
+        port = 1234,
+        offload = pin,
+        native_speed = "default",
+    )
+    assert "--diffusion-conv-direct" not in server
+    unpinned = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, native_speed = "default"
+    )
+    assert "--diffusion-conv-direct" in unpinned
+
+
+def test_metal_detection_does_not_trust_the_python_architecture(monkeypatch):
+    # An x86_64 Python under Rosetta on Apple Silicon still drives the Metal GPU.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(sd_cpp_args, "apple_silicon_machine", lambda: True)
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    # An explicit Metal pin is Metal whatever the machine reports.
+    monkeypatch.setattr(sd_cpp_args, "apple_silicon_machine", lambda: False)
+    assert native_speed_flags("default", ["--backend", "diffusion=MTL0"]) == ["--diffusion-fa"]
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
+
+
+def test_video_load_route_skips_the_video_claim_for_a_forced_cpu_h3_load():
+    import inspect
+
+    import routes.video as video_routes
+
+    source = inspect.getsource(video_routes)
+    guard = source.index("await asyncio.to_thread(forces_cpu_backend, device)")
+    branch = source.index("if forced_cpu:", guard)
+    # Neither acquires nor releases VIDEO: an old MPS model keeps its claim until the worker tears it down.
+    assert source[branch : source.index('elif device != "cpu":', branch)].strip() == (
+        "if forced_cpu:\n            status_dict = await asyncio.to_thread(_begin_load)"
+    )
+    assert branch < source.index("return acquire_for_request(VIDEO, _begin_load)")
+
+
+def test_partial_backend_specs_leave_the_diffusion_model_on_metal(monkeypatch):
+    # sd.cpp auto-fits unassigned modules, so te=cpu / vae=cpu alone still runs the denoiser on Metal.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    fa_only = ["--diffusion-fa"]
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    assert native_speed_flags("default", ["--backend", "te=cpu"]) == fa_only
+    assert native_speed_flags("default", ["--backend", "vae=cpu,te=cpu"]) == fa_only
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu"]) == full
+    # An explicit diffusion entry beats the bare default, as in sd.cpp.
+    assert (
+        native_speed_flags("default", ["--backend", "cpu", "--backend", "diffusion=MTL0"])
+        == fa_only
+    )
+    assert native_speed_flags("default", ["--backend", "MTL0,diffusion=cpu"]) == full
+
+
+def test_forces_cpu_backend_only_for_a_paravirtual_mps_device(monkeypatch):
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert sd_cpp_args.forces_cpu_backend("mps") is True
+    assert sd_cpp_args.forces_cpu_backend("cuda") is False
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    assert sd_cpp_args.forces_cpu_backend("mps") is False
+
+
+def test_image_load_route_skips_the_diffusion_claim_for_a_forced_cpu_native_load():
+    import inspect
+
+    import routes.inference as inference_routes
+
+    source = inspect.getsource(inference_routes)
+    start = source.index("off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)")
+    window = source[start : start + 25000]
+    # Off the event loop: the paravirtual probe can shell out to sysctl / system_profiler.
+    guard = window.index("await asyncio.to_thread(forces_cpu_backend, device)")
+    assert window.index("activated = active_engine_name()") < guard < window.index("if needs_gpu:")
+    assert "needs_gpu = False" in window[guard : guard + 200]
+
+
+def test_upscale_on_paravirtual_metal_runs_on_the_cpu_backend(monkeypatch):
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    params = SdCppUpscaleParams(input_image = "/i/in.png", upscale_model = "/m/esrgan.pth")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    cmd = build_sd_cpp_upscale_command("sd-cli", params, output_path = "/o/out.png")
+    assert cmd.count("--backend") == 1 and cmd[cmd.index("--backend") + 1] == "cpu"
+    # An explicit caller --backend wins: no second, concatenated spec.
+    pinned = build_sd_cpp_upscale_command(
+        "sd-cli", params, output_path = "/o/out.png", extra_args = ["--backend", "MTL0"]
+    )
+    assert pinned.count("--backend") == 1 and pinned[-1] == "MTL0"
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    assert "--backend" not in build_sd_cpp_upscale_command(
+        "sd-cli", params, output_path = "/o/out.png"
     )
 
 

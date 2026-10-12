@@ -10,13 +10,14 @@ import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
-import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
+import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR, cornerInsets } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
+import { outsideThread } from "./outside-thread";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
@@ -403,7 +404,7 @@ const HOVER_ONLY = '[role="tooltip"], [data-slot="hover-card-content"]';
 /** Boxes of `selector` over `rect` (anywhere when null), minus those holding `skip`. */
 function overlays(selector: string, rect: DOMRect | null, skip: string | null = TOOLTIP): DOMRect[] {
   const boxes: DOMRect[] = [];
-  for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+  for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
     if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
@@ -562,7 +563,7 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   if (rect.width < 2 || rect.height < 2) return null;
   let bottom = rect.bottom;
   // `data-native-inset`: panel UI below the page, e.g. the annotate bar.
-  for (const dock of document.querySelectorAll<HTMLElement>(
+  for (const dock of outsideThread(
     ".chat-full-view-dock, .chat-full-view-dock-minimized, [data-native-inset]",
   )) {
     const box = dock.getBoundingClientRect();
@@ -583,7 +584,7 @@ let toastInset: string | null = null;
 
 // native views cover DOM toasts, so reserve a left column when the page reaches the right edge or Run settings.
 function insetToasts(rect: DOMRect | null): void {
-  const style = document.documentElement.style;
+  const style = cornerInsets.style;
   // read the inline value set by watchChatSettingsInset; it is absent when the panel is closed or the row is narrow.
   const settings = Number.parseFloat(style.getPropertyValue(CHAT_SETTINGS_INSET_VAR)) || 0;
   const room = rect && rect.right >= window.innerWidth - settings - 2 && rect.left >= TOAST_COLUMN;

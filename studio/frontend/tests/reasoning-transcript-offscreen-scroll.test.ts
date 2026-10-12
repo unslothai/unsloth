@@ -34,23 +34,10 @@ test("a transcript watches its distance from the thread viewport", () => {
   );
 });
 
-test("a far transcript drops both viewport scroll listeners and resumes when near", () => {
+test("a far transcript drops its viewport scroll listener and resumes when near", () => {
   const toggle = between(transcript, "const setNearby = ", "const proximity =");
-  const [near, far] = toggle.split("} else {");
-  assert.match(
-    far,
-    /followOffset\.current\?\.\(\s*false,/,
-    "offset observer kept offscreen",
-  );
-  assert.match(
-    far,
-    /box\.bottom <= scroll\.getBoundingClientRect\(\)\.top\s*\?\s*1e9\s*:\s*-1e9/,
-  );
-  assert.match(
-    far,
-    /scroll\.removeEventListener\("scroll", schedule\)/,
-    "measure listener kept offscreen",
-  );
+  const [near, far] = toggle.split("\n      scroll.removeEventListener(");
+  assert.ok(far, "no far branch");
   assert.match(
     near,
     /scroll\.addEventListener\("scroll", schedule/,
@@ -58,28 +45,11 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
   );
   assert.match(
     near,
-    /if \(beforePaint\)[\s\S]*?flushSync\(\(\) => \{\s*measure\(\);\s*followOffset\.current\?\.\(true\);\s*\}\)/,
+    /if \(beforePaint\) flushSync\(capture\);\s*else schedule\(\);/,
+    "a jump back does not mount the rows in view before paint",
   );
-
-  const observe = between(
-    transcript,
-    "observeElementOffset: (instance, callback) => {",
-    "overscan:",
-  );
-  assert.match(
-    observe,
-    /if \(!on\) \{[\s\S]*?if \(park !== undefined\) callback\(park, false\);\s*return;\s*\}/,
-    "offset observer cannot be stopped or parked",
-  );
-  assert.match(
-    observe,
-    /callback\(instance\.scrollElement\?\.scrollTop \?\? 0, false\);\s*stop = observeElementOffset\(instance,/,
-    "resubscribing does not seed the current offset first",
-  );
-  assert.match(
-    observe,
-    /if \(current === generation\) callback\(offset, isScrolling\)/,
-  );
+  assert.match(far, /^"scroll", schedule\);/, "measure listener kept offscreen");
+  assert.match(far, /cancelAnimationFrame\(frame\);\s*frame = 0;/);
 });
 
 test("a jump past the observer margin wakes far transcripts through one listener per viewport", () => {
@@ -100,22 +70,15 @@ test("a jump past the observer margin wakes far transcripts through one listener
   );
 });
 
-test("a far transcript corrects a resize above the reader by its size change, not its frozen offset", () => {
-  const adjust = between(
-    transcript,
-    "virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta) => {",
-    "useLayoutEffect(",
-  );
-  assert.match(
-    adjust,
-    /if \(nearby\.current\) return true;\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*adjustAbove\(delta\);\s*return false;/,
-    "a far transcript hands TanStack a correction from its frozen offset",
-  );
+test("a far transcript still corrects a resize above the reader without the scroll listener", () => {
+  const remeasure = between(transcript, "rowRemeasurers.set(element, (row) => {", "});");
+  assert.match(remeasure, /element\.getBoundingClientRect\(\)\.bottom -/);
+  assert.match(remeasure, /adjustAbove\(Math\.round\(shift\)\)/);
+  assert.match(transcript, /const observer = new ResizeObserver\(/);
 });
 
-test("a far transcript skips the reading-anchor scan", () => {
-  assert.match(
-    transcript,
-    /if \(nearby\.current\)\s*for \(const row of element\.querySelectorAll<HTMLElement>\(\s*"\[data-index\]",?\s*\)\)/,
-  );
+test("a far transcript drops its reading anchor and runs no anchor scan", () => {
+  const toggle = between(transcript, "const setNearby = ", "const proximity =");
+  assert.match(toggle, /reading = undefined;/);
+  assert.match(transcript, /if \(nearby\.current\)\s*scroll\.addEventListener\("scroll", schedule/);
 });

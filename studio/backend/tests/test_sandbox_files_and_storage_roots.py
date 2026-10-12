@@ -3030,7 +3030,15 @@ def test_deleting_a_big_sandbox_does_not_hold_up_other_chats(tmp_path, monkeypat
     release = threading.Event()
     real_rmtree = tools.shutil.rmtree
 
+    detached_prefix = os.path.basename(str(workdir)) + tools._DETACHED_SUFFIX
+
     def slow_rmtree(path, **kwargs):
+        # rmtree is patched for the whole process: only this chat's detached tree is the
+        # delete under test. Anything else (the legacy migration this call starts, a
+        # background cleanup from an earlier test in the worker) used to set `started`
+        # before the rename and fail the name check below.
+        if not os.path.basename(os.fspath(path)).startswith(detached_prefix):
+            return real_rmtree(path, **kwargs)
         started.set()
         release.wait(10)
         return real_rmtree(path, **kwargs)

@@ -34,6 +34,99 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
+# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor), "N" ending the
+# token ("ltx25"), or nothing ("ltx-2-19b" = 2.0). Anything else ("ltx-24fps", "ltx-transformer") is no name evidence,
+# as is a bare "ltx23" / "ltx-23" (no release uses that spelling, so it cannot outrank the repo).
+_LTX_VERSION = re.compile(
+    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9])(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
+)
+
+
+def ltx_name_version(name: Optional[str]) -> Optional[str]:
+    for found in _LTX_VERSION.finditer((name or "").lower()):
+        if found.group(2) is None or int(found.group(2)) >= 4:
+            return f"2.{found.group(1) or found.group(2) or 0}"
+    return None
+
+
+def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
+    # LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in LTX-2.
+    for name in names:
+        version = ltx_name_version(name)
+        if version is not None and int(version[2:]) >= 4:
+            return version
+    return None
+
+
+def unsupported_ltx_message(version: str, subject: str) -> str:
+    return (
+        f"{subject} is LTX-{version}, which Studio does not support yet. LTX-{version} is not a drop-in LTX-2.3: "
+        "it uses a new Gemma 4 text encoder, a new video decoder and its own sampling schedule, so loading it as "
+        "LTX-2 would fail or produce a broken video. Use LTX-2.3 (Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) "
+        "for now."
+    )
+
+
+def assert_supported_ltx_version(
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> None:
+    """A file whose own name has a versioned LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder
+    loads); any other file name (``model``, ``ltx-transformer``) defers to the repo / display id."""
+
+    def leaf(name: Optional[str]) -> str:
+        # Last segment only: a local parent folder must not decide.
+        return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
+
+    base = leaf(filename)
+    if ltx_name_version(base) is not None:
+        picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
+    else:
+        picks = (
+            (base, filename),
+            (leaf(display_repo_id), display_repo_id),
+            (leaf(repo_id), repo_id),
+        )
+    for name, shown in picks:
+        version = unsupported_ltx_version(name)
+        if version is not None:
+            raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+
+
+def assert_ltx_pick_supported(
+    family: Optional[str],
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> None:
+    """Name guard for a pick already resolved to ``family``; a non-LTX family never trips on an ltx-2.5 token."""
+    if family == "ltx-2":
+        assert_supported_ltx_version(repo_id, filename, display_repo_id)
+
+
+def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
+    """Refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+    import json
+    from pathlib import Path
+
+    try:
+        index = Path(str(path or "")).expanduser() / "model_index.json"
+        if not path or not index.is_file():
+            return
+        spec = json.loads(index.read_text(encoding = "utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(spec, dict) or not str(spec.get("_class_name", "")).startswith("LTX2"):
+        return
+    encoder = spec.get("text_encoder")
+    encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    if str(encoder_class).startswith("Gemma4") or any(
+        isinstance(spec.get(k), list) and spec.get(k)[0]
+        for k in ("diffusion_decoder", "duration_head")
+    ):
+        raise ValueError(unsupported_ltx_message("2.5", f"'{path}' (by its model_index.json)"))
+
 
 @dataclass(frozen = True)
 class VideoFamily:

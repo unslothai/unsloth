@@ -372,7 +372,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   const chatPage = readSrc("features/chat/chat-page.tsx");
   assert.match(
     chatPage,
-    /const activePinnedEffort = useModelReasoningEffortStore\(\s*\(state\) => state\.effortByModel\[inferenceParams\.checkpoint\],/,
+    /const activePinnedEffort = useModelReasoningEffortStore\(\s*\(state\) => state\.effortByModel\[inferenceCheckpoint\],/,
   );
   assert.match(
     chatPage,
@@ -383,7 +383,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceCheckpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -644,7 +644,7 @@ test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
   );
   assert.match(
     chatPage,
-    /externalReasoningTakesEffort\(reasoningCaps\)\s*\? pinnedReasoningEffort\(inferenceParams\.checkpoint, effortLevels\)/,
+    /externalReasoningTakesEffort\(reasoningCaps\)\s*\? pinnedReasoningEffort\(inferenceCheckpoint, effortLevels\)/,
   );
   // Both record the level the pin takes the place of, so clearing it can put that back.
   assert.match(
@@ -659,7 +659,7 @@ test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
   // that used to put the provider default back over the pin.
   assert.match(
     chatPage,
-    /\}, \[externalProvidersForChat, inferenceParams\.checkpoint, settingsHydrated\]\);/,
+    /\}, \[externalProvidersForChat, inferenceCheckpoint, settingsHydrated\]\);/,
   );
   assert.doesNotMatch(chatPage, /const anthropicTopEffort =/);
 });

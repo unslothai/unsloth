@@ -234,6 +234,9 @@ def test_pre_detect_reads_the_repo_the_loader_fetches(
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", probe)
     monkeypatch.setattr(trainer_mod, "is_vision_model", vision)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+    # The 4-bit row reads the 4-bit table only where bitsandbytes is usable; with unsloth
+    # importable on a CPU host it is not. The fallback has its own test below.
+    monkeypatch.setattr(trainer_mod, "_bitsandbytes_allows_4bit", lambda: True)
 
     trainer = trainer_mod.UnslothTrainer()
     trainer.pre_detect_and_load_tokenizer(

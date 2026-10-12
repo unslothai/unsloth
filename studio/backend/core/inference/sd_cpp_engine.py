@@ -601,7 +601,11 @@ class SdCppEngine:
     ) -> Path:
         """Speed flags skip any offload flag; a set cancel_event kills the sd-cli process tree."""
         offload = list(offload or [])
-        speed = [f for f in native_speed_flags(native_speed) if f not in offload]
+        speed = [
+            f
+            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            if f not in offload
+        ]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             self._require_binary(),

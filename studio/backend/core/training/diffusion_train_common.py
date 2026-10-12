@@ -197,7 +197,25 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
-    """An unclassifiable custom name falls through to the SDXL trainer, for backwards compatibility."""
+    family = _resolve_trainable_family(base_model, model_family)
+    from core.inference.video_families import assert_ltx_pick_supported
+
+    assert_ltx_pick_supported(family, base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
+    Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
+    base; an explicit ``model_family`` must name a registry family, and that family must be
+    trainable; otherwise the family is detected from the base-model name, and a KNOWN but
+    non-trainable family is rejected; a name resolving to no registry family but matching a known
+    non-trainable architecture (SD3 / PixArt / ...) is rejected; a resolved family whose pipeline
+    class the installed diffusers lacks is rejected, so an environment too old for the pick fails
+    here rather than in the child, after the GPU residents are gone; and an unclassifiable custom
+    name/path falls through to the SDXL trainer (backwards compatible -- a wrong pick still fails
+    cleanly later in from_pretrained). No pipeline assert on that last path: there is no family
+    spec to read a class off, and SDXL's pipeline predates every diffusers in play."""
     name = str(base_model or "").strip().lower()
     # A MODULAR_BASE_FAMILIES checkout has modular_model_index.json and no model_index.json.
     local = Path(base_model).expanduser() if base_model else None
@@ -215,6 +233,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Must precede every family branch, including an explicit model_family override.
     _refuse_component_only_repo(base_model)
     _refuse_ltx23_training_base(base_model)
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
+
+    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
