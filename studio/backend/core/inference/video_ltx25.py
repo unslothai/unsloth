@@ -1258,14 +1258,16 @@ def render(
 
     with torch.inference_mode() if torch.is_inference_mode_enabled() else torch.no_grad():
         param = next(upsampler.parameters())
-        moved = param.device != video_latents.device
+        # Saved before the move: Module.to() swaps the parameter's storage in place, so param.device follows it.
+        home = param.device
+        moved = home != video_latents.device
         if moved:
             upsampler.to(video_latents.device)
         try:
             upsampled = upsampler(video_latents.to(param.dtype))
         finally:
             if moved:
-                upsampler.to(param.device)
+                upsampler.to(home)
 
     stage2 = dict(
         base,

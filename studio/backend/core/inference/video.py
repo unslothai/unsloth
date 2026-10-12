@@ -1137,6 +1137,24 @@ def _resolve_load_family(
     )[0]
 
 
+def _assert_local_ltx_header_matches(
+    repo_id: str, gguf_filename: Optional[str], family: str
+) -> None:
+    """A forced LTX family still never loads the other release's weights: a local file's header names its release."""
+    from .diffusion_content import inspect_checkpoint, local_pick_file
+    from .video_families import LTX25_FAMILY, wrong_ltx_family_message
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if not path:
+        return
+    found = inspect_checkpoint(path).family
+    if found in LTX_FAMILIES and found != family:
+        version = "2.5" if found == LTX25_FAMILY else "2.3"
+        raise ValueError(
+            wrong_ltx_family_message(version, family, f"'{os.path.basename(path)}' (by its weights)")
+        )
+
+
 def _resolve_load_family_with_source(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1147,7 +1165,10 @@ def _resolve_load_family_with_source(
 ) -> tuple[Optional[VideoFamily], bool]:
     """``_resolve_load_family`` plus whether a local file's header decided the family."""
     if family_override:
-        return detect_video_family(repo_id, family_override), False
+        fam = detect_video_family(repo_id, family_override)
+        if fam is not None and fam.name in LTX_FAMILIES:
+            _assert_local_ltx_header_matches(repo_id, gguf_filename, fam.name)
+        return fam, False
     fam = (
         (display_repo_id and detect_video_family(display_repo_id))
         or detect_video_family(repo_id)
@@ -1359,6 +1380,8 @@ def _note_sd_cpp_accelerator_failure(
 
 # "Not read yet", distinct from None, the real answer for a binary the installer does not own.
 _UNREAD_ACCELERATOR = object()
+# _close_pending_ltx25_encoder's default: stop the pending worker whichever load started it.
+_ANY_LOAD = object()
 
 
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
@@ -2741,8 +2764,9 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
-        # An LTX-2.5 Gemma 4 encoder worker started by a load that has not committed yet; a failed load stops it.
-        self._ltx25_pending_encoder: Any = None
+        # (load token, client) of an LTX-2.5 Gemma 4 encoder worker whose load has not committed yet; a failed load stops
+        # it.
+        self._ltx25_pending_encoder: Optional[tuple[Optional[int], Any]] = None
         # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
         # behind the active one holds no cancel event yet, so without this fence it could win the lock after an eject
         # and denoise a whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their
@@ -3544,7 +3568,8 @@ class VideoBackend:
             # A failed/cancelled load never commits _VideoLoadState, so roll back the process-wide speed globals here
             # (token-scoped).
             self._rollback_precommit_globals(token)
-            self._close_pending_ltx25_encoder()
+            # Token-scoped: a newer LTX-2.5 load may already hold the slot with its own worker.
+            self._close_pending_ltx25_encoder(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -4128,9 +4153,15 @@ class VideoBackend:
             from .gpu_arbiter import VIDEO, release_if
             release_if(VIDEO, lambda: token is None or token == self._load_token)
 
-    def _close_pending_ltx25_encoder(self) -> None:
-        """Stop an LTX-2.5 encoder worker whose load never committed (failed, cancelled or superseded)."""
-        client, self._ltx25_pending_encoder = self._ltx25_pending_encoder, None
+    def _close_pending_ltx25_encoder(self, token: Any = _ANY_LOAD) -> None:
+        """Stop an LTX-2.5 encoder worker whose load never committed (failed, cancelled or superseded).
+
+        With ``token``, only the worker that load started: a newer load's worker is left alone."""
+        pending = self._ltx25_pending_encoder
+        if pending is None or (token is not _ANY_LOAD and pending[0] != token):
+            return
+        self._ltx25_pending_encoder = None
+        client = pending[1]
         if client is not None:
             try:
                 client.close()
@@ -6577,7 +6608,7 @@ class VideoBackend:
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
             )
-            self._ltx25_pending_encoder = ltx25_client
+            self._ltx25_pending_encoder = (_load_token, ltx25_client)
 
         # ── build the pipeline.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
@@ -7695,7 +7726,8 @@ class VideoBackend:
                     bg_compile = load_bg_compile,
                 )
                 self._precommit_globals = None
-                if ltx25_client is not None:
+                pending_encoder = self._ltx25_pending_encoder
+                if ltx25_client is not None and pending_encoder is not None and pending_encoder[1] is ltx25_client:
                     self._ltx25_pending_encoder = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",

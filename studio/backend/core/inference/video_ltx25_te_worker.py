@@ -67,24 +67,52 @@ def _single_file_folder(config: dict) -> str:
             cache_dir = config.get("cache_dir") or None,
             local_files_only = bool(config.get("local_files_only")),
         )
+    weights = os.path.realpath(path)
     folder = tempfile.mkdtemp(prefix = "unsloth_ltx25_te_")
-    with safe_open(path, framework = "pt", device = "cpu") as handle:
-        meta = handle.metadata() or {}
-        if "gemma_config" not in meta:
-            raise RuntimeError(f"'{name}' has no embedded encoder config")
-        with open(os.path.join(folder, "config.json"), "w", encoding = "utf-8") as fh:
-            json.dump(json.loads(meta["gemma_config"]), fh)
-        keys = set(handle.keys())
-        for tensor_name, file_name in (
-            ("tokenizer_json", "tokenizer.json"),
-            ("hf_asset__tokenizer_config.json", "tokenizer_config.json"),
-        ):
-            if tensor_name not in keys:
-                raise RuntimeError(f"'{name}' has no embedded {file_name}")
-            with open(os.path.join(folder, file_name), "wb") as fh:
-                fh.write(handle.get_tensor(tensor_name).numpy().tobytes())
-    os.symlink(os.path.realpath(path), os.path.join(folder, "model.safetensors"))
+    try:
+        _link_weights(weights, os.path.join(folder, "model.safetensors"))
+    except OSError:
+        # The temp dir is on another volume than the weights, so no hard link: the scratch folder goes beside them.
+        os.rmdir(folder)
+        folder = tempfile.mkdtemp(prefix = ".unsloth_ltx25_te_", dir = os.path.dirname(weights))
+        try:
+            _link_weights(weights, os.path.join(folder, "model.safetensors"))
+        except OSError as exc:
+            os.rmdir(folder)
+            raise RuntimeError(
+                f"could not link '{name}' into a scratch checkpoint folder without copying it: {exc}"
+            ) from exc
+    try:
+        with safe_open(path, framework = "pt", device = "cpu") as handle:
+            meta = handle.metadata() or {}
+            if "gemma_config" not in meta:
+                raise RuntimeError(f"'{name}' has no embedded encoder config")
+            with open(os.path.join(folder, "config.json"), "w", encoding = "utf-8") as fh:
+                json.dump(json.loads(meta["gemma_config"]), fh)
+            keys = set(handle.keys())
+            for tensor_name, file_name in (
+                ("tokenizer_json", "tokenizer.json"),
+                ("hf_asset__tokenizer_config.json", "tokenizer_config.json"),
+            ):
+                if tensor_name not in keys:
+                    raise RuntimeError(f"'{name}' has no embedded {file_name}")
+                with open(os.path.join(folder, file_name), "wb") as fh:
+                    fh.write(handle.get_tensor(tensor_name).numpy().tobytes())
+    except BaseException:
+        import shutil
+
+        shutil.rmtree(folder, ignore_errors = True)
+        raise
     return folder
+
+
+def _link_weights(src: str, dst: str) -> None:
+    """Link ``src`` at ``dst`` without copying the 24 GB file: a symlink, else a hard link. Windows refuses symlinks
+    without Developer Mode or administrator rights (WinError 1314); a hard link needs neither, only the same volume."""
+    try:
+        os.symlink(src, dst)
+    except OSError:
+        os.link(src, dst)
 
 
 def _load(config: dict) -> tuple[Any, Any]:

@@ -338,6 +338,27 @@ def test_renamed_local_ltx25_file_loads_as_ltx25_by_its_header(tmp_path):
     assert _detect_load_family(str(tmp_path), good.name, None, None, "single_file").name == "ltx-2"
 
 
+def test_a_forced_ltx_family_still_reads_a_local_header(tmp_path):
+    from core.inference.video import _detect_load_family
+
+    shapes23, _ = _shapes("Lightricks/LTX-2.3/ltx-2.3-22b-distilled.safetensors")
+    v23 = tmp_path / "v23"
+    v23.mkdir()
+    _write_header_only_safetensors(v23 / "model.safetensors", shapes23)
+    with pytest.raises(ValueError, match = "loads as the 'ltx-2' family, not 'ltx-2.5'"):
+        _detect_load_family(str(v23), "model.safetensors", "ltx-2.5", None, "single_file")
+    assert _detect_load_family(str(v23), "model.safetensors", "ltx-2", None, "single_file").name == "ltx-2"
+    v25_dir = tmp_path / "v25"
+    v25_dir.mkdir()
+    _write_header_only_safetensors(v25_dir / "model.safetensors", _LTX25_REAL[_LTX25_REAL_KEY]["shapes"])
+    with pytest.raises(ValueError, match = "loads as the 'ltx-2.5' family, not 'ltx-2'"):
+        _detect_load_family(str(v25_dir), "model.safetensors", "ltx-2", None, "single_file")
+    assert (
+        _detect_load_family(str(v25_dir), "model.safetensors", "ltx-2.5", None, "single_file").name
+        == LTX25_FAMILY
+    )
+
+
 # ── registry + defaults ──────────────────────────────────────────────────────
 
 
@@ -895,6 +916,36 @@ def test_two_stage_without_an_upsampler_is_a_clear_error():
         v25.render(_FakePipe(SimpleNamespace()), _kwargs(), dev = False, upsampler = None)
 
 
+class _OffloadedUpsampler(_Upsampler):
+    """Starts off the latents' device; ``to`` swaps the parameter's device in place, as Module.to() does."""
+
+    def __init__(self):
+        import torch
+
+        super().__init__()
+        self.param = SimpleNamespace(device = torch.device("meta"), dtype = torch.float32)
+        self.moves = []
+
+    def parameters(self):
+        yield self.param
+
+    def to(self, device, *_a, **_k):
+        import torch
+
+        self.moves.append(torch.device(device))
+        self.param.device = torch.device(device)
+        return self
+
+
+def test_an_offloaded_upsampler_goes_back_where_it_was():
+    import torch
+
+    upsampler = _OffloadedUpsampler()
+    v25.render(_FakePipe(SimpleNamespace(keep_tokens = None)), _kwargs(), dev = False, upsampler = upsampler)
+    assert upsampler.moves == [torch.device("cpu"), torch.device("meta")]
+    assert upsampler.param.device == torch.device("meta")
+
+
 # ── the real 2.5 DiT layout lands on the 2.5 diffusers transformer ───────────
 
 # diffusers' scripts/convert_ltx2_to_diffusers.py, version "2.5" (what Lightricks/LTX-2.5-Diffusers transformer/ holds).
@@ -1125,6 +1176,88 @@ def test_encoder_worker_reads_the_single_file_release(tmp_path):
         venv_dir = "/nonexistent",
     )
     assert pack_client.config["single_file"] is None and pack_client.config["key_mapping"] is None
+
+
+def _write_single_file_encoder(folder: Path) -> Path:
+    import numpy as np
+    import torch
+    from safetensors.torch import save_file
+
+    path = folder / v25.LTX25_SINGLE_TEXT_ENCODER
+    path.parent.mkdir(parents = True, exist_ok = True)
+    save_file(
+        {
+            "model.norm.weight": torch.ones(4),
+            "tokenizer_json": torch.from_numpy(np.frombuffer(b"{}", dtype = np.uint8).copy()),
+            "hf_asset__tokenizer_config.json": torch.from_numpy(np.frombuffer(b"{}", dtype = np.uint8).copy()),
+        },
+        str(path),
+        metadata = {"gemma_config": json.dumps({"model_type": "gemma4_unified"}), "format": "pt"},
+    )
+    return path
+
+
+def test_encoder_worker_links_without_symlink_rights(monkeypatch, tmp_path):
+    import os
+    import shutil
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    path = _write_single_file_encoder(tmp_path / "weights")
+    config = {"repo": str(tmp_path / "weights"), "single_file": v25.LTX25_SINGLE_TEXT_ENCODER}
+
+    def no_symlink(*_a, **_k):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(worker.os, "symlink", no_symlink)
+    folder = Path(worker._single_file_folder(config))
+    try:
+        linked = folder / "model.safetensors"
+        assert not linked.is_symlink() and os.path.samefile(linked, path)
+    finally:
+        shutil.rmtree(folder)
+    assert path.is_file()
+
+    # The temp dir on another volume: the scratch folder goes beside the weights, and is the caller's to remove.
+    real_link = os.link
+
+    def link_beside_only(src, dst):
+        if Path(dst).parent.parent != path.parent:
+            raise OSError(18, "Invalid cross-device link")
+        real_link(src, dst)
+
+    monkeypatch.setattr(worker.os, "link", link_beside_only)
+    folder = Path(worker._single_file_folder(config))
+    try:
+        assert folder.parent == path.parent and os.path.samefile(folder / "model.safetensors", path)
+        assert json.loads((folder / "config.json").read_text()) == {"model_type": "gemma4_unified"}
+    finally:
+        shutil.rmtree(folder)
+    assert path.is_file() and sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+def test_a_failed_load_stops_only_its_own_encoder_worker():
+    from core.inference import video as vid
+
+    class _Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    backend = vid.VideoBackend()
+    newer = _Client()
+    backend._ltx25_pending_encoder = (2, newer)
+    # A superseded load (token 1) unwinding after the newer load started its worker leaves that worker alone.
+    backend._close_pending_ltx25_encoder(1)
+    assert not newer.closed and backend._ltx25_pending_encoder == (2, newer)
+    backend._close_pending_ltx25_encoder(2)
+    assert newer.closed and backend._ltx25_pending_encoder is None
+    # Untokened, whichever load started it.
+    other = _Client()
+    backend._ltx25_pending_encoder = (3, other)
+    backend._close_pending_ltx25_encoder()
+    assert other.closed and backend._ltx25_pending_encoder is None
 
 
 def test_encoder_worker_is_spawned_on_the_lifetime_thread(monkeypatch):
