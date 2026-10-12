@@ -158,7 +158,10 @@ test("one reader's deadline detaches that reader alone, and a retry starts a fre
   const { module, requests } = harness();
   const quiet = module.getChatThread("t1", { share: true });
   const bounded = module.getChatThread("t1", { share: true, timeoutMs: 1 });
+  // AbortSignal.timeout's timer does not hold the event loop open (seen on Node 22 CI).
+  const alive = setTimeout(() => {}, 10_000);
   await assert.rejects(bounded, (e: DOMException) => e.name === "TimeoutError");
+  clearTimeout(alive);
   assert.equal(requests()[0].init?.signal?.aborted, false);
   const retry = module.getChatThread("t1", { share: true, timeoutMs: 1000 });
   assert.equal(requests().length, 2);
