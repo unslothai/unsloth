@@ -196,6 +196,25 @@ async function waitForLoad(tabId: string, signal?: AbortSignal): Promise<Browser
   return useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId) ?? null;
 }
 
+// The page agent's own error messages (page-agent.ts). Errors reach the model outside the
+// untrusted-content fence, and a page can answer in the agent's place, so nothing else passes.
+const AGENT_ERRORS = [
+  /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
+  /^r\d{1,9} is not a text field\.$/,
+  /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
+  /^r\d{1,9} is not a dropdown or checkbox; click it, then click the option\.$/,
+  /^r\d{1,9} is no longer on the page; call browser_snapshot for fresh refs\.$/,
+  /^this page has too many elements to number; use browser_find\.$/,
+  /^the page's own script failed during that action; take a fresh snapshot\.$/,
+  /^unknown command$/,
+];
+
+function agentError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const text = typeof value === "string" ? value : "";
+  return AGENT_ERRORS.some((pattern) => pattern.test(text)) ? text : "the page gave an answer the panel doesn't recognise.";
+}
+
 function checkedAnswer(value: unknown): AgentAnswer | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
@@ -203,7 +222,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
   const info = raw.info && typeof raw.info === "object" ? (raw.info as Record<string, unknown>) : null;
   return {
     ok: raw.ok,
-    error: str(raw.error, 2000),
+    error: agentError(raw.error),
     text: typeof raw.text === "string" ? raw.text.slice(0, 200_000) : undefined,
     links: Array.isArray(raw.links)
       ? raw.links.filter((link): link is string => typeof link === "string" && link.length <= 8192).slice(0, 400)
@@ -418,8 +437,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (!described.ok || !described.info) return { ok: false, pageError: described.error ?? `${ref} could not be found.` };
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
-  if (action.op === "click" || action.op === "select" || action.op === "type") {
-    gates.push(gateElement(action.op, info, before, action.policy, permissions()));
+  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, before, action.policy, permissions()));
+  if (action.op === "select") {
+    const chosen = info.role === "combobox" ? { ...info, name: action.value ?? "" } : info;
+    gates.push(gateElement("select", chosen, before, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
@@ -427,6 +448,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   // Deleting is editing: a password or card field the agent can't type into it can't empty either.
   if (action.op === "press" && (action.key === "Backspace" || action.key === "Delete")) {
     gates.push(gateElement("type", info, before, action.policy, permissions()));
+    // Outside a text field it is an app's delete shortcut, asked like a Delete button.
+    if (!TEXT_ROLES.has(info.role)) {
+      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, before, action.policy, permissions()));
+    }
   }
   // Enter in a field sends its form, so it is held to what a submit button would be.
   const submits =

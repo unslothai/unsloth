@@ -206,7 +206,9 @@ export function gateElement(
   // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.
   const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(info.name) || LOCALIZED.test(info.name);
   // Selecting a checkbox, radio or switch is a click on it.
-  const clicks = action === "click" || submits || (action === "select" && info.role !== "combobox");
+  // A select is a click: on a checkbox, its name; on a dropdown, the option chosen (the executor
+  // passes it as the name), since a page can act on the change event.
+  const clicks = action === "click" || submits || action === "select";
   if (clicks && consequential) {
     return { kind: "ask", ask: "click", host, name: clip(info.name), prompt: `Click “${clip(info.name)}” on ${host}?`, detail: describe(info) };
   }

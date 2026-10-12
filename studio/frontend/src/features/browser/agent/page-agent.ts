@@ -76,6 +76,7 @@ export function installPageAgent(): void {
   const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
   const NOT_TEXT = new Set([...BUTTON_INPUTS, "checkbox", "radio", "range", "file", "color", "hidden"]);
 
+  class AgentError extends Error {}
   const refs = new WeakMap<Element, number>();
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
@@ -93,7 +94,7 @@ export function installPageAgent(): void {
     let id = refs.get(el);
     if (id === undefined) {
       // Past its range a number would belong to the next page's refs.
-      if (nextRef > lastRef) throw new Error("this page has too many elements to number; use browser_find.");
+      if (nextRef > lastRef) throw new AgentError("this page has too many elements to number; use browser_find.");
       id = nextRef++;
       refs.set(el, id);
       byRef.set(id, new WeakRef(el));
@@ -102,7 +103,7 @@ export function installPageAgent(): void {
   };
   const lookup = (ref: string): Element => {
     const el = byRef.get(Number(String(ref).replace(/^r/i, "")))?.deref();
-    if (!el || !el.isConnected) throw new Error(`${ref} is no longer on the page; call browser_snapshot for fresh refs.`);
+    if (!el || !el.isConnected) throw new AgentError(`${ref} is no longer on the page; call browser_snapshot for fresh refs.`);
     return el;
   };
 
@@ -640,7 +641,7 @@ export function installPageAgent(): void {
       const option = Array.from(el.options).find(
         (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,
       ) ?? Array.from(el.options).find((candidate) => candidate.text.toLowerCase().includes(wanted));
-      if (!option) return { ok: false, error: `${ref} has no option ${quoted(value)}.` };
+      if (!option) return { ok: false, error: `${ref} has no such option; snapshot it to see its options.` };
       el.value = option.value;
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -715,7 +716,9 @@ export function installPageAgent(): void {
           return { ok: false, error: "unknown command" };
       }
     } catch (error) {
-      return { ok: false, error: clean(error instanceof Error ? error.message : String(error), 300) };
+      // Only the agent's own words: a page script can throw anything, and errors reach the model unfenced.
+      if (error instanceof AgentError) return { ok: false, error: clean(error.message, 300) };
+      return { ok: false, error: "the page's own script failed during that action; take a fresh snapshot." };
     }
   };
 
