@@ -79,8 +79,8 @@ def test_unlimited_socket_wait_keeps_connect_timeout():
     limit.set_minutes(0)
     timeout = inference._llama_streaming_generation_timeout()
     assert timeout.read is None
-    assert timeout.connect == 30
-    assert timeout.write == 30
+    assert timeout.connect == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    assert timeout.write == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
 
 
 def test_sync_custom_wait_survives_original_limit_and_then_expires(monkeypatch):
