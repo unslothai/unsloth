@@ -2600,7 +2600,11 @@ def _free_less_commitments_mib(commitments: list) -> Optional[int]:
     return max(0, int(free) - held)
 
 
-def _host_bounded_parking_mib(need_mib: int, backend = None, planned_host_mib: int = 0) -> int:
+def _host_bounded_parking_mib(
+    need_mib: int,
+    backend = None,
+    planned_host_mib: int = 0,
+) -> int:
     """``need_mib`` capped to what this host can pin without pressure; 0 means do not park.
 
     A park past the budget drops its cells and is re-prefilled, which costs about what the copy
@@ -16218,7 +16222,13 @@ class LlamaCppBackend:
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
         return model_bytes - free_vram_mib * 1024 * 1024, heap_free_mib, heap_bytes
 
-    def _planned_host_weights_mib(self, cmd, detected_gpus, env = None, **kwargs) -> int:
+    def _planned_host_weights_mib(
+        self,
+        cmd,
+        detected_gpus,
+        env = None,
+        **kwargs,
+    ) -> int:
         """MiB of weights this launch will hold in host RAM, 0 when it cannot be priced."""
         try:
             priced = self._launch_host_weights(cmd, detected_gpus, env, **kwargs)

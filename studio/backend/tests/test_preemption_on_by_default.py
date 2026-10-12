@@ -577,6 +577,7 @@ class TestExactParksAreCountedAcrossModels:
 
     def test_the_launch_rebounds_on_its_placement(self):
         import inspect
+
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index("_offload_msg = self._launch_host_shortfall_message(")
         window = source[site : site + 1200]

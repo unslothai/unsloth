@@ -49,9 +49,9 @@ class TestTheReserveFollowsProgress:
         clock.now += preemption.PENDING_PREFILL_TTL_S - 10
         signal.note_prefill_progress()
         clock.now += 20
-        assert controller.snapshot().prefilling == 12000, (
-            "the prompt is still going in, so the next batch still needs its room"
-        )
+        assert (
+            controller.snapshot().prefilling == 12000
+        ), "the prompt is still going in, so the next batch still needs its room"
 
     def test_without_progress_it_still_expires(self, monkeypatch):
         clock, controller, _signal = self._announced(monkeypatch)
