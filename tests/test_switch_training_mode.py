@@ -32,7 +32,7 @@ def switch():
     tree = ast.parse(UTILS.read_text(encoding = "utf-8"))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in HELPERS]
     assert {n.name for n in nodes} == set(HELPERS)
-    namespace = _Namespace(torch = torch, functools = functools)
+    namespace = _Namespace(torch = torch, functools = functools, inspect = inspect)
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(UTILS), "exec"), namespace)
     return namespace["switch_training_mode"]
 
@@ -169,6 +169,81 @@ def test_pretrained_model_recasts_kernels_only_when_they_are_on(switch, monkeypa
     switch(model, False)
     assert not model.training and not model.lin.training
     assert recasts == ([(True,)] if use_kernels else [])
+
+
+def _reference_and_ours(build, switch, training):
+    ref, ours = build(), build()
+    ref.train() if training else ref.eval()
+    switch(ours, training)
+    return ref, ours
+
+
+def _keep_eval(module, mode = True):
+    # What _unsloth_freeze_norm_running_stats installs on frozen running-stat norms.
+    return torch.nn.Module.train(module, False)
+
+
+@pytest.mark.parametrize("training", [True, False])
+def test_a_per_instance_train_partial_is_honoured(switch, training):
+    def build():
+        model = nn.Sequential(nn.Linear(2, 2), nn.BatchNorm1d(2))
+        model[1].train = functools.partial(_keep_eval, model[1])
+        return model
+
+    ref, ours = _reference_and_ours(build, switch, training)
+    assert _flags(ours) == _flags(ref)
+    assert ours[1].training is False
+
+
+def test_a_root_eval_override_runs_on_inference(switch):
+    calls = []
+
+    class _Root(nn.Sequential):
+        def eval(self):
+            calls.append("eval")
+            return super().eval()
+
+    model = _Root(nn.Linear(2, 2))
+    switch(model, False)
+    assert calls == ["eval"] and not model[0].training
+
+
+def test_a_property_backed_training_flag_goes_through_its_setter(switch):
+    class _Prop(nn.Linear):
+        @property
+        def training(self):
+            return self.__dict__.get("_mode", True)
+
+        @training.setter
+        def training(self, value):
+            self.__dict__["_mode"] = value
+
+    model = nn.Sequential(_Prop(2, 2))
+    switch(model, False)
+    assert model[0].training is False
+
+
+def test_a_custom_child_traversal_is_followed(switch):
+    class _Hiding(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.visible = nn.Dropout()
+            self.hidden = nn.Dropout()
+
+        def named_children(self):
+            yield "visible", self.visible
+
+    for training in (True, False):
+
+        def build():
+            model = nn.Sequential(_Hiding())
+            for module in model.modules():
+                module.training = not training
+            return model
+
+        ref, ours = _reference_and_ours(build, switch, training)
+        assert _flags(ours) == _flags(ref)
+        assert ours[0].hidden.training is (not training)
 
 
 def test_pretrained_train_override_only_recasts_kernels():

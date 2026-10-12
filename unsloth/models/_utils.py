@@ -8741,26 +8741,33 @@ def set_module_gradient_checkpointing(module, value):
 
 @functools.lru_cache(maxsize = None)
 def _mode_switch_class_info(cls):
-    """(train, gc, setattr) for switch_training_mode, per class.
+    """(train, eval, gc, setattr) for switch_training_mode, per class.
 
-    train: True when cls.train / cls.eval are nn.Module's, "kernels" for PreTrainedModel's (adds a kernel
-    re-cast only under `use_kernels`), False otherwise. gc: whether the class has gradient_checkpointing,
-    or None for classes with their own __getattr__ (PEFT wrappers delegate it). setattr: nn.Module's.
+    train: True when train() and the child traversal are nn.Module's, "kernels" for PreTrainedModel.train
+    (adds a kernel re-cast only under `use_kernels`), False otherwise. eval: eval() is nn.Module's or
+    PreTrainedModel's. gc: the class has gradient_checkpointing, None for classes with their own
+    __getattr__ (PEFT wrappers delegate it). setattr: `training` is a plain instance attribute.
     """
     try:
         from transformers import PreTrainedModel
         pretrained = (PreTrainedModel.train, PreTrainedModel.eval)
     except Exception:
         pretrained = (None, None)
-    if cls.eval is not torch.nn.Module.eval and cls.eval is not pretrained[1]:
+    module = torch.nn.Module
+    children = cls.children is module.children and cls.named_children is module.named_children
+    if not children:
         train = False
-    elif cls.train is torch.nn.Module.train:
+    elif cls.train is module.train:
         train = True
     else:
         train = "kernels" if cls.train is pretrained[0] else False
-    plain_getattr = cls.__getattr__ is torch.nn.Module.__getattr__
-    gc = hasattr(cls, "gradient_checkpointing") if plain_getattr else None
-    return train, gc, cls.__setattr__ is torch.nn.Module.__setattr__
+    plain_eval = cls.eval is module.eval or cls.eval is pretrained[1]
+    gc = hasattr(cls, "gradient_checkpointing") if cls.__getattr__ is module.__getattr__ else None
+    descriptor = inspect.getattr_static(cls, "training", None)
+    plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
+        type(descriptor), "__set__"
+    )
+    return train, plain_eval, gc, plain_setattr
 
 
 def _has_gradient_checkpointing(module, on_class):
@@ -8777,12 +8784,16 @@ def _has_gradient_checkpointing(module, on_class):
 
 
 def switch_training_mode(model, training):
-    """model.train(training) for for_inference / for_training, which GRPO calls every step.
+    """model.train() / model.eval() for for_inference / for_training, which GRPO calls every step.
 
-    One walk over the tree replaces model.train() plus the modules() / parameters() scans that followed
-    it. Returns the modules carrying a gradient_checkpointing flag. A class whose train()/eval() does more
-    than nn.Module's gets the real model.train(training). Entering training drops the `_fast_lora` dtype
-    casts fast_linear_forward cached on LoRA weights.
+    One walk over the tree replaces the recursive train() plus the modules() / parameters() scans that
+    followed it. Returns the modules carrying a gradient_checkpointing flag. Entering training drops the
+    `_fast_lora` dtype casts fast_linear_forward cached on LoRA weights.
+
+    `training` is written directly only where nn.Module.train would do nothing else. A module whose train()
+    differs (a class override, an instance one such as _unsloth_freeze_norm_running_stats' partial,
+    PreTrainedModel with kernels on, its own child traversal) gets its own train(mode) for its subtree, as
+    the recursive call would; a root that differs, or overrides eval(), gets model.train() / model.eval().
     """
     if not isinstance(model, torch.nn.Module):
         model.train() if training else model.eval()
@@ -8791,33 +8802,46 @@ def switch_training_mode(model, training):
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora
         return [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
-    modules, checkpointing = [], []
-    flat = True
+    flat, delegates, checkpointing = [], [], []
     seen = set()
-    stack = [model]
+    stack = [(model, False)]
     while stack:
-        module = stack.pop()
+        module, covered = stack.pop()
         if module is None or id(module) in seen:
             continue
         seen.add(id(module))
-        train, gc, plain_setattr = _mode_switch_class_info(type(module))
-        modules.append((module, plain_setattr))
-        if train is not True and (train is False or getattr(module, "use_kernels", False)):
-            flat = False
+        train, plain_eval, gc, plain_setattr = _mode_switch_class_info(type(module))
+        if not covered:
+            if (
+                train is False
+                or "train" in module.__dict__
+                or (train == "kernels" and getattr(module, "use_kernels", False))
+                or (
+                    module is model
+                    and not training
+                    and (not plain_eval or "eval" in module.__dict__)
+                )
+            ):
+                delegates.append(module)
+                covered = True
+            else:
+                flat.append((module, plain_setattr))
         if _has_gradient_checkpointing(module, gc):
             checkpointing.append(module)
         if training:
             for param in module._parameters.values():
                 if param is not None and "_fast_lora" in param.__dict__:
                     del param._fast_lora
-        stack.extend(module._modules.values())
-    if flat:
-        for module, plain_setattr in modules:
-            # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
-            if plain_setattr:
-                module.__dict__["training"] = training
-            else:
-                module.training = training
-    else:
-        model.train(training)
+        stack.extend((child, covered) for child in module._modules.values())
+    if delegates and delegates[0] is model:
+        model.train() if training else model.eval()
+        return checkpointing
+    for module, plain_setattr in flat:
+        # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
+        if plain_setattr:
+            module.__dict__["training"] = training
+        else:
+            module.training = training
+    for module in delegates:
+        module.train(training)
     return checkpointing
