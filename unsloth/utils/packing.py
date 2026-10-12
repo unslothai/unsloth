@@ -333,7 +333,7 @@ _HYBRID_WARNED: set = set()
 
 
 def _hybrid_packing_mode() -> str:
-    """"on" / "off" / "auto"; read at call time so setting the flag after import still works."""
+    """ "on" / "off" / "auto"; read at call time so setting the flag after import still works."""
     value = os.environ.get(_HYBRID_PACKING_ENV_VAR, "").strip().lower()
     if value in {"1", "true", "yes", "on"}:
         return "on"
@@ -1200,9 +1200,13 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
     weight = module.conv1d.weight
     dtype, device = weight.dtype, weight.device
     lengths = torch.tensor(_HYBRID_PROBE_LENGTHS, dtype = torch.int32)
-    cu_seqlens = torch.cat([torch.zeros(1, dtype = torch.int32), lengths.cumsum(0, dtype = torch.int32)])
+    cu_seqlens = torch.cat(
+        [torch.zeros(1, dtype = torch.int32), lengths.cumsum(0, dtype = torch.int32)]
+    )
     total = int(cu_seqlens[-1])
-    seq_idx = torch.repeat_interleave(torch.arange(len(_HYBRID_PROBE_LENGTHS), dtype = torch.int32), lengths)
+    seq_idx = torch.repeat_interleave(
+        torch.arange(len(_HYBRID_PROBE_LENGTHS), dtype = torch.int32), lengths
+    )
     generator = torch.Generator().manual_seed(0)
     hidden = torch.randn(1, total, module.hidden_size, generator = generator)
     hidden = hidden.to(device = device, dtype = dtype)

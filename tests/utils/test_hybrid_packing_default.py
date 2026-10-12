@@ -29,24 +29,44 @@ def _segments(T, seq_idx):
     return list(zip(bounds[:-1], bounds[1:]))
 
 
-def conv_exact(x, weight, bias = None, activation = None, seq_idx = None, **kwargs):
+def conv_exact(
+    x,
+    weight,
+    bias = None,
+    activation = None,
+    seq_idx = None,
+    **kwargs,
+):
     import torch.nn.functional as F
 
     outs = []
     for s, e in _segments(x.shape[-1], seq_idx):
         seg = x[:, :, s:e]
-        y = F.conv1d(seg, weight.unsqueeze(1), bias, padding = weight.shape[-1] - 1, groups = x.shape[1])
+        y = F.conv1d(
+            seg, weight.unsqueeze(1), bias, padding = weight.shape[-1] - 1, groups = x.shape[1]
+        )
         outs.append(y[:, :, : e - s])
     out = torch.cat(outs, dim = -1)
     return F.silu(out) if activation else out
 
 
-def conv_leaky(x, weight, bias = None, activation = None, seq_idx = None, **kwargs):
+def conv_leaky(
+    x,
+    weight,
+    bias = None,
+    activation = None,
+    seq_idx = None,
+    **kwargs,
+):
     # Names seq_idx (passes the static check) but ignores it.
     return conv_exact(x, weight, bias, activation, None)
 
 
-def scan_exact(x, cu_seqlens = None, **kwargs):
+def scan_exact(
+    x,
+    cu_seqlens = None,
+    **kwargs,
+):
     # A decayed running sum that restarts at every cu_seqlens boundary.
     T = x.shape[1]
     starts = set(cu_seqlens.tolist()[:-1]) if cu_seqlens is not None else {0}
@@ -59,14 +79,24 @@ def scan_exact(x, cu_seqlens = None, **kwargs):
     return torch.stack(out, dim = 1)
 
 
-def scan_leaky(x, cu_seqlens = None, **kwargs):
+def scan_leaky(
+    x,
+    cu_seqlens = None,
+    **kwargs,
+):
     return scan_exact(x, None)
 
 
 class FakeGatedDeltaNet(torch.nn.Module):
     """transformers < 5.16 shape: instance kernels, the conv called with seq_idx=None."""
 
-    def __init__(self, conv = conv_exact, scan = scan_exact, hidden = 8, width = 4):
+    def __init__(
+        self,
+        conv = conv_exact,
+        scan = scan_exact,
+        hidden = 8,
+        width = 4,
+    ):
         super().__init__()
         if hidden is not None:
             self.hidden_size = hidden
@@ -74,7 +104,12 @@ class FakeGatedDeltaNet(torch.nn.Module):
         self.causal_conv1d_fn = conv
         self.chunk_gated_delta_rule = scan
 
-    def forward(self, hidden_states, cache_params = None, attention_mask = None):
+    def forward(
+        self,
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
         x = hidden_states.transpose(1, 2)
         x = self.causal_conv1d_fn(
             x = x, weight = self.conv1d.weight.squeeze(1), bias = None, activation = "silu", seq_idx = None
@@ -90,7 +125,14 @@ class FakeHybrid(torch.nn.Module):
         self.embed = torch.nn.Embedding(32, 8)
         self.linear_attn = mixer
 
-    def forward(self, input_ids = None, position_ids = None, packed_seq_lengths = None, use_cache = None, **kw):
+    def forward(
+        self,
+        input_ids = None,
+        position_ids = None,
+        packed_seq_lengths = None,
+        use_cache = None,
+        **kw,
+    ):
         return self.linear_attn(self.embed(input_ids))
 
 
@@ -115,8 +157,19 @@ def _untouched(model, conv, scan):
 
 @pytest.mark.parametrize(
     "value,mode",
-    [(None, "auto"), ("", "auto"), ("maybe", "auto"), ("1", "on"), ("TRUE", "on"), ("yes", "on"),
-     ("on", "on"), ("0", "off"), ("false", "off"), ("No", "off"), (" off ", "off")],
+    [
+        (None, "auto"),
+        ("", "auto"),
+        ("maybe", "auto"),
+        ("1", "on"),
+        ("TRUE", "on"),
+        ("yes", "on"),
+        ("on", "on"),
+        ("0", "off"),
+        ("false", "off"),
+        ("No", "off"),
+        (" off ", "off"),
+    ],
 )
 def test_mode_parsing(monkeypatch, value, mode):
     if value is None:
@@ -136,9 +189,13 @@ def test_default_packs_exact_gated_delta(monkeypatch):
     assert not packing_module._HYBRID_WARNED
     ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(1))
     lengths = [4, 1, 4]
-    packed = model(input_ids = ids, packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32), use_cache = False)
+    packed = model(
+        input_ids = ids, packed_seq_lengths = torch.tensor(lengths, dtype = torch.int32), use_cache = False
+    )
     assert model._unsloth_varlen_handshake_done
-    alone = torch.cat([model(input_ids = ids[:, s:s + n]) for s, n in zip((0, 4, 5), lengths)], dim = 1)
+    alone = torch.cat(
+        [model(input_ids = ids[:, s : s + n]) for s, n in zip((0, 4, 5), lengths)], dim = 1
+    )
     torch.testing.assert_close(packed, alone)
     plain = model(input_ids = ids, use_cache = True)
     assert not torch.allclose(plain, packed)
@@ -173,7 +230,9 @@ def test_a_failed_probe_restores_the_modeling_namespace(monkeypatch):
     def create_causal_mask(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sys.modules[__name__], "create_causal_mask", create_causal_mask, raising = False)
+    monkeypatch.setattr(
+        sys.modules[__name__], "create_causal_mask", create_causal_mask, raising = False
+    )
     model = FakeHybrid(FakeGatedDeltaNet(conv = conv_leaky))
     assert patch_hybrid_linear_attention_varlen(model) is False
     assert sys.modules[__name__].create_causal_mask is create_causal_mask
@@ -186,7 +245,12 @@ class DropoutGatedDeltaNet(FakeGatedDeltaNet):
         super().__init__(**kwargs)
         self.dropout = torch.nn.Dropout(0.5)
 
-    def forward(self, hidden_states, cache_params = None, attention_mask = None):
+    def forward(
+        self,
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
         return super().forward(self.dropout(hidden_states), cache_params, attention_mask)
 
 
@@ -204,7 +268,14 @@ def test_probe_runs_in_eval_mode_and_keeps_the_rng(monkeypatch):
 def test_probe_failure_to_run_is_a_rejection(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
-    def conv_raises(x, weight, bias = None, activation = None, seq_idx = None, **kwargs):
+    def conv_raises(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        seq_idx = None,
+        **kwargs,
+    ):
         raise RuntimeError("kernel exploded")
 
     model = FakeHybrid(FakeGatedDeltaNet(conv = conv_raises))
@@ -218,8 +289,15 @@ def test_probe_requires_dispatch(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
     class BypassGatedDeltaNet(FakeGatedDeltaNet):
-        def forward(self, hidden_states, cache_params = None, attention_mask = None):
-            return conv_exact(hidden_states.transpose(1, 2), self.conv1d.weight.squeeze(1)).transpose(1, 2)
+        def forward(
+            self,
+            hidden_states,
+            cache_params = None,
+            attention_mask = None,
+        ):
+            return conv_exact(
+                hidden_states.transpose(1, 2), self.conv1d.weight.squeeze(1)
+            ).transpose(1, 2)
 
     mixer = BypassGatedDeltaNet()
     model = FakeHybrid(mixer)
@@ -242,7 +320,11 @@ def test_default_needs_a_probeable_mixer(monkeypatch, caplog):
 def test_default_rejects_torch_fallback(monkeypatch):
     monkeypatch.delenv(ENV, raising = False)
 
-    def torch_chunk_gated_delta_rule(x, cu_seqlens = None, **kwargs):
+    def torch_chunk_gated_delta_rule(
+        x,
+        cu_seqlens = None,
+        **kwargs,
+    ):
         return scan_exact(x, cu_seqlens)
 
     model = FakeHybrid(FakeGatedDeltaNet(scan = torch_chunk_gated_delta_rule))
@@ -268,26 +350,52 @@ def _hub_wrapped(torch_function, implementation):
 def _zoo_style_dispatch(torch_function, name_seq_idx = True):
     # unsloth-zoo gdn_causal_conv1d._make_hub_dispatch: marked, own signature naming seq_idx.
     if name_seq_idx:
+
         @functools.wraps(torch_function)
-        def causal_conv1d_fn(hidden_states, weight, bias = None, activation = None, seq_idx = None, **kwargs):
+        def causal_conv1d_fn(
+            hidden_states,
+            weight,
+            bias = None,
+            activation = None,
+            seq_idx = None,
+            **kwargs,
+        ):
             return conv_exact(hidden_states, weight, bias, activation, seq_idx)
     else:
+
         @functools.wraps(torch_function)
-        def causal_conv1d_fn(hidden_states, weight, bias = None, activation = None, **kwargs):
+        def causal_conv1d_fn(
+            hidden_states,
+            weight,
+            bias = None,
+            activation = None,
+            **kwargs,
+        ):
             return conv_exact(hidden_states, weight, bias, activation)
+
     causal_conv1d_fn._unsloth_triton_causal_conv1d = True
     causal_conv1d_fn.__signature__ = inspect.signature(causal_conv1d_fn, follow_wrapped = False)
     return causal_conv1d_fn
 
 
 def _kwargs_model(name, conv_impl):
-    def conv_ref(hidden_states, weight, bias = None, activation = None, **kwargs):
+    def conv_ref(
+        hidden_states,
+        weight,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
         return conv_exact(hidden_states, weight, bias, activation)
 
     def scan_ref(x, **kwargs):
         return scan_exact(x)
 
-    def scan_fast(x, cu_seqlens = None, **kwargs):
+    def scan_fast(
+        x,
+        cu_seqlens = None,
+        **kwargs,
+    ):
         return scan_exact(x, cu_seqlens)
 
     modeling = types.ModuleType(name)
@@ -323,8 +431,14 @@ def test_zoo_triton_conv_is_accepted(monkeypatch, mode):
         model = _kwargs_model(name, _zoo_style_dispatch)
         assert patch_hybrid_linear_attention_varlen(model) is True
         ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
-        packed = model(input_ids = ids, packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32), use_cache = False)
-        alone = torch.cat([model(input_ids = ids[:, s:e]) for s, e in ((0, 4), (4, 5), (5, 9))], dim = 1)
+        packed = model(
+            input_ids = ids,
+            packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32),
+            use_cache = False,
+        )
+        alone = torch.cat(
+            [model(input_ids = ids[:, s:e]) for s, e in ((0, 4), (4, 5), (5, 9))], dim = 1
+        )
         torch.testing.assert_close(packed, alone)
         assert model.linear_attn._unsloth_varlen_kwargs_hit
     finally:
@@ -361,7 +475,13 @@ def test_real_zoo_dispatch_is_recognised():
     if "seq_idx" not in inspect.signature(gcc._legacy_causal_conv1d_fn).parameters:
         pytest.skip("unsloth-zoo without the seq_idx Triton conv")
 
-    def causal_conv1d_fn(hidden_states, weight, bias = None, activation = None, **kwargs):
+    def causal_conv1d_fn(
+        hidden_states,
+        weight,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
         return hidden_states
 
     assert packing_module._is_unsloth_seq_idx_conv(gcc._make_hub_dispatch(causal_conv1d_fn))
@@ -391,7 +511,10 @@ def test_engagement_counters(monkeypatch):
     monkeypatch.delenv(ENV, raising = False)
     stats = dict(packing_module.HYBRID_PACKING_STATS)
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
-    assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet(conv = conv_leaky))) is False
+    assert (
+        patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet(conv = conv_leaky)))
+        is False
+    )
     now = packing_module.HYBRID_PACKING_STATS
     assert now["probe_runs"] == stats["probe_runs"] + 2
     assert now["probe_passed"] == stats["probe_passed"] + 1
@@ -415,15 +538,22 @@ def test_hub_kernel_behind_compile_disable_wrapper(monkeypatch):
     try:
         model = _kwargs_model(name, _zoo_style_dispatch)
         modeling = sys.modules[name]
-        modeling.torch_chunk_gated_delta_rule = disable_unless_decode(modeling.torch_chunk_gated_delta_rule)
-        assert "implementation" in packing_module._hub_closure(modeling.torch_chunk_gated_delta_rule)
+        modeling.torch_chunk_gated_delta_rule = disable_unless_decode(
+            modeling.torch_chunk_gated_delta_rule
+        )
+        assert "implementation" in packing_module._hub_closure(
+            modeling.torch_chunk_gated_delta_rule
+        )
         assert patch_hybrid_linear_attention_varlen(model) is True
     finally:
         sys.modules.pop(name, None)
 
 
 def test_boundaries_follow_the_call_onto_its_device():
-    varlen = (torch.tensor([0, 4, 9], dtype = torch.int32), torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32))
+    varlen = (
+        torch.tensor([0, 4, 9], dtype = torch.int32),
+        torch.tensor([[0] * 4 + [1] * 5], dtype = torch.int32),
+    )
     x = torch.empty(1, 8, 9, device = "meta")
     cu, seq_idx = packing_module._varlen_on(varlen, (), {"x": x})
     assert cu.device.type == "meta" and seq_idx.device.type == "meta"
@@ -435,7 +565,11 @@ def test_a_stale_stash_never_reaches_a_call_of_another_length(monkeypatch):
     model = FakeHybrid(FakeGatedDeltaNet())
     assert patch_hybrid_linear_attention_varlen(model) is True
     ids = torch.randint(0, 32, (1, 9), generator = torch.Generator().manual_seed(2))
-    model(input_ids = ids, packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32), use_cache = False)
+    model(
+        input_ids = ids,
+        packed_seq_lengths = torch.tensor([4, 1, 4], dtype = torch.int32),
+        use_cache = False,
+    )
     mixer = model.linear_attn
     stale = mixer._unsloth_varlen
     hidden = model.embed(ids[:, :5])
