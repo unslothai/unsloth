@@ -183,7 +183,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
-import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
+import { MATCH_SOURCE_RESOLUTION, keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
@@ -1295,9 +1295,15 @@ function VideoGenerator({
     );
   }, [resolutionPresets.length]);
 
-  const supportsKeyframes = status?.supports_keyframes === true;
+  // MiniMax-H3 takes a start and/or end frame; an image-to-video pipeline (Wan2.2 TI2V 5B, LTX-2) a
+  // start frame only.
+  const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
+  const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
   // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.
   const canvasKeyframe = firstFrame ?? lastFrame;
+  // Only MiniMax-H3 derives its canvas from the aspect itself and refuses ratios past 1:4 / 4:1;
+  // the preset families always find a nearest preset.
+  const canvasRefusesAspect = !status?.defaults?.canvas_from_presets;
 
   const supportsReferences = status?.supports_references === true;
   const hasReferenceRoom = hasReferenceCapacity(
@@ -1310,11 +1316,9 @@ function VideoGenerator({
 
   // Drop conditioning that the newly loaded partition cannot accept.
   useEffect(() => {
-    if (status?.loaded && !supportsKeyframes) {
-      setFirstFrame(null);
-      setLastFrame(null);
-    }
-  }, [status?.loaded, supportsKeyframes]);
+    if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
+    if (status?.loaded && !supportsLastFrame) setLastFrame(null);
+  }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -3448,8 +3452,8 @@ function VideoGenerator({
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
-        first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
-        last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
+        first_frame: supportsFirstFrame ? firstFrame ?? undefined : undefined,
+        last_frame: supportsLastFrame ? lastFrame ?? undefined : undefined,
         reference_images:
           supportsReferences && referenceImages.length > 0
             ? referenceImageDataUrls(referenceImages)
@@ -3505,7 +3509,8 @@ function VideoGenerator({
     fps,
     steps,
     status?.supports_cfg,
-    supportsKeyframes,
+    supportsFirstFrame,
+    supportsLastFrame,
     firstFrame,
     lastFrame,
     supportsReferences,
@@ -3841,9 +3846,11 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
-                  : supportsKeyframes
+                  : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
-                    : "Generate a video from a prompt"}
+                    : supportsFirstFrame
+                      ? "Generate a video from a prompt, or animate a start frame"
+                      : "Generate a video from a prompt"}
               </p>
             </div>
 
@@ -3875,37 +3882,40 @@ function VideoGenerator({
           </Field>
 
           {supportsKeyframes && (
-            <div className="grid gap-2">
+            <div className="grid gap-2" data-testid="video-keyframes">
               <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                Start and end frame
+                {supportsLastFrame ? "Start and end frame" : "Start frame"}
                 <InfoHint>
-                  Optional. A start frame animates that picture; an end frame makes the clip land
-                  on one; both make it travel between them. Text-to-video is what you get with
-                  neither. The start frame is stretched onto the canvas and the end frame is
-                  centre-cropped, which is how the model was conditioned.
+                  {supportsLastFrame
+                    ? "Optional. A start frame animates that picture; an end frame makes the clip land on one; both make it travel between them. Text-to-video is what you get with neither. The start frame is stretched onto the canvas and the end frame is centre-cropped, which is how the model was conditioned."
+                    : "Optional. The clip starts on this picture and animates it (image-to-video); without one it is text-to-video. Match source picks the resolution preset closest to the picture's shape, and the picture is centre-cropped onto it."}
                 </InfoHint>
               </span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
-                  <ImageDropzone
-                    value={firstFrame}
-                    onChange={setFirstFrame}
-                    label="Click or drop"
-                    removeLabel="Remove start frame"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">End frame</span>
-                  <ImageDropzone
-                    value={lastFrame}
-                    onChange={setLastFrame}
-                    label="Click or drop"
-                    removeLabel="Remove end frame"
-                  />
-                </div>
+              <div className={supportsLastFrame ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+                {supportsFirstFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
+                    <ImageDropzone
+                      value={firstFrame}
+                      onChange={setFirstFrame}
+                      label="Click or drop"
+                      removeLabel="Remove start frame"
+                    />
+                  </div>
+                )}
+                {supportsLastFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">End frame</span>
+                    <ImageDropzone
+                      value={lastFrame}
+                      onChange={setLastFrame}
+                      label="Click or drop"
+                      removeLabel="Remove end frame"
+                    />
+                  </div>
+                )}
               </div>
-              {canvasKeyframe && !matchedResolution && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
