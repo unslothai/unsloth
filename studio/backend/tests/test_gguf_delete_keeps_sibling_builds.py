@@ -69,6 +69,26 @@ def test_the_listing_still_offers_one_build_per_quant(tmp_path):
     assert [(v.quant, v.filename) for v in variants] == [("IQ3_S", LISTED)]
 
 
+def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-q4_k_m.gguf"
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for name in (alpha, beta):
+        (snapshot / name).write_bytes(b"x" * 64)
+    (snapshot / "config.json").write_text("{}")
+
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert [(variant.quant, variant.filename) for variant in variants] == [("Q4_K_M", alpha)]
+
+    repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
+    _delete_gguf_variant_from_repos(repo.repo_id, variants[0].quant, [repo], None, root = tmp_path)
+    assert not (cache_snapshot / alpha).is_symlink()
+    assert (cache_snapshot / beta).is_symlink()
+
+
 def test_deleting_the_row_keeps_the_other_builds(tmp_path):
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 

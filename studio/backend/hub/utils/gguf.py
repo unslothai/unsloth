@@ -929,13 +929,14 @@ def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
     """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
-            (path, int(size or 0))
-        )
+        families.setdefault(gguf_variant_key(path).casefold(), {}).setdefault(
+            gguf_shard_set(path), []
+        ).append((path, int(size or 0)))
     grouped: dict[str, tuple[str, int]] = {}
-    for key, by_family in families.items():
+    for by_family in families.values():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
-        grouped[key] = (min(path for path, _ in chosen), sum(size for _, size in chosen))
+        first = min(path for path, _ in chosen)
+        grouped[gguf_variant_key(first)] = (first, sum(size for _, size in chosen))
     return grouped
 
 
