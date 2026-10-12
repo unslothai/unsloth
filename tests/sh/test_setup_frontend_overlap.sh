@@ -5,8 +5,9 @@
 # setup.sh runs the frontend build in the background on a source install (#8818).
 # These run the real helpers (and the real setup_fail) against a stand-in _build_frontend:
 # the join reports the build's output and exit code, a setup that fails or is interrupted
-# first takes the whole build with it and undoes what it left behind, and the gate keeps
-# Desktop, staged updates, verbose, opted-out and small machines serial.
+# first takes the whole build with it, puts back what it hid and leaves the tree marked for
+# a rebuild, a new build waits for one still being stopped, and the gate keeps Desktop,
+# staged updates, verbose, opted-out and small machines serial.
 set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
@@ -17,7 +18,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 HELPERS="$WORK/helpers.sh"
 FNS="setup_fail _remove_agent_instruction_files _frontend_can_build_in_background
-    _frontend_build_cleanup _frontend_bg_stop _frontend_bg_start _frontend_bg_cancel
+    _frontend_build_cleanup _frontend_proc_id _frontend_build_begin _frontend_bg_stop _frontend_bg_start _frontend_bg_cancel
     _frontend_bg_join _frontend_bg_reap"
 {
     printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_WATCH=""\n_FRONTEND_BG_LOG=""\n_FRONTEND_BG_STAMP=""\n'
@@ -37,6 +38,7 @@ _is_verbose() { [ "${UNSLOTH_VERBOSE:-0}" = "1" ]; }
 '
 
 FE="$WORK/outer/studio/frontend"
+MARK="$FE/.unsloth-build.local"
 run_case() {
     # $1 = body appended after the helpers; prints the script output and "rc=N".
     local out rc=0
@@ -107,8 +109,9 @@ echo "not-reached"')
 assert_contains "exit 5" "$out" "rc=5"
 assert_not_contains "setup stops at the boundary" "$out" "not-reached"
 
-# A build that ignores TERM, has hidden an ancestor .gitignore and written dist.
+# A build that marks the tree, hides an ancestor .gitignore, writes dist and ignores TERM.
 STUBBORN="_build_frontend() {
+    _frontend_build_begin
     mv '$WORK/outer/.gitignore' '$WORK/outer/.gitignore._twbuild'
     mkdir -p '$FE/dist'
     python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)' &
@@ -117,16 +120,14 @@ STUBBORN="_build_frontend() {
 }"
 prime() {
     printf '*\n' > "$WORK/outer/.gitignore"
-    rm -rf "$WORK/outer/.gitignore._twbuild" "$FE/dist" "$WORK/grandchild"
-    touch "$FE/src/app.tsx"
+    rm -rf "$WORK/outer/.gitignore._twbuild" "$FE/dist" "$WORK/grandchild" "$MARK"
 }
 check_aftermath() {
     local gc
     gc=$(cat "$WORK/grandchild" 2>/dev/null || echo 0)
     if wait_gone "$gc" 10; then ok "$1: TERM-resistant child was killed"; else bad "$1: child $gc still running"; kill -KILL "$gc" 2>/dev/null; fi
     assert_eq "$1: ancestor .gitignore is back" "*" "$(cat "$WORK/outer/.gitignore" 2>/dev/null)"
-    assert_eq "$1: sources are newer than dist, so the next run rebuilds" "$FE/src/app.tsx" \
-        "$(find "$FE/src" -type f -newer "$FE/dist" -print -quit 2>/dev/null)"
+    if [ -e "$MARK" ]; then ok "$1: tree stays marked, so the next run rebuilds"; else bad "$1: build mark gone"; fi
 }
 
 echo "== setup_fail stops the build before it returns =="
@@ -177,6 +178,23 @@ _frontend_bg_join
 # The stamp belongs to the finished build; pretend its id came back as another group.
 _frontend_bg_stop $other")
 if kill -0 "$other" 2>/dev/null; then ok "unrelated process group left alone"; kill "$other"; else bad "unrelated process group $other was killed"; fi
+
+echo "== a new build waits for one still being stopped, then takes over =="
+prime
+( sleep 3 ) & owner=$!
+ps -o pid= -o lstart= -p "$owner" | sed 's/^ *//' > "$MARK"
+mv "$WORK/outer/.gitignore" "$WORK/outer/.gitignore._twbuild"
+start=$(date +%s)
+out=$(run_case '_frontend_build_begin; echo "self=$$"')
+waited=$(( $(date +%s) - start ))
+if [ "$waited" -ge 2 ]; then ok "waited for the live owner (${waited}s)"; else bad "did not wait for the live owner (${waited}s)"; fi
+assert_eq "hidden .gitignore put back before the new build" "*" "$(cat "$WORK/outer/.gitignore" 2>/dev/null)"
+assert_eq "marker now names the new build" "$(printf '%s\n' "$out" | sed -n 's/^self=//p')" "$(cut -d' ' -f1 "$MARK")"
+wait "$owner" 2>/dev/null
+start=$(date +%s)
+run_case '_frontend_build_begin' >/dev/null
+if [ $(( $(date +%s) - start )) -le 1 ]; then ok "a dead owner is not waited for"; else bad "waited for a dead owner"; fi
+rm -f "$MARK"
 
 echo "== background build cleans agent guide files out of node_modules =="
 touch "$FE/node_modules/pkg/AGENTS.md"

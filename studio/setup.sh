@@ -156,8 +156,7 @@ _frontend_can_build_in_background() {
     [ "${_mb:-0}" -ge 12288 ] 2>/dev/null
 }
 
-# Undo what a killed build leaves: a hidden ancestor .gitignore, and a dist the freshness
-# check would call up to date (an epoch mtime forces a rebuild).
+# Put back an ancestor .gitignore a killed build hid.
 _frontend_build_cleanup() {
     local _dir="$SCRIPT_DIR/frontend"
     while [ "$_dir" != "/" ]; do
@@ -166,9 +165,28 @@ _frontend_build_cleanup() {
             mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || :
         fi
     done
-    if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
-        touch -t 197001010000 "$SCRIPT_DIR/frontend/dist" 2>/dev/null || :
-    fi
+}
+
+# "<pid> <start time>" of a process, the identity a build marker records.
+_frontend_proc_id() {
+    ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+# A build marks the tree before it touches node_modules or dist and clears the mark only once
+# it succeeded, so a build that died at any point is redone instead of trusted (the freshness
+# check reads it). A build whose setup was just interrupted is still being stopped for up to
+# ~6 s: wait for it, then undo what it hid, so two builds never share the tree.
+_frontend_build_begin() {
+    local _mark="$SCRIPT_DIR/frontend/.unsloth-build.local" _owner="" _n=0 _self
+    [ -f "$_mark" ] && _owner=$(cat "$_mark" 2>/dev/null)
+    while [ -n "$_owner" ] && [ "$_n" -lt 30 ] &&
+        [ "$(_frontend_proc_id "${_owner%% *}")" = "$_owner" ]; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    _self=$(exec sh -c 'echo "$PPID"')
+    _frontend_proc_id "$_self" > "$_mark" 2>/dev/null || :
 }
 
 # TERM the build's group, KILL it after 5 s (npm ci ignores TERM; KILL skips the build's EXIT
@@ -219,8 +237,9 @@ _frontend_bg_cancel() {
     [ -n "${_FRONTEND_BG_PID:-}" ] || return 0
     local _pid=$_FRONTEND_BG_PID
     _FRONTEND_BG_PID=""
-    kill -KILL "$_FRONTEND_BG_WATCH" 2>/dev/null || :
+    # The watcher stays until the build is gone, in case setup is killed meanwhile.
     _frontend_bg_stop "$_pid"
+    kill -KILL "$_FRONTEND_BG_WATCH" 2>/dev/null || :
     wait "$_pid" 2>/dev/null || :
     rm -f "$_FRONTEND_BG_LOG"
 }
@@ -2287,6 +2306,8 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+# An earlier build that never finished (killed, failed) left its mark: redo it.
+[ ! -e "$SCRIPT_DIR/frontend/.unsloth-build.local" ] || _NEED_FRONTEND_BUILD=true
 fi  # end packaged/Tauri guard
 
 # OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
@@ -2477,6 +2498,7 @@ fi
 # ── Build frontend ──
 substep "building frontend..."
 _build_frontend() {
+_frontend_build_begin
 cd "$SCRIPT_DIR/frontend"
 _HIDDEN_GITIGNORES=()
 _dir="$(pwd)"
@@ -2573,6 +2595,7 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+rm -f "$SCRIPT_DIR/frontend/.unsloth-build.local"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then
@@ -2588,6 +2611,7 @@ cd "$SCRIPT_DIR"
 
 if _frontend_can_build_in_background; then
     _frontend_bg_start
+    cd "$SCRIPT_DIR"
 else
     _build_frontend
 fi
