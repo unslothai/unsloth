@@ -7035,7 +7035,6 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
-        <BrowserAgentMenuItem />
         {researchAvailable ? (
           <DropdownMenuItem
             disabled={researchDisabled && !deepResearchEnabled}
@@ -7080,8 +7079,13 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
+        {/* Browser use sits right under Chat with files, or leads this section without it. */}
+        {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
         {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          <Fragment key={id}>
+            {plusMenuNodes[id]}
+            {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
+          </Fragment>
         ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
