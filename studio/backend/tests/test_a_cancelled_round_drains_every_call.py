@@ -107,6 +107,7 @@ def test_a_cancel_mid_round_drains_and_closes_the_siblings(monkeypatch):
         return list(closed)
 
     closed_at_end = asyncio.run(_main())
-    assert sorted(closed_at_end) == ["call_a", "call_b"], (
-        f"the response ended with only {closed_at_end} of the round's streams closed"
-    )
+    assert sorted(closed_at_end) == [
+        "call_a",
+        "call_b",
+    ], f"the response ended with only {closed_at_end} of the round's streams closed"

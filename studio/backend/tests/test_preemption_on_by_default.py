@@ -503,14 +503,15 @@ class TestExactParksAreCountedAcrossModels:
         cmd = ["llama-server", "--preempt-ram", "999999"]
         named = llama_mod._rebound_named_parking_budget(cmd, 999999, first)
         assert named and first._parking_reserving_mib == named
-        assert llama_mod._host_bounded_parking_mib(10**9, second) < alone, (
-            "the second launch sized off the same free reading as the first"
-        )
+        assert (
+            llama_mod._host_bounded_parking_mib(10**9, second) < alone
+        ), "the second launch sized off the same free reading as the first"
         first._parking_reserving_mib = None
         assert llama_mod._host_bounded_parking_mib(10**9, second) == alone
 
     def test_the_in_flight_figure_is_set_under_the_sizing_lock_and_cleared(self):
         import inspect
+
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert (
             "with _parking_budget_lock: _exact_budget = _server_owned_parking_budget_mib("
