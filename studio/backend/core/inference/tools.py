@@ -12520,7 +12520,8 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     within its depth, every segment servable. Edits are not reported; the creating call's row
     already downloads the current bytes."""
     try:
-        relative = os.path.relpath(target, os.path.realpath(workdir))
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
         size = os.stat(target).st_size
     except (OSError, ValueError):
         return ""
@@ -12528,7 +12529,7 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
     if (
         parts[0] == os.pardir
         or os.path.isabs(relative)
-        or len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
         or not all(_servable_segment(part) for part in parts)
     ):
         return ""
@@ -12791,7 +12792,18 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    text = _defuse_sentinels(_edit_file_apply(arguments, session_id, disable_sandbox, created))
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict, session_id: "str | None", disable_sandbox: bool, created: "list[str]"
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -12820,18 +12832,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        created = _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
-        if session_id and created.startswith("Created "):
-            created = _defuse_sentinels(created) + _edit_file_created_sentinel(
-                target, _get_workdir(session_id)
-            )
-        return created
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
