@@ -12,7 +12,7 @@ export {
   npuRowsFor,
   npuSizeLabel,
 } from "./api";
-export { NpuSetupNotice } from "./npu-setup-notice";
+export { NpuPoweredBy, NpuSetupNotice } from "./npu-setup-notice";
 export {
   type NpuCatalog,
   type NpuPickerSource,

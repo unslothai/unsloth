@@ -86,7 +86,7 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 # local. Registered under the name the PICKLE records, which for a re-exported class is not the class's own
 # ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
 # ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given torchao lacks are
-# skipped rather than raised: the set spans every release ``install_python_stack`` pins (0.14, 0.16, 0.17) and an
+# skipped rather than raised: the set spans every release ``install_python_stack`` pins or pinned (0.14 to 0.18) and an
 # absent class could not have produced a loadable checkpoint here anyway. Adding a scheme means adding its
 # constructors here; forgetting warns and falls back to dense-quantise, never a silent unpickle.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
