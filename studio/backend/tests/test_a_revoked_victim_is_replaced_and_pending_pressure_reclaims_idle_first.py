@@ -49,9 +49,9 @@ class TestARevokedVictimIsReplaced:
             for gen_id in ("a", "b", "c")
             if controller.participant(gen_id).state == ParticipantState.PREEMPTING
         ]
-        assert replaced and victim not in replaced, (
-            "the undone choice left the cache over its ceiling with nobody asked to stop"
-        )
+        assert (
+            replaced and victim not in replaced
+        ), "the undone choice left the cache over its ceiling with nobody asked to stop"
 
     def test_nobody_is_chosen_once_the_room_is_not_owed(self):
         controller = _three_decoders()
@@ -99,7 +99,12 @@ def test_a_pending_prompt_reclaims_idle_residue_before_the_plan(monkeypatch):
     monkeypatch.setattr(inference, "read_slot_occupancy", lambda scrape: dict(occupancy))
     erased: list = []
 
-    def reclaim(occupancy, erase, *, needed = 0):
+    def reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         erased.append(needed)
         return 6000
 

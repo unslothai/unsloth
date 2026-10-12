@@ -1239,9 +1239,7 @@ class PreemptionController:
             # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
             # can choose it again.
             participant.preempt_chosen_at = 0.0
-            participant.consecutive_preemptions = max(
-                0, participant.consecutive_preemptions - 1
-            )
+            participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
             revoked = True
