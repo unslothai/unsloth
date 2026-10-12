@@ -114,15 +114,15 @@ const TOOL_ONLY_ADAPTER_RE =
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
-  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.composerDocuments,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachOpenDocuments\?\.\([\s\S]*?composerAttachments/;
+  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.docs,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachDocuments\?\.\([\s\S]*?composerAttachments/;
 const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
-  /const composerDocumentPaths = docPaths\.filter\(isComposerAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(composerDocumentPaths\),[\s\S]*?composerDocuments: composerDocuments\.intents/;
+  /registerEach\(docPaths\),[\s\S]*?docs: docs\.intents/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
-  /const needsComposerDocuments = composerDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments =\s*needsImages \|\| needsComposerDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
+  /const needsDocuments = documentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
 const OPEN_DOCUMENT_BACKEND_GATE_RE =
-  /function canAttachDocumentPaths[\s\S]*?isComposerAttachmentName\(path\)[\s\S]*?\? canAttachOpenDocuments\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
+  /function canAttachDocs[\s\S]*?return Boolean\(options\.onAttachDocuments\);/;
 const OPEN_DOCUMENT_CHAT_QUEUE_RE =
-  /const handleNativeOpenDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachOpenDocuments: handleNativeOpenDocumentDrop/;
+  /const handleNativeDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachDocuments: handleNativeDocumentDrop/;
 const OPEN_DOCUMENT_DRAIN_RE =
   /takeOpenDocumentAttachments\(targetKey\)[\s\S]*?nativeAttachmentIntentToFile\(intent\)[\s\S]*?await aui\.composer\(\)\.addAttachment\(file\)/;
 
@@ -220,16 +220,16 @@ for (const [format, extensions, adapter, rustList] of [
   });
 }
 
-test("Office, Outlook and web page drops index in chat with files and match the native allowlist", () => {
+test("native chat accepts Office types with a composer adapter; native intake retains explicit RAG formats", () => {
   const office =
     ".doc .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
       " ",
     );
   for (const extension of office) {
     const path = `/docs/Report${extension.toUpperCase()}`;
-    assert.equal(classifyDropPaths([path]).kind, "docs", path);
-    assert.ok(!isComposerAttachmentName(path), path);
-    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+    const supported = [".xlsx", ".xlsm", ".pptx"].includes(extension);
+    assert.equal(classifyDropPaths([path]).kind, supported ? "docs" : "unsupported", path);
+    assert.equal(isComposerAttachmentName(path), supported, path);
   }
   // Types with a composer adapter keep going to the composer.
   for (const ext of [".odt", ".rtf", ".epub", ".eml", ".docm"]) {
@@ -1567,10 +1567,10 @@ test("gettext catalogs use the charset declared by their header", async () => {
   );
 });
 
-test("RAG documents keep their existing route", () => {
+test("text and PDF drops attach to the composer", () => {
   for (const path of ["/docs/notes.txt", "/docs/notes.md", "/docs/paper.pdf"]) {
     assert.equal(classifyDropPaths([path]).kind, "docs", path);
-    assert.equal(isComposerAttachmentName(path), false, path);
+    assert.equal(isComposerAttachmentName(path), true, path);
   }
 });
 

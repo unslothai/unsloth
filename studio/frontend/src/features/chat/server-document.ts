@@ -5,7 +5,10 @@ import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { MAX_SERVER_DOCUMENT_BYTES } from "./open-document-accept";
 import { MAX_TEXT_ATTACHMENT_BYTES } from "./text-attachment-accept";
 
-export class NoDocumentTextError extends Error {}
+export class NoDocumentTextError extends Error {
+  // Matched by name: runtime-provider loads this module lazily, so it cannot use instanceof.
+  override name = "NoDocumentTextError";
+}
 
 // Per File, so the chip's preview reuses the upload the adapter already made.
 const extracted = new WeakMap<File, Promise<string>>();

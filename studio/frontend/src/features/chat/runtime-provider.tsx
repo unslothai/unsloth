@@ -124,7 +124,6 @@ import {
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
   isToolOnlyAttachmentName,
 } from "./open-document-accept";
-import { NoDocumentTextError, extractServerDocumentText } from "./server-document";
 import {
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -901,10 +900,12 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
   }
 
   private read(file: File): Promise<string | null> {
-    return extractServerDocumentText(file).catch((cause: unknown) => {
+    // Loaded on use: the first screen has no document to read.
+    const text = import("./server-document").then((m) => m.extractServerDocumentText(file));
+    return text.catch((cause: unknown) => {
       // A scanned PDF past the browser reader's ceiling keeps PDFAttachmentAdapter's textless rule.
       if (
-        cause instanceof NoDocumentTextError &&
+        (cause as Error | undefined)?.name === "NoDocumentTextError" &&
         (isToolOnlyAttachmentName(file.name) || /\.pdf$/i.test(file.name)) &&
         pythonToolOpensAttachments()
       ) {
