@@ -3337,8 +3337,11 @@ def _linux_host_only_uncovered_amd(*arch_lists: "list[str]") -> "str | None":
     """The uncovered arches, comma-joined, when every probed arch is one; else None.
 
     A generic ROCm wheel installed there loads, then faults on its first GPU op. A covered
-    peer anywhere in the lists keeps the normal route.
+    peer anywhere in the lists keeps the normal route, as does a set HSA_OVERRIDE_GFX_VERSION:
+    amd-smi and KFD read the physical arch under it, while the runtime runs the spoofed one.
     """
+    if (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip():
+        return None
     _archs = list(
         dict.fromkeys(
             (g or "").strip().lower().split(":", 1)[0] for _l in arch_lists for g in (_l or [])

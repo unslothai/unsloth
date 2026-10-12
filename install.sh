@@ -5915,14 +5915,17 @@ get_torch_index_url() {
         # RDNA 1 / Polaris read fine and still have no wheels: no pytorch.org tag and no AMD
         # per-arch index carries their kernels, so the generic tag below installed a multi-GB
         # torch that faults on its first GPU op (#8529). Only when EVERY probed arch is one, so
-        # a covered peer keeps its wheels; an HSA_OVERRIDE_GFX_VERSION spoof probes as its target.
-        _amd_unsup_all=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
+        # a covered peer keeps its wheels. A set HSA_OVERRIDE_GFX_VERSION keeps the old route too:
+        # amd-smi reads the physical arch under it while the runtime runs the spoofed one.
+        _amd_unsup_all=""
+        [ -n "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ] || _amd_unsup_all=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }')
         if [ -n "$_amd_unsup_all" ]; then
             echo "[WARN] AMD GPU detected ($_amd_unsup_all) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
             echo "[WARN] The ROCm PyTorch wheels carry no kernels for it: they would install, then fail on the first GPU operation." >&2
             echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+            echo "[INFO] If you run this GPU with HSA_OVERRIDE_GFX_VERSION, export it and re-run this installer to keep ROCm PyTorch." >&2
             if _amd_therock_extra=$(_therock_device_extra_for_gfx "${_amd_unsup_all%%,*}" 2>/dev/null); then
                 echo "[INFO] Untested: AMD's TheRock publishes nightly ${_amd_unsup_all%%,*} wheels. To try them, export both and re-run:" >&2
                 echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
@@ -7491,7 +7494,7 @@ elif _has_amd_rocm_gpu; then
     # The arch read fine and get_torch_index_url sent it to CPU for having no wheels (#8529),
     # so "no usable ROCm" would blame a working install. Same filter as that function.
     _amd_unsup_read=""
-    if [ "$_torch_index_pinned" != true ]; then
+    if [ "$_torch_index_pinned" != true ] && [ -z "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ]; then
         _amd_unsup_read=$(_probe_amd_gfx_arch 2>/dev/null | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
             | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
                    END { if (!bad && l != "") print l }') || _amd_unsup_read=""

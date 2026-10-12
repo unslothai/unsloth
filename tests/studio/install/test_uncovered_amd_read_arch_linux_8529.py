@@ -40,7 +40,10 @@ _POSIX = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse = True)
-def _reset_probe():
+def _reset_probe(monkeypatch):
+    # The shell harnesses inherit os.environ; a test sets these itself.
+    for name in ("HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES", "UNSLOTH_ROCM_GFX_ARCH"):
+        monkeypatch.delenv(name, raising = False)
     stack_mod._invalidate_torch_runtime_probe()
     yield
     stack_mod._invalidate_torch_runtime_probe()
@@ -107,14 +110,25 @@ def test_a_covered_card_alone_is_unchanged():
     assert "download.pytorch.org/whl/rocm6.4" in calls, calls
 
 
-def test_an_hsa_spoof_routes_as_the_spoofed_arch():
-    """rocminfo under HSA_OVERRIDE_GFX_VERSION=10.3.0 reports gfx1030, the user's choice."""
+def test_an_hsa_spoof_keeps_the_generic_install():
+    """amd-smi and KFD read the physical gfx1010 under HSA_OVERRIDE_GFX_VERSION=10.3.0, while
+    the runtime runs gfx1030 kernels from the generic wheel."""
     calls = routing._run_install(
-        gfx_devices = ("gfx1030",),
+        gfx_devices = ("gfx1010",),
         rocm_version = (6, 4),
         env = {"HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
     )
     assert "download.pytorch.org/whl/rocm6.4" in calls, calls
+
+
+def test_an_hsa_spoof_keeps_the_update_preflight(monkeypatch):
+    fastpath._host(
+        monkeypatch,
+        torch = ("2.10.0+cpu", ""),
+        gfx = ("gfx1010",),
+        env = {"HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
+    )
+    assert fastpath._needs_pass() is True
 
 
 def test_an_existing_rocm_build_is_left_alone():
@@ -296,3 +310,45 @@ def test_install_summary_other_hosts_are_unchanged(probe):
 def test_install_summary_a_pin_still_wins():
     out = _install_summary_gpu_step("gfx1010", pinned = True)
     assert "STEP: AMD GPU (torch index pinned: cpu)" in out, out
+
+
+@_POSIX
+def test_install_sh_an_hsa_spoof_keeps_the_generic_tag(monkeypatch):
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    url, err = guards._run_sh_get_torch_index_url("gfx1010", rocm_tag = "rocm6.4")
+    assert url.endswith("/rocm6.4"), (url, err)
+
+
+@_POSIX
+def test_install_sh_the_warning_names_the_spoof_escape(monkeypatch):
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+    _url, err = guards._run_sh_get_torch_index_url("gfx1010", rocm_tag = "rocm6.4")
+    assert "HSA_OVERRIDE_GFX_VERSION, export it and re-run" in err, err
+
+
+@_POSIX
+@pytest.mark.parametrize(
+    "env",
+    [{"HSA_OVERRIDE_GFX_VERSION": "10.3.0"}, {"ROCR_VISIBLE_DEVICES": "1"}],
+    ids = ["hsa-spoof", "rocr-mask"],
+)
+def test_setup_sh_a_spoof_or_rocr_mask_keeps_the_old_report(monkeypatch, env):
+    """rocminfo in setup.sh is ROCR-filtered, so a masked covered peer is invisible there."""
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    out = _setup_report("gfx1010", "gfx1010", "AMD Radeon RX 5700 XT")
+    assert "STEP: AMD Radeon RX 5700 XT (gfx1010)" in out, out
+
+
+@_POSIX
+def test_setup_sh_a_declared_arch_outranks_the_rocr_mask(monkeypatch):
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1010")
+    out = _setup_report("gfx1010", "gfx1010", "")
+    assert "STEP: AMD GPU detected (gfx1010) -- no ROCm PyTorch wheels" in out, out
+
+
+@_POSIX
+def test_install_summary_an_hsa_spoof_keeps_the_old_line(monkeypatch):
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
+    assert "STEP: AMD GPU (no usable ROCm -- CPU fallback)" in _install_summary_gpu_step("gfx1010")

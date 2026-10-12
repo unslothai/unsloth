@@ -4349,13 +4349,19 @@ EOF
     # An arch READ as uncovered on every probed GPU gets the warning too, not only a missing
     # one: a host with ROCm installed reads gfx1010 fine and still has no wheels (#8529).
     # install.sh's get_torch_index_url holds the same list. A declared arch is all the
-    # installers route on, so the physical inventory is not consulted beside it.
+    # installers route on, so the physical inventory is not consulted beside it. The
+    # installers probe with ROCR_VISIBLE_DEVICES stripped, rocminfo here does not, so a mask
+    # could hide the covered peer; an HSA_OVERRIDE_GFX_VERSION spoof keeps the old route.
     _setup_unsup_inv="$_setup_gfx_all"
     [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
-    _setup_unsup_gfx=$(printf '%s\n' "$_setup_gfx" "$_setup_unsup_inv" | sed 's/:.*$//' \
-        | tr '[:upper:]' '[:lower:]' \
-        | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
-               END { if (!bad && l != "") print l }')
+    _setup_unsup_gfx=""
+    if [ -z "$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | tr -d '[:space:]')" ] && \
+       { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
+        _setup_unsup_gfx=$(printf '%s\n' "$_setup_gfx" "$_setup_unsup_inv" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+    fi
     if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         step "gpu" "$_setup_mkt ($_setup_gfx)"
     elif [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ]; then
