@@ -1228,6 +1228,11 @@ class ToolLoopController:
             arguments = canonicalize_web_search_arguments(arguments)
         return tool_name, coerced, arguments, canonical_tool_call_key(tool_name, arguments)
 
+    def healed_arguments(self, tool_call: Mapping[str, Any]) -> tuple[str, Any]:
+        """The name and arguments `prepare_call` classifies, after healing. Reads no state."""
+        tool_name, _coerced, arguments, _key = self._healed_call(tool_call)
+        return tool_name, arguments
+
     def call_key(self, tool_call: Mapping[str, Any]) -> str:
         """The identity `prepare_call` deduplicates on, after healing. Reads no state."""
         return self._healed_call(tool_call)[3]

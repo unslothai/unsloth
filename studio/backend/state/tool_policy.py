@@ -158,25 +158,37 @@ def round_may_prompt(
     sandbox_level: Optional[str] = None,
     is_high_risk = None,
     never_needs = None,
+    healed = None,
 ) -> bool:
     """Whether any call of a parsed round could stop and ask, decided before any runs.
 
     The same question ``needs_tool_confirmation`` answers per call, so "off" still counts the
     calls it gates. Arguments arrive as a JSON string on the wire; any that do not parse, or a
     classifier that raises, count as asking, which only costs the round its overlap.
+
+    ``healed`` maps a call to the ``(name, arguments)`` `prepare_call` classifies: a web_search
+    `href` heals to a `url`, a fetch that asks, so the raw dict would let a sibling start first.
     """
     if not confirm_tool_calls or bypass_permissions:
         return False
     for call in calls or ():
         fn = (call or {}).get("function") or {}
-        # Named as `prepare_call` names it, so a padded name is gated as the tool it runs.
-        name = str(fn.get("name") or "").strip()
-        raw = fn.get("arguments")
-        if isinstance(raw, str):
+        if healed is not None:
             try:
-                raw = json.loads(raw) if raw.strip() else {}
-            except ValueError:
+                name, raw = healed(call or {})
+            except Exception:
+                return True
+            if isinstance(raw, dict) and _UNPARSED_ARGUMENTS_KEY in raw:
                 raw = None
+        else:
+            # Named as `prepare_call` names it, so a padded name is gated as the tool it runs.
+            name = str(fn.get("name") or "").strip()
+            raw = fn.get("arguments")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw) if raw.strip() else {}
+                except ValueError:
+                    raw = None
         if not isinstance(raw, dict):
             if permission_mode != "off" or off_mode_still_gates(name, sandbox_level):
                 return True
@@ -196,6 +208,10 @@ def round_may_prompt(
         except Exception:
             return True
     return False
+
+
+# `tool_loop_controller.UNPARSED_ARGUMENTS_KEY`, spelled here so this module imports nothing of it.
+_UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 
 def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:

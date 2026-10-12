@@ -41199,6 +41199,7 @@ class LlamaCppBackend:
                     bypass_permissions = bypass_permissions,
                     permission_mode = permission_mode,
                     sandbox_level = sandbox_level,
+                    healed = getattr(tool_controller, "healed_arguments", None),
                 )
                 # A round may only overlap when its calls cannot depend on each other's
                 # RESULTS. `prepare_call` has two such dependencies, both written by
