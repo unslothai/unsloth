@@ -153,9 +153,7 @@ def cached_gguf_sources(repo_id: str, *, scoped_ready = None) -> dict[str, Cache
                     sources[key] = CachedGgufSource(variant, snapshot, has_vision)
                 partials.pop(key, None)
                 continue
-            # An interrupted split quant is listed but not complete. Keep it as a fallback
-            # instead of dropping it, so the merge can still show the row, mark it partial
-            # and point a resume at the folder that holds it.
+            # keep interrupted split quants as partial resume sources
             partials.setdefault(
                 key, CachedGgufSource(variant, snapshot, has_vision, incomplete = True)
             )

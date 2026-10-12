@@ -519,7 +519,7 @@ def local_path_physical_identity(raw_path: str) -> str:
 
 
 def should_group_local_gguf_files(filenames: Sequence[str]) -> bool:
-    """Whether filenames are variants of one selectable checkpoint."""
+    """whether filenames are variants of one selectable checkpoint."""
     if len(filenames) == 1:
         return True
 
@@ -918,7 +918,6 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
-            # A key qualified by path: show the quant, plus what distinguishes it.
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
@@ -926,7 +925,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+    """map each variant key to the loader's first shard set and its total bytes."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
         families.setdefault(gguf_variant_key(path).casefold(), {}).setdefault(

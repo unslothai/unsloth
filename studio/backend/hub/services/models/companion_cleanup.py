@@ -151,14 +151,14 @@ def companion_dependents(
     *,
     ignore_repo_ids = (),
 ) -> list[str]:
-    """Installed checkpoints that would still need *base_repo_id* after ignoring *ignore_repo_ids*, sorted for a stable message. Empty means the base is safe to remove."""
+    """return sorted checkpoints needing *base_repo_id*; an empty result makes it removable."""
     scans = cache_scans if cache_scans is not None else cache_inventory.all_hf_cache_scans()
     required = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore_repo_ids)
     return sorted(required.get((base_repo_id or "").strip().lower(), set()))
 
 
 def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
-    """The deletion guard's predicate, shared so the preview and the refusal cannot disagree."""
+    """share the deletion guard so preview and refusal agree."""
     from hub.services.models.deletion import _variant_is_a_required_companion_asset as _impl
     return _impl(repo_id, variant)
 
@@ -200,8 +200,7 @@ def _delete_impact_blocking(
             else _repo_blob_bytes(repo_info)
         )
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
-    # while a sibling quant survives they stay in use.
+    # companions become reclaimable only when no runnable checkpoint survives
     removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
@@ -214,7 +213,7 @@ def _delete_impact_blocking(
     ignore = [repo_id] if removes_last_checkpoint else []
     required_after = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore)
 
-    # Companion bases THIS pick uses, from the same derivation the loader's resolver feeds.
+    # derive this selection's companion bases through the loader's resolver
     own_bases = companion_assets.required_companion_bases(
         [_SingleRepoScan(repos)] if repos else [],
     )
@@ -254,7 +253,7 @@ def _delete_impact_blocking(
 
 
 class _SingleRepoScan:
-    """Adapter presenting a fixed repo list with the attribute the derivation reads."""
+    """present a fixed repo list through the scan interface."""
 
     def __init__(self, repos):
         self.repos = repos
@@ -266,7 +265,7 @@ async def delete_impact_response(
     cache_path: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> dict:
-    """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
+    """preview bytes, retained assets, and blockers for deleting *repo_id* or its *variant*."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -302,7 +301,7 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key):
             continue
         repos = by_id[base_key]
-        # A repo holding a runnable denoiser is a model the user installed: a companion fetch takes everything BUT transformer/, while a pipeline pick takes it, so its presence answers whether the user asked for this repo. Per COPY, since a delete is scoped to one cache root.
+        # exclude user-installed copies with denoisers; companion fetches omit transformer/ and orphan rows are per root
         repos = [r for r in repos if not _repo_holds_denoiser(r)]
         if not repos:
             continue

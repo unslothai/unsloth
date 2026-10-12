@@ -3194,14 +3194,14 @@ def list_gguf_variants(
             )
         )
 
-    # Largest first; pinning and OOM demotion happen client-side where VRAM info exists.
+    # largest first; pinning and OOM demotion happen client-side with VRAM data.
     variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
 
 
 def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
-    """MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples; ``routes/inference.py`` bills this size to the VRAM guard."""
+    """mirror ``hub.utils.gguf.group_gguf_variant_files`` for consistent VRAM accounting."""
     families: dict[str, dict[tuple[str, int], list[tuple[str, str, int]]]] = {}
     for name, quant, size in entries:
         families.setdefault(quant.casefold(), {}).setdefault(_gguf_shard_set(name), []).append(
@@ -3216,13 +3216,7 @@ def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, 
 
 
 def _resolve_gguf_dir(p: Path) -> Optional[Path]:
-    """Resolve a path to the directory containing GGUF variants.
-
-    Directory *p* returns directly. A ``.gguf`` file whose parent dir has
-    model metadata (``config.json`` or ``adapter_config.json``) returns the
-    parent -- all GGUFs there belong to the same model. Returns ``None`` for
-    loose standalone GGUFs (no config) to avoid cross-wiring unrelated models.
-    """
+    """resolve a GGUF directory; reject loose files without metadata to avoid mixing models."""
     if p.is_dir():
         return p
     if p.is_file() and p.suffix.lower() == ".gguf":

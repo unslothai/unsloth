@@ -225,7 +225,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                     sub.rmdir()
                     removed += 1
                 except OSError as e:
-                    # A concurrent download refilling the dir (ENOTEMPTY) is not a failure; a read-only cache or locked dir is, so surface it.
+                    # ignore ENOTEMPTY from concurrent refills; surface locked or read-only directories.
                     if e.errno != errno.ENOTEMPTY:
                         failures.append(f"{sub.name}: {e}")
     return removed, failures
@@ -405,7 +405,7 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # No main GGUF is left, so the companions cannot be launched; reclaim them with the last variant.
+                # no main GGUF remains, so its companions cannot be launched.
                 lambda name: _is_gguf_filename(name)
                 and (
                     _is_mmproj_filename(name)
@@ -1072,7 +1072,7 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer below: the first read ran before the reservation existed, so a load starting in between published its claim too late, and begin_delete misses it too.
+        # recheck after reserving the scope so a concurrent load claim is visible.
         try:
             blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
         except Exception as e:
@@ -1108,13 +1108,11 @@ async def delete_cached_model_response(
             only_if_orphan = only_if_orphan,
             preferred_path = preferred_path,
         )
-        # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
-        # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
+        # prune stale audio.cpp hardlinks that retain deleted blobs; current farms are unchanged.
         from core.inference.audio_cpp_files import prune_link_farm
         from hub.utils.hf_cache_state import hf_cache_roots
 
-        # Every remembered root, not one recomputed from cache_path: an omitted path deletes from
-        # the sole owning cache, which need not be the active one. Pruning drops only stale entries.
+        # prune every remembered root because the owning cache may not be active.
         def _prune_all() -> None:
             for root in hf_cache_roots():
                 prune_link_farm(root)
@@ -1166,8 +1164,7 @@ def _delete_cached_model_blocking(
     from hub.utils.gguf_sources import cached_gguf_action_path
 
     cache_path = cached_gguf_action_path(repo_id, variant, cache_path, preferred_path)
-    # Free up space's list can be minutes old, and a background download finishing turns that orphan
-    # into an installed checkpoint neither guard below catches.
+    # recheck orphan status because a download can finish after the free-space listing.
     if only_if_orphan:
         from hub.services.models import companion_cleanup
         from hub.utils import companion_assets
@@ -1176,7 +1173,7 @@ def _delete_cached_model_blocking(
             copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
                 repo_id.strip().lower(), []
             )
-            # Only the copy being removed: the orphan listing emits one row per cache root, so a full-pipeline copy in another remembered cache must not veto removing the companion-only copy listed.
+            # check only this root; a full copy elsewhere must not block deleting this orphan row.
             if cache_path:
                 wanted = Path(cache_path)
                 copies = [

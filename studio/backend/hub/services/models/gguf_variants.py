@@ -2319,7 +2319,7 @@ async def get_gguf_variants_response(
     hf_token: Optional[str] = None,
     include_cache_locations: bool = False,
 ) -> GgufVariantsResponse:
-    """The listing alone, for callers that do not read metadata off the same copy."""
+    """return the listing without same-copy metadata."""
     answer = await get_gguf_variants_answer(
         repo_id,
         prefer_local_cache = prefer_local_cache,
