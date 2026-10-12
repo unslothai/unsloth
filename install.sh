@@ -2308,6 +2308,11 @@ DESKTOP_EOF
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
@@ -2317,8 +2322,12 @@ PLIST_EOF
         # Single-quoted heredoc + sed so $-vars in $_css_data_dir do not expand at launch.
         _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
         _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
+        # A script-only bundle may be started under Rosetta (#9467), and a translated shell hands the x86_64 slice of a universal2 venv python its arm64 wheels. LSArchitecturePriority asks Launch Services for arm64, and arch -arm64 also covers a bundle id whose Rosetta choice Launch Services already cached. hw.optional.arm64 is absent on Intel, so Intel keeps the plain exec.
         cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
 #!/bin/sh
+if [ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ] && [ -x /usr/bin/arch ]; then
+    exec /usr/bin/arch -arm64 '@@DATA_DIR@@/launch-studio.sh' "$@"
+fi
 exec '@@DATA_DIR@@/launch-studio.sh' "$@"
 STUB_EOF
         sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
@@ -3328,7 +3337,20 @@ _check_linux_deps() {
     fi
 
     if [ -n "$_optional_missing" ]; then
-        step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
+        # Off apt the Debian package names mean nothing (NixOS, Fedora, Arch, SteamOS: #4986), so name the commands probed above.
+        _shown_missing="$_optional_missing"
+        if ! command -v apt-get >/dev/null 2>&1; then
+            _shown_missing=""
+            for _m in $_optional_missing; do
+                case "$_m" in
+                    build-essential) _m="gcc" ;;
+                    libcurl4-openssl-dev) _m="curl-config" ;;
+                esac
+                _shown_missing="$_shown_missing $_m"
+            done
+            _shown_missing="${_shown_missing# }"
+        fi
+        step "deps" "using prebuilt llama.cpp (missing: $_shown_missing)" "$C_WARN"
         substep "Not required to run: Unsloth downloads a prebuilt inference engine."
         case " $_optional_missing " in
             *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
@@ -4823,6 +4845,52 @@ _nvidia_gpu_wins_over_amd() {
     fi
     return 0
 }
+_pci_devices_root() { printf '%s' /sys/bus/pci/devices; }
+
+# First XPU-capable Intel display device id; same allowlist as hardware.py _INTEL_XPU_PCI_*.
+_intel_xpu_gpu_id() {
+    for _ix_vendor in "$(_pci_devices_root)"/*/vendor; do
+        [ -r "$_ix_vendor" ] || continue
+        read -r _ix_v < "$_ix_vendor" 2>/dev/null || continue
+        [ "$_ix_v" = "0x8086" ] || continue
+        _ix_dir="${_ix_vendor%vendor}"
+        read -r _ix_c < "${_ix_dir}class" 2>/dev/null || continue
+        case "$_ix_c" in 0x03*) ;; *) continue ;; esac
+        read -r _ix_d < "${_ix_dir}device" 2>/dev/null || continue
+        _ix_d=$(printf '%s' "$_ix_d" | tr '[:upper:]' '[:lower:]')
+        case "$_ix_d" in
+            0x7d55|0x7d51|0x64a0|0xb080|0xb081|0xb082|0xb083|0xb084|0xb085|0xb086|0xb087) printf '%s' "$_ix_d"; return 0 ;;
+            # PVC (Data Center GPU Max) by exact id: 0x0BE0-0x0BE5 nearby is Cedar Trail (gma500).
+            0x0bd0|0x0bd4|0x0bd5|0x0bd6|0x0bd7|0x0bd8|0x0bd9|0x0bda|0x0bdb|0x0b69|0x0b6e) printf '%s' "$_ix_d"; return 0 ;;
+        esac
+        _ix_n=$(printf '%d' "$_ix_d" 2>/dev/null) || continue
+        if { [ "$_ix_n" -ge 22160 ] && [ "$_ix_n" -le 22210 ]; } ||  # 0x5690-0x56C2
+           { [ "$_ix_n" -ge 57856 ] && [ "$_ix_n" -le 58111 ]; }; then # 0xE200-0xE2FF
+            printf '%s' "$_ix_d"; return 0
+        fi
+    done
+    return 1
+}
+
+# Declines beside any AMD silicon: the runtime-less AMD reroute owns a */cpu index there.
+_intel_xpu_auto_gpu_id() {
+    [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] && return 1
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && return 1
+    # Level Zero / SYCL device-filter indices need not follow PCI order, so any filter leaves the choice to a pin.
+    _ix_var=""
+    [ -n "${SYCL_DEVICE_FILTER+x}" ] && _ix_var=SYCL_DEVICE_FILTER
+    [ -n "${SYCL_DEVICE_ALLOWLIST+x}" ] && _ix_var=SYCL_DEVICE_ALLOWLIST
+    [ -n "${ONEAPI_DEVICE_SELECTOR+x}" ] && _ix_var=ONEAPI_DEVICE_SELECTOR
+    # Level Zero reads an empty or "default" mask as unset (compute-runtime isAffinityMaskSet).
+    case "${ZE_AFFINITY_MASK-default}" in ""|default) ;; *) _ix_var=ZE_AFFINITY_MASK ;; esac
+    if [ -n "$_ix_var" ]; then
+        echo "[INFO] $_ix_var is set -- skipping the Intel XPU auto route; set UNSLOTH_TORCH_INDEX_FAMILY=xpu to install XPU PyTorch." >&2
+        return 1
+    fi
+    _amd_hardware_corroborated && return 1
+    _intel_xpu_gpu_id
+}
+
 # Returns 0 if an AMD display GPU is on the PCI bus even when ROCm cannot use it (a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected" hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
 _amd_gpu_present_via_pci() {
     [ -d /sys/bus/pci/devices ] || return 1
@@ -5701,6 +5769,21 @@ _detect_rocm_version_tag() {
     printf '%s\n' "$_rt_best"
 }
 
+# The generic bitsandbytes ROCm wheel is built for the rocm6.4 ABI. Keep the
+# published ROCm leaf mapping in get_torch_index_url intact for explicit and
+# legacy callers, but floor automatic generic selections to this compatible tag.
+_ROCM_BNB_GENERIC_FLOOR_TAG="rocm6.4"
+_rocm_bnb_compatible_generic_tag() {
+    case "$1" in
+        rocm6.0|rocm6.0.*|rocm6.1|rocm6.1.*|rocm6.2|rocm6.2.*|rocm6.3|rocm6.3.*)
+            printf '%s\n' "$_ROCM_BNB_GENERIC_FLOOR_TAG"
+            ;;
+        *)
+            printf '%s\n' "$1"
+            ;;
+    esac
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -5756,6 +5839,10 @@ get_torch_index_url() {
             *) echo "$_base/cpu"; return ;;
         esac
         if ! _has_amd_rocm_gpu; then
+            if _ix_gpu=$(_intel_xpu_auto_gpu_id); then
+                echo "[INFO] Intel GPU ($_ix_gpu) detected -- selecting XPU PyTorch (UNSLOTH_DISABLE_XPU_AUTO=1 to keep CPU)." >&2
+                echo "$_base/xpu"; return
+            fi
             echo "$_base/cpu"; return
         fi
         # A generic rocm index is only safe when the gfx arch is readable: the Strix reroute (gfx1150/1151 to the arch-specific index) learns gfx from rocminfo/amd-smi, so if those are missing OR do not enumerate the GPU, an unknown-arch box might be Strix and would get the broken _grouped_mm wheels. Probe via the shared helper (override first, then rocminfo/amd-smi with visibility masks cleared); if the arch is unreadable, never guess a rocm index. A KFD-only host whose arch is still inferable from hardware IDs (PCI/cpuinfo/lspci) returns the cpu index and lets the runtime-less reroute below upgrade it to AMD per-arch wheels, and the reroute gate uses this same probe so the handoff cannot misfire. Only when inference fails too is CPU final, with the actionable warning.
@@ -5859,10 +5946,20 @@ get_torch_index_url() {
                 (*)
                     echo "$_base/rocm7.2" ;;
             esac)
+            _rocm_selected_tag=${_rocm_index##*/}
+            # Automatic generic 6.0-6.3 selections floor to rocm6.4, the oldest ROCm the bitsandbytes
+            # wheel ships a library for (#10273). A sole gfx906 keeps the literal tag for its legacy
+            # route and BNB skip. Normalize like _is_gfx906_bnb_skip: rocminfo names each agent twice
+            # and an override keeps its ISA suffix; a mixed host dedupes to two arches and floors.
+            _bnb_floor_gfx=$(printf '%s\n' "$_amd_gfx_probe" \
+                | sed 's/:.*$//' | tr -d '[:blank:]' | awk 'NF && !seen[$0]++')
+            case "$_bnb_floor_gfx" in
+                (gfx906) : ;;
+                (*) _rocm_index="$_base/$(_rocm_bnb_compatible_generic_tag "$_rocm_selected_tag")" ;;
+            esac
             # No UNSLOTH_TORCH_INDEX_FAMILY hint: newer leaves have nothing inside _TORCH_CEILING (#10657).
-            _rocm_leaf=${_rocm_index##*/}
-            if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
-                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; capping to the $_rocm_leaf index (its wheels bundle their own runtime, so this is expected)." >&2
+            if [ "$_rocm_tag" != "$_rocm_selected_tag" ]; then
+                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; capping to the $_rocm_selected_tag index (its wheels bundle their own runtime, so this is expected)." >&2
             fi
             echo "$_rocm_index"
             return
@@ -6038,10 +6135,19 @@ _torch_release_in_window() {
     echo "no"
 }
 
-# "yes" when $1 is the cu130 index on Linux/WSL x86_64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
+# "yes" when $1 is the cu130 index on Linux/WSL x86_64 or aarch64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
 _cu130_torch213_route() {
     [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
+    [ "$(_cu130_torch213_host_ok)" = "yes" ] || { echo "no"; return; }
     _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# New installs only: torch 2.13 has no cp313t wheel, and the kernel wheels need glibc 2.35.
+_cu130_torch213_host_ok() {
+    _cth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
+    [ "$_cth_gil" = "gil-enabled" ] || { echo "no"; return; }
+    _cth_glibc=$(_uv_glibc_minor) || { echo "no"; return; }
+    [ "$_cth_glibc" -ge 35 ] 2>/dev/null && echo "yes" || echo "no"
 }
 
 # The local half of the route, with no network: it alone decides the preservation window, so a
@@ -6049,7 +6155,7 @@ _cu130_torch213_route() {
 _cu130_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
-    case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
+    case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
 }
@@ -6395,6 +6501,25 @@ _pick_radeon_wheel() {
         http*) printf '%s\n' "$_href" ;;
         *)     printf '%s\n' "${_RADEON_BASE_URL%/}/${_href#/}" ;;
     esac
+}
+
+# True when torch $1 (X.Y) can run torch.compile on the Python of Radeon wheel tag $2 (cpXY):
+# Dynamo reached 3.13 in torch 2.6 and 3.14 in 2.10. rocm-rel-6.4's only cp313 torch is 2.5.1,
+# which imports fine and then fails the first training step.
+_radeon_torch_compiles_for_pytag() {
+    case "$2" in
+        cp313) _rtc_need=6 ;;
+        cp314) _rtc_need=10 ;;
+        *) return 0 ;;
+    esac
+    _rtc_major="${1%%.*}"
+    _rtc_minor="${1#*.}"
+    _rtc_minor="${_rtc_minor%%.*}"
+    case "$_rtc_major$_rtc_minor" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_rtc_major" -gt 2 ] && return 0
+    [ "$_rtc_major" -eq 2 ] && [ "$_rtc_minor" -ge "$_rtc_need" ]
 }
 
 # ── ROCm-on-WSL bootstrap for AMD Strix Halo (gfx1151) ───────────────────────
@@ -6752,7 +6877,7 @@ fi
 if [ "$SKIP_TORCH" = false ]; then
     _warn_if_cuda_mask_hides_amd "$TORCH_INDEX_URL"
 fi
-# Export the resolved torch backend ("cuda", "rocm" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
+# Export the resolved torch backend ("cuda", "rocm", "xpu" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
 _torch_index_leaf="${_torch_index_leaf%%#*}"
 while [ -n "$_torch_index_leaf" ] && [ "${_torch_index_leaf%/}" != "$_torch_index_leaf" ]; do
@@ -6772,12 +6897,19 @@ case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
     cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    xpu)        export UNSLOTH_TORCH_BACKEND="xpu"  ;;
     # Unknown leaf: unset so a stale value cannot leak and the stack probes the GPU.
     *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
 # Derived from the index this script RESOLVED, which on a GPU-less machine is "cpu" whether or not anyone asked. Without the marker every ordinary Linux CPU install is recorded as a deliberate choice, and a machine that later gains a GPU is never offered the repair. Only when the stated family SURVIVED the resolution: the case above has already overwritten the variable, so a caller who said "cuda" on a machine with no visible GPU now carries the resolved "cpu", and treating that as stated would deny that host the repair for good if the GPU ever became visible.
-if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] &&
+# The XPU opt-out on a host the Intel route would otherwise take is a deliberate CPU choice.
+_xpu_opted_out=false
+if [ "${UNSLOTH_TORCH_BACKEND:-}" = cpu ] && [ "${UNSLOTH_DISABLE_XPU_AUTO:-0}" = 1 ] &&
+   _intel_xpu_gpu_id >/dev/null 2>&1 && ! _amd_hardware_corroborated; then
+    _xpu_opted_out=true
+fi
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] && [ "$_xpu_opted_out" != true ] &&
    { [ "$_torch_backend_was_stated" != true ] ||
      [ "$_torch_backend_stated_value" != "$UNSLOTH_TORCH_BACKEND" ]; }; then
     export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"
@@ -6799,7 +6931,7 @@ case "$_torch_index_leaf" in
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
-    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU device below it, so a mirror serving an older +xpu wheel would install something that cannot run. Reached only through an explicit pin.
+    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU device below it, so a mirror serving an older +xpu wheel would install something that cannot run. Reached through a pin or the Intel GPU auto route.
     xpu)
         TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
@@ -7137,7 +7269,10 @@ _CU130_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
-    if { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+    # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
+       && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "$(_cu130_torch213_host_ok)" = "yes" ] \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi
@@ -7341,6 +7476,12 @@ elif _has_amd_rocm_gpu; then
     else
         # AMD GPU visible to the kernel but the torch index stayed CPU: no usable ROCm userspace to pick a wheel. "none" would repeat the false diagnosis this installer used to give.
         step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
+    fi
+elif [ "$_torch_index_leaf" = xpu ]; then
+    if _ix_gpu=$(_intel_xpu_gpu_id); then
+        step "gpu" "Intel GPU ($_ix_gpu, XPU)"
+    else
+        step "gpu" "Intel XPU (torch index pinned)"
     fi
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
@@ -8112,6 +8253,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         _target_minor=$((_target_minor - 1))
                         _attempts=$((_attempts + 1))
                     done
+                fi
+
+                # A matched set can still be unusable for training on this Python; the ROCm index
+                # carries newer builds for it (rocm6.4 has torch 2.9.1 for cp313).
+                _sel_torch_ver=$(_extract_version "$_torch_whl" "torch")
+                if [ "$_radeon_versions_match" = true ] && [ -n "$_sel_torch_ver" ] && \
+                   ! _radeon_torch_compiles_for_pytag "$_sel_torch_ver" "$_RADEON_PYTAG"; then
+                    substep "[WARN] Radeon repo's newest $_RADEON_PYTAG PyTorch is $_sel_torch_ver, which cannot run torch.compile on this Python" "$C_WARN"
+                    _radeon_versions_match=false
                 fi
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \

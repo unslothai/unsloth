@@ -2858,6 +2858,14 @@ class ChatCompletionRequest(BaseModel):
             "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
+    deduplicate_tool_calls: Optional[bool] = Field(
+        True,
+        description = (
+            "[x-unsloth] When false, a tool call identical to one that already "
+            "succeeded in this response runs again instead of being answered "
+            "with a duplicate notice. Default on."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
@@ -4375,7 +4383,9 @@ class DiffusionLoadRequest(BaseModel):
         "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
         "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
         "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
-        "the base repo then supplies only configs and tokenizers for these encoders.",
+        "the base repo then supplies only configs and tokenizers for these encoders. Unset on a local DiT "
+        "inside a ComfyUI models tree, the tree's text_encoders file that fits is used when exactly one is "
+        "best (UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS=0 turns that off).",
     )
     vae_file: Optional[str] = Field(
         None,
@@ -5111,6 +5121,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
     )
     bytes: int = Field(
         0, description = "Declared size of the files still missing from cache, 0 when unknown"
+    )
+    file_bytes: Dict[str, int] = Field(
+        default_factory = dict,
+        description = "Declared size of each file counted in ``bytes``. Empty from a planner that "
+        "does not break it down; the download panel then shows one bar.",
     )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"

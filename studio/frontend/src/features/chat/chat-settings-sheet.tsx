@@ -86,6 +86,7 @@ import {
   parseExternalModelId,
   promptCacheTtlAppliesToModel,
   promptCachingAppliesToModel,
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -825,6 +826,15 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // Budget, duration and dedupe are knobs of Unsloth's own tool loop, which external turns run
+  // only when the provider supports Unsloth tools (`=== true`, the same test the request uses).
+  const showStudioToolLoopControls =
+    !isExternalModel ||
+    providerModelSupportsStudioTools(
+      externalProviderType,
+      externalSelection?.modelId,
+    ) === true;
+
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       promptCacheTtlAppliesToModel(
@@ -1697,18 +1707,27 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-            {isExternalModel ? null : (
+            {showStudioToolLoopControls ? (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5">
-              <AutoHealToolCallsToggle />
-              <NudgeToolCallsToggle />
-              <ConfirmToolCallsToggle />
-              <BypassPermissionsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <AutoHealToolCallsToggle />
+                  <NudgeToolCallsToggle />
+                </>
+              )}
+              <DeduplicateToolCallsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <ConfirmToolCallsToggle />
+                  <BypassPermissionsToggle />
+                </>
+              )}
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
-            )}
+            ) : null}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">
@@ -2035,6 +2054,35 @@ function NudgeToolCallsToggle() {
         className="panel-switch shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
+      />
+    </div>
+  );
+}
+
+function DeduplicateToolCallsToggle() {
+  const deduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.deduplicateToolCalls,
+  );
+  const setDeduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.setDeduplicateToolCalls,
+  );
+
+  return (
+    <div className="flex min-h-8 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Deduplicate Tool Calls
+        </span>
+        <InfoHint>
+          Skips a tool call identical to one that already succeeded in this
+          response and tells the model it was a duplicate. Turn off to let a
+          repeated call run again.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={deduplicateToolCalls}
+        onCheckedChange={setDeduplicateToolCalls}
       />
     </div>
   );

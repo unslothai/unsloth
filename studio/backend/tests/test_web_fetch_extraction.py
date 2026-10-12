@@ -338,6 +338,148 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            '<h3 data-state="closed"><button type="button" aria-controls="r1" aria-expanded="false">'
+            'What is the right plan for me?<span aria-hidden="true">v</span></button></h3>'
+            '<div id="r1" role="region"><p>Answer text.</p></div>',
+            "### What is the right plan for me?",
+        ),
+        (
+            '<h2 class="accordion-header">\n  <button class="accordion-button" type="button" '
+            'aria-expanded="true" aria-controls="c1">\n    What is the right plan for me?\n  </button>\n</h2>'
+            '<div id="c1"><div class="accordion-body">Answer text.</div></div>',
+            "What is the right plan for me?",
+        ),
+        (
+            "<h3><button>What is the right plan for me?</button></h3><p>Answer text.</p>",
+            "### What is the right plan for me?",
+        ),
+        (
+            '<div role="heading" aria-level="3"><button aria-expanded="false">'
+            "What is the right plan for me?</button></div><p>Answer text.</p>",
+            "What is the right plan for me?",
+        ),
+    ],
+)
+def test_accordion_question_in_a_heading_button_is_kept(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+
+
+def test_buttons_that_are_not_a_heading_title_are_still_dropped():
+    html = (
+        "<h4><span>Create Artifacts</span><button aria-expanded='false'>"
+        "<span class='sr-only'>More information</span></button></h4>"
+        "<p>Body text.</p><button>Subscribe</button>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "Body text." in out
+    assert "More information" not in out
+    assert "Subscribe" not in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<h4>&#67;&#114;&#101;&#97;&#116;&#101;<button>More information</button></h4><p>Body text.</p>",
+        "<h4>&eacute;<button>More information</button></h4><p>Body text.</p>",
+        "<hgroup><h1>Create</h1><h2></h2><button>More information</button></hgroup><p>Body text.</p>",
+    ],
+)
+def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
+    "between", ["", "<!-- </h4> -->", "<span hidden>" + "x" * 5000 + "</span>"]
+)
+def test_a_leading_control_before_the_heading_title_is_dropped(between):
+    html = (
+        f"<h4><button aria-expanded='false'>More information</button>{between}<span>Create Artifacts</span></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            "<hgroup><h1><button>Question</button></h1><p>Sub</p></hgroup><p>Answer text.</p>",
+            "# Question",
+        ),
+        (
+            "<h3><button hidden>old</button><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        (
+            "<h3><span hidden><button>old</button></span><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<h3><button>Question</button><br></h3><p>Answer text.</p>", "### Question"),
+        ("<h3><em><button>Question</button></em></h3><p>Answer text.</p>", "### *Question*"),
+        (
+            "<h3><button aria-label='Settings'><svg><path/></svg></button><button>Question</button></h3>"
+            "<p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<ul><li><h3><button>Question</button><li>Answer text.</ul>", "### Question"),
+        (
+            "<ul><li hidden>old<li><h3><button>Question</button></h3>Answer text.</ul>",
+            "### Question",
+        ),
+        ("<p hidden>old<h3><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
+            '<script>const x="<h3><button>"</script><!-- <h2><button> -->'
+            "<h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<h3><!-- </h3> --><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
+            "<title-card>Card</title-card><h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        (
+            '<div data-example="<script>"></div><h3 data-template="</h3>"><button>Question</button></h3>'
+            "<p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<p>a\nb</p>\n<h3>\n  <button>Question</button></h3><p>Answer text.</p>", "Question"),
+        (
+            '<div role="presentation heading" aria-level="3"><button>Question</button></div><p>Answer text.</p>',
+            "Question",
+        ),
+    ],
+)
+def test_heading_button_title_edge_cases(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+    assert "old" not in out
+
+
+@pytest.mark.parametrize(
+    "cut", ["<h3><button>Question", "<h3><button>Question</button>", "<h3><button>Question<svg>"]
+)
+def test_heading_button_cut_by_the_fetch_cap_keeps_its_title(cut):
+    assert "### Question" in html_to_markdown("<p>Answer text.</p>" + cut)
+
+
+@pytest.mark.parametrize("title", ["<em>Question</em> one", "First<br>Second", "Q &amp; A"])
+def test_a_heading_button_title_renders_like_the_plain_heading(title):
+    plain = html_to_markdown(f"<h3>{title}</h3><p>Answer text.</p>")
+    assert html_to_markdown(f"<h3><button>{title}</button></h3><p>Answer text.</p>") == plain
+
+
 def test_visible_void_hr_still_renders():
     # Guard: the suppression must not affect non-hidden void elements.
     html = "<body><p>a</p><hr><p>b</p></body>"
@@ -725,6 +867,232 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
     assert "[a related page](/wiki/Another_Related_Page_1)" in out
     assert "[[1]](#cite_note-1)" in out
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
+        ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
+        ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
+        ("<sup>1</sup> Footnote text", "1 Footnote text"),
+        ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
+        ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
+        ("a<b><sup>2</sup></b>", "a**^2**"),
+        ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
+        ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("x<sup>2*3</sup> and x<sup><em>n</em></sup>", "x^(2*3) and x^*n*"),
+        ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
+        ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
+        ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("$<b>19</b><sup>99</sup>", "$**19**99"),
+        ("Brand<sup>TM</sup> and Service<sup>SM</sup>", "BrandTM and ServiceSM"),
+        ("el 1<sup>º</sup> y la 2<sup>ª</sup>, x<sup>a</sup>", "el 1º y la 2ª, x^a"),
+        (
+            "le XV<sup>e</sup> siècle, François I<sup>er</sup>, MAX<sup>e</sup>",
+            "le XVe siècle, François Ier, MAX^e",
+        ),
+        ("<span>$</span> <b>19</b><sup>99</sup>", "$ **19**99"),
+        (
+            "&#8378;19<sup>99</sup> or &#8369;19<sup>99</sup>, a19<sup>2</sup>",
+            "₺1999 or ₱1999, a19^2",
+        ),
+        (
+            "CHF 19<sup>95</sup> or USD 19<sup>99</sup>, ABC 10<sup>3</sup>",
+            "CHF 1995 or USD 1999, ABC 10^3",
+        ),
+        (
+            "AED 19<sup>99</sup>, TWD 19<sup>99</sup>, ILS 19<sup>99</sup>",
+            "AED 1999, TWD 1999, ILS 1999",
+        ),
+        (
+            "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
+            "ZWG 1999, les 1ers et 1res",
+        ),
+        ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
+        (
+            'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
+            "XCG 1999, claim2",
+        ),
+        ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
+        ("CHF 1’299<sup>95</sup> or CHF 1'299<sup>95</sup>", "CHF 1’29995 or CHF 1'29995"),
+        ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
+        ("Brand<sup>(TM)</sup> and Other<sup>(R)</sup>", "Brand(TM) and Other(R)"),
+        (
+            "KWD 19<sup>950</sup>, BHD 1<sup>234</sup>, USD 10<sup>100</sup>",
+            "KWD 19950, BHD 1234, USD 10^100",
+        ),
+        ("M<sup>r</sup>, M<sup>s</sup> and M<sup>rs</sup> Smith", "Mr, Ms and Mrs Smith"),
+        ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
+        ("les 1<sup>ères</sup> places", "les 1ères places"),
+        ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
+        ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
+        (
+            'claim<sup class="footnote-reference">2</sup>, la 2<sup>de</sup>, le 2<sup>d</sup>',
+            "claim2, la 2de, le 2d",
+        ),
+        (
+            "la P<sup>re</sup> Durand, 12<sup>bis</sup> rue, article 3<sup>ter</sup>",
+            "la Pre Durand, 12bis rue, article 3ter",
+        ),
+        (
+            'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
+            "claim2 and fact3",
+        ),
+        ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
+        (
+            'x<sup class="excited">2</sup> and 10<sup>.5</sup>, $19<sup>.99</sup>',
+            "x^2 and 10^(.5), $19.99",
+        ),
+        (
+            'claim<sup class="fnref">2</sup>, fact<sup class="fn-ref">3</sup>, Marca<sup>MR</sup>',
+            "claim2, fact3, MarcaMR",
+        ),
+        (
+            "les S<sup>ts</sup>, les S<sup>tes</sup> et les C<sup>ies</sup>",
+            "les Sts, les Stes et les Cies",
+        ),
+        ("les 2<sup>nds</sup>", "les 2nds"),
+        ("（a+b）<sup>2</sup> and 「引用」<sup>1</sup>", "（a+b）^2 and 「引用」1"),
+        (
+            '&euro;19<sup>,99</sup> and claim<sup class="reference-number">2</sup>',
+            "€19,99 and claim2",
+        ),
+        (
+            "SVC 19<sup>99</sup>, claim<sup>1&ndash;3</sup>, fact<sup>2,5</sup>, 10<sup>-3</sup>",
+            "SVC 1999, claim1–3, fact2,5, 10^-3",
+        ),
+        ("x<sup>2,5</sup> and 10<sup>1,000</sup>", "x^2,5 and 10^1,000"),
+        ("&#8363;10<sup>12</sup> and &#8361;10<sup>12</sup>", "₫10^12 and ₩10^12"),
+        ("claim<sup>1,3&ndash;5</sup>", "claim1,3–5"),
+        ("Doors 9:30<sup>pm</sup>, ends 11<sup>p.m.</sup>", "Doors 9:30pm, ends 11p.m."),
+        ("10<sup>6&ndash;8</sup> CFU/mL and 10<sup>d</sup>", "10^(6–8) CFU/mL and 10^d"),
+        ("(x+1)<sup>2&ndash;4</sup>", "(x+1)^(2–4)"),
+        (
+            "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
+            "Mme Dupont, Dr Martin, no 5, Om^e",
+        ),
+        ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
+        (
+            'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
+            "claim1 and fact2",
+        ),
+        ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
+        ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
+        ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
+        ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
+        ("le 1<sup>er</sup> mai, 2<sup>e</sup> et x<sup>e</sup>", "le 1er mai, 2e et x^e"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
+
+
+def test_stripped_header_keeps_the_exponent_in_its_heading():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "# E=mc^2" in out
+    assert "E=mc2" not in out
+
+
+def test_deeply_nested_superscripts_track_a_bounded_depth():
+    out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
+    assert out.translate(str.maketrans("", "", "^()")) == "x" + "a" * 50
+    assert out.count("^") == 8
+
+
+def test_linked_footnote_wrapping_its_superscript_renders_unchanged():
+    html = '<p>text<a role="doc-noteref" href="#fn1"><sup>1</sup></a> more</p>'
+    assert html_to_markdown(html) == "text[1](#fn1) more"
+
+
+def test_exponent_headings_do_not_read_as_body_prose():
+    heads = "".join(f"<h2>x<sup>n+{i}</sup></h2>" for i in range(67))
+    body = "<p>" + "Real document body sentence. " * 12 + "</p>"
+    html = f"<html><body><article>{heads}</article><div>{body}</div></body></html>"
+    assert "Real document body" in html_to_markdown(html, main_content = True)
+
+
+def test_same_site_linked_base_keeps_its_exponent():
+    site_links = SiteLinks("https://e.com/page")
+    html = '<p>5 <a href="/metre">m</a><sup>2</sup> and <a href="https://x.org/m">m</a><sup>3</sup></p>'
+    out = site_links.clean(html_to_markdown(html, site_links = site_links))
+    assert out == "5 [m](/metre)^2 and [m](https://x.org/m)^3"
+
+
+def test_empty_superscripts_do_not_rescan_the_page():
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "<i></i><sup></sup>" * 8000 + "</p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "*" * 250000 + "<sup></sup>" * 23000 + "</p>")
+    assert time.perf_counter() - start < 3
+    start = time.perf_counter()
+    html_to_markdown("<p>claim<sup>" + "1–" * 16000 + "x</sup></p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown(
+        "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
+    )
+    assert time.perf_counter() - start < 3
+
+
+def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
+    html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
+    assert html_to_markdown(html).endswith("1.898×10^27 kg")
+
+
+def test_untracked_superscripts_keep_the_stack_bounded():
+    from core.inference._html_to_md import _MarkdownRenderer
+
+    renderer = _MarkdownRenderer()
+    renderer.feed("<p>" + "<sup>" * 5000 + "x")
+    assert len(renderer._sup_starts) <= 8
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
 
 
 def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
@@ -1546,8 +1914,7 @@ def test_many_tiny_articles_do_not_displace_substantial_main():
 
 
 def test_single_substantial_article_still_preferred_over_main():
-    # GitHub-README case: one substantial <article> inside <main> must still win
-    # over sibling <main> furniture.
+    # GitHub README pages mix a substantial <article> with repository furniture.
     article_body = "Real README documentation body text. " * 20
     html = (
         "<body><main>"
@@ -1560,16 +1927,115 @@ def test_single_substantial_article_still_preferred_over_main():
     assert "JavaScript 89.3%" not in out
 
 
-# ── truncated (unclosed) main-content scopes must still be scored ──
+def test_one_card_does_not_stand_in_for_a_listing_main():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    html = f"<body><main><h1>Pricing</h1>{cards}</main></body>"
+    out = html_to_markdown(html, main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_article_listing_without_main_uses_the_document():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    out = html_to_markdown(f"<body><h1>Pricing</h1>{cards}</body>", main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_post_body_outside_article_beats_author_bio_card():
+    post = "Main post body paragraph with the actual story. " * 30
+    bio = "Author bio describing the writer and their work. " * 6
+    related = "".join(
+        f"<article class='related'><h3>Related {i}</h3><p>{'Teaser for another post. ' * 9}</p></article>"
+        for i in range(3)
+    )
+    html = (
+        "<body><main><h1>Post title</h1>"
+        f"<div class='post-content'><p>{post}</p></div>"
+        f"<article class='author-card'><p>{bio}</p></article>{related}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Main post body paragraph" in out
+
+
+def test_lone_readme_article_is_kept_over_repo_page_chrome():
+    readme = "Short README describing the library. " * 8
+    rows = "".join(
+        f"<tr><td><a href='/o/r/tree/main/dir{i}'>dir{i}</a></td>"
+        f"<td><a href='/o/r/commit/{i}'>Update the dir{i} module and its tests</a></td><td>2 days ago</td></tr>"
+        for i in range(25)
+    )
+    html = (
+        "<body><main><h2>Repository files navigation</h2>"
+        f"<table><tr><th>Name</th><th>Last commit message</th><th>Last commit date</th></tr>{rows}</table>"
+        f"<article class='markdown-body'><h1>Lib</h1><p>{readme}</p></article>"
+        "<div><h2>About</h2><p>A small library for doing one thing well.</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Short README describing the library." in out
+    assert "Last commit message" not in out
+
+
+def test_link_heavy_comments_do_not_pull_main_over_the_post():
+    post = "The post explains the topic in full detail here. " * 50
+    comments = "".join(
+        f"<article class='comment'><p><a href='https://example.com/author/{i}?{'utm_source=comments&' * 20}'>Reader {i}</a> "
+        f"says: {'Thanks for writing this up. ' * 9}</p></article>"
+        for i in range(6)
+    )
+    html = (
+        f"<body><main><article class='post'><h1>Post</h1><p>{post}</p></article>"
+        f"<section id='comments'>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up." not in out
+
+
+def test_generated_table_spans_do_not_pull_main_over_the_post():
+    post = "Primary article prose with real details. " * 30
+    related = "Related card teaser. " * 12
+    rows = "".join(f"<tr><td>row {i}</td></tr>" for i in range(1, 80))
+    table = f"<table><tr><td rowspan='80'>repeated marker</td><td>row 0</td></tr>{rows}</table>"
+    html = (
+        "<body><main>"
+        f"<article><h1>Primary</h1><p>{post}</p></article>"
+        f"<article><p>{related}</p></article>{table}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Primary article prose" in out
+    assert "Related card teaser." not in out
+
+
+@pytest.mark.parametrize("hide", ["hidden", "aria-hidden='true'", "style='display:none'"])
+def test_hidden_duplicate_article_is_not_a_second_card(hide):
+    post = "The post explains the topic in full detail here. " * 20
+    comments = "".join(
+        f"<div class='comment'><p>Reader {i} says: {'Thanks for writing this up, it helped. ' * 6}</p></div>"
+        for i in range(8)
+    )
+    html = (
+        f"<body><main><article><h1>Post</h1><p>{post}</p></article>"
+        f"<article {hide}><p>Duplicate</p></article><section>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up" not in out
 
 
 def test_truncated_open_article_scope_is_scored_and_preferred():
-    # _fetch_url_raw caps large pages, so the download can end before the closing
-    # </article>. The scope is still the main content and must be preferred over the
-    # whole document (which re-leaks the page chrome).
+    # _fetch_url_raw may truncate before </article>, so the open scope must exclude page chrome.
     chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
     article_body = "Real README documentation body text. " * 20
-    # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
     out = html_to_markdown(html, main_content = True)
     assert "Real README documentation body text." in out

@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
     StringConstraints,
     ValidationError,
     field_validator,
@@ -89,7 +90,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import sandbox_memory_limit, systemone_settings
+from utils import sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -181,6 +182,8 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
+    normalize_lan_access_addresses,
+    save_lan_access_addresses,
     save_lan_access_port,
     set_lan_access_auto_start,
     start_lan_access,
@@ -199,6 +202,7 @@ from utils.embedding_model_settings import (
     get_rag_embedding_model,
     get_stored_embedding_model,
     reset_rag_embedding_model,
+    set_embedding_device,
     set_rag_embedding_model,
     validate_embedding_model,
 )
@@ -581,6 +585,21 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class ToolResultLimitPayload(BaseModel):
+    max_chars: StrictInt = Field(
+        ..., ge = tool_result_limit.MIN_MAX_CHARS, le = tool_result_limit.MAX_MAX_CHARS
+    )
+
+
+class ToolResultLimitResponse(BaseModel):
+    # The cap before a small context window lowers it.
+    max_chars: int
+    default_chars: int = tool_result_limit.DEFAULT_MAX_CHARS
+    min_chars: int = tool_result_limit.MIN_MAX_CHARS
+    max_allowed_chars: int = tool_result_limit.MAX_MAX_CHARS
+    locked_by_environment: bool = False
 
 
 class HuggingFaceTokenPayload(BaseModel):
@@ -1484,6 +1503,46 @@ def update_upload_limit(
             log = logger,
         ) from exc
     return _upload_limit_response(limit_mb)
+
+
+def _tool_result_limit_response() -> ToolResultLimitResponse:
+    return ToolResultLimitResponse(
+        max_chars = tool_result_limit.effective_max_chars(),
+        locked_by_environment = tool_result_limit.locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/tool-result-limit", response_model = ToolResultLimitResponse)
+def get_tool_result_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> ToolResultLimitResponse:
+    return _tool_result_limit_response()
+
+
+@_owner_settings_router.put("/tool-result-limit", response_model = ToolResultLimitResponse)
+def update_tool_result_limit(
+    payload: ToolResultLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> ToolResultLimitResponse:
+    """Save how many characters of one tool result the model reads. Applies from the next tool call."""
+    if tool_result_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{tool_result_limit.MAX_CHARS_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    try:
+        max_chars = tool_result_limit.set_max_chars(payload.max_chars)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid tool output limit."),
+            event = "settings.update_tool_result_limit_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.tool_result_limit_updated subject=%s max_chars=%s", current_subject, max_chars
+    )
+    return _tool_result_limit_response()
 
 
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
@@ -2781,10 +2840,26 @@ class EmbeddingModelResponse(BaseModel):
     loaded: bool = False
     # Whether ANY embedder is resident.
     backend_loaded: bool = False
+    embedding_device: Literal["auto", "cpu", "gpu"] = "auto"
+    # RAG_EMBED_DEVICE names a device, so Settings shows it read-only.
+    embedding_device_locked: bool = False
+
+
+class EmbeddingDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+
+
+def _embedding_device_state() -> tuple[str, bool]:
+    from core.rag import config as rag_config
+    try:
+        return rag_config.embed_device_preference(), rag_config.embed_device_locked()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return "auto", False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     model = get_rag_embedding_model()
+    device, device_locked = _embedding_device_state()
     return EmbeddingModelResponse(
         embedding_model = model,
         embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
@@ -2793,6 +2868,8 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         is_custom = get_stored_embedding_model() is not None,
         loaded = _embedder_is_loaded(model),
         backend_loaded = _any_embedder_is_loaded(),
+        embedding_device = device,
+        embedding_device_locked = device_locked,
     )
 
 
@@ -3759,6 +3836,29 @@ def unload_embedding_model(
     return _embedding_model_response()
 
 
+@_owner_settings_router.put("/embedding-model/device", response_model = EmbeddingModelResponse)
+def update_embedding_device(
+    payload: EmbeddingDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Run the embedder on the CPU, the GPU, or the hardware default, for every embedding model. The vectors
+    keep their embedding space, so indexed documents stay searchable. A failed GPU start falls back to CPU."""
+    from core.rag import config as rag_config
+
+    if rag_config.embed_device_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The embedding device is set by RAG_EMBED_DEVICE."
+        )
+    if set_embedding_device(payload.device):
+        from core.rag import embeddings
+
+        # The resident embedder stays on its old device until rebuilt; the next index or search rebuilds it.
+        embeddings.release_backend()
+    logger.info(
+        "settings.embedding_device_updated subject=%s device=%s", current_subject, payload.device
+    )
+    return _embedding_model_response()
+
+
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -3924,6 +4024,22 @@ class LanAccessPortPayload(BaseModel):
     port: Optional[StrictInt] = Field(ge = 1, le = 65535)
 
 
+class LanAccessAddressesPayload(BaseModel):
+    # required, so a body that forgets the field cannot silently reset the choice to Automatic
+    addresses: Optional[list[StrictStr]]
+
+    @field_validator("addresses")
+    @classmethod
+    def _bindable(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        normalized = normalize_lan_access_addresses(value)
+        return list(normalized) if normalized is not None else None
+
+
+class LanAccessAddress(BaseModel):
+    address: str
+    public: bool = False
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
@@ -3933,6 +4049,9 @@ class LanAccessResponse(BaseModel):
 
     configured_port: Optional[int] = None
     active_port: Optional[int] = None
+    configured_addresses: Optional[list[str]] = None
+    available_addresses: list[LanAccessAddress] = []
+    configured_public_addresses: list[str] = []
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -4019,6 +4138,25 @@ def update_lan_access_port(
         "settings.lan_access_port_updated subject=%s port=%s",
         current_subject,
         payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
+@_owner_settings_router.put("/lan-access/addresses", response_model = LanAccessResponse)
+def update_lan_access_addresses(
+    request: Request,
+    payload: LanAccessAddressesPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_addresses(request.app, payload.addresses))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_addresses_updated subject=%s addresses=%s",
+        current_subject,
+        ",".join(payload.addresses) if payload.addresses is not None else "automatic",
     )
     return response
 
