@@ -129,8 +129,7 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
 
 
 def test_paravirtual_metal_runs_the_whole_graph_on_the_cpu_backend(monkeypatch):
-    # GitHub macos-15 (Apple Paravirtual device): the bundled ggml segfaults on Metal (in-place op on a CPU-fallback
-    # buffer, "buffer is nil") and its fallbacks make that GPU slower than the VM's CPU, so a VM gets --backend cpu.
+    # The bundled ggml segfaults on a paravirtual Metal GPU, so a VM gets --backend cpu.
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
@@ -159,7 +158,6 @@ def test_paravirtual_metal_runs_the_whole_graph_on_the_cpu_backend(monkeypatch):
     # An explicit --backend pin in the offload flags wins; no dangling "cpu" argument is appended.
     pinned = sd_cpp_args.metal_placement_flags(["--backend", "diffusion=MTL0,te=cpu,vae=MTL0"])
     assert pinned == []
-    # Off darwin nothing changes.
     monkeypatch.setattr("sys.platform", "linux")
     assert metal_text_encoder_flags() == []
 
@@ -185,15 +183,14 @@ def test_paravirtual_probe_is_darwin_only_and_survives_a_missing_probe(monkeypat
     monkeypatch.setattr(builtins, "__import__", _no_llama)
     assert probe() is False
     probe.cache_clear()
-    assert sd_cpp_args.metal_is_paravirtual is not probe  # the autouse fixture still isolates the other tests
+    assert sd_cpp_args.metal_is_paravirtual is not probe
 
 
 # ── offload policy -> sd-cli flags ──────────────────────────────────────────
 
 
 def test_native_speed_on_apple_metal_drops_direct_conv(monkeypatch):
-    # ggml-metal's direct CONV_2D: SD1.5 512 UNet hit the GPU watchdog (3/3 failed) and the VAE decode was 5.5x slower
-    # on GitHub macos-15; flash attention stays (SD1.5 sampling 53.4 -> 16.9 s there).
+    # ggml-metal's direct CONV_2D trips the GPU watchdog; flash attention stays.
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr("sys.platform", "darwin")
@@ -206,7 +203,6 @@ def test_native_speed_on_apple_metal_drops_direct_conv(monkeypatch):
         binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, native_speed = "default"
     )
     assert "--diffusion-fa" in server and "--diffusion-conv-direct" not in server
-    # A paravirtual Mac runs on the CPU backend, where direct conv is the win it was measured to be.
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
     # Intel Macs ship a CPU-only build.

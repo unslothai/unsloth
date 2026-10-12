@@ -137,8 +137,7 @@ class SdCppUpscaleParams:
 
 
 # Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s on CPU), except on
-# Apple Metal, which keeps only --diffusion-fa (see _runs_on_apple_metal). max keeps it (profiles chain).
+# --diffusion-conv-direct (numerically exact), except Apple Metal keeps only --diffusion-fa. max keeps it (profiles chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -159,13 +158,9 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
 
 
 def _runs_on_apple_metal() -> bool:
-    """True when sd.cpp will run its graphs on Apple Metal: the darwin arm64 prebuilt is the Metal build, and only a
-    paravirtual GPU is moved to the CPU backend (``metal_text_encoder_flags``).
+    """True when sd.cpp runs on Apple Metal (darwin arm64, not a paravirtual GPU).
 
-    ``--diffusion-conv-direct`` is a CPU / CUDA win but not a Metal one: ggml-metal's direct CONV_2D kernel is far
-    slower than im2col + mul_mm. On GitHub macos-15 (M1 GPU, simdgroup features enabled) an SD1.5 512 px UNet with it
-    exceeded the GPU watchdog (``kIOGPUCommandBufferCallbackErrorTimeout``, 3/3 generations failed) and the VAE
-    equivalent made decode 5.5x slower (12.6 s -> 69.7 s); Z-Image sampling was unchanged with or without it."""
+    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
     import platform
     import sys
 
@@ -180,11 +175,7 @@ _METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
 
 @functools.lru_cache(maxsize = 1)
 def metal_is_paravirtual() -> bool:
-    """True when this Mac's Metal device is Apple's paravirtual GPU (a macOS VM: GitHub / cloud CI Macs, UTM).
-
-    Reuses the llama.cpp path's probe (MLX device name, then ``hw.model``, then SPDisplaysDataType), including its
-    ``UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1`` override. Imported lazily and only on darwin, so argv construction stays
-    free of subprocesses everywhere else. Cached: the answer cannot change within a process."""
+    """True when this Mac's Metal device is Apple's paravirtual GPU (a macOS VM). Reuses the llama.cpp probe."""
     import sys
 
     if sys.platform != "darwin":
@@ -202,18 +193,9 @@ def metal_is_paravirtual() -> bool:
 def metal_text_encoder_flags() -> list[str]:
     """Placement flags for sd.cpp on Apple Metal, else nothing.
 
-    On a paravirtual Metal device the whole graph goes to the CPU backend (``--backend cpu``). That GPU reports
-    MTLGPUFamilyApple5 with no simdgroup reduction / matrix and no bfloat, so ggml-metal hands most ops to the CPU,
-    and the bundled ggml then crashes: an in-place op (the group-norm affine + SiLU of every UNet / VAE block) stays on
-    Metal while its source was computed on the CPU, giving ``ggml_metal_buffer_get_id: ... buffer is nil`` and a
-    segfault (SD-Turbo on GitHub macos-15: 3/3 runs, no abort signature, so the CPU restart below never fires). BF16
-    weights abort outright (``pre-allocated tensor ... cannot run the operation``, Z-Image-Turbo). Even with those
-    fixed in ggml the fallbacks make that GPU slower than the VM's CPU (SD-Turbo 512: 89 s vs 62 s per image).
-
-    Elsewhere on darwin the TEXT ENCODER is kept on the CPU (``--clip-on-cpu``). ggml-metal gates RMS_NORM, MUL_MAT
-    and friends on simdgroup support and aborted an LLM encoder mid-generation on macos-14 (FLUX.2-klein-4B Q2_K,
-    exit -6); that was the same paravirtual GPU. ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` keeps the encoder on
-    Metal."""
+    A paravirtual GPU gets ``--backend cpu``: the bundled ggml segfaults there on CPU-fallback buffers. Otherwise the
+    text encoder stays on the CPU (``--clip-on-cpu``) since ggml-metal can abort an LLM encoder;
+    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` keeps it on Metal."""
     import os
     import sys
 
@@ -227,11 +209,9 @@ def metal_text_encoder_flags() -> list[str]:
 
 
 def metal_placement_flags(offload: Sequence[str]) -> list[str]:
-    """``metal_text_encoder_flags()`` minus what ``offload`` already says, as whole flags.
+    """``metal_text_encoder_flags()`` minus what ``offload`` already says.
 
-    ``--backend cpu`` is a flag pair: filtering it item by item against an offload list that holds a ``--backend``
-    device pin would leave a dangling ``cpu`` argument, and sd.cpp joins repeated ``--backend`` values anyway, so an
-    explicit pin wins and the pair is dropped."""
+    ``--backend cpu`` is a flag pair: per-item filtering would leave a dangling ``cpu``, so an explicit pin drops it."""
     flags = metal_text_encoder_flags()
     if flags == list(CPU_BACKEND_FLAGS):
         return [] if "--backend" in offload else flags
