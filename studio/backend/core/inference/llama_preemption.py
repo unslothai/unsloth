@@ -1137,8 +1137,12 @@ class PreemptionController:
                 participant.tokens = participant.resident_tokens(reported)
                 if reported > 0:
                     # Only a decoded token says the prompt is in: the round boundary's zero
-                    # follows `note_tokens`, and would undo a replay it just announced.
-                    participant.measured = True
+                    # follows `note_tokens`, and would undo a replay it just announced. Stamped
+                    # as `note_measured` stamps, not folded at once: a probe already in flight
+                    # read the cache before this prompt, and promoting on it drops the charge.
+                    if not participant.measured and participant.measured_at_seq is None:
+                        self._resident_seq += 1
+                        participant.measured_at_seq = self._resident_seq
                     participant.cells_reclaimed = False
                     participant.replay_pending = False
                     participant.prefill_done()
