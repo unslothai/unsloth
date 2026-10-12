@@ -4915,8 +4915,8 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
-    # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
+    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
+    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
     # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
     # exit code of whichever native command ran last.
     function Test-ApplicationControlBlock {
@@ -4925,9 +4925,9 @@ function Install-UnslothStudio {
         $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
         while ($ex) {
             # Win32Exception carries NativeErrorCode; outer wrappers keep only the HRESULT
-            # form of the same code (0x800704EC).
-            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 1260) { return $true }
-            if ($ex.HResult -eq -2147023636) { return $true }
+            # form of the same code (0x800704EC, 0x800711C7).
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -in @(1260, 4551)) { return $true }
+            if ($ex.HResult -in @(-2147023636, -2147020345)) { return $true }
             $ex = $ex.InnerException
         }
         return $false
@@ -4940,11 +4940,11 @@ function Install-UnslothStudio {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
         Write-StudioLine "[ERROR] Windows Application Control blocked the managed Python runtime." -ForegroundColor Red
-        Write-StudioLine "        Windows error 1260 (ERROR_ACCESS_DISABLED_BY_POLICY)" -ForegroundColor Yellow
+        Write-StudioLine "        AppLocker, App Control for Business or Smart App Control refused to start it." -ForegroundColor Yellow
         Write-StudioLine "        Blocked program: $Path" -ForegroundColor Yellow
-        Write-StudioLine "        Ask your administrator to review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
+        Write-StudioLine "        Review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
         Write-StudioLine "        or CodeIntegrity/Operational event 3077." -ForegroundColor Yellow
-        return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
+        return "Windows Application Control blocked the managed Python runtime at $Path."
     }
 
     # One pre-quoted command line, not an argument array: Start-Process joins
@@ -4995,8 +4995,8 @@ function Install-UnslothStudio {
     # Does Application Control deny this launcher here? Windows cannot be asked without
     # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
     # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
-    # child, 1260 straight back); an unaffected machine pays one `--version`, measured
-    # at a quarter second. A process that started is not blocked whatever it does next,
+    # child, the policy code straight back); an unaffected machine pays one `--version`,
+    # measured at a quarter second. A process that started is not blocked whatever it does next,
     # so the timeout path still answers "not blocked" and just stops waiting.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -7679,6 +7679,7 @@ exit 0
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
+    $script:ExistingInstall = $false
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -8146,6 +8147,37 @@ exit 0
         } catch { return $null }
     }
 
+    function Get-TorchVersionFromDisk {
+        param([string]$VenvRoot)
+        $versionPy = Join-Path $VenvRoot "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $versionPy -PathType Leaf)) { return $null }
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($versionPy)) {
+                if ($line -match "^__version__\s*=\s*'([^']*)'") { return $Matches[1] }
+            }
+        } catch {}
+        return $null
+    }
+
+    # Before anything below moves an environment aside; a broken legacy .venv still counts.
+    $_legacyVenvDir = Join-Path $StudioHome ".venv"
+    $_cwdVenvPy = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe" } else { $null }
+    if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
+        $script:ExistingInstall = $true
+    } elseif ($studioUsesLegacyLayout -and (Test-DirectoryHasEntries -Path $_legacyVenvDir)) {
+        $script:ExistingInstall = $true
+        if (-not $SkipTorch) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $_legacyVenvDir }
+    } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (
+            (Test-Path -LiteralPath $_cwdVenvPy) -or
+            (Test-Path -LiteralPath (Join-Path (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) "pyvenv.cfg") -PathType Leaf))) {
+        # A CWD-relative venv whose interpreter is gone is still an earlier install.
+        $script:ExistingInstall = $true
+        if (-not $SkipTorch) {
+            if (Test-Path -LiteralPath $_cwdVenvPy) { $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy }
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) }
+        }
+    }
+
     $studioVenvReplacementCommitted = $false
     try {
     # Replace occupied venvs even when python.exe is missing, as in #9479.
@@ -8175,6 +8207,9 @@ exit 0
         # Record the release before the rollback move; only the new-layout replace needs it.
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            # A missing or broken interpreter still leaves torch's version.py: without it a
+            # 2.13/2.14 install would fall to the <2.12 default on a plain re-run.
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $VenvDir }
         }
         # And the interpreter's architecture, for the same reason and while it can still be
         # read: the move below takes $VenvPython with it, and the Windows-on-ARM rebuild
@@ -10622,9 +10657,10 @@ main()
         param(
             [string]$TorchVersion,
             # Named -Constraint: the Windows port keeps no shell-style constraint variable.
-            [Parameter(Mandatory = $true)][string]$Constraint
+            [Parameter(Mandatory = $true)][string]$Constraint,
+            [switch]$Keep
         )
-        if ($env:UNSLOTH_TORCH_UPGRADE -eq '1') { return $null }
+        if ($env:UNSLOTH_TORCH_UPGRADE -eq '1' -and -not $Keep) { return $null }
         $release = ConvertTo-TorchNumericRelease $TorchVersion
         if (-not $release) { return $null }
         if (-not (Test-TorchReleaseInWindow -Release $release -Constraint $Constraint)) { return $null }
@@ -10634,7 +10670,106 @@ main()
             Release    = $release
             TorchSpec  = "torch==$($release.PublicBase)"
             VisionSpec = "torchvision==0.$visionMinor.*"
-            AudioSpec  = "torchaudio==2.$($release.Minor).*"
+            # torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
+            AudioSpec  = "torchaudio==2.$([Math]::Min($release.Minor, 11)).*"
+        }
+    }
+
+    # Port of install.sh's cu130 torch 2.13 route (the only one prebuilt-wheels-cu13 serves).
+    $script:Cu130TorchCeiling = "2.15.0"
+    $script:Cu130NewInstallTorchSpec = "torch>=2.13.0,<2.14.0"
+    $script:Cu130NewInstallVisionSpec = "torchvision>=0.28.0,<0.29.0"
+
+    # Local facts only: decides the keep window, so a PyPI outage cannot shrink it.
+    function Test-Cu130Torch213Platform {
+        param([string]$IndexUrl, [string]$PythonExe)
+        if (-not $IndexUrl -or (Get-TorchIndexLeafName $IndexUrl) -ne "cu130") { return $false }
+        if ((Get-HostMachineArch) -ne "x86_64") { return $false }
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code "import sys, sysconfig; print('%d.%d' % sys.version_info[:2], sysconfig.get_platform())"
+        if (-not $probe.Ok) { return $false }
+        $lines = @($probe.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($lines.Count -eq 0) { return $false }
+        return ($lines[-1].ToLowerInvariant() -eq "3.13 win-amd64")
+    }
+
+    # An existing home never takes 2.13 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
+    # The PyPI check reads unsloth's metadata, so a `--package` other than unsloth keeps the default.
+    function Resolve-Cu130TorchRoute {
+        param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall, [string]$PackageName = "unsloth")
+        $result = [pscustomobject]@{ PreserveSpec = $DefaultSpec; NewInstall = $false }
+        if (-not (Test-Cu130Torch213Platform -IndexUrl $IndexUrl -PythonExe $PythonExe)) { return $result }
+        $result.PreserveSpec = "torch>=2.4,<$($script:Cu130TorchCeiling)"
+        if ($PackageName -eq "unsloth" -and (-not $ExistingInstall -or $env:UNSLOTH_TORCH_UPGRADE -eq '1') -and
+                (Test-PypiUnslothAdmitsTorch -Want "2.13.0")) {
+            $result.NewInstall = $true
+        }
+        return $result
+    }
+
+    # UPGRADE=1 with the route closed must not move a resident 2.13/2.14 down.
+    function Get-UpgradeKeptTorchPin {
+        param(
+            [string]$TorchVersion,
+            [Parameter(Mandatory = $true)][string]$DefaultSpec,
+            [Parameter(Mandatory = $true)][string]$PreserveSpec,
+            [bool]$NewInstallRoute
+        )
+        if ($env:UNSLOTH_TORCH_UPGRADE -ne '1' -or $NewInstallRoute -or $PreserveSpec -eq $DefaultSpec) { return $null }
+        $release = ConvertTo-TorchNumericRelease $TorchVersion
+        if (-not $release -or (Test-TorchReleaseInWindow -Release $release -Constraint $DefaultSpec)) { return $null }
+        return (Get-PreviousTorchPin -TorchVersion $TorchVersion -Constraint $PreserveSpec -Keep)
+    }
+
+    # Exactly one unconditional torch requirement of plain comparisons, else no.
+    function Test-RequiresDistAdmitsTorch {
+        param([string[]]$RequiresDist, [Parameter(Mandatory = $true)][string]$Want)
+        $toTuple = {
+            param([string]$v)
+            $nums = @([regex]::Matches($v, '\d+') | Select-Object -First 3 | ForEach-Object { [long]$_.Value })
+            while ($nums.Count -lt 3) { $nums += [long]0 }
+            return $nums
+        }
+        $compare = {
+            param($a, $b)
+            for ($i = 0; $i -lt 3; $i++) {
+                if ($a[$i] -lt $b[$i]) { return -1 }
+                if ($a[$i] -gt $b[$i]) { return 1 }
+            }
+            return 0
+        }
+        $specs = @($RequiresDist | Where-Object { $_ -match '^torch\s*[<>=!~(]' -and $_ -notmatch 'extra ==' })
+        if ($specs.Count -ne 1) { return $false }
+        $body = ($specs[0] -split ';', 2)[0].Substring("torch".Length).Trim().Trim('(', ')')
+        $wantTuple = & $toTuple $Want
+        foreach ($part in @($body -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            if ($part -notmatch '^(<=|>=|==|!=|<|>)\s*([0-9][0-9.]*)$') { return $false }
+            $c = & $compare $wantTuple (& $toTuple $Matches[2])
+            $ok = switch ($Matches[1]) {
+                "<"  { $c -lt 0 }
+                "<=" { $c -le 0 }
+                ">"  { $c -gt 0 }
+                ">=" { $c -ge 0 }
+                "==" { $c -eq 0 }
+                "!=" { $c -ne 0 }
+            }
+            if (-not $ok) { return $false }
+        }
+        return $true
+    }
+
+    # `studio update` re-resolves under the INSTALLED release's cap, so only a release admitting $Want
+    # opens the route. Any failure, offline mode, upload cutoff or other index answers no.
+    function Test-PypiUnslothAdmitsTorch {
+        param([Parameter(Mandatory = $true)][string]$Want)
+        if (Test-UvEnvFlag -Name "UV_OFFLINE") { return $false }
+        if ($env:UV_EXCLUDE_NEWER -or $env:UV_EXCLUDE_NEWER_PACKAGE) { return $false }
+        if (Test-MirrorConfigured -Tool uv) { return $false }
+        $url = if ($env:UNSLOTH_PYPI_JSON_URL) { $env:UNSLOTH_PYPI_JSON_URL } else { "https://pypi.org/pypi/unsloth/json" }
+        try {
+            $info = (Invoke-RestMethod -Uri $url -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).info
+            return (Test-RequiresDistAdmitsTorch -RequiresDist @($info.requires_dist) -Want $Want)
+        } catch {
+            return $false
         }
     }
 
@@ -10999,7 +11134,23 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            # As install.sh: freeze the trio for this with-deps resolve, then keep the release for the
+            # flavor repair below, which would otherwise reinstall the default range.
+            $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
+            $_migOverrides = @()
+            if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            if ($script:TorchOverridesFile) {
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
+                $script:TorchOverridesFile = $null
+            }
+            Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+            $_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            if ($_migTorchVer -and -not $ROCmIndexUrl -and ((Get-TorchIndexLeafName $TorchIndexUrl) -match '^cu\d+$')) {
+                $_migWindow = if (Test-Cu130Torch213Platform -IndexUrl $TorchIndexUrl -PythonExe $VenvPython) { "torch>=2.4,<$($script:Cu130TorchCeiling)" } else { "torch>=2.4,<2.12.0" }
+                $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $_migTorchVer -Constraint $_migWindow
+                if ($script:PrevTorchPin) { $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase }
+            }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -11025,20 +11176,38 @@ main()
         $_pinTorchSpec = "torch>=2.4,<2.12.0"
         $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
         $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
+        $_preserveTorchSpec = $_pinTorchSpec
+        $_cu130NewInstallRoute = $false
+        if (-not $SkipTorch -and -not $ROCmIndexUrl) {
+            $_cu130Route = Resolve-Cu130TorchRoute -IndexUrl $TorchIndexUrl -PythonExe $VenvPython `
+                -DefaultSpec $_pinTorchSpec -ExistingInstall ([bool]$script:ExistingInstall) -PackageName $PackageName
+            $_preserveTorchSpec = $_cu130Route.PreserveSpec
+            $_cu130NewInstallRoute = $_cu130Route.NewInstall
+        }
         # Release preservation, after every floor choice. Exported as UNSLOTH_KEPT_TORCH.
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (-not $SkipTorch -and $script:PrevTorchVer -and -not $ROCmMultiArch) {
-            $_routeWindow = $_pinTorchSpec
+            $_routeWindow = $_preserveTorchSpec
             # Vet the kept release against the XPU window, or a kept 2.5 becomes an unsatisfiable pin.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
             if ($ROCmIndexUrl -and $ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor }
             $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $script:PrevTorchVer -Constraint $_routeWindow
+            if (-not $script:PrevTorchPin -and $_routeWindow -eq $_preserveTorchSpec) {
+                $script:PrevTorchPin = Get-UpgradeKeptTorchPin -TorchVersion $script:PrevTorchVer `
+                    -DefaultSpec $_pinTorchSpec -PreserveSpec $_preserveTorchSpec -NewInstallRoute $_cu130NewInstallRoute
+            }
             if ($script:PrevTorchPin) {
                 $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase
                 substep "existing install has torch $script:PrevTorchVer -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
             }
+        }
+        # A kept release that fails to reinstall falls back to the pre-route default below, never to 2.13.
+        if (-not $script:PrevTorchPin -and $_cu130NewInstallRoute) {
+            $_pinTorchSpec = $script:Cu130NewInstallTorchSpec
+            $_pinVisionSpec = $script:Cu130NewInstallVisionSpec
+            substep "cu130 + Python 3.13: installing torch 2.13, which the prebuilt flash-attn / causal-conv1d / mamba-ssm wheels are built for"
         }
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"

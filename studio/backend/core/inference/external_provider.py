@@ -38,21 +38,20 @@ from models.providers import (
     validate_provider_reasoning_contract,
 )
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way in, so a prompt built here is
-# templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
-# sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
+# custom endpoints are treated as local because skipping their chat template can forge a turn (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# custom may reject include_usage; OpenAI Responses supplies usage, while listed streams require it.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
+# custom may reject include_usage; OpenAI Responses returns usage without it; listed streams need it.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset(
+    {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen"}
+)
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
-# refresh quickly enough to detect a server restart within one or two turns.
+# refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
@@ -862,6 +861,27 @@ def _apply_deepseek_reasoning_controls(
         return
     if enable_thinking is True:
         body["thinking"] = {"type": "enabled"}
+
+
+_KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+
+
+def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
+    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+
+
+def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
+    """kimi-k3 always reasons and has no `thinking` field; effort is low | high | max (server default max), output
+    is capped by `max_completion_tokens`, and its fixed sampling (presence_penalty incl.) is to be omitted.
+    https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"""
+    body.pop("thinking", None)
+    body.pop("presence_penalty", None)
+    if "max_tokens" in body:
+        body["max_completion_tokens"] = body.pop("max_tokens")
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _KIMI_K3_EFFORT_ALIASES.get(effort, effort)
+    if effort in ("low", "high", "max"):
+        body["reasoning_effort"] = effort
 
 
 def _apply_qwen_reasoning_controls(body: dict[str, Any], enable_thinking: Optional[bool]) -> None:
@@ -1722,6 +1742,7 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                reasoning_effort,
             ):
                 yield line
             return
@@ -1776,7 +1797,9 @@ class ExternalProviderClient:
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always on (ignore the toggle); kimi-k2.6
         # defaults on, can be disabled. `keep: all` preserves every chunk for the UI panel.
-        if self.provider_type == "kimi" and enable_thinking is not None:
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
+        elif self.provider_type == "kimi" and enable_thinking is not None:
             if model == "kimi-k2-thinking":
                 # Always on; ignore client toggle to avoid an API-level reject.
                 pass
@@ -2125,7 +2148,11 @@ class ExternalProviderClient:
             )
 
     async def _stream_kimi_web_search(
-        self, messages: list[dict[str, Any]], model: str, max_tokens: Optional[int]
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Kimi $web_search round-trip, per https://platform.kimi.ai/docs/guide/use-web-search: POST
         messages with tools=[{type: "builtin_function", function: {name: "$web_search"}}] and
@@ -2158,6 +2185,8 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
 
         tool_call_id = "kimi_web_search"
         synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
@@ -2179,6 +2208,8 @@ class ExternalProviderClient:
         )
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
+        # A reasoning model's tool-call turn is replayed whole, reasoning included, or the follow-up is rejected.
+        reasoning_parts: list[str] = []
         try:
             async with _client().stream(
                 "POST",
@@ -2223,6 +2254,8 @@ class ExternalProviderClient:
                             if not isinstance(choice, dict):
                                 continue
                             delta = choice.get("delta") or {}
+                            if isinstance(delta.get("reasoning_content"), str):
+                                reasoning_parts.append(delta["reasoning_content"])
                             for tc in delta.get("tool_calls") or []:
                                 if not isinstance(tc, dict):
                                     continue
@@ -2366,6 +2399,8 @@ class ExternalProviderClient:
             "content": "",
             "tool_calls": list(tool_calls_acc.values()),
         }
+        if reasoning_parts:
+            assistant_msg["reasoning_content"] = "".join(reasoning_parts)
         tool_msgs = [
             {
                 "role": "tool",
@@ -4243,16 +4278,69 @@ class ExternalProviderClient:
                                                     }
                                                 }
                                             )
-            # Gemini 3 strict function-calling requires text-part thoughtSignatures to be replayed on history; the
-            # frontend stows the latest one as extra_content.google.thought_signature on the assistant message and we
-            # pin it onto the last text part here.
-            if role == "assistant" and parts:
+            # Gemini history must keep every native thought/answer boundary intact so a signature is never moved
+            # onto adjacent unsigned text. The frontend carries those exact parts because OpenAI reasoning_content
+            # is not otherwise replayed to native Gemini.
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
+                        _replayed_thoughts: list[dict[str, Any]] = []
+                        _thought_parts = _msg_g.get("thought_parts")
+                        if isinstance(_thought_parts, list):
+                            for _thought_part in _thought_parts:
+                                if not isinstance(_thought_part, dict):
+                                    continue
+                                _thought_text = _thought_part.get("text")
+                                _thought_sig = _thought_part.get(
+                                    "thought_signature"
+                                ) or _thought_part.get("thoughtSignature")
+                                if not isinstance(_thought_text, str):
+                                    continue
+                                if _thought_sig is not None and (
+                                    not isinstance(_thought_sig, str) or not _thought_sig
+                                ):
+                                    continue
+                                _replayed_thought: dict[str, Any] = {
+                                    "text": _thought_text,
+                                    "thought": True,
+                                }
+                                if isinstance(_thought_sig, str):
+                                    _replayed_thought["thoughtSignature"] = _thought_sig
+                                _replayed_thoughts.append(_replayed_thought)
+                        _signed_answers = _msg_g.get("answer_parts")
+                        _replayed_answers: list[dict[str, Any]] = []
+                        if isinstance(_signed_answers, list):
+                            for _signed_answer in _signed_answers:
+                                if not isinstance(_signed_answer, dict):
+                                    continue
+                                _answer_text = _signed_answer.get("text")
+                                _answer_sig = _signed_answer.get(
+                                    "thought_signature"
+                                ) or _signed_answer.get("thoughtSignature")
+                                if not isinstance(_answer_text, str):
+                                    continue
+                                if _answer_sig is not None and (
+                                    not isinstance(_answer_sig, str) or not _answer_sig
+                                ):
+                                    continue
+                                _answer_part: dict[str, Any] = {"text": _answer_text}
+                                if isinstance(_answer_sig, str):
+                                    _answer_part["thoughtSignature"] = _answer_sig
+                                _replayed_answers.append(_answer_part)
+                        if _replayed_answers:
+                            # `content` is the UI's merged rendering of these exact native parts. Replace its text
+                            # rather than appending a second copy, and keep empty signature-only parts intact.
+                            parts = [
+                                *_replayed_thoughts,
+                                *_replayed_answers,
+                                *(part for part in parts if "text" not in part),
+                            ]
+                        else:
+                            parts[:0] = _replayed_thoughts
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
-                        if isinstance(_msg_sig, str) and _msg_sig:
+                        if not _replayed_answers and isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
@@ -4591,8 +4679,7 @@ class ExternalProviderClient:
             }
             thinking_budget: Optional[int] = None
             if effort_lc == "none" or enable_thinking is False:
-                # Pro-tier 2.5 rejects budget=0 (400 "only works in thinking mode"), so coerce to a small positive
-                # value.
+                # Gemini 2.5 Pro rejects zero, so use a small positive budget.
                 thinking_budget = 128 if _is_pro_thinking_only else 0
             elif effort_lc in _EFFORT_TO_BUDGET:
                 thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
@@ -4602,12 +4689,17 @@ class ExternalProviderClient:
                 gen_config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget,
                 }
+        if (
+            "thinkingConfig" in gen_config
+            and effort_lc not in ("none", "off")
+            and enable_thinking is not False
+        ):
+            gen_config["thinkingConfig"]["includeThoughts"] = True
 
         if gen_config:
             body["generationConfig"] = gen_config
 
-        # Hosted tools: googleSearch (grounding) and codeExecution. Image-mode rejects codeExecution; only Gemini 3
-        # image models accept googleSearch.
+        # Image models reject codeExecution; only Gemini 3 image models accept googleSearch.
         def _gemini_image_model_allows_google_search(_m: str) -> bool:
             return (
                 _m.startswith("gemini-3-pro-image")
@@ -4877,8 +4969,12 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(text: str, extra_content: Optional[dict[str, Any]] = None) -> str:
-            delta: dict[str, Any] = {"content": text}
+        def _text_chunk(
+            text: str,
+            extra_content: Optional[dict[str, Any]] = None,
+            field: str = "content",
+        ) -> str:
+            delta: dict[str, Any] = {field: text}
             if extra_content:
                 delta["extra_content"] = extra_content
             chunk = {
@@ -4895,13 +4991,41 @@ class ExternalProviderClient:
             return f"data: {_json.dumps(chunk)}"
 
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
-            """Return ``{"google": {"thought_signature": ...}}`` when the Gemini stream part carries
-            a `thoughtSignature` we must replay on a follow-up turn (Gemini 3 image editing and
-            tool contexts both require an exact signature echo)."""
+            """Return replay metadata for one Gemini native stream part.
+
+            Thought and answer parts keep their exact boundaries, including unsigned text beside signed
+            text and signature-only empty parts. Gemini validates a signature against the part it originally
+            signed, so collapsing these to one scalar signature corrupts follow-up history.
+            """
             sig = part.get("thoughtSignature") or part.get("thought_signature")
-            if isinstance(sig, str) and sig:
-                return {"google": {"thought_signature": sig}}
-            return None
+            valid_sig = sig if isinstance(sig, str) and sig else None
+            google: dict[str, Any] = {}
+            if valid_sig is not None:
+                google["thought_signature"] = valid_sig
+            if part.get("thought") is True:
+                thought_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    thought_part["thought_signature"] = valid_sig
+                google["thought_part"] = thought_part
+                if valid_sig is not None:
+                    google["thought"] = True
+            elif ("text" in part and isinstance(part.get("text"), str)) or (
+                valid_sig is not None
+                and not any(
+                    key in part
+                    for key in (
+                        "functionCall",
+                        "executableCode",
+                        "codeExecutionResult",
+                        "inlineData",
+                    )
+                )
+            ):
+                answer_part: dict[str, Any] = {"text": part.get("text", "")}
+                if valid_sig is not None:
+                    answer_part["thought_signature"] = valid_sig
+                google["answer_part"] = answer_part
+            return {"google": google} if google else None
 
         # Gemini finish reasons -> OpenAI vocabulary.
         _finish_reason_map: dict[str, Optional[str]] = {
@@ -5100,14 +5224,18 @@ class ExternalProviderClient:
                                 for part in parts:
                                     if not isinstance(part, dict):
                                         continue
-                                    # Text delta. Stow part-level `thoughtSignature` on the delta so Gemini 3 turns
-                                    # needing an exact signature echo round-trip cleanly.
+                                    # Preserve thoughtSignature for Gemini 3's exact follow-up echo.
                                     text = part.get("text")
                                     _part_extra = _gemini_part_extra(part)
                                     if isinstance(text, str) and text:
                                         yield _text_chunk(
                                             text,
                                             extra_content = _part_extra,
+                                            field = (
+                                                "reasoning_content"
+                                                if part.get("thought")
+                                                else "content"
+                                            ),
                                         )
                                     elif _part_extra is not None and not any(
                                         k in part
@@ -5118,8 +5246,7 @@ class ExternalProviderClient:
                                             "inlineData",
                                         )
                                     ):
-                                        # Empty-content part carrying a thoughtSignature: emit an empty delta to
-                                        # preserve the signature.
+                                        # Emit an empty delta when a signature has no payload.
                                         yield _text_chunk(
                                             "",
                                             extra_content = _part_extra,

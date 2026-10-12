@@ -26,7 +26,7 @@ function write(result) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-// oxc 0.131.0 reports label offsets in UTF-8 bytes; the UI counts columns in
+// oxc reports label offsets in UTF-8 bytes; the UI counts columns in
 // UTF-16 code units, like the editor and the browser do.
 function lineColumn(bytes, offset) {
   if (!bytes || !Number.isInteger(offset) || offset < 0) {

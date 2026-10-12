@@ -8,7 +8,7 @@ import ts from "typescript";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { providerSupportsPreserveThinking } = await import("../src/features/chat/provider-capabilities.ts");
+const { providerModelReplaysReasoning, providerSupportsPreserveThinking } = await import("../src/features/chat/provider-capabilities.ts");
 const source = readFileSync(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url), "utf8");
 const tree = ts.createSourceFile("adapter.ts", source, ts.ScriptTarget.Latest, true);
 let replayExpression = "";
@@ -25,10 +25,19 @@ function visit(node: ts.Node): void {
 visit(tree);
 assert.ok(replayExpression && payloadExpression);
 // Evaluates the real send-path expressions rather than a copied policy.
-const evaluate = new Function("providerSupportsPreserveThinking", "externalProvider", "runtime", "isExternalRequest",
+const evaluateWithModel = new Function("providerSupportsPreserveThinking", "externalProvider", "runtime", "isExternalRequest",
+  "providerModelReplaysReasoning", "externalSelection",
   `return { replay: ${replayExpression}, fields: ${payloadExpression} };`) as
-  (supports: typeof providerSupportsPreserveThinking, provider: {providerType: string}, runtime: {preserveThinking: boolean}, external: boolean) =>
+  (supports: typeof providerSupportsPreserveThinking, provider: {providerType: string}, runtime: {preserveThinking: boolean}, external: boolean,
+    replays: typeof providerModelReplaysReasoning, selection: {modelId: string}) =>
     {replay: boolean; fields: {preserve_thinking?: boolean}};
+const evaluate = (
+  supports: typeof providerSupportsPreserveThinking,
+  provider: {providerType: string},
+  runtime: {preserveThinking: boolean},
+  external: boolean,
+  modelId = "m",
+) => evaluateWithModel(supports, provider, runtime, external, providerModelReplaysReasoning, {modelId});
 
 test("llama.cpp sends the selected value and replays reasoning only when enabled", () => {
   for (const enabled of [true, false]) {
@@ -36,7 +45,7 @@ test("llama.cpp sends the selected value and replays reasoning only when enabled
     assert.deepEqual(result, {replay: enabled, fields: {preserve_thinking: enabled}});
   }
   assert.match(source, /pruneOutboundHistory\(messages, replayReasoning\)/);
-  assert.match(source, /toOpenAIMessages\(message, replayReasoning\)/);
+  assert.match(source, /toOpenAIMessages\(\s*message,\s*replayReasoning,/);
 });
 
 test("switching providers never leaks a retained enabled preference", () => {
@@ -45,4 +54,17 @@ test("switching providers never leaks a retained enabled preference", () => {
       {replay: false, fields: {}});
   }
   assert.equal(evaluate(providerSupportsPreserveThinking, {providerType: ""}, {preserveThinking: false}, false).replay, true);
+});
+
+test("kimi-k3 replays reasoning whatever the preserve toggle says; k2.6 does not", () => {
+  for (const enabled of [true, false]) {
+    assert.deepEqual(
+      evaluate(providerSupportsPreserveThinking, {providerType: "kimi"}, {preserveThinking: enabled}, true, "kimi-k3"),
+      {replay: true, fields: {}},
+    );
+    assert.equal(
+      evaluate(providerSupportsPreserveThinking, {providerType: "kimi"}, {preserveThinking: enabled}, true, "kimi-k2.6").replay,
+      false,
+    );
+  }
 });

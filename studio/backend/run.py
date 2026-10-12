@@ -33,6 +33,17 @@ def _normalize_standard_streams():
 _normalize_standard_streams()
 
 
+def _is_tegra():
+    """utils.tegra.is_tegra, inlined: this runs before the backend is on sys.path."""
+    try:
+        if os.path.exists("/etc/nv_tegra_release"):
+            return True
+        with open("/proc/device-tree/compatible", "rb") as fh:
+            return b"nvidia,tegra" in fh.read()
+    except OSError:
+        return False
+
+
 def _fix_torch_cuda_ld_path():
     """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH, returning True if it was changed. PyTorch wheels
     ship their own CUDA runtime in ``site-packages/nvidia/*/lib``; on Linux the dynamic linker reads
@@ -58,7 +69,8 @@ def _fix_torch_cuda_ld_path():
         torch_lib = os.path.join(torch_dir, "lib")
         if os.path.isdir(torch_lib):
             lib_dirs.append(torch_lib)
-        if os.path.isdir(nvidia_dir):
+        # Jetson: JetPack's CUDA stays first (#4862).
+        if os.path.isdir(nvidia_dir) and not _is_tegra():
             for sub in sorted(os.listdir(nvidia_dir)):
                 lib = os.path.join(nvidia_dir, sub, "lib")
                 if os.path.isdir(lib):
@@ -115,6 +127,7 @@ except ValueError as exc:
 # taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
 # precede the first import below. An xformers built for a newer torch fails the same import anywhere.
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -123,6 +136,7 @@ from core._torchao_stub import (
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
 # rich -> structlog -> platform crash (https://github.com/python/cpython/issues/102396).

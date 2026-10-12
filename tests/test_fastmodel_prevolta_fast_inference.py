@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastModel pre-Volta fast_inference fallback; sliced with `ast` because importing the loader needs a GPU."""
+"""FastModel / FastLanguageModel pre-Volta fast_inference fallback; sliced with `ast` because importing the loader needs a GPU."""
 
 import ast
 import types
@@ -12,9 +12,14 @@ import pytest
 LOADER_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "loader.py"
 
 
-def _fast_inference_blocks():
+@pytest.fixture(params = ["FastModel", "FastLanguageModel"])
+def loader_class(request):
+    return request.param
+
+
+def _fast_inference_blocks(cls_name):
     tree = ast.parse(LOADER_PATH.read_text(encoding = "utf-8"))
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastModel")
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     for parent in ast.walk(fn):
         body = getattr(parent, "body", None)
@@ -32,10 +37,11 @@ def _fast_inference_blocks():
                     gate.test
                 )
                 return [gate, node]
-    raise AssertionError("FastModel.from_pretrained has no pre-Volta gate before the GB10 block")
+    raise AssertionError(f"{cls_name}.from_pretrained has no pre-Volta gate before the GB10 block")
 
 
 def _run(
+    cls_name,
     device_type,
     capability,
     name = "Tesla P100-PCIE-16GB",
@@ -57,13 +63,13 @@ def _run(
         "DEVICE_COUNT": 1,
         "torch": types.SimpleNamespace(cuda = cuda),
     }
-    exec(compile(ast.Module(_fast_inference_blocks(), []), str(LOADER_PATH), "exec"), ns)
+    exec(compile(ast.Module(_fast_inference_blocks(cls_name), []), str(LOADER_PATH), "exec"), ns)
     return ns["fast_inference"]
 
 
 @pytest.mark.parametrize("capability", [(6, 1), (6, 0), (5, 2)])
-def test_pre_volta_cuda_falls_back(capability, capsys):
-    assert _run("cuda", capability) is False
+def test_pre_volta_cuda_falls_back(loader_class, capability, capsys):
+    assert _run(loader_class, "cuda", capability) is False
     assert "vLLM does not work on older GPUs" in capsys.readouterr().out
 
 
@@ -78,20 +84,20 @@ def test_pre_volta_cuda_falls_back(capability, capsys):
         ("xpu", (0, 0)),
     ],
 )
-def test_other_devices_keep_fast_inference(device_type, capability, capsys):
-    assert _run(device_type, capability) is True
+def test_other_devices_keep_fast_inference(loader_class, device_type, capability, capsys):
+    assert _run(loader_class, device_type, capability) is True
     assert "older GPUs" not in capsys.readouterr().out
 
 
-def test_gb10_still_falls_back():
-    assert _run("cuda", (12, 1), name = "NVIDIA GB10") is False
+def test_gb10_still_falls_back(loader_class):
+    assert _run(loader_class, "cuda", (12, 1), name = "NVIDIA GB10") is False
 
 
-def test_pre_volta_falls_back_without_requiring_vllm(capsys):
-    assert _run("cuda", (6, 1), has_vllm = False) is False
+def test_pre_volta_falls_back_without_requiring_vllm(loader_class, capsys):
+    assert _run(loader_class, "cuda", (6, 1), has_vllm = False) is False
     assert "vLLM does not work on older GPUs" in capsys.readouterr().out
 
 
-def test_volta_still_requires_vllm():
+def test_volta_still_requires_vllm(loader_class):
     with pytest.raises(ImportError):
-        _run("cuda", (7, 0), has_vllm = False)
+        _run(loader_class, "cuda", (7, 0), has_vllm = False)

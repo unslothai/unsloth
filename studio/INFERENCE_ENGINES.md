@@ -20,7 +20,8 @@ byte totals; Studio does not invent a percentage, transfer speed or ETA.
 ## Initial support
 
 This experimental profile requires Linux x86_64, glibc 2.34 or newer, an NVIDIA
-GPU with compute capability 8.0 or newer, and driver 580 or newer. It uses
+GPU with compute capability 8.0 or newer, and driver 580 or newer; vLLM also runs on
+AMD GPUs (see [AMD GPUs](#amd-gpus)). It uses
 the model's standard chat template and each engine's native model loaders.
 Select one or more GPUs in the model settings. With multiple GPUs, choose
 **Multi-GPU mode**:
@@ -111,7 +112,8 @@ Engines run in their own processes from environments under the Studio home's
 `engines` directory. Studio never imports engine packages into its own Python
 process. Compiler caches, including Triton, are scoped to each engine profile, model,
 precision, context and GPU selection to avoid reusing incompatible kernels.
-The committed requirements profiles lock versions and wheel hashes for Python 3.13.
+The committed requirements profiles lock versions and wheel hashes for Python 3.13 (the ROCm
+lock: Python 3.12).
 Each engine has one locked release per PyTorch build it can share, newest first:
 
 | Engine | Release | PyTorch | Lock |
@@ -120,6 +122,7 @@ Each engine has one locked release per PyTorch build it can share, newest first:
 | vLLM | 0.26.0 | 2.11.0 (CUDA 13.0) | `vllm-linux-cu130.txt` |
 | SGLang | 0.5.20 | 2.13.0 (CUDA 13.0) | `sglang-linux-cu130-torch213.txt` |
 | SGLang | 0.5.17 | 2.11.0 (CUDA 13.0) | `sglang-linux-cu130.txt` |
+| vLLM on AMD | 0.30.0 | 2.12.0 (ROCm 7.2) | `vllm-linux-rocm723.txt` |
 
 Studio installs the release built on its own PyTorch, so a new install (torch 2.13) and an
 existing default install (torch 2.11) both share. Any other PyTorch (2.10, 2.12, a CUDA 12 build)
@@ -189,6 +192,48 @@ guard is disabled for these managed groups: Studio checks every GPU, and SGLang
 sizes its cache from the minimum available memory across ranks. This allows
 cards with different memory capacities without treating their VRAM as a pool.
 
+## AMD GPUs
+
+vLLM runs on AMD GPUs from vLLM's own ROCm build: vLLM 0.30.0 with the PyTorch 2.12 it
+publishes for ROCm 7.2 (`vllm-linux-rocm723.txt`). SGLang stays NVIDIA only. Studio picks the
+ROCm build when its own PyTorch is a ROCm build, or on Linux when the kernel lists an AMD GPU and
+no NVIDIA driver is loaded.
+
+On Linux the host needs:
+
+- x86_64 and glibc 2.39 or newer: the wheels are `manylinux_2_39`, as on Ubuntu 24.04.
+- ROCm 7.2 or a newer 7.x release in `/opt/rocm`, with its math libraries. vLLM's PyTorch links
+  the host's ROCm (MIOpen, rocBLAS, hipBLASLt, RCCL and the rest) instead of bundling it.
+- Open MPI 4 and libnuma, which that PyTorch also links (`libopenmpi3t64 libnuma1` on Ubuntu 24.04).
+- A C compiler: Triton builds its HIP driver module when the engine first compiles a kernel.
+- Access to `/dev/kfd` (the `render` and `video` groups).
+- A GPU whose gfx target vLLM's ROCm kernels are built for: gfx90a, gfx942, gfx950, gfx1100,
+  gfx1101, gfx1150, gfx1151, gfx1200 or gfx1201. Studio reads the target the GPU presents to
+  PyTorch, so an `HSA_OVERRIDE_GFX_VERSION` in Studio's environment applies to the engine too.
+
+The engine always gets an isolated environment on a uv-managed CPython 3.12: vLLM publishes its
+ROCm build for CPython 3.12 only, and Triton compiles against the interpreter's `Python.h`, which a
+distribution's Python lacks without its `-dev` package. Its device mask sets `HIP_VISIBLE_DEVICES`
+and `CUDA_VISIBLE_DEVICES` to the same ids (vLLM refuses a mismatch), translated through an
+inherited `ROCR_VISIBLE_DEVICES`. The memory budget comes from the engine's own PyTorch instead of
+nvidia-smi. Model default, BF16, FP16, INT8 and FP8 work. 4-bit conversion and prequantized
+BitsAndBytes checkpoints are refused before the resident model unloads, because vLLM's ROCm build
+has no BitsAndBytes.
+
+On Windows the engine runs in Studio's WSL distro, as on NVIDIA, on one AMD GPU. Installing it
+also installs ROCm 7.2.1 from AMD's apt repository into the distro, plus AMD's prebuilt WSL
+packages from `ROCm/librocdxg` v1.2.2: `rocdxg-roct`, the HSA runtime's bridge to the Windows
+driver over `/dev/dxg`, and `rocdxg-amd-smi-lib`, through which vLLM detects the GPU. The apt key
+and both packages are pinned by sha256. The AMD Windows driver must expose the GPU to WSL. The
+engine runs with `HSA_ENABLE_DXG_DETECTION=1`, `LD_LIBRARY_PATH=/opt/rocm-wsl/lib` and
+`ROCPROFILER_REGISTER_ENABLED=0`: rocprofiler-sdk, which vLLM's PyTorch links, aborts HIP start-up
+without the KFD sysfs topology that WSL lacks. The pool HIP reports under WSL is the dedicated
+memory plus a share of the host's RAM, and allocations past what the host can back stall rather
+than fail, so Studio budgets a discrete card against its dedicated memory and an APU against its
+dedicated memory plus 80% of the RAM Windows reports available. When Windows reports neither, the
+budget falls back to the WSL VM's available memory, and the load is refused when that cannot be
+read either. This was measured on one Strix Halo machine.
+
 ## Maintaining profiles
 
 Run from the repository root using uv. Seed each output file with `uv pip freeze`
@@ -201,6 +246,14 @@ for lock in vllm-linux-cu130-torch213 vllm-linux-cu130 sglang-linux-cu130-torch2
   uv pip compile $lock.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --excludes $lock.excludes -o $lock.txt
   python engine_compat.py $lock
 done
+```
+
+The ROCm lock resolves vLLM's own index beside PyPI; its hashes pin every wheel, whichever index
+serves it:
+
+```sh
+uv pip compile vllm-linux-rocm723.in --python-version 3.12 --python-platform x86_64-manylinux_2_39 --extra-index-url https://wheels.vllm.ai/rocm/0.30.0/rocm723 --generate-hashes -o vllm-linux-rocm723.txt
+python engine_compat.py vllm-linux-rocm723
 ```
 
 Keep each lock's torch, torchvision, torchaudio and CUDA pins equal to the Studio

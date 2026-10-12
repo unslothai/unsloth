@@ -48,27 +48,28 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
-function lastUserText(
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        ? (part as { text: string }).text
+        : "",
+    )
+    .join(" ");
+}
+
+function userTexts(
   messages: readonly { role?: string; content?: unknown }[],
-): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    const content = message.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((part) =>
-        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-          ? (part as { text: string }).text
-          : "",
-      )
-      .join(" ");
-  }
-  return "";
+): string[] {
+  return messages
+    .filter((message) => message?.role === "user")
+    .map((message) => messageText(message.content));
 }
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -177,6 +178,25 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  type GeminiContinuationReplay,
+  type GeminiContinuationReplayTurn,
+  type GeminiAnswerReplayPart,
+  type GeminiThoughtReplayPart,
+  type PositionedGeminiAnswerReplayPart,
+  type PositionedGeminiThoughtReplayPart,
+  appendGeminiAnswerReplayPart,
+  appendGeminiThoughtReplayPart,
+  geminiAnswerReplayParts,
+  geminiContinuationReplayEntries,
+  geminiThoughtReplayParts,
+  pinGeminiAnswerReplayParts,
+  pinGeminiTextThoughtSignature,
+  pinGeminiThoughtReplayParts,
+  readGeminiContinuationReplay,
+  withGeminiAnswerReplayParts,
+  withGeminiThoughtReplayParts,
+} from "../gemini-thought-replay";
 
 import {
   createBoundaryScan,
@@ -221,6 +241,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
   providerHostsCodeExecution,
@@ -231,7 +252,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
-import { skillToolsOffered } from "./skill-tools";
+import { skillToolNames } from "./skill-tools";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -338,6 +359,7 @@ import {
   incompleteLabel,
   incompleteReasonAfterError,
   type IncompleteReason,
+  isRestart,
   noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -359,6 +381,7 @@ import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
+  getChatAgentsMd,
   getInferenceStatus,
   listCachedGguf,
   listCachedModels,
@@ -368,6 +391,11 @@ import {
   StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+import {
+  type AgentsMdRecord,
+  composeChatInstructions,
+  EMPTY_AGENTS_MD,
+} from "../utils/agents-md";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -1374,6 +1402,87 @@ function attachAssistantThoughtSignature(
   }
 }
 
+function serializeGeminiContinuationTurns(
+  turns: GeminiContinuationReplayTurn[],
+  includeTrailingInstruction: boolean,
+): SerializedMessage[] {
+  const messages: SerializedMessage[] = [];
+  for (const entry of geminiContinuationReplayEntries(
+    turns,
+    includeTrailingInstruction,
+  )) {
+    if (entry.role === "user") {
+      messages.push({ role: "user", content: CONTINUE_INSTRUCTION });
+      continue;
+    }
+    const { turn } = entry;
+    const assistant: SerializedMessage = {
+      role: "assistant",
+      content: turn.text,
+      ...(turn.thoughtParts?.length || turn.answerParts?.length
+        ? {
+            extra_content: withGeminiAnswerReplayParts(
+              withGeminiThoughtReplayParts(undefined, turn.thoughtParts ?? []),
+              turn.answerParts ?? [],
+            ),
+          }
+        : {}),
+    };
+    attachAssistantThoughtSignature([assistant], turn.thoughtSignature);
+    messages.push(assistant);
+  }
+  return messages;
+}
+
+function stripGeminiContinuationVisiblePrefix(
+  messages: SerializedMessage[],
+  visiblePrefix: string,
+): void {
+  if (!visiblePrefix) return;
+  const assistant = messages.find((message) => message.role === "assistant");
+  if (!assistant) return;
+  if (typeof assistant.content === "string") {
+    if (assistant.content.startsWith(visiblePrefix)) {
+      assistant.content = assistant.content.slice(visiblePrefix.length);
+    }
+    return;
+  }
+  if (!Array.isArray(assistant.content)) return;
+  const content = assistant.content as Array<Record<string, unknown>>;
+  const text = content
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("");
+  if (!text.startsWith(visiblePrefix)) return;
+  let remaining = visiblePrefix.length;
+  assistant.content = content.flatMap((part) => {
+    if (remaining === 0 || part.type !== "text" || typeof part.text !== "string") {
+      return [part];
+    }
+    const drop = Math.min(remaining, part.text.length);
+    remaining -= drop;
+    const trimmed = part.text.slice(drop);
+    return trimmed ? [{ ...part, text: trimmed }] : [];
+  }) as OpenAIMessageContent;
+}
+
+function expandGeminiContinuationReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  const replay = readGeminiContinuationReplay(
+    (message as { metadata?: unknown }).metadata,
+  );
+  if (!replay) return serialized;
+  if (replay.stripVisiblePrefix) {
+    stripGeminiContinuationVisiblePrefix(serialized, replay.visiblePrefix);
+  }
+  return [
+    ...serializeGeminiContinuationTurns(replay.turns, true),
+    ...serialized,
+  ];
+}
+
 function serializeAssistantReplayMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1396,6 +1505,8 @@ function serializeAssistantReplayMessages(
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
+  let pendingGeminiThoughtParts: GeminiThoughtReplayPart[] = [];
+  let pendingGeminiAnswerParts: GeminiAnswerReplayPart[] = [];
   let imagePartsPending = imageParts.length > 0;
 
   let pendingLocalToolRoundId: number | null = null;
@@ -1407,6 +1518,8 @@ function serializeAssistantReplayMessages(
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
+    const hasGeminiThoughtParts = pendingGeminiThoughtParts.length > 0;
+    const hasGeminiAnswerParts = pendingGeminiAnswerParts.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
     const incomplete =
       message.status?.type === "incomplete" ||
@@ -1419,7 +1532,14 @@ function serializeAssistantReplayMessages(
       incomplete,
     });
 
-    if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
+    if (
+      !force &&
+      !hasContent &&
+      !hasToolCalls &&
+      !hasReasoningContent &&
+      !hasGeminiThoughtParts &&
+      !hasGeminiAnswerParts
+    ) {
       return;
     }
 
@@ -1438,6 +1558,18 @@ function serializeAssistantReplayMessages(
     }
     if (hasReasoningContent) {
       assistantMessage.reasoning_content = reasoningContent;
+    }
+    if (hasGeminiThoughtParts) {
+      assistantMessage.extra_content = withGeminiThoughtReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiThoughtParts,
+      );
+    }
+    if (hasGeminiAnswerParts) {
+      assistantMessage.extra_content = withGeminiAnswerReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiAnswerParts,
+      );
     }
 
     if (hasToolCalls) {
@@ -1466,6 +1598,8 @@ function serializeAssistantReplayMessages(
     pendingReasoningParts.length = 0;
     pendingToolCalls = [];
     pendingToolResults = [];
+    pendingGeminiThoughtParts = [];
+    pendingGeminiAnswerParts = [];
     imagePartsPending = false;
 
     pendingLocalToolRoundId = null;
@@ -1476,6 +1610,7 @@ function serializeAssistantReplayMessages(
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
       pendingReasoningParts.push(part.text);
       continue;
     }
@@ -1484,6 +1619,8 @@ function serializeAssistantReplayMessages(
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
+      pendingGeminiAnswerParts.push(...geminiAnswerReplayParts(part));
       pendingTextParts.push(part.text);
       continue;
     }
@@ -1544,6 +1681,7 @@ function serializeAssistantReplayMessages(
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
+  expandGeminiContinuations = false,
 ): SerializedMessage[] {
   message = modelVisibleMessage(message);
   if (
@@ -1555,10 +1693,13 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return fillStoppedAssistantReplay(
+    const serialized = fillStoppedAssistantReplay(
       message,
       serializeAssistantReplayMessages(message, includeReasoningContent),
     );
+    return expandGeminiContinuations
+      ? expandGeminiContinuationReplay(message, serialized)
+      : serialized;
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -2037,15 +2178,16 @@ export async function buildLocalTokenCountHistory(
             : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    resolveAgentsMd(projectId),
+  ]);
+  const combinedSystemPrompt = composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
   if (combinedSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
@@ -2099,6 +2241,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
+  messages: readonly { role?: string; content?: unknown }[] = [],
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
@@ -2141,10 +2284,12 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  await settleSkillsForText("");
-  const hasEnabledSkills = skillToolsOffered(
+  // re-fetch for every counted user turn so skills created since page load match request pricing.
+  await settleSkillsForText(userTexts(messages).join("\n"));
+  const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
     codeToolsEnabled,
+    userTexts(messages),
   );
   if (
     !toolsEnabled &&
@@ -2152,7 +2297,7 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
-    !hasEnabledSkills
+    skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -2181,8 +2326,8 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
-      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
+      // match the request gate so token pricing includes only sent skill tools.
+      ...skillTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2251,11 +2396,7 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(
-  threadId: string | undefined,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const projectId = await resolveProjectId(threadId, readThreadRecord);
+async function resolveProjectInstructions(projectId: string | null): Promise<string> {
   if (!projectId) {
     return "";
   }
@@ -2267,11 +2408,33 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+// Background recounts and the send that follows them ask within moments: one read serves both.
+const AGENTS_MD_TTL_MS = 2_000;
+const agentsMdByProject = new Map<
+  string,
+  { at: number; value: Promise<AgentsMdRecord> }
+>();
+
+/** The AGENTS.md text for a request; a failed read sends what it would without the file. */
+function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
+  const key = projectId ?? "";
+  const now = Date.now();
+  const hit = agentsMdByProject.get(key);
+  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+    return hit.value;
+  }
+  const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
+  agentsMdByProject.set(key, { at: now, value });
+  return value;
+}
+
 export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  // Only what goes to the model carries AGENTS.md; copies and exports of a chat keep its own instructions.
+  opts?: { agentsMd?: boolean },
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2280,18 +2443,16 @@ export async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(
-    threadId,
-    readThreadRecord,
-  );
-  return [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
+  ]);
+  return composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
 }
 
 // Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
@@ -2389,7 +2550,7 @@ const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
-  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)/i;
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)|Q[0-9]+_K|BF16|F16|F32)/i;
 
 type AutoLoadCandidate = {
   id: string;
@@ -2560,6 +2721,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "specFallbackReason",
   "specDraftNMax",
   "loadedSpecDraftNMax",
+  "specDraftModel",
+  "loadedSpecDraftModel",
 ] as const satisfies readonly (keyof ChatRuntimeState)[];
 
 type VisibleModelRuntimeState = Pick<
@@ -3358,6 +3521,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validateFailures += 1;
       return false;
     }
+    // Engine choice is the picker dialog's; the default engine would decompress and crawl (#8861).
+    if (validation.managed_engine_offer) {
+      hadNonTrustFailure = true;
+      validateFailures += 1;
+      return false;
+    }
     return true;
   }
 
@@ -3524,10 +3693,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
-    const effectiveSpeculativeType =
-      config.speculativeType ?? specSettings.speculativeType;
+    const candidateIsMlx = isServedByMlx(
+      candidate.kind === "gguf",
+      platform.deviceType,
+      platform.chatOnlyReason,
+    );
+    // MLX falls back to the standing preference: the live store may hold another model's settings.
+    const standingSpec = candidateIsMlx
+      ? resolveSpeculativeSettingsForLoad({ usePersistedPreference: true })
+      : specSettings;
+    const effectiveSpeculativeType = resolveSpeculativeType(
+      config.speculativeType,
+      standingSpec.speculativeType ?? "auto",
+      candidateIsMlx,
+    );
     const effectiveSpecDraftNMax =
-      config.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? standingSpec.specDraftNMax;
+    const mlxDrafter = candidateIsMlx
+      ? { spec_draft_model: config.specDraftModel ?? null }
+      : {};
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
@@ -3602,6 +3786,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      ...mlxDrafter,
       reasoning_budget:
         candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
       reasoning_budget_message:
@@ -3640,8 +3825,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
       // Persist the global preference only when the value came from global settings, or autoloading
-      // a remembered model rewrites the default.
-      if (config.speculativeType == null) {
+      // a remembered model rewrites the default. MLX only reads it.
+      if (config.speculativeType == null && !candidateIsMlx) {
         saveSpeculativeType(effectiveSpeculativeType);
       }
       // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
@@ -4603,6 +4788,7 @@ export function createOpenAIStreamAdapter(
           params.systemPrompt,
           params.systemVariables,
           readThreadRecord,
+          { agentsMd: true },
         );
         if (transitionSignal.aborted) return;
         const ragScope =
@@ -4683,11 +4869,13 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            // Omitted when empty: CreateResearchRun forbids unknown fields, so an unconditional send 422s
-            // an older backend.
+            // omit empty fields: old backends reject unknown fields with 422.
             ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            ...(runtime.researchMcpSources.length
+              ? { mcpSources: runtime.researchMcpSources }
+              : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
             },
@@ -4698,8 +4886,7 @@ export function createOpenAIStreamAdapter(
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
-            // Stopped while createResearchRun was in flight, so the handle had no id; replay it rather
-            // than follow a run the user ended.
+            // replay stop once creation supplies the missing run id.
             void cancelResearchRun(createdRun.id).catch(() => {});
             return;
           }
@@ -5094,6 +5281,9 @@ export function createOpenAIStreamAdapter(
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
         runtime.preserveThinking
+      ) || providerModelReplaysReasoning(
+        externalProvider?.providerType,
+        externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       const { messages: renderedMessages, sandboxAttachments } =
@@ -5105,7 +5295,11 @@ export function createOpenAIStreamAdapter(
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
         .flatMap((message) => {
-          const serialized = toOpenAIMessages(message, replayReasoning);
+          const serialized = toOpenAIMessages(
+            message,
+            replayReasoning,
+            externalProvider?.providerType === "gemini",
+          );
           return isExternalRequest
             ? withProviderCompaction(message, serialized, {
                 providerType: toExternalBackendProviderType(
@@ -5159,7 +5353,20 @@ export function createOpenAIStreamAdapter(
         })
           ? (continuation.reasoning ?? "")
           : "";
-      if (continuation && !continuation.partial && !resumedThought) {
+      const hasGeminiReplayContinuation = Boolean(
+        continuation &&
+          externalProvider?.providerType === "gemini" &&
+          (continuation.geminiReplayTurns?.length ||
+            continuation.thoughtParts?.length ||
+            continuation.answerParts?.length ||
+            continuation.thoughtSignature),
+      );
+      if (
+        continuation &&
+        !continuation.partial &&
+        !resumedThought &&
+        !hasGeminiReplayContinuation
+      ) {
         toast.error("This response cannot be resumed", {
           description:
             "It stopped mid-thought, and only GGUF and MLX models can resume a thought. Use Retry instead.",
@@ -5176,24 +5383,40 @@ export function createOpenAIStreamAdapter(
         : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
-        outboundMessages.push({
-          role: "assistant",
-          content: continuationCompaction
-            ? [
-                continuationCompaction,
-                ...(continuation.partial
-                  ? [{ type: "text" as const, text: continuation.partial }]
-                  : []),
-              ]
-            : continuation.partial,
-          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
-        });
-        // The original assistant message is not in this branch, so without its signature the history
-        // goes back unsigned.
-        attachAssistantThoughtSignature(
-          outboundMessages,
-          continuation.thoughtSignature,
-        );
+        const geminiReplayTurns =
+          externalProvider?.providerType === "gemini"
+            ? continuation.geminiReplayTurns
+            : undefined;
+        if (geminiReplayTurns?.length) {
+          outboundMessages.push(
+            ...serializeGeminiContinuationTurns(geminiReplayTurns, false),
+          );
+        } else {
+          outboundMessages.push({
+            role: "assistant",
+            content: continuationCompaction
+              ? [
+                  continuationCompaction,
+                  ...(continuation.partial
+                    ? [{ type: "text" as const, text: continuation.partial }]
+                    : []),
+                ]
+              : continuation.partial,
+            ...(resumedThought ? { reasoning_content: resumedThought } : {}),
+            ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
+              ? {
+                  extra_content: withGeminiThoughtReplayParts(
+                    undefined,
+                    continuation.thoughtParts,
+                  ),
+                }
+              : {}),
+          });
+          attachAssistantThoughtSignature(
+            outboundMessages,
+            continuation.thoughtSignature,
+          );
+        }
         // Anthropic 400s when the last message is an assistant turn, so append an instruction turn
         // instead of a prefill.
         if (rejectsAssistantPrefill(externalProvider?.providerType)) {
@@ -5209,6 +5432,7 @@ export function createOpenAIStreamAdapter(
         params.systemPrompt,
         params.systemVariables,
         readThreadRecord,
+        { agentsMd: true },
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -5591,9 +5815,28 @@ export function createOpenAIStreamAdapter(
       const continuationPartial = continuation
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
+      const geminiContinuationReplayTurns =
+        continuation?.geminiReplayTurns?.length
+          ? continuation.geminiReplayTurns
+          : undefined;
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const geminiContinuationReplay = (
+        final: boolean,
+      ): GeminiContinuationReplay | undefined =>
+        geminiContinuationReplayTurns
+          ? {
+              turns: geminiContinuationReplayTurns,
+              visiblePrefix: continuation?.partial ?? "",
+              stripVisiblePrefix:
+                !final ||
+                !isRestart(
+                  continuation?.partial ?? "",
+                  cumulativeText.slice(continuationPartial.length),
+                ),
+            }
+          : undefined;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5693,6 +5936,7 @@ export function createOpenAIStreamAdapter(
         providerCompactionProviderType,
         providerCompactionModelId,
         providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
+        geminiContinuationReplay: geminiContinuationReplay(false),
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -5999,24 +6243,21 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      // Latest Gemini text-part thoughtSignature, pinned onto the final text MessagePart so the
-      // next turn's replay carries it.
-      let latestTextThoughtSignature: string | undefined;
-      const pinTextThoughtSignature = <T extends { type: string }>(
-        parts: T[],
-      ): T[] => {
-        if (!latestTextThoughtSignature || parts.length === 0) return parts;
-        for (let i = parts.length - 1; i >= 0; i -= 1) {
-          if (parts[i].type === "text") {
-            parts[i] = {
-              ...parts[i],
-              _google_thought_signature: latestTextThoughtSignature,
-            } as T;
-            break;
-          }
-        }
-        return parts;
-      };
+      let legacyGeminiTextSignature: string | undefined;
+      const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
+        geminiContinuationReplayTurns
+          ? []
+          : (continuation?.thoughtParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
+      const geminiAnswerParts: PositionedGeminiAnswerReplayPart[] =
+        geminiContinuationReplayTurns
+          ? []
+          : (continuation?.answerParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6059,7 +6300,14 @@ export function createOpenAIStreamAdapter(
         }
         assembled.push(...runs[boundaries.length]);
 
-        return pinTextThoughtSignature(assembled);
+        pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
+        pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
+        return pinGeminiTextThoughtSignature(
+          assembled,
+          geminiAnswerParts.length > 0
+            ? undefined
+            : legacyGeminiTextSignature,
+        );
       };
 
       const {
@@ -6362,11 +6610,13 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            await settleSkillsForText(lastUserText(outboundMessages));
+            // include every user turn because follow-ups still need skills mentioned earlier.
+            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
-          const hasEnabledSkills = skillToolsOffered(
+          const skillTools = skillToolNames(
             getSkillsSnapshot().skills,
             codeToolsEnabled,
+            userTexts(outboundMessages),
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
@@ -6526,7 +6776,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6537,9 +6787,7 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(hasEnabledSkills
-                        ? ["read_skill", "create_skill"]
-                        : []),
+                      ...skillTools,
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6568,6 +6816,7 @@ export function createOpenAIStreamAdapter(
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
                     nudge_tool_calls: false,
+                    deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6755,7 +7004,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -6765,9 +7014,7 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(hasEnabledSkills
-                      ? ["read_skill", "create_skill"]
-                      : []),
+                    ...skillTools,
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
@@ -6809,6 +7056,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
                   nudge_tool_calls: runtime.nudgeToolCalls,
+                  deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = runtime.toolCallTimeout;
@@ -7590,6 +7838,9 @@ export function createOpenAIStreamAdapter(
               // Replay state reaches the message only through a yield, so a Stop while the gate holds one
               // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
+              let geminiReplayStateChanged = false;
+              let geminiThoughtSignature: string | undefined;
+              let capturedGeminiThoughtPart = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<
                   string,
@@ -7597,11 +7848,71 @@ export function createOpenAIStreamAdapter(
                 >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const googleRecord = eGoogle as Record<string, unknown>;
+                  const sig = googleRecord.thought_signature;
+                  const thoughtPart = googleRecord.thought_part;
+                  const answerPart = googleRecord.answer_part;
+                  if (
+                    thoughtPart &&
+                    typeof thoughtPart === "object" &&
+                    !Array.isArray(thoughtPart)
+                  ) {
+                    const thoughtRecord = thoughtPart as Record<string, unknown>;
+                    const thoughtText = thoughtRecord.text;
+                    const thoughtSignature = thoughtRecord.thought_signature;
+                    if (
+                      typeof thoughtText === "string" &&
+                      (thoughtSignature === undefined ||
+                        (typeof thoughtSignature === "string" && thoughtSignature))
+                    ) {
+                      appendGeminiThoughtReplayPart(
+                        geminiThoughtParts,
+                        thoughtText,
+                        typeof thoughtSignature === "string"
+                          ? thoughtSignature
+                          : undefined,
+                        toolCallParts.length,
+                      );
+                      capturedGeminiThoughtPart = true;
+                      geminiReplayStateChanged = true;
+                    }
+                  }
+                  let capturedAnswerPart = false;
+                  if (
+                    answerPart &&
+                    typeof answerPart === "object" &&
+                    !Array.isArray(answerPart)
+                  ) {
+                    const answerRecord = answerPart as Record<string, unknown>;
+                    const answerText = answerRecord.text;
+                    const answerSignature = answerRecord.thought_signature;
+                    if (
+                      typeof answerText === "string" &&
+                      (answerSignature === undefined ||
+                        (typeof answerSignature === "string" && answerSignature))
+                    ) {
+                      appendGeminiAnswerReplayPart(
+                        geminiAnswerParts,
+                        {
+                          text: answerText,
+                          ...(typeof answerSignature === "string"
+                            ? { thoughtSignature: answerSignature }
+                            : {}),
+                        },
+                        toolCallParts.length,
+                      );
+                      capturedAnswerPart = true;
+                      geminiReplayStateChanged = true;
+                    }
+                  }
                   if (typeof sig === "string" && sig) {
-                    replayStateChanged ||= sig !== latestTextThoughtSignature;
-                    latestTextThoughtSignature = sig;
+                    const belongsToThought = googleRecord.thought === true;
+                    if (belongsToThought) {
+                      geminiThoughtSignature = sig;
+                    } else if (!capturedAnswerPart) {
+                      geminiReplayStateChanged ||= sig !== legacyGeminiTextSignature;
+                      legacyGeminiTextSignature = sig;
+                    }
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
@@ -7658,6 +7969,23 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+              if (
+                !capturedGeminiThoughtPart &&
+                externalProvider?.providerType === "gemini" &&
+                (reasoning || geminiThoughtSignature)
+              ) {
+                appendGeminiThoughtReplayPart(
+                  geminiThoughtParts,
+                  reasoning,
+                  geminiThoughtSignature,
+                  toolCallParts.length,
+                );
+                geminiReplayStateChanged = true;
+              }
+              // Text-bearing replay metadata is published with the same paced preview as its visible delta.
+              // Metadata-only signature parts still need an immediate yield or Stop could lose them.
+              replayStateChanged ||=
+                geminiReplayStateChanged && !delta && !reasoning;
               // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content
               // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (
@@ -8466,6 +8794,7 @@ export function createOpenAIStreamAdapter(
               providerCompactionModelId,
               providerCompactionConnectionKey:
                 providerCompactionOriginConnectionKey,
+              geminiContinuationReplay: geminiContinuationReplay(true),
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8644,6 +8973,7 @@ export function createOpenAIStreamAdapter(
                 providerCompactionModelId,
                 providerCompactionConnectionKey:
                   providerCompactionOriginConnectionKey,
+                geminiContinuationReplay: geminiContinuationReplay(true),
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

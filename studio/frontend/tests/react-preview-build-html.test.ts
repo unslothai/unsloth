@@ -52,7 +52,7 @@ function frame(registry: Record<string, unknown> = {}) {
   return { run, errors, rendered };
 }
 
-// What moduleRunnerTransformSync 0.131.0 emits for `export default function App` with one import.
+// What moduleRunnerTransformSync 0.152.0 emits for `export default function App` with one import.
 const EXPORT_DEFAULT = `Object.defineProperty(__vite_ssr_exports__, "default", { enumerable: true, configurable: true, get() { return App; } });
 const __vite_ssr_import_0__ = await __vite_ssr_import__("react/jsx-runtime", { importedNames: ["jsx"] });
 function App() { return __vite_ssr_import_0__.jsx("p", {}); }`;
