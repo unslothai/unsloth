@@ -8,7 +8,11 @@ removes that and nothing else, and a folder that moved or was replaced is never 
 """
 
 import os
+import platform
+import shutil
 import stat
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,11 +22,28 @@ from storage import studio_db
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def projects_home(tmp_path):
+    """Outside the project-delete denylist: macOS tmp_path resolves under /private, which the guard
+    refuses, so a delete there would prove nothing (same fallback as test_chat_history_storage)."""
+    candidate = tmp_path / "Projects"
+    resolved = str(candidate.resolve())
+    check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
+    if any(check == p or check.startswith(p + os.sep) for p in studio_db._denied_path_prefixes()):
+        candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
+    candidate.mkdir(parents = True, exist_ok = True)
+    try:
+        yield candidate
+    finally:
+        if ".unsloth-studio-tests" in candidate.parts:
+            shutil.rmtree(candidate, ignore_errors = True)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch, projects_home):
     from core.inference import tools
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(projects_home))
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(tools, "_workdirs", {})
@@ -96,8 +117,10 @@ def test_a_moved_or_replaced_folder_falls_back_to_the_managed_one(env):
 
 def test_the_users_folder_keeps_its_mode(env):
     _use_repo(env)
+    # Read back rather than assumed: Windows reports 0o777 for any directory and ignores chmod.
+    before = stat.S_IMODE(os.stat(env.repo).st_mode)
     env.tools._get_workdir("project-p1")
-    assert stat.S_IMODE(os.stat(env.repo).st_mode) == 0o755
+    assert stat.S_IMODE(os.stat(env.repo).st_mode) == before
 
 
 def test_project_delete_never_touches_the_users_folder(env):
@@ -155,10 +178,18 @@ def test_route_sets_and_clears_the_folder(env, monkeypatch):
 def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, tmp_path):
     from routes import chat_history
     from utils import native_path_leases
-    from utils.paths.storage_roots import project_workspaces_root
+    from utils.paths.storage_roots import project_workspaces_root, shared_project_workspaces_root
 
     body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
-    for reserved in (project_workspaces_root(), tmp_path):
+    # The default layout, where the owner's Projects and other accounts' folders are siblings.
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME")
+    monkeypatch.setenv(
+        "UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path.parent / f"{tmp_path.name}-docs")
+    )
+    other_account = shared_project_workspaces_root() / "Accounts" / ("b" * 32) / "Projects" / "x"
+    other_account.mkdir(parents = True)
+    project_workspaces_root().mkdir(parents = True, exist_ok = True)
+    for reserved in (project_workspaces_root(), other_account, tmp_path):
         # tmp_path holds the Studio home and every project, so picking it is refused too.
         monkeypatch.setattr(
             native_path_leases,

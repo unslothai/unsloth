@@ -1245,11 +1245,11 @@ def patch_project(
 def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     """The folder a desktop grant names, checked as a linked folder is, and kept clear of Studio's
     own folders: one that holds every project's workspace would hand this project's tools the rest."""
-    from core.inference.tools import sandbox_root
+    from core.inference.tools import shared_sandbox_root
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
     from utils.paths.path_utils import is_path_within
-    from utils.paths.storage_roots import project_workspaces_root, studio_root
+    from utils.paths.storage_roots import shared_project_workspaces_root, studio_root
 
     try:
         grant = verify_native_path_lease(
@@ -1261,7 +1261,8 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         path = folder_sync.validate_folder_path(str(grant.canonical_path))
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    for reserved in (studio_root(), project_workspaces_root(), sandbox_root()):
+    # The shared roots, not this account's: they also hold every managed account's workspaces.
+    for reserved in (studio_root(), shared_project_workspaces_root(), shared_sandbox_root()):
         reserved = os.path.realpath(str(reserved))
         if is_path_within(path, reserved, allow_root = True) or is_path_within(
             reserved, path, allow_root = True
