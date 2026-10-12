@@ -92,7 +92,6 @@ def _same(a, b):
         assert torch.equal(a[2][k][1], b[2][k][1]), k
 
 
-# ---- gating ---------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -201,12 +200,10 @@ def test_changed_diffusers_attention_keeps_bf16(monkeypatch):
     assert mf.install_mps_fp16(model, MPS_BF16) == 0
 
 
-# ---- numerics ---------------------------------------------------------------------------------------------------------
 
 
 def test_headroom_identities_are_exact_in_fp32(monkeypatch):
-    """With fp32 compute the only difference from stock is the power-of-two headroom (w3 / 32 then x32, v / 4 then
-    x4), which floating point carries exactly: the patched model reproduces the stock fp32 model bit for bit."""
+    """Power-of-two headroom is exact: fp32 compute reproduces the stock model bit for bit."""
     monkeypatch.setattr(mf, "COMPUTE_DTYPE", "float32")
     model = _model(torch.float32)
     ref = _run(model, torch.float32)
@@ -299,11 +296,9 @@ def test_ffn_output_saturates_instead_of_inf(monkeypatch):
     assert float(out.abs().max()) == float(torch.tensor(65504.0).to(torch.bfloat16)) * mf.FFN_HEADROOM
 
 
-# ---- composition ----------------------------------------------------------------------------------------------------
 
 
 class NativeWeightOnlyLinear(nn.Module):
-    """Stand-in with the type name and buffers of Studio's int8 weight-only layer; records its input dtype."""
 
     def __init__(self, lin):
         super().__init__()
@@ -349,8 +344,7 @@ class _LoRALinear(nn.Module):
 
 @needs_fp16
 def test_lora_injected_after_install_rides_the_headroom():
-    """Wrappers replacing the projections after install are called at run time, so the adapted branch is scaled as
-    a whole (the headroom lives on the processor / FFN, not on the Linears)."""
+    """Projections replaced after install (LoRA) are still called at run time and scaled as a whole."""
 
     def adapt(model):
         torch.manual_seed(1)

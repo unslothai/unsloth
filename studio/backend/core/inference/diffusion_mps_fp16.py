@@ -1,26 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""float16 compute with fixed headroom for Z-Image on Apple Silicon MPS (opt-in: ``UNSLOTH_DIFFUSION_MPS_FP16=1``).
+"""Opt-in (``UNSLOTH_DIFFUSION_MPS_FP16=1``) fp16 compute for Z-Image attention / FFN internals on MPS.
 
-M1 / M2 GPUs have no native bf16, so a torch MPS bf16 GEMM runs ~1.7x slower than fp16. Plain fp16 is not an option:
-Z-Image's feed-forward output reaches ~5e5 (fp16 max 65504) and renders NaN. As in mflux's float16 compute mode, only
-the inside of each block's attention and feed-forward runs in fp16; the residual stream, AdaLN modulation, the norms
-between modules, embedders, final layer, text encoder and VAE stay bf16. The two overflowing sites run at a fixed
-power-of-two headroom and are scaled back in bf16:
+Plain fp16 NaNs (FFN output reaches ~5e5), so the two overflowing sites run at power-of-two headroom (exact, as the
+projections are bias-free and attention is linear in v), then are clamped to the fp16 range and rescaled in bf16:
 
     feed-forward: w2(silu(w1 x) * (w3 x / 32)) * 32
     attention:    to_out(sdpa(q, k, v / 4)) * 4
 
-Both are identities (bias-free projections, attention linear in v, power-of-two scales exact in floating point), so
-the only change is fp16 rounding inside the module. The fp16 result is clamped to the fp16 range before the bf16 cast:
-a stray overflow saturates one value instead of sending inf into the stream.
-
-Per instance (FFN ``forward`` override, attention processor subclass), never class-level, so CUDA / CPU pipes and other
-models are never touched, and module calls stay at run time so a LoRA injected later still applies. Studio's int8
-weight-only layers (``NativeWeightOnlyLinear``) keep their int8 storage and take fp16 activations as they are.
+Patched per instance, never class-level, so other pipes / models are untouched.
 """
-
 from __future__ import annotations
 
 import os
@@ -32,13 +22,12 @@ FFN_HEADROOM = 32.0
 ATTN_HEADROOM = 4.0
 _FP16_MAX = 65504.0
 _MARK = "_unsloth_mps_fp16"
-# torch dtype name the attention / FFN internals run in (tests set float32 to check the headroom identities exactly).
+# Tests set float32 to check the headroom identities exactly.
 COMPUTE_DTYPE = "float16"
 
 _SUPPORTED_TRANSFORMERS = ("ZImageTransformer2DModel",)
 _PROCESSOR_CLS = "ZSingleStreamAttnProcessor"
-# The processor below re-implements diffusers' Z-Image attention with the v headroom; a diffusers release that changes
-# that attention (gating, biases, a new norm) no longer carries these, and the patch stays off.
+# The processor re-implements diffusers' Z-Image attention: if its source changes, the patch stays off.
 _PROCESSOR_TOKENS = (
     "attn.to_q(hidden_states)",
     "attn.to_k(hidden_states)",
@@ -77,7 +66,7 @@ def _compute_dtype() -> Any:
 
 
 def _to_stream(x: Any, dtype: Any, headroom: float) -> Any:
-    # x is this module's own fp16 temporary, so clamp in place; x headroom is exact in bf16 (power of two).
+    # Clamp so a stray overflow saturates one value instead of sending inf into the stream.
     return x.clamp_(-_FP16_MAX, _FP16_MAX).to(dtype).mul_(headroom)
 
 
@@ -96,7 +85,6 @@ _PROCESSOR: Optional[type] = None
 
 
 def processor_cls() -> type:
-    """``ZSingleStreamAttnProcessor`` with fp16 compute and v / 4 headroom (built lazily: imports diffusers)."""
     global _PROCESSOR
     if _PROCESSOR is not None:
         return _PROCESSOR
@@ -147,7 +135,6 @@ def processor_cls() -> type:
 
 
 def _rope(x_in: Any, freqs_cis: Any) -> Any:
-    # diffusers' Z-Image RoPE: complex rotation in fp32, result back in the input dtype.
     import torch
 
     x = torch.view_as_complex(x_in.float().reshape(*x_in.shape[:-1], -1, 2))
@@ -159,8 +146,7 @@ def _is_native_quant(mod: Any) -> bool:
 
 
 def _castable(mod: Any) -> bool:
-    """A plain float module (Linear / RMSNorm, optionally PEFT-wrapped) whose weights can be stored in fp16, or a
-    Studio int8 weight-only Linear. Anything carrying quantized storage (GGUF, torchao, bnb) is refused."""
+    # Quantized storage (GGUF, torchao, bnb) is refused: casting it to fp16 would dequantize or corrupt it.
     import torch
 
     if mod is None:
@@ -207,7 +193,6 @@ def _block_targets(block: Any) -> Optional[tuple[Any, Any, list]]:
 
 
 def unsupported_reason(root: Any, target: Any) -> Optional[str]:
-    """Why ``install_mps_fp16`` would not engage on ``root`` for ``target``, or None when it would."""
     if not mps_fp16_requested():
         return f"{MPS_FP16_ENV} not set"
     if getattr(target, "device", None) != "mps":
@@ -244,8 +229,7 @@ def unsupported_reason(root: Any, target: Any) -> Optional[str]:
 
 
 def install_mps_fp16(root: Any, target: Any, logger: Any = None) -> int:
-    """Run Z-Image attention + FFN internals in fp16 with headroom on MPS. Returns blocks patched (0 = not engaged).
-    All or nothing: one block that does not match keeps the whole model in bf16. Idempotent."""
+    # All or nothing: one mismatched block keeps the whole model bf16 (no mixed-precision half-patched model).
     reason = unsupported_reason(root, target)
     if reason is not None:
         if logger is not None and mps_fp16_requested():
@@ -286,7 +270,6 @@ def is_installed(root: Any) -> bool:
 
 
 def remove_mps_fp16(root: Any) -> int:
-    """Undo ``install_mps_fp16``: stock processors and FFN forward, weights back in their load dtype."""
     if root is None:
         return 0
     removed = 0

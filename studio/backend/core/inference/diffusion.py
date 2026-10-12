@@ -7967,7 +7967,6 @@ class DiffusionBackend:
                         getattr(target, "dtype", None),
                         logger = logger,
                     )
-                    # Opt-in (UNSLOTH_DIFFUSION_MPS_FP16=1): Z-Image attention / FFN in fp16 with headroom on MPS.
                     # After quantization, so int8 weight-only layers keep their storage.
                     from .diffusion_mps_fp16 import install_mps_fp16
 
