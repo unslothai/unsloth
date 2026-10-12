@@ -7,6 +7,7 @@ import type {
   ResearchEvent,
   ResearchPlan,
   ResearchRun,
+  ResearchWebsitePolicy,
 } from "../types/research";
 
 type StreamResearchEvent = Omit<ResearchEvent, "data" | "run"> & {
@@ -124,7 +125,27 @@ export const approveResearchRun = (
   planHash: string,
 ) => mutate(id, "approve", { planRevision, planHash });
 export const cancelResearchRun = (id: string) => mutate(id, "cancel");
-export const retryResearchRun = (id: string) => mutate(id, "retry");
+// Retry carries the current time budget and website access, so a timed-out run can be given more.
+export const retryResearchRun = (
+  id: string,
+  settings?: {
+    modelTimeoutSeconds: number;
+    websitePolicy: ResearchWebsitePolicy;
+  },
+) =>
+  mutate(
+    id,
+    "retry",
+    settings
+      ? {
+          budgets: { modelTimeoutSeconds: settings.modelTimeoutSeconds },
+          websitePolicy: {
+            allowedDomains: [...settings.websitePolicy.allowedDomains],
+            blockedDomains: [...settings.websitePolicy.blockedDomains],
+          },
+        }
+      : undefined,
+  );
 
 export async function updateResearchPlan(
   id: string,
