@@ -40,10 +40,12 @@ import {
 function ProjectWorkingFolder({ project }: { project: ProjectRecord }) {
   const leasesSupported = useNativePathLeasesSupported();
   const [folder, setFolder] = useState(project.workingFolder ?? null);
-  const [seededFor, setSeededFor] = useState(project.id);
+  // Keyed on the record's folder too, so a change made elsewhere shows up here.
+  const seed = `${project.id}\n${project.workingFolder ?? ""}`;
+  const [seededFor, setSeededFor] = useState(seed);
   const [busy, setBusy] = useState(false);
-  if (project.id !== seededFor) {
-    setSeededFor(project.id);
+  if (seed !== seededFor) {
+    setSeededFor(seed);
     setFolder(project.workingFolder ?? null);
   }
   if (!isTauri || !leasesSupported) return null;

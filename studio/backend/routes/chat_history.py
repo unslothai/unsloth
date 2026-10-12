@@ -1249,7 +1249,11 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     from core.rag import folder_sync
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
     from utils.paths.path_utils import is_path_within
-    from utils.paths.storage_roots import shared_project_workspaces_root, studio_root
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
 
     try:
         grant = verify_native_path_lease(
@@ -1262,7 +1266,12 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
     except (NativePathLeaseError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     # The shared roots, not this account's: they also hold every managed account's workspaces.
-    for reserved in (studio_root(), shared_project_workspaces_root(), shared_sandbox_root()):
+    for reserved in (
+        studio_root(),
+        shared_project_workspaces_root(),
+        shared_sandbox_root(),
+        shared_tmp_root(),
+    ):
         reserved = os.path.realpath(str(reserved))
         if is_path_within(path, reserved, allow_root = True) or is_path_within(
             reserved, path, allow_root = True
@@ -1271,6 +1280,9 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
                 status_code = 400,
                 detail = "Studio's own folders cannot be used as a project folder.",
             )
+    # Tools write here (scratch files, edits), so a read-only folder would fail every call.
+    if not os.access(path, os.W_OK):
+        raise HTTPException(status_code = 400, detail = "The folder is not writable.")
     st = os.stat(path)
     return path, (st.st_dev, st.st_ino)
 

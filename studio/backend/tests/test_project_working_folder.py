@@ -140,6 +140,14 @@ def test_the_users_folder_keeps_its_mode(env):
     assert stat.S_IMODE(os.stat(env.repo).st_mode) == before
 
 
+def test_a_folder_cleared_mid_resolve_still_keeps_its_mode(env, monkeypatch):
+    # The setting is cleared after the tools resolved the user's folder but before the chmod.
+    before = stat.S_IMODE(os.stat(env.repo).st_mode)
+    monkeypatch.setattr(env.tools, "_project_workdir_for", lambda _sid: os.path.realpath(env.repo))
+    env.tools._get_workdir("project-p1")
+    assert stat.S_IMODE(os.stat(env.repo).st_mode) == before
+
+
 def test_project_delete_never_touches_the_users_folder(env):
     _use_repo(env)
     project = studio_db.get_chat_project("p1")
@@ -238,6 +246,48 @@ def test_route_refuses_studios_own_folders_and_other_accounts(env, monkeypatch, 
     with pytest.raises(HTTPException) as exc:
         chat_history.set_project_working_folder("p1", body, current_subject = "u")
     assert exc.value.status_code == 403
+
+
+def test_route_refuses_the_shared_temp_root(env, monkeypatch):
+    # Every account's temporary files live under it, so a folder holding it is refused.
+    from routes import chat_history
+    from utils import native_path_leases
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(
+        native_path_leases,
+        "verify_native_path_lease",
+        lambda lease, **_: _grant(env.repo),
+    )
+    monkeypatch.setattr(storage_roots, "shared_tmp_root", lambda: env.repo / "unsloth-studio")
+    body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+    with pytest.raises(HTTPException) as exc:
+        chat_history.set_project_working_folder("p1", body, current_subject = "u")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason = "needs a POSIX read-only directory, which root can still write",
+)
+def test_route_refuses_a_read_only_folder(env, monkeypatch):
+    from routes import chat_history
+    from utils import native_path_leases
+
+    monkeypatch.setattr(
+        native_path_leases,
+        "verify_native_path_lease",
+        lambda lease, **_: _grant(env.repo),
+    )
+    os.chmod(env.repo, 0o555)
+    try:
+        body = chat_history.ChatProjectWorkingFolder(nativePathLease = "lease")
+        with pytest.raises(HTTPException) as exc:
+            chat_history.set_project_working_folder("p1", body, current_subject = "u")
+        assert exc.value.status_code == 400
+        assert "not writable" in exc.value.detail
+    finally:
+        os.chmod(env.repo, 0o755)
 
 
 def test_route_refuses_a_bad_grant(env, monkeypatch):

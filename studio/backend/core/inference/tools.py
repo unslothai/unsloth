@@ -10837,17 +10837,20 @@ def _project_exists(project_id: str) -> bool:
         return True
 
 
-def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
-    """Whether a project workdir is the user's own folder rather than Studio's managed one."""
+def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
+    """Whether a project workdir is Studio's managed sandbox. Compared with that path rather than
+    re-reading the working-folder setting, which can change between the resolve and the chmod."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
     try:
-        from storage.studio_db import available_project_working_folder, get_chat_project
+        from storage.studio_db import get_chat_project
+
         project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
-        return available_project_working_folder(project) == workdir
+        sandbox = (project or {}).get("sandboxPath")
+        return bool(sandbox) and os.path.realpath(sandbox) == workdir
     except Exception:
         # Unknown is treated as the user's: leaving a mode alone is always safe.
-        return True
+        return False
 
 
 def _project_workdir_for(session_id: "str | None") -> "str | None":
@@ -11706,8 +11709,8 @@ def _get_workdir(session_id: str | None = None) -> str:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
         # whoever else uses it. Never a project's own folder of the user's, whatever the root.
-        if (created or _sandbox_is_ours(workdir)) and not (
-            project_workdir and _is_user_project_folder(session_id, project_workdir)
+        if (created or _sandbox_is_ours(workdir)) and (
+            not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
         ):
             try:
                 os.chmod(workdir, 0o700)
