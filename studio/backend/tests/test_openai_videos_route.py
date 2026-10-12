@@ -1291,7 +1291,12 @@ def test_requested_duration_is_recomputed_for_the_reserved_family(client, backen
 
 
 def _wan_ti2v_switch(switched):
-    async def _fake_switch(model, *, before_switch = None, **_kwargs):
+    async def _fake_switch(
+        model,
+        *,
+        before_switch = None,
+        **_kwargs,
+    ):
         pick = types.SimpleNamespace(
             model_path = "Wan-AI/Wan2.2-TI2V-5B-Diffusers", gguf_filename = None, model_kind = None
         )
@@ -1306,7 +1311,9 @@ def test_a_first_frame_without_the_i2v_class_is_refused_before_the_model_switch(
     client, backend, monkeypatch
 ):
     switched = {"completed": False}
-    monkeypatch.setattr(media_auto_switch, "maybe_auto_switch_media_model", _wan_ti2v_switch(switched))
+    monkeypatch.setattr(
+        media_auto_switch, "maybe_auto_switch_media_model", _wan_ti2v_switch(switched)
+    )
     monkeypatch.setattr(video_module, "_i2v_pipeline_available", lambda name: False)
     png = _reference_image_bytes("PNG")
     resp = _create(
