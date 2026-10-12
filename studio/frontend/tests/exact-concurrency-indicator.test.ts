@@ -202,8 +202,8 @@ test("the recompute note is persisted with the answer and read from the answer o
   // visible branch, so a reload, a retry and a switch back to a sibling all agree.
   assert.equal(
     ADAPTER.match(/preemptRecomputed: sawPreemptRecompute \|\| undefined,/g)?.length,
-    2,
-    "the live and the final metadata both carry it",
+    3,
+    "the live, the final and the interrupted settlement metadata all carry it",
   );
   assert.doesNotMatch(ADAPTER, /notePreemptRecompute|clearPreemptRecompute/);
   assert.match(PROVIDER, /preemptRecomputed: true/);
@@ -226,8 +226,8 @@ test("the recompute note is persisted with the answer and read from the answer o
   assert.equal(
     ADAPTER.match(/preemptRecomputedModelId: sawPreemptRecompute \? preemptRecomputedOn : undefined,/g)
       ?.length,
-    2,
-    "the live and the final metadata both name the recompute's model",
+    3,
+    "the live, the final and the interrupted settlement all name the recompute's model",
   );
   // Read before usage: a Continue on another checkpoint stamps the joined usage with that one.
   assert.match(PROVIDER, /const answerModelId =\s+typeof recomputedOn === "string" && recomputedOn\s+\? recomputedOn/);

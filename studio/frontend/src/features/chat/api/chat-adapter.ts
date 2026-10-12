@@ -9017,6 +9017,9 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                // Replaces every earlier snapshot, so the re-prefill caveat rides it too.
+                preemptRecomputed: sawPreemptRecompute || undefined,
+                preemptRecomputedModelId: sawPreemptRecompute ? preemptRecomputedOn : undefined,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,
