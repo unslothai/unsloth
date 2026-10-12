@@ -6,7 +6,6 @@ import test from "node:test";
 import {
   type ContextTruncation,
   compactionBoundary,
-  countAutomaticCompactions,
   shouldShowCompactionNotice,
   mergeContextTruncation,
   promptWasShortened,
@@ -267,48 +266,16 @@ test("a boundary that goes BACKWARDS does not re-announce", () => {
   assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
 });
 
-test("automatic compaction count follows the notice boundary high-water mark", () => {
-  assert.equal(countAutomaticCompactions([]), 0);
-  assert.equal(
-    countAutomaticCompactions([
-      { dropped_messages: 12, boundary_messages: 4, fits: true },
-      { dropped_messages: 4, boundary_messages: 4, fits: true },
-      { dropped_messages: 3, boundary_messages: 8, fits: true },
-      { dropped_messages: 1, boundary_messages: 2, fits: true },
-      { dropped_messages: 5, boundary_messages: 10, fits: true },
-    ]),
-    3,
+test("the context meter counts exactly the compaction notices the thread renders", () => {
+  assert.match(
+    RUNTIME_PROVIDER,
+    /compactionNoticeMessageIds\(thread\.messages\)\.size/,
   );
-});
-
-test("automatic compaction count includes a checkpoint without a boundary move", () => {
-  assert.equal(
-    countAutomaticCompactions([
-      { dropped_messages: 4, boundary_messages: 4, fits: true },
-      {
-        dropped_messages: 2,
-        boundary_messages: 4,
-        checkpoint_started: true,
-        fits: true,
-      },
-      { dropped_messages: 2, boundary_messages: 4, fits: true },
-    ]),
-    2,
-  );
-  assert.equal(
-    countAutomaticCompactions([
-      { dropped_messages: 0, boundary_messages: 0, fits: false },
-      undefined,
-    ]),
-    0,
-  );
-});
-
-test("the context meter receives the transcript-derived compaction count", () => {
-  assert.match(RUNTIME_PROVIDER, /countAutomaticCompactions\(truncations\)/);
   assert.match(RUNTIME_PROVIDER, /<CompactionCountRegistrar onCountChange=/);
   assert.match(CHAT_PAGE, /onCompactionCountChange=\{/);
   assert.match(CHAT_PAGE, /compactionCount=\{compactionCount\}/);
+  // A chat that never compacted keeps the tooltip it had.
+  assert.match(CONTEXT_USAGE_BAR, /\(input\.compactionCount \?\? 0\) > 0 && \(/);
   assert.match(CONTEXT_USAGE_BAR, /Automatic compactions/);
 });
 

@@ -56,10 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
-import {
-  countAutomaticCompactions,
-  type ContextTruncation,
-} from "./utils/context-truncation";
+import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -3626,28 +3623,17 @@ function ActiveBranchRegistrar({
   return null;
 }
 
-// The header meter sits outside AssistantRuntimeProvider, so publish the transcript-derived
-// count through a callback rather than calling useAuiState from ChatPage itself.
+// The header meter sits outside AssistantRuntimeProvider, so the count is published upward.
+// Same set the thread renders notices for, so the meter never disagrees with the transcript.
 function CompactionCountRegistrar({
   onCountChange,
 }: {
   onCountChange: (threadId: string, count: number) => void;
 }): ReactElement | null {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const count = useAuiState(({ thread }) => {
-    const truncations = thread.messages
-      .filter((message) => message.role === "assistant")
-      .map((message) => {
-        const metadata = message.metadata as
-          | { custom?: { contextTruncation?: unknown } }
-          | undefined;
-        const value = metadata?.custom?.contextTruncation;
-        return value && typeof value === "object"
-          ? (value as ContextTruncation)
-          : undefined;
-      });
-    return countAutomaticCompactions(truncations);
-  });
+  const count = useAuiState(
+    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+  );
 
   useEffect(() => {
     if (threadId) onCountChange(threadId, count);
