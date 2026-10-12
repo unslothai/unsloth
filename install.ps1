@@ -7545,9 +7545,7 @@ exit 0
         return $true
     }
 
-    # A custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>\uv, off the user PATH: winget and
-    # the default destination would put it in the profile and the registry PATH. A uv the
-    # machine already has is still used. Re-runs find the private one first.
+    # A custom home gets its own uv in <home>\uv: winget and the default edit the profile and user PATH.
     $script:StudioKeepsTools = (-not $studioUsesLegacyLayout) -and (Test-StudioHomeIsCustom)
     $script:StudioPrivateUvDir = $null
     if ($script:StudioKeepsTools -and
@@ -7610,7 +7608,7 @@ exit 0
     # tests/python/test_windows_python_venv_hardening.py, where a call into the rest of the
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
-    # A custom home also never borrows the shared cache: wheels uv adds would land on that drive.
+    # Never the shared cache: new wheels would land on the profile drive.
     if ($script:StudioKeepsTools -and
         (Test-StudioUvCacheUsable -Cache (Join-Path (Join-Path $StudioHome "cache") "uv"))) {
         $IsolateUvCache = $true
