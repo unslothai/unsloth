@@ -52,9 +52,12 @@ AUTOREGRESSIVE_CONFIGS = [
     {"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]},
 ]
 
-# These import Studio's training / inference modules or core Unsloth, which need torch; the
-# cross-platform legs run the backend tests without it.
-_needs_torch = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "needs torch")
+# These import Studio's training / inference modules or core Unsloth, which need torch and unsloth_zoo;
+# the cross-platform and backend CI legs run some tests without them.
+_needs_torch = pytest.mark.skipif(
+    any(importlib.util.find_spec(name) is None for name in ("torch", "unsloth_zoo")),
+    reason = "needs torch and unsloth_zoo",
+)
 
 
 @pytest.mark.parametrize("profile", sorted(DIFFUSION_CONFIGS))
