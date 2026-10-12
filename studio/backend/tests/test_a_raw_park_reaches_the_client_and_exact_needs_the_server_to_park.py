@@ -397,7 +397,12 @@ class TestTheNamedBudgetIsJudged:
         assert llama_mod._exact_host_shortfall_after_load(4096, 4096) is None
         assert llama_mod._exact_host_shortfall_after_load(4096, 1000) == (4096, 1000)
         assert llama_mod._exact_host_shortfall_after_load(None, 1000) is None
-        assert llama_mod._exact_host_shortfall_after_load(4096, None) is None
+        # Unreadable is not room: nothing certifies the parks, so exact is not reported on.
+        assert llama_mod._exact_host_shortfall_after_load(4096, None) == (4096, -1)
+        assert llama_mod._exact_host_shortfall_after_load(0, None) is None
+        assert "could not be read" in llama_mod._exact_host_short_warning((4096, -1))
+        assert "1000 MiB free" in llama_mod._exact_host_short_warning((4096, 1000))
+        assert "free memory could not be read" in source
 
     def test_a_single_slot_still_budgets_the_one_snapshot_it_writes(self):
         pool = 1024 * 1024 * 1024

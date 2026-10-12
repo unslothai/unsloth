@@ -2774,10 +2774,25 @@ def _exact_host_free_mib(backend) -> Optional[int]:
 def _exact_host_shortfall_after_load(
     writes: Optional[int], free_mib: Optional[int]
 ) -> Optional[tuple[int, int]]:
-    """``(writes, free)`` when the parks' host RAM is short now that the model is resident."""
-    if writes is None or free_mib is None or int(writes) <= int(free_mib):
+    """``(writes, free)`` when the parks' host RAM is short now that the model is resident.
+    ``free`` is -1 when the host could not be read: that certifies nothing either."""
+    if writes is None or int(writes) <= 0:
+        return None
+    if free_mib is None:
+        return (int(writes), -1)
+    if int(writes) <= int(free_mib):
         return None
     return (int(writes), int(free_mib))
+
+
+def _exact_host_short_warning(short: tuple[int, int]) -> str:
+    if short[1] < 0:
+        return (
+            "Exact concurrency may park up to %d MiB of KV state in host RAM, and this host's "
+            "free memory could not be read, so the parks cannot be promised room. A park the "
+            "host cannot hold is re-prefilled, which is not byte-identical." % short[0]
+        )
+    return _EXACT_HOST_SHORT_AFTER_LOAD % short
 
 
 def _exact_preflight_env(environ: Mapping[str, str], gpu_memory_mode: Optional[str]) -> dict:
@@ -34158,7 +34173,7 @@ class LlamaCppBackend:
                     )
                     if _exact_host_short is not None:
                         self._exact_host_short = _exact_host_short
-                        self._record_load_warning(_EXACT_HOST_SHORT_AFTER_LOAD % _exact_host_short)
+                        self._record_load_warning(_exact_host_short_warning(_exact_host_short))
                 if (
                     _exact_short is not None
                     and _mtp_will_engage
@@ -34228,9 +34243,7 @@ class LlamaCppBackend:
                         )
                         if _exact_host_short is not None:
                             self._exact_host_short = _exact_host_short
-                            self._record_load_warning(
-                                _EXACT_HOST_SHORT_AFTER_LOAD % _exact_host_short
-                            )
+                            self._record_load_warning(_exact_host_short_warning(_exact_host_short))
                     else:
                         # Named by the launch or by the user; zero only if nothing parks, and
                         # then `server_preempts_kv` is what reports it.
@@ -34269,6 +34282,11 @@ class LlamaCppBackend:
                             f" --preempt-ram {_exact_short[0]} MiB cannot hold the "
                             f"{_exact_short[1]} MiB of KV and draft state a park saves; raise it "
                             f"to at least {_exact_short[2]} MiB, or set an explicit context."
+                        )
+                    elif _exact_host_short is not None and _exact_host_short[1] < 0:
+                        _exact_why = (
+                            " This host's free memory could not be read, so the "
+                            f"{_exact_host_short[0]} MiB parking budget cannot be promised room."
                         )
                     elif _exact_host_short is not None:
                         _exact_why = (
