@@ -29,7 +29,8 @@ const defaultsFor = (() => {
   ]
     .join("\n")
     .replace(/: Array<\{[^}]*\}>/, "")
-    .replace(/\(repoId: string\): \{[^}]*\}/, "(repoId)");
+    .replace(/\(repoId: string\): \{[^}]*\}/, "(repoId)")
+    .replace(/\((\w+): string\)/g, "($1)");
   const pick = new Function(`${source}\nreturn defaultsFor;`)() as (
     repoId: string,
   ) => { steps: number; guidance: number };
@@ -69,6 +70,10 @@ test("the other families keep their recipes", () => {
     ["Lightricks/LTX-2.3/ltx-2.3-22b-distilled.safetensors", 8, 1],
     ["hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["someone/unknown-model", 8, 1],
+    ["wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+    ["/home/wan2.1/models/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+    ["wan-lab/LTX-2.3", 40, 4],
+    ["/home/user/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors", 20, 5],
   ];
   for (const [id, steps, guidance] of cases) {
     assert.deepEqual(defaultsFor(id), { steps, guidance }, id);

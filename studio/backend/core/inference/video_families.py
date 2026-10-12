@@ -964,6 +964,9 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )
+# The Wan keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
+# checkpoint itself names.
+_NAME_SEGMENT_DEFAULT_KEYS = frozenset(k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith("wan"))
 
 
 def default_video_generation_params(
@@ -985,8 +988,10 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
     ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        whole = (identifier or "").lower()
+        name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(

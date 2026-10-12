@@ -271,8 +271,15 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = `${repoId.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+  const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
+  const id = fold(repoId);
+  // The Wan rows count only in the model / file name, as on the backend.
+  const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  return (
+    MODEL_DEFAULTS.find((d) =>
+      (d.match.startsWith("wan") ? name : id).includes(d.match),
+    ) ?? DEFAULT_GEN
+  );
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {
