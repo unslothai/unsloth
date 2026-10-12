@@ -59,6 +59,19 @@ def test_te_flags_by_family():
 # ── Metal text-encoder placement ────────────────────────────────────────────
 
 
+import core.inference.sd_cpp_args as _sd_cpp_args_module
+
+_REAL_PARAVIRTUAL_PROBE = _sd_cpp_args_module.metal_is_paravirtual
+
+
+@pytest.fixture(autouse = True)
+def _physical_metal(monkeypatch):
+    # The paravirtual probe shells out on darwin; every test here runs as physical Apple Silicon unless it says so.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+
+
 def test_metal_keeps_the_text_encoder_off_the_gpu(monkeypatch):
     # ggml's Metal backend aborts the process on RMS_NORM with non-contiguous rows and has no per-op CPU fallback, so an LLM
     # text encoder killed sd-server mid-generation on macOS (macos-14, FLUX.2-klein-4B Q2_K: loads on mps, first generation exits -6).
@@ -113,6 +126,66 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
     assert "--clip-on-cpu" not in build_sd_cpp_server_command(
         binary = "sd-server", files = files, host = "127.0.0.1", port = 1234
     )
+
+
+def test_paravirtual_metal_runs_the_whole_graph_on_the_cpu_backend(monkeypatch):
+    # GitHub macos-15 (Apple Paravirtual device): the bundled ggml segfaults on Metal (in-place op on a CPU-fallback
+    # buffer, "buffer is nil") and its fallbacks make that GPU slower than the VM's CPU, so a VM gets --backend cpu.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    assert metal_text_encoder_flags() == ["--backend", "cpu"]
+    # The encoder kill switch does not put a VM back on its GPU.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU", "1")
+    assert metal_text_encoder_flags() == ["--backend", "cpu"]
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU")
+    files = SdCppModelFiles(diffusion_model = "/m/x.gguf")
+    server = build_sd_cpp_server_command(binary = "sd-server", files = files, host = "127.0.0.1", port = 1234)
+    cli = build_sd_cpp_command(
+        binary = "sd-cli", files = files, params = SdCppGenParams(prompt = "x"), output_path = "/o/x.png"
+    )
+    for argv in (server, cli):
+        i = argv.index("--backend")
+        assert argv[i + 1] == "cpu"
+        assert argv.count("--backend") == 1
+        assert "--clip-on-cpu" not in argv
+    # A low_vram policy that already offloads keeps its flags and still gets the CPU backend exactly once.
+    model = build_sd_cpp_server_command(
+        binary = "sd-server", files = files, host = "127.0.0.1", port = 1234, offload = offload_flags("model")
+    )
+    assert model.count("--backend") == 1 and model[model.index("--backend") + 1] == "cpu"
+    # An explicit --backend pin in the offload flags wins; no dangling "cpu" argument is appended.
+    pinned = sd_cpp_args.metal_placement_flags(["--backend", "diffusion=MTL0,te=cpu,vae=MTL0"])
+    assert pinned == []
+    # Off darwin nothing changes.
+    monkeypatch.setattr("sys.platform", "linux")
+    assert metal_text_encoder_flags() == []
+
+
+def test_paravirtual_probe_is_darwin_only_and_survives_a_missing_probe(monkeypatch):
+    import builtins
+
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    probe = _REAL_PARAVIRTUAL_PROBE
+    probe.cache_clear()
+    monkeypatch.setattr("sys.platform", "linux")
+    assert probe() is False
+    probe.cache_clear()
+    monkeypatch.setattr("sys.platform", "darwin")
+    orig_import = builtins.__import__
+
+    def _no_llama(name, *args, **kwargs):
+        if name == "core.inference.llama_cpp":
+            raise ImportError("probe unavailable")
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_llama)
+    assert probe() is False
+    probe.cache_clear()
+    assert sd_cpp_args.metal_is_paravirtual is not probe  # the autouse fixture still isolates the other tests
 
 
 # ── offload policy -> sd-cli flags ──────────────────────────────────────────

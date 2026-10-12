@@ -13,6 +13,7 @@ one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -159,27 +160,64 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
 _METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
 
 
+@functools.lru_cache(maxsize = 1)
+def metal_is_paravirtual() -> bool:
+    """True when this Mac's Metal device is Apple's paravirtual GPU (a macOS VM: GitHub / cloud CI Macs, UTM).
+
+    Reuses the llama.cpp path's probe (MLX device name, then ``hw.model``, then SPDisplaysDataType), including its
+    ``UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1`` override. Imported lazily and only on darwin, so argv construction stays
+    free of subprocesses everywhere else. Cached: the answer cannot change within a process."""
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+    except Exception:  # noqa: BLE001 -- no probe means no evidence of a VM
+        return False
+    try:
+        return bool(_metal_device_is_paravirtual())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def metal_text_encoder_flags() -> list[str]:
-    """Keep the TEXT ENCODER on CPU when sd.cpp runs on Apple Metal, else nothing.
+    """Placement flags for sd.cpp on Apple Metal, else nothing.
 
-    ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
-    not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
-    for FLUX.1) takes the whole sd-server process down mid-generation:
-        ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
-        LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
+    On a paravirtual Metal device the whole graph goes to the CPU backend (``--backend cpu``). That GPU reports
+    MTLGPUFamilyApple5 with no simdgroup reduction / matrix and no bfloat, so ggml-metal hands most ops to the CPU,
+    and the bundled ggml then crashes: an in-place op (the group-norm affine + SiLU of every UNet / VAE block) stays on
+    Metal while its source was computed on the CPU, giving ``ggml_metal_buffer_get_id: ... buffer is nil`` and a
+    segfault (SD-Turbo on GitHub macos-15: 3/3 runs, no abort signature, so the CPU restart below never fires). BF16
+    weights abort outright (``pre-allocated tensor ... cannot run the operation``, Z-Image-Turbo). Even with those
+    fixed in ggml the fallbacks make that GPU slower than the VM's CPU (SD-Turbo 512: 89 s vs 62 s per image).
 
-    Observed on macos-14 arm64 with FLUX.2-klein-4B Q2_K: the model loads on ``mps`` and the first
-    generation dies with exit code -6. The encoder runs once per prompt while the DiT runs every
-    step, so pinning only the encoder keeps Metal for the part that matters. Set
-    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` to opt back in once ggml grows the kernel."""
+    Elsewhere on darwin the TEXT ENCODER is kept on the CPU (``--clip-on-cpu``). ggml-metal gates RMS_NORM, MUL_MAT
+    and friends on simdgroup support and aborted an LLM encoder mid-generation on macos-14 (FLUX.2-klein-4B Q2_K,
+    exit -6); that was the same paravirtual GPU. ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` keeps the encoder on
+    Metal."""
     import os
     import sys
 
     if sys.platform != "darwin":
         return []
+    if metal_is_paravirtual():
+        return list(CPU_BACKEND_FLAGS)
     if os.environ.get(_METAL_TE_ON_GPU_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
         return []
     return ["--clip-on-cpu"]
+
+
+def metal_placement_flags(offload: Sequence[str]) -> list[str]:
+    """``metal_text_encoder_flags()`` minus what ``offload`` already says, as whole flags.
+
+    ``--backend cpu`` is a flag pair: filtering it item by item against an offload list that holds a ``--backend``
+    device pin would leave a dangling ``cpu`` argument, and sd.cpp joins repeated ``--backend`` values anyway, so an
+    explicit pin wins and the pair is dropped."""
+    flags = metal_text_encoder_flags()
+    if flags == list(CPU_BACKEND_FLAGS):
+        return [] if "--backend" in offload else flags
+    return [f for f in flags if f not in offload]
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -392,7 +430,7 @@ def build_sd_cpp_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -484,7 +522,7 @@ def build_sd_cpp_video_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -590,7 +628,7 @@ def build_sd_cpp_server_command(
         cmd += offload
     # De-dup speed flags against offload (may already include --diffusion-fa).
     cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
     if verbose:
         cmd += ["-v"]
     if extra_args:
