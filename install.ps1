@@ -6705,7 +6705,7 @@ exit 0
     # A reinstall keeps its minor so cached cp3XX wheels (torch) are reused; UNSLOTH_TORCH_UPGRADE=1 moves it.
     if (-not $PythonExplicitRequest -and $env:UNSLOTH_TORCH_UPGRADE -ne '1') {
         $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $VenvDir
-        # A legacy layout is migrated or rebuilt below, in this order; it keeps its minor too.
+        # Legacy layouts keep their minor too (checked in the order they are migrated below).
         if (-not $_existingPythonMinor -and $studioUsesLegacyLayout) {
             $_legacyDirs = @((Join-Path $StudioHome ".venv"))
             if ($env:USERPROFILE) { $_legacyDirs += (Join-Path $env:USERPROFILE "unsloth_studio") }
@@ -7111,8 +7111,7 @@ exit 0
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
         $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
         $wantTag = if ($Arch -eq "arm64") { "win-arm64" } else { "win-amd64" }
-        # An arch-qualified key takes no version range, so a skipped patch is stepped past: the
-        # next patch first, then an older one, which an offline machine may already have.
+        # Arch-qualified keys take no range: past a skipped patch try the next, then an older (cached) one.
         $queue = [System.Collections.Generic.List[string]]::new()
         $queue.Add($(if ($Patch) { $Patch } else { $Minor }))
         $tried = @{}
