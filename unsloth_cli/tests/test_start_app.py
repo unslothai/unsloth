@@ -817,6 +817,7 @@ def test_vscode_over_ssh_prints_the_group_instead_of_writing_a_dead_file(studio,
     monkeypatch.setattr(start.sys, "platform", "linux")
     monkeypatch.setenv("SSH_CONNECTION", "10.0.0.2 51234 10.0.0.9 22")
     user_dir = studio["home"] / ".config" / "Code" / "User"
+    assert start._vscode_over_ssh(user_dir / "chatLanguageModels.json")
 
     result = CliRunner().invoke(start.start_app, ["vscode"])
 
@@ -833,3 +834,32 @@ def test_vscode_over_ssh_prints_the_group_instead_of_writing_a_dead_file(studio,
     user_dir.mkdir(parents = True)
     assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
     assert (user_dir / "chatLanguageModels.json").exists()
+
+
+def test_vscode_reuses_the_remembered_key_for_a_remote_server(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    remote = "http://gpu-box.lan:8888"
+    # _connect recovered a key saved for this server on an earlier run; none was passed now.
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (remote, CLI_KEY, dict(MODEL)))
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    (model,) = json.loads(config.read_text())[0]["models"]
+    assert model["url"] == f"{remote}/v1/chat/completions"
+    assert model["requestHeaders"] == {"Authorization": f"Bearer {CLI_KEY}"}
+
+
+@pytest.mark.parametrize("name", ["REMOTE_CONTAINERS", "CODESPACES"])
+def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv(name, "true")
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert not (studio["home"] / ".config" / "Code").exists()

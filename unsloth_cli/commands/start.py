@@ -6228,7 +6228,8 @@ def _vscode_over_ssh(path: Path) -> bool:
     # VS Code reads this file on the machine it runs on; a Remote-SSH host has no VS Code user dir.
     if sys.platform in ("win32", "darwin") or path.parent.is_dir():
         return False
-    return any(os.environ.get(name) for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+    return any(os.environ.get(name) for name in remote)
 
 
 def _add_vscode_provider(
@@ -6276,7 +6277,8 @@ def _add_vscode_provider(
         _shutdown_auto_served()
         raise
     if remote:
-        port = urlparse(base).port or 80
+        url = urlparse(base)
+        port = url.port or (443 if url.scheme == "https" else 80)
         typer.echo(
             "This is an SSH session with no VS Code user dir here, so nothing was written: VS Code "
             "reads its model list on the machine it runs on. There, run Chat: Manage Language "
@@ -7277,6 +7279,7 @@ def vscode(
         server_options = server_options,
     )
     tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
-    # An explicit key _connect rejected for a server it just started must not be saved.
-    explicit = api_key if key == api_key else None
+    # A remote server keeps the key _connect accepted (maybe a remembered one); locally, an
+    # explicit key _connect rejected for a server it just started must not be saved.
+    explicit = key if not is_loopback_url(base) else api_key if key == api_key else None
     _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)
