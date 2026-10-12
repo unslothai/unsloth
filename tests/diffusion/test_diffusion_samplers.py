@@ -291,6 +291,38 @@ def test_generate_text_cuts_at_eos_and_budget(monkeypatch):
     )
     # max_new_tokens caps what is decoded even when a sampler returns more.
     assert diffusion_samplers.generate_text(model, _Tok(), prompt = "hi", max_new_tokens = 2) == "11"
+
+    # Dream: eos_token_id is <|endoftext|> only, while its chat template closes a turn with <|im_end|>.
+    turn_id = 99
+
+    class _ChatTok(_Tok):
+        all_special_ids = [EOS_ID, turn_id]
+
+        def apply_chat_template(
+            self,
+            messages,
+            add_generation_prompt = False,
+            tokenize = False,
+        ):
+            turns = "".join(f"<{m['role']}>{m['content']}<turn>" for m in messages)
+            return turns + ("<assistant>" if add_generation_prompt else "")
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = True,
+        ):
+            if return_tensors is None:
+                return {"input_ids": [turn_id, 5] if text.startswith("<turn>") else [5]}
+            return super().__call__(text, return_tensors, add_special_tokens)
+
+    produced = torch.tensor([[11, 12, turn_id, 14, 15]])
+    chat = [{"role": "user", "content": "hi"}]
+    assert diffusion_samplers.generate_text(model, _ChatTok(), messages = chat) == "11 12"
+    assert seen["eos_ids"] == [EOS_ID, turn_id]
+    assert diffusion_samplers.generate_text(model, _ChatTok(), prompt = "hi") == "11 12 99 14 15"
+    assert seen["eos_ids"] == [EOS_ID]
     with pytest.raises(ValueError, match = "no diffusion sampler"):
         model._unsloth_diffusion_profile = "missing"
         diffusion_samplers.generate_text(model, _Tok(), prompt = "hi")

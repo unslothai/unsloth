@@ -85,6 +85,29 @@ def _eos_ids(base, tokenizer):
     return ids
 
 
+_TURN_PROBE = "Unsloth turn probe"
+
+
+def _turn_end_ids(tokenizer):
+    """The special token the chat template writes right after an assistant reply. Dream's eos_token_id is only
+    <|endoftext|>, but its template closes a turn with <|im_end|>, so a chat reply would run on past it."""
+    text_tokenizer = _text_tokenizer(tokenizer)
+    try:
+        rendered = text_tokenizer.apply_chat_template(
+            [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": _TURN_PROBE}],
+            tokenize = False,
+        )
+        ids = text_tokenizer(rendered.split(_TURN_PROBE, 1)[1], add_special_tokens = False)[
+            "input_ids"
+        ]
+    except Exception:
+        return []
+    special = set(getattr(text_tokenizer, "all_special_ids", None) or ())
+    decoder = getattr(text_tokenizer, "added_tokens_decoder", None) or {}
+    special.update(i for i, token in decoder.items() if getattr(token, "special", False))
+    return [int(ids[0])] if ids and ids[0] in special else []
+
+
 def _device(base):
     try:
         return next(base.parameters()).device
@@ -503,6 +526,8 @@ def generate_text(
     device = _device(base)
     input_ids, attention_mask = _encode(tokenizer, prompt, messages, device)
     eos_ids = _eos_ids(base, tokenizer)
+    if messages is not None:
+        eos_ids += [i for i in _turn_end_ids(tokenizer) if i not in eos_ids]
     mask_id = _profile_mask_id(base, tokenizer, name)
     # manual_seed reseeds every CUDA device, so snapshot every device a sharded model uses.
     cuda_devices = sorted({p.device.index for p in base.parameters() if p.device.type == "cuda"})
