@@ -54,7 +54,7 @@ test("the box clips at the top instead of scrolling, and Show full is a hand ope
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
     reasoning,
-    /const capped = !foldLead && reasoningTailCapped\(\{ visibility, override \}\);/,
+    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility, override \}\);/,
   );
   assert.match(
     reasoning,
@@ -95,4 +95,14 @@ test("a bounded transcript corrects nothing through the thread and mounts the ta
     /if \(bounded\) \{[\s\S]*?fragments\.length - 1[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?mounted\.add\(i\)/,
   );
   assert.match(transcript, /\}, \[viewport, virtualizer, bounded\]\);/);
+});
+
+test("a closing block keeps the cap it had while open", () => {
+  // Hand-closing a full trace re-capped it mid-collapse and skipped the transcript's corrections.
+  assert.match(
+    reasoning,
+    /if \(isOpen && closingCapped !== cappedNow\) \{\s*setClosingCapped\(cappedNow\);\s*\}\s*const capped = isOpen \? cappedNow : closingCapped;/,
+  );
+  const open = reasoning.indexOf("const isOpen = resolveReasoningOpen(");
+  assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
 });

@@ -785,8 +785,6 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
-  // Fold mode keeps its rounds inline: the lead's box could not hold the rounds folded after it.
-  const capped = !foldLead && reasoningTailCapped({ visibility, override });
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -825,6 +823,15 @@ const ReasoningGroupBlock = ({
     visibility,
     override,
   });
+
+  // Fold mode keeps its rounds inline: the lead's box could not hold the rounds folded after it.
+  // A closing block keeps the cap it had while open: a hand close must not re-cap a full trace.
+  const cappedNow = !foldLead && reasoningTailCapped({ visibility, override });
+  const [closingCapped, setClosingCapped] = useState(cappedNow);
+  if (isOpen && closingCapped !== cappedNow) {
+    setClosingCapped(cappedNow);
+  }
+  const capped = isOpen ? cappedNow : closingCapped;
 
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
