@@ -37,9 +37,9 @@ def test_a_probe_from_before_the_prompt_does_not_fold_it_in():
     controller.note_tokens("loop", 5000, 5000)
     assert controller.participant("loop").measured is False
     controller.note_resident(6000, started_at_seq = in_flight)
-    assert controller.snapshot().committed >= 6000 + 5000, (
-        "the first round's prompt was folded into a reading taken before it was sent"
-    )
+    assert (
+        controller.snapshot().committed >= 6000 + 5000
+    ), "the first round's prompt was folded into a reading taken before it was sent"
 
 
 def test_its_first_token_and_a_later_reading_fold_it_in():
