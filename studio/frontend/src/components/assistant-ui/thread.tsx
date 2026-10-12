@@ -21,6 +21,7 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import {
   compactionNoticeMessageIds,
@@ -2337,6 +2338,7 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        {!hideComposer && <AutoReadAloud />}
         <IntentAwareScrollProvider value={autoScrollContext}>
           <div
             ref={composedViewportRef}
@@ -5622,14 +5624,13 @@ const Composer: FC<{
               {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"
-                  tooltip={isWritingExpanded ? "Collapse" : "Expand"}
-                  aria-label={
+                  tooltip={
                     isWritingExpanded ? "Collapse composer" : "Expand composer"
                   }
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -5710,11 +5711,6 @@ const Composer: FC<{
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
         isWritingExpanded && !isDictating ? "true" : undefined
-      }
-      data-writing-toggle={
-        (showWritingToggle || isWritingExpanded) && !isDictating
-          ? "true"
-          : undefined
       }
       aria-disabled={disabled}
       onSubmit={handleSubmit}

@@ -568,13 +568,21 @@ _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
 
 
-def _is_native_x86_64() -> bool:
-    """Linux x86_64, or Windows x64 on an x64 machine. An emulated x64 Python on Windows on ARM
-    is excluded: install.ps1 keys its torch 2.13 route on the machine as well as the interpreter."""
-    if platform.machine().lower() not in ("x86_64", "amd64"):
-        return False
+def _cu130_first_torch_minor() -> int:
+    """cu130 has no aarch64 torchvision 0.24 / torchaudio 2.9, so aarch64 starts at 2.10."""
+    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64"):
+        return 10
+    return _CU130_FIRST_TORCH_MINOR
+
+
+def _is_cu130_route_machine() -> bool:
+    """Linux x86_64 or aarch64, or Windows x64 on an x64 machine. An emulated x64 Python on Windows
+    on ARM is excluded: install.ps1 keys its torch 2.13 route on the machine as well as the interpreter."""
+    machine = platform.machine().lower()
     if sys.platform.startswith("linux"):
-        return True
+        return machine in ("x86_64", "amd64", "aarch64", "arm64")
+    if machine not in ("x86_64", "amd64"):
+        return False
     return sys.platform == "win32" and not _is_windows_arm64()
 
 
@@ -582,7 +590,7 @@ def _is_cu130_torch213_route(index_url: str | None) -> bool:
     return (
         bool(index_url)
         and _torch_index_leaf(index_url) == "cu130"
-        and _is_native_x86_64()
+        and _is_cu130_route_machine()
         and sys.version_info[:2] == (3, 13)
     )
 
@@ -608,7 +616,7 @@ def _cuda_repair_torch_specs(
     release = _resident_torch_release()
     if release is not None:
         minor = int(release.split(".")[1])
-        if _CU130_FIRST_TORCH_MINOR <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+        if _cu130_first_torch_minor() <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
             # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
             audio_minor = min(minor, 11)
             return (
