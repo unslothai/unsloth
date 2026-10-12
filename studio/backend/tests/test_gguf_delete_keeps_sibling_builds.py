@@ -286,6 +286,75 @@ def test_scoped_source_path_selects_the_rows_build(tmp_path):
     assert (snapshots / "new" / beta).is_symlink()
 
 
+def test_scoped_source_path_keeps_repo_ancestor_for_shared_blob(tmp_path):
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    repo_dir = tmp_path / "hub" / "models--org--Model-GGUF"
+    source = repo_dir / "snapshots" / "rev" / "model-Q4_K_M.gguf"
+    shared = tmp_path / "xet" / "blobs" / "shared"
+    source.parent.mkdir(parents = True)
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"x")
+    source.symlink_to(shared)
+
+    assert cached_gguf_action_path("org/Model-GGUF", "Q4_K_M", preferred_path = str(source)) == str(
+        repo_dir
+    )
+
+
+def test_deleting_selected_build_preserves_sibling_partial_state(tmp_path, monkeypatch):
+    from hub.services.models import gguf_variants
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils import download_manifest
+    from utils import hf_cache_settings
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M.gguf"
+    repo, snapshots = _revisioned_repo(tmp_path, (("old", [alpha]), ("new", [beta])))
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    monkeypatch.setattr(gguf_variants, "_fetch_gguf_variant_requirements", lambda *a, **k: {})
+    partial_hash = "f" * 64
+    incomplete = repo.repo_path / "blobs" / f"{partial_hash}.incomplete"
+    incomplete.write_bytes(b"partial")
+    empty_beta_dir = snapshots / "new" / "Q4_K_M"
+    empty_beta_dir.mkdir()
+    assert download_manifest.write_manifest(
+        "model",
+        repo.repo_id,
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(beta, 128, partial_hash)],
+        hub_cache = tmp_path,
+        commit_hash = "new",
+        metadata_derived = True,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo.repo_id, "Q4_K_M", "http", hub_cache = tmp_path
+    )
+
+    _delete_gguf_variant_from_repos(
+        repo.repo_id,
+        "Q4_K_M",
+        [repo],
+        None,
+        root = tmp_path,
+        preferred_path = str(snapshots / "old" / alpha),
+    )
+
+    assert not (snapshots / "old" / alpha).is_symlink()
+    assert (snapshots / "new" / beta).is_symlink()
+    assert incomplete.exists()
+    assert empty_beta_dir.is_dir()
+    assert (
+        download_manifest.read_manifest("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
+        is not None
+    )
+    assert download_manifest.has_cancel_marker("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
+
+
 def test_delete_preview_counts_the_whole_audio_package(tmp_path):
     from core.inference.audio_cpp_models import FAMILIES
     from hub.services.models.companion_cleanup import (

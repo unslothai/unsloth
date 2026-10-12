@@ -176,7 +176,7 @@ def cached_gguf_action_path(
     if preferred_path:
         expected = f"models--{repo_id.replace('/', '--')}".lower()
         try:
-            selected = Path(preferred_path).expanduser().resolve(strict = False)
+            selected = Path(preferred_path).expanduser()
         except (OSError, RuntimeError, ValueError):
             selected = None
         repo_dir = (

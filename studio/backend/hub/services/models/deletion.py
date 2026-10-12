@@ -33,6 +33,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_listed_checkpoints,
+    gguf_variant_family,
     gguf_variant_key,
     gguf_variant_keys_by_checkpoint,
     is_qualified_gguf_variant_key,
@@ -229,7 +230,9 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     return removed, failures
 
 
-def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+def _remove_empty_snapshot_dirs(
+    target_repos: list, protected_revisions: frozenset[str] = frozenset()
+) -> tuple[int, list[str]]:
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
@@ -244,6 +247,8 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
         except OSError:
             continue
         for snap in snap_dirs:
+            if snap.name in protected_revisions:
+                continue
             try:
                 snap.rmdir()
                 removed += 1
@@ -364,6 +369,7 @@ def _delete_gguf_variant_from_repos(
     deleted_bytes = 0
     deleted_blobs = 0
     completed_hashes: set[str] = set()
+    selected_families: set[str] = set()
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
@@ -380,6 +386,11 @@ def _delete_gguf_variant_from_repos(
             # keep components used by another downloaded mix, including MiniMax's shared decoder.
             if match[2] not in protected
         ]
+        selected_families.update(
+            gguf_variant_family(name).lower()
+            for _snap, _blob, name in matched
+            if _is_main_gguf_filename(name)
+        )
 
         for snap, _blob, name in matched:
             try:
@@ -442,14 +453,32 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
-        repo_id,
-        variant,
-        hf_token,
-        extra_hashes = frozenset(completed_hashes),
-        companions = not sibling_active,
-        root = root,
-    )
+    cleanup_variant: Optional[str] = variant
+    protected_revisions: set[str] = set()
+    manifest = download_manifest.read_manifest("model", repo_id, variant, hub_cache = root)
+    if manifest is not None and selected_families:
+        manifest_families = {
+            gguf_variant_family(expected.path).lower()
+            for expected in manifest.expected_files
+            if _is_main_gguf_filename(expected.path)
+        }
+        # a bare quant manifest can belong to a different renamed checkpoint still downloading.
+        if manifest_families and not manifest_families.issubset(selected_families):
+            cleanup_variant = next(iter(selected_families)) if len(selected_families) == 1 else None
+            if manifest.commit_hash:
+                protected_revisions.add(manifest.commit_hash)
+
+    if cleanup_variant is None:
+        incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
+    else:
+        incomplete_result = gguf_variants.delete_variant_incomplete_blobs_result(
+            repo_id,
+            cleanup_variant,
+            hf_token,
+            extra_hashes = frozenset(completed_hashes),
+            companions = not sibling_active,
+            root = root,
+        )
     if incomplete_result.unresolved:
         raise HTTPException(
             status_code = 409,
@@ -460,9 +489,19 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
-    removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
-    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    state_purged = (
+        download_manifest.purge_state("model", repo_id, cleanup_variant, hub_cache = root)
+        if cleanup_variant is not None
+        else False
+    )
+    removed_dirs, dir_failures = (
+        _remove_empty_variant_dirs(target_repos, cleanup_variant)
+        if cleanup_variant is not None
+        else (0, [])
+    )
+    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(
+        target_repos, frozenset(protected_revisions)
+    )
     removed_dirs += removed_snap_dirs
     dir_failures.extend(snap_dir_failures)
     if dir_failures:
