@@ -3728,6 +3728,7 @@ from models.inference import (
     ChatCompletion,
     ToolApprovalStatusRequest,
     ToolConfirmRequest,
+    BrowserActionResultRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -6470,6 +6471,7 @@ async def _select_request_tools(
     mcp_allowed: bool,
     checkpoint_fitted: bool = False,
     supports_vision: bool = False,
+    ui_events: bool = True,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -6494,6 +6496,17 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    if tools_on and ui_events and payload.enabled_tools is not None:
+        # Never in the default catalog: only a chat tab with the browser panel can run them, and it
+        # asks by name. Without UI frames the action never reaches a tab, so the tool would only
+        # wait out its timeout.
+        from core.inference.browser_agent import BROWSER_SCREENSHOT, BROWSER_TOOLS
+        tools += [
+            tool
+            for tool in BROWSER_TOOLS
+            if tool["function"]["name"] in payload.enabled_tools
+            and (supports_vision or tool["function"]["name"] != BROWSER_SCREENSHOT)
+        ]
     tools = [
         tool
         for tool in tools
@@ -21638,6 +21651,20 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.post("/browser-action-result")
+async def browser_action_result(
+    body: BrowserActionResultRequest, current_subject: str = Depends(get_current_subject)
+):
+    from state.browser_actions import resolve_browser_action
+    from utils.account_context import current_account_id
+
+    if not resolve_browser_action(
+        body.action_id, body.result, body.session_id, current_account_id()
+    ):
+        raise HTTPException(status_code = 404, detail = "No pending browser action")
+    return {"resolved": True}
+
+
 @studio_router.post("/tool-approval-status")
 async def tool_approval_status(
     request: ToolApprovalStatusRequest, current_subject: str = Depends(get_current_subject)
@@ -28641,6 +28668,7 @@ async def _proxy_to_external_provider(
                 supports_vision = model_supports_vision,
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
+                ui_events = _ui_events,
             )
             if studio_tool_payloads:
                 # The loop runs iff the catalog is non-empty, and its approval handshake
@@ -29023,6 +29051,7 @@ async def _proxy_to_external_provider(
             ),
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
+            ui_events = _ui_events,
         )
     run_studio_tool_loop = bool(external_studio_tools)
     _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
@@ -31515,6 +31544,7 @@ async def produce_openai_chat_completions(
                 # Only this branch runs the checkpoint fit. The process-wide policy says a
                 # reset is POSSIBLE somewhere, not that this request can perform one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                ui_events = _ui_events,
             )
             _reject_missing_forced_tool(payload.tool_choice, tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
@@ -32059,6 +32089,14 @@ async def produce_openai_chat_completions(
                             _stream_usage = event.get("usage")
                             _stream_timings = event.get("timings")
                             _stream_finish = event.get("finish_reason")
+                            continue
+
+                        if event["type"] == "context_usage":
+                            # Must not reach the content branch below: its empty text resets prev_text.
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
                         if event["type"] == "quote_cut":
@@ -33669,6 +33707,7 @@ async def produce_openai_chat_completions(
             mcp_allowed = _sf_mcp_allowed,
             supports_vision = bool(_sf_model_info.get("is_vision")),
             checkpoint_fitted = _sf_fit_overflow is not None,
+            ui_events = _ui_events,
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -46228,6 +46267,14 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
         )
 
 
+def _refuse_mlx_loras(request: DiffusionLoadRequest) -> None:
+    if request.loras:
+        raise HTTPException(
+            status_code = 400,
+            detail = "LoRA adapters are not supported on the MLX engine yet.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -46257,7 +46304,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+    from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -46309,13 +46356,27 @@ async def diffusion_download_plan(
             gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
         # Plan for the engine /images/load will pick: a GGUF on a GPU-less host routes to native
         # sd.cpp, which reads different files. Card-scoped, since the failure records are per card.
-        if (
-            fam is not None
-            and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
-        ):
+        predicted = (
+            predict_engine(
+                fam,
+                model_kind = kind,
+                gpu_ordinal = gpu_ordinal,
+                gguf_filename = request.gguf_filename,
+            )
+            if fam is not None
+            else None
+        )
+        if predicted == ENGINE_SD_CPP:
             _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
+        elif predicted == ENGINE_MLX:
+            # Opt-in MLX engine (UNSLOTH_DIFFUSION_MLX=1): same single-GGUF contract as native.
+            _refuse_native_component_files(request)
+            _refuse_mlx_loras(request)
+            from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
+
+            planner = get_mlx_diffusion_backend()
         if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
@@ -46517,7 +46578,8 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
-    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+    from core.inference.sd_cpp_args import forces_cpu_backend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -46583,12 +46645,20 @@ async def load_diffusion_model_gated(
         try:
             # Card-scoped like the activation below, or the wrong engine's preflight runs.
             pending_name = (
-                predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal)
+                predict_engine(
+                    fam,
+                    model_kind = kind,
+                    gpu_ordinal = gpu_ordinal,
+                    gguf_filename = request.gguf_filename,
+                )
                 if fam is not None
                 else None
             )
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             pending_name = None
+        # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
+        if pending_name == ENGINE_MLX:
+            needs_gpu = True
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -46612,8 +46682,11 @@ async def load_diffusion_model_gated(
                 repo_id = request.model_path,
                 base_repo = request.base_repo,
             )
-        elif fam is not None and pending_name == ENGINE_SD_CPP:
+        elif fam is not None and pending_name in (ENGINE_SD_CPP, ENGINE_MLX):
+            # The opt-in MLX engine shares the native contract: one GGUF, no dense-quant knobs.
             _refuse_native_component_files(request)
+            if pending_name == ENGINE_MLX:
+                _refuse_mlx_loras(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -46659,6 +46732,8 @@ async def load_diffusion_model_gated(
                 before_fallback = (
                     _guard_diffusion_load_against_training if off_torch is not None else None
                 ),
+                # Only the opt-in MLX engine reads it (to judge the GGUF quant).
+                gguf_filename = request.gguf_filename,
             )
         )
         # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
@@ -46675,8 +46750,10 @@ async def load_diffusion_model_gated(
         # only when the prediction was inconclusive or wrong; a correct one already paid it.
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
-            if activated == ENGINE_SD_CPP:
+            if activated in (ENGINE_SD_CPP, ENGINE_MLX):
                 _refuse_native_component_files(request)
+                if activated == ENGINE_MLX:
+                    _refuse_mlx_loras(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
@@ -46700,6 +46777,15 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if activated == ENGINE_MLX:
+            needs_gpu = True
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,

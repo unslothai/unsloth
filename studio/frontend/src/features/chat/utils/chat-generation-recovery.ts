@@ -48,6 +48,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
         _reasoningDurationMs?: unknown;
+        _contextUsage?: unknown;
         context_truncated?: unknown;
         quote_cut?: unknown;
         usage?: unknown;
@@ -56,7 +57,12 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
+  if (
+    "_reasoningDurationMs" in chunk ||
+    "_contextUsage" in chunk ||
+    chunk.context_truncated ||
+    chunk.quote_cut
+  ) {
     return false;
   }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
