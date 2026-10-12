@@ -398,6 +398,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
   if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, before, action.policy, permissions()));
+  // Deleting is editing: a password or card field the agent can't type into it can't empty either.
+  if (action.op === "press" && (action.key === "Backspace" || action.key === "Delete")) {
+    gates.push(gateElement("type", info, before, action.policy, permissions()));
+  }
   // Enter in a field sends its form, so it is held to what a submit button would be.
   const submits =
     (action.op === "type" && action.submit) ||
@@ -421,9 +425,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     const clicked = await pageCall(ready, { op: "click", ref, directLinks: !useNativeBrowser.getState().enabled });
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
-      // A link: opened in this tab, under the same rules as any other address.
-      const blocked = navigationBlocks(clicked.navigate, action.policy, permissions());
-      if (blocked) return { ok: false, error: `Not done: ${blocked}.` };
+      // A link: opened in this tab, under the same rules as any other address. Its href is read
+      // now, so it may not be one the last snapshot listed.
+      const refused = await pass(gateNavigation(clicked.navigate, navigationContext(action, context)), signal);
+      if (refused) return { ok: false, error: refused };
       knownHosts.add(hostOfUrl(clicked.navigate));
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);

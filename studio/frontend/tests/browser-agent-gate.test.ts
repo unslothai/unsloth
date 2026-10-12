@@ -52,6 +52,17 @@ test("an address the model made up for a new site asks first", () => {
   const gate = gateNavigation("https://collector.example/?q=secret", navigation({ userText: "summarize my notes" }));
   assert.equal(gate.kind, "ask");
   assert.ok(gate.kind === "ask" && gate.ask === "open" && gate.host === "collector.example");
+  // Naming a shared host's brand doesn't approve its users' subdomains, nor a host hidden inside a longer one.
+  assert.equal(gateNavigation("https://collector.github.io/x", navigation({ userText: "search GitHub for gguf" })).kind, "ask");
+  assert.equal(gateNavigation("https://e.com/x", navigation({ userText: "open example.com" })).kind, "ask");
+});
+
+test("consequential labels ask in the languages Studio ships in", () => {
+  const page = "https://shop.example/cart";
+  for (const name of ["Supprimer le compte", "Comprar ahora", "Jetzt überweisen", "立即购买", "注文を確定する", "구매하기", "Удалить"]) {
+    assert.equal(gateElement("click", element({ name }), page, open, NONE).kind, "ask", name);
+  }
+  assert.equal(gateElement("click", element({ name: "Ordinary results" }), page, open, NONE).kind, "allow");
 });
 
 test("non-web schemes and the website policy are refused outright", () => {

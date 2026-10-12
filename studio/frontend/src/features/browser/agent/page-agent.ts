@@ -341,7 +341,7 @@ export function installPageAgent(): void {
       const heading = /^h([1-6])$/.exec(tag);
       if (heading) {
         flush();
-        const text = clean((el as HTMLElement).innerText, 200);
+        const text = clean(visibleText(el), 200);
         if (shown && text) push(`${"#".repeat(Number(heading[1]))} ${text}`);
         // Its links and buttons still get refs; its words are already out.
         for (const child of Array.from(el.querySelectorAll("a[href], button, input, [role]"))) walk(child);
@@ -438,6 +438,14 @@ export function installPageAgent(): void {
     return { ok: true, text: hits.length ? hits.join("\n") : `Nothing on this page matches ${quoted(query)}.`, links };
   };
 
+  const isSubmitter = (node: Element) => {
+    const kind = (node.getAttribute("type") ?? "").toLowerCase();
+    return node.tagName === "BUTTON" ? kind === "" || kind === "submit" : node.tagName === "INPUT" && (kind === "submit" || kind === "image");
+  };
+  /** The button Enter in a field submits with, as a browser picks it: the form's first submit button. */
+  const defaultButton = (form: HTMLFormElement | null) =>
+    Array.from(form?.elements ?? []).find(isSubmitter) as HTMLButtonElement | HTMLInputElement | undefined;
+
   /** No ref: the focused element, which a key press would act on. */
   const describe = (ref: string): Record<string, unknown> => {
     const el = ref ? lookup(ref) : (document.activeElement ?? document.body);
@@ -446,14 +454,10 @@ export function installPageAgent(): void {
     const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
     const tag = el.tagName.toLowerCase();
     const type = (field.type || "").toLowerCase();
-    const isSubmitter = (node: Element) => {
-      const kind = (node.getAttribute("type") ?? "").toLowerCase();
-      return node.tagName === "BUTTON" ? kind === "" || kind === "submit" : node.tagName === "INPUT" && (kind === "submit" || kind === "image");
-    };
     const submits = Boolean(form) && isSubmitter(el);
     // What actually submits: this button, or for Enter in a field the form's default button.
     // Its formaction/formmethod override the form's, as browsers and the proxied frame honor.
-    const submitter = submits ? el : Array.from(form?.elements ?? []).find(isSubmitter);
+    const submitter = submits ? el : defaultButton(form);
     const method = submitter?.getAttribute("formmethod") || form?.getAttribute("method") || "get";
     const action = submitter?.hasAttribute("formaction")
       ? new URL(submitter.getAttribute("formaction") ?? "", document.baseURI).href
@@ -560,7 +564,8 @@ export function installPageAgent(): void {
       const inputType = tag === "input" ? (field.type || "text").toLowerCase() : "";
       // Only a text field sends its form on Enter, the case the panel gates as a submit.
       if (tag === "input" && field.form && !NOT_TEXT.has(inputType)) {
-        field.form.requestSubmit();
+        // With the button describe() gated, so its formaction and formmethod apply here too.
+        field.form.requestSubmit(defaultButton(field.form) ?? null);
         return { ok: true, note: "Submitted the form." };
       }
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();

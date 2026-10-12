@@ -68,10 +68,23 @@ export type NavigationContext = {
   userText: string;
 };
 
+// Hosts that give anyone a subdomain (from the public suffix list's private section).
+const SHARED_HOSTS = [
+  "github.io", "gitlab.io", "pages.dev", "workers.dev", "vercel.app", "netlify.app", "herokuapp.com",
+  "web.app", "firebaseapp.com", "appspot.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com",
+  "blogspot.com", "wordpress.com", "tumblr.com", "substack.com", "notion.site", "glitch.me", "repl.co",
+  "onrender.com", "fly.dev", "ngrok.io", "ngrok-free.app", "trycloudflare.com", "surge.sh", "neocities.org",
+  "hf.space", "streamlit.app", "deno.dev", "googleusercontent.com", "sharepoint.com", "myshopify.com",
+];
+
 function mentioned(host: string, text: string): boolean {
   const lower = text.toLowerCase();
-  // example.com in "look at example.com", or the site's name ("search wikipedia").
-  if (lower.includes(host)) return true;
+  // example.com in "look at example.com", as a whole name (not e.com inside it).
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`(^|[^a-z0-9.-])${escaped}($|[^a-z0-9-])`).test(lower)) return true;
+  // The site's name ("search wikipedia" for en.wikipedia.org), but not on a shared host, where each
+  // subdomain is someone else's: "github" must not approve collector.github.io.
+  if (SHARED_HOSTS.some((suffix) => host.endsWith(`.${suffix}`))) return false;
   const name = host.split(".").slice(-2, -1)[0];
   return Boolean(name && name.length >= 4 && new RegExp(`\\b${name.replace(/[^a-z0-9-]/g, "")}\\b`).test(lower));
 }
@@ -112,6 +125,36 @@ const CONSEQUENTIAL =
 
 const CONSEQUENTIAL_LINK = /\b(buy|purchase|order now|checkout|check out|pay|donate|delete|unsubscribe|subscribe)\b/i;
 
+// The same verbs in the languages Studio ships in (src/i18n/locales). Whole words where words are
+// spaced; anywhere in Chinese, Japanese and Korean, where a verb sits inside a longer run.
+const SPACED_WORDS = [
+  // es, pt-br
+  "comprar", "compra", "pagar", "pague", "eliminar", "borrar", "excluir", "apagar", "enviar", "transferir", "suscribirse", "assinar", "confirmar", "publicar", "finalizar compra",
+  // fr
+  "acheter", "payer", "commander", "supprimer", "envoyer", "virement", "transférer", "s'abonner", "confirmer", "publier", "se connecter", "s'inscrire",
+  // de
+  "kaufen", "bezahlen", "bestellen", "löschen", "entfernen", "senden", "überweisen", "abonnieren", "bestätigen", "veröffentlichen", "anmelden", "registrieren",
+  // it
+  "acquista", "paga", "ordina", "elimina", "invia", "trasferisci", "iscriviti", "abbonati", "conferma", "pubblica", "accedi",
+  // sv
+  "köp", "betala", "beställ", "radera", "ta bort", "skicka", "överför", "prenumerera", "bekräfta", "publicera", "logga in",
+  // ru
+  "купить", "оплатить", "заказать", "удалить", "отправить", "перевести", "подписаться", "подтвердить", "опубликовать", "войти",
+  // ar, he, hi
+  "شراء", "ادفع", "دفع", "حذف", "إرسال", "تحويل", "اشتراك", "تأكيد", "نشر",
+  "קנה", "רכישה", "תשלום", "מחק", "שלח", "העבר", "הירשם", "אשר", "פרסם", "התחבר",
+  "खरीदें", "भुगतान", "हटाएं", "भेजें", "सदस्यता", "पुष्टि", "प्रकाशित",
+];
+const UNSPACED_WORDS = [
+  "购买", "支付", "付款", "下单", "删除", "发送", "转账", "订阅", "确认", "发布", "登录", "注册",
+  "購入", "支払", "注文", "削除", "送信", "送金", "振込", "購読", "投稿", "ログイン",
+  "구매", "결제", "주문", "삭제", "전송", "송금", "이체", "구독", "게시", "로그인",
+];
+const LOCALIZED = new RegExp(
+  `(?<![\\p{L}\\p{M}])(?:${SPACED_WORDS.join("|")})(?![\\p{L}\\p{M}])|${UNSPACED_WORDS.join("|")}`,
+  "iu",
+);
+
 export type ElementAction = "click" | "type" | "select" | "submit";
 
 /** `submit`: the action will submit the element's form (a submit button, or Enter in a field). */
@@ -150,7 +193,7 @@ export function gateElement(
     return { kind: "ask", ask: "submit", host, name: "", prompt: `Submit this form on ${host}?`, detail: describe(info) };
   }
   // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.
-  const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(info.name);
+  const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(info.name) || LOCALIZED.test(info.name);
   // Selecting a checkbox, radio or switch is a click on it.
   const clicks = action === "click" || submits || (action === "select" && info.role !== "combobox");
   if (clicks && consequential) {
