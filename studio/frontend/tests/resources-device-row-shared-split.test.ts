@@ -74,6 +74,10 @@ test("the System device row labels a shared total instead of calling it VRAM", (
   );
   assert.match(
     resourcesTab,
-    /\) : sharedSplit \? \([\s\S]*?vram: formatGiB\(sharedSplit\.dedicated\)[\s\S]*?shared: formatGiB\(sharedSplit\.shared\)[\s\S]*?gpu\.sharedWithSystemRam/,
+    /\) : sharedSplit \? \(\s*<span[^>]*>\s*\{percentText\}\s*<\/span>/,
+  );
+  assert.match(
+    resourcesTab,
+    /\{sharedSplit && !hasSharedMemoryHeadroom\(device\) \? \([\s\S]*?vram: formatGiB\(sharedSplit\.dedicated\)[\s\S]*?shared: formatGiB\(sharedSplit\.shared\)[\s\S]*?gpu\.sharedWithSystemRam/,
   );
 });
