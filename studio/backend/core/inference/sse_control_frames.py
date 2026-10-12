@@ -51,6 +51,7 @@ _CONTROL_KEYS = (
     "_toolStatus",
     "_diffusionFrame",
     "_reasoningDurationMs",
+    "_contextUsage",
     "_mcp_provenance",
     "quote_cut",
 )
