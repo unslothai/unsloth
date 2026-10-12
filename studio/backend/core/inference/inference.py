@@ -2386,6 +2386,8 @@ class InferenceBackend:
         """A text-diffusion LM fills a whole block at once, so the answer arrives as one completion: there is
         no left-to-right token stream to forward. Holds the generation lock until the sampler returns, and
         the sampler polls ``cancel_event`` between denoising steps."""
+        # No token stats come back from the sampler; a previous request's must not be reported for this one.
+        self.last_generation_stats = None
         from utils.models.diffusion_lm import require_diffusion_api
 
         if messages:

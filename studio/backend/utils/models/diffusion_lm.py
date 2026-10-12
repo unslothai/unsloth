@@ -192,10 +192,11 @@ def export_refusal(profile: Optional[str], method: str) -> Optional[str]:
     return None
 
 
-def diffusion_lm_export_limits(checkpoint_path: str) -> Optional[dict]:
+def diffusion_lm_export_limits(checkpoint_path: str, hf_token = None) -> Optional[dict]:
     """``{profile, disabled_methods, reason}`` for a text-diffusion checkpoint folder, else None. Cache-only:
-    the base model was read when it trained, and a picker probe must not reach the network."""
-    profile = diffusion_lm_profile_for_model(checkpoint_path, local_files_only = True)
+    the base model was read when it trained, and a picker probe must not reach the network. ``hf_token``
+    is the caller's (False = denied the ambient credential), so the cache guard sees the same boundary."""
+    profile = diffusion_lm_profile_for_model(checkpoint_path, hf_token, local_files_only = True)
     if not profile:
         return None
     disabled = [m for m in ("merged", "gguf") if export_refusal(profile, m)]

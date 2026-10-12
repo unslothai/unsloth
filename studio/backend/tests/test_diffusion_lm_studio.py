@@ -487,6 +487,7 @@ def _inference_backend(monkeypatch, profile = "llada"):
 
 def test_chat_uses_the_diffusion_sampler_as_one_completion(monkeypatch):
     backend, applied = _inference_backend(monkeypatch)
+    backend.last_generation_stats = {"prompt_tokens": 999}  # left over from an earlier generation
     out = list(
         backend._generate_chat_response_inner(
             messages = [{"role": "user", "content": "2+2?"}],
@@ -501,6 +502,7 @@ def test_chat_uses_the_diffusion_sampler_as_one_completion(monkeypatch):
     call = _Sampler.calls[-1]
     assert call["messages"][0] == {"role": "system", "content": "Be brief."}
     assert call["max_new_tokens"] == 64 and call["stop"] is False and applied == [True]
+    assert backend.last_generation_stats is None
 
 
 def test_raw_prompt_stream_uses_the_sampler_too(monkeypatch):
@@ -586,6 +588,22 @@ def test_chat_diffusion_load_refuses_an_unmarked_model_and_keeps_the_token_bound
     assert "hf_token = _hf_token_for_loader(hf_token)\n" in branch
     assert "if not loaded_profile:" in branch and "raise RuntimeError(" in branch
     assert "or diffusion_lm_profile" not in branch
+
+
+def test_export_limits_probe_uses_the_callers_credential(monkeypatch):
+    from routes import export as export_routes
+    from utils.models import diffusion_lm
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion_lm,
+        "diffusion_lm_profile_for_model",
+        lambda name, hf_token = None, *a, **k: seen.append(hf_token) or "llada",
+    )
+    assert diffusion_lm.diffusion_lm_export_limits("/ckpt", False)["profile"] == "llada"
+    assert seen == [False]
+    src = inspect.getsource(export_routes.get_decision_export_info)
+    assert "hf_token_arg(None, allow_ambient_token = allow_ambient)" in src
 
 
 def test_mlx_refusal_resolves_a_hub_adapter_to_its_base(monkeypatch, tmp_path):
