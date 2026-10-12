@@ -659,8 +659,6 @@ def LlamaAttention_fast_forward_inference(
     ):
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
-    if attention_mask is not None:
-        attention_mask = attention_mask | ~attention_mask.any(dim = -1, keepdim = True)
 
     # Grouped query attention.
     _, _, cached_len, _ = Knn.shape

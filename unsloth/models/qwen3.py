@@ -302,8 +302,6 @@ def Qwen3Attention_fast_forward_inference(
         and attention_mask.dtype != torch.bool
     ):
         attention_mask = attention_mask.eq(0)
-    if attention_mask is not None:
-        attention_mask = attention_mask | ~attention_mask.any(dim = -1, keepdim = True)
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:

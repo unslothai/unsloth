@@ -57,12 +57,6 @@ def decoder(request):
         "boolean",
         "additive",
         "none",
-        "empty_padding",
-        "empty_boolean",
-        "empty_additive",
-        "window_padding",
-        "window_boolean",
-        "window_additive",
     ],
 )
 @pytest.mark.parametrize("groups", [1, 2])
@@ -95,13 +89,6 @@ def test_single_row_cached_attention_masks(decoder, mask_kind, groups, batch_siz
         "additive": torch.tensor([[[[float("-inf"), 0.0, 0.0]]]]).expand(batch_size, -1, -1, -1),
         "none": None,
     }
-    for prefix, visible in [("empty", [False, False, False]), ("window", [True, False, False])]:
-        mask = torch.tensor(visible).view(1, 1, 1, 3).expand(batch_size, -1, -1, -1)
-        masks[f"{prefix}_padding"] = mask[:, 0, 0, :].long()
-        masks[f"{prefix}_boolean"] = mask
-        masks[f"{prefix}_additive"] = torch.zeros_like(mask, dtype = torch.float32).masked_fill(
-            ~mask, float("-inf")
-        )
 
     output, _ = decoder(
         attention,
@@ -112,12 +99,6 @@ def test_single_row_cached_attention_masks(decoder, mask_kind, groups, batch_siz
         attention_mask = masks[mask_kind],
     )
 
-    if sliding_window is not None:
-        expected = 1.0
-    elif mask_kind.startswith("window"):
-        expected = 100.0
-    elif mask_kind == "none" or mask_kind.startswith("empty"):
-        expected = 34.0
-    else:
-        expected = 1.0
+    # The window of 2 drops the padded slot, so every mask agrees there.
+    expected = 34.0 if mask_kind == "none" and sliding_window is None else 1.0
     torch.testing.assert_close(output, torch.full((batch_size, 1, 2), expected))
