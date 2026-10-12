@@ -143,6 +143,7 @@ function Install-UnslothStudio {
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
+    $script:StudioPrivateUvDir = $null
     # Same reason, and this one caches a decision about the machine: a policy added or
     # removed between two runs in one console, or a replaced launcher under a hash rule,
     # would otherwise be answered from the first run's probe.
@@ -7415,7 +7416,9 @@ exit 0
 
         # Same destination priority as astral's installer, so an existing uv is
         # replaced in place and the PATH probe further below still finds it.
-        $destDir = $script:StudioPrivateUvDir
+        # Read safely: extracted, this runs under a caller's strict mode.
+        $privateDir = Get-Variable -Name StudioPrivateUvDir -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        $destDir = $privateDir
         foreach ($candidate in @($destDir, $env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
             if ($candidate) { $destDir = $candidate; break }
         }
@@ -7535,7 +7538,7 @@ exit 0
 
         # Same PATH treatment and opt-outs astral's installer uses: an unmanaged
         # install forces no-modify-path there, so it must here too.
-        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL -and -not $script:StudioPrivateUvDir) {
+        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL -and -not $privateDir) {
             Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
         }
         $env:PATH = "$destDir;$env:PATH"

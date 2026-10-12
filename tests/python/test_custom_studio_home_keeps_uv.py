@@ -112,9 +112,10 @@ def test_ps1_default_root_and_explicit_uv_dir_keep_the_old_layout(shell, tmp_pat
 
 def test_ps1_private_uv_skips_winget_and_the_user_path():
     install = _between(INSTALL_PS1, "    function Install-UvFromRelease {", "\n    }\n")
-    assert "$destDir = $script:StudioPrivateUvDir" in install
+    assert "Get-Variable -Name StudioPrivateUvDir -Scope Script" in install
+    assert "$destDir = $privateDir" in install
     assert (
-        "-not $env:UV_UNMANAGED_INSTALL -and -not $script:StudioPrivateUvDir) {\n"
+        "-not $env:UV_UNMANAGED_INSTALL -and -not $privateDir) {\n"
         "            Add-ToUserPath" in install
     )
     assert "if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {" in INSTALL_PS1
