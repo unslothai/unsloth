@@ -14,10 +14,8 @@ export function pinBrowserPage(handle: Element): () => void {
   const right = handle.getBoundingClientRect().left < rect.left;
   Object.assign(page.style, {
     position: "absolute",
-    // Where it is now, not top 0: the toolbar and bookmarks bar above it share this parent, and
-    // the page (and a native view measured from it) would slide up over them.
     top: `${rect.top - box.top}px`,
-    bottom: `${box.bottom - rect.bottom}px`,
+    bottom: "0",
     margin: "0",
     width: `${rect.width}px`,
     [right ? "right" : "left"]: `${right ? box.right - rect.right : rect.left - box.left}px`,

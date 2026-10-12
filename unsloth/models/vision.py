@@ -128,6 +128,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    switch_training_mode,
     _is_seq2seq_lm_config,
 )
 from ._utils import *
@@ -5033,12 +5034,9 @@ class FastBaseModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
-        model.eval()  # to turn off training on modules deeper in
-
-        # Since transformers 4.53, this must be turned off explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = False
+        # Since transformers 4.53, checkpointing must be turned off explicitly.
+        for module in switch_training_mode(model, False):
+            module.gradient_checkpointing = False
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -5068,15 +5066,14 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
-            model, use_gradient_checkpointing
+            model, use_gradient_checkpointing, checkpointing
         )
-        if use_gradient_checkpointing:
-            arm_gradient_checkpointing(model)
-
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
+        if use_gradient_checkpointing and arm_gradient_checkpointing(model, checkpointing):
+            # Arming runs the model's enabler once (remote code can flag layers the walk did not see).
+            checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5097,12 +5094,10 @@ class FastBaseModel:
             _for_training(m)
             m = m.model
         _for_training(m)
-        model.train()  # to turn on training on modules deeper in
-
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
+        for module in checkpointing:
+            set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
