@@ -127,6 +127,7 @@ except ValueError as exc:
 # taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
 # precede the first import below. An xformers built for a newer torch fails the same import anywhere.
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -135,6 +136,7 @@ from core._torchao_stub import (
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
 # rich -> structlog -> platform crash (https://github.com/python/cpython/issues/102396).

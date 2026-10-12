@@ -5930,15 +5930,56 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
     ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
 
 
-def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
-    """The caller drops a count naming a different model, so one loaded from a resolved
-    path must still answer as the repo id."""
+@pytest.mark.parametrize(
+    ("active", "advertised"),
+    [
+        ("/Users/alice/outputs/my-finetune-mlx", None),
+        ("/hf/hub/models--org--repo/snapshots/abc123", "org/repo"),
+        ("mlx-community/Qwen3.5-2B-4bit", None),
+    ],
+    ids = ["local_folder", "auto_switch_snapshot", "hub_repo_id"],
+)
+def test_an_mlx_count_reports_the_id_status_publishes(monkeypatch, active, advertised):
+    """/status publishes the raw active name as model_identifier and the client adopts it as its
+    checkpoint, dropping any count that names another model; a cleaned or advertised id here
+    left a local-folder or auto-switched MLX / vLLM model on the estimate forever."""
+    backend = _RenderRecordingBackend()
+    backend.active_model_name = active
+    backend._openai_advertised_id = advertised
+    models = {active: next(iter(_mirror(_TOOL_TEMPLATE).values()))}
+    served = _count_route(
+        monkeypatch, backend, models = models, messages = [{"role": "user", "content": "hello"}]
+    )
+    assert json.loads(served.body)["model"] == active
+
+
+@pytest.mark.parametrize("via_api_key", [True, False], ids = ["api_key", "ui_session"])
+def test_an_mlx_count_redacts_a_local_folder_for_an_api_key_caller(monkeypatch, via_api_key):
+    """/status hides host paths from API-key callers; the count must not hand the same path back."""
+    from hub.utils.host_paths import redact_host_paths
     from routes import inference as route
 
+    active = "/Users/alice/outputs/my-finetune-mlx"
     backend = _RenderRecordingBackend()
-    monkeypatch.setattr(route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id")
-    served = _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hello"}])
-    assert json.loads(served.body)["model"] == "org/advertised-repo-id"
+    backend.active_model_name = active
+    backend.models = {active: next(iter(_mirror(_TOOL_TEMPLATE).values()))}
+    monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    served = asyncio.run(
+        route.chat_count_tokens(
+            route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hi"}]),
+            current_subject = "tester",
+            via_api_key = via_api_key,
+        )
+    )
+    model = json.loads(served.body)["model"]
+    if via_api_key:
+        assert "/Users/alice" not in model
+        status_view = redact_host_paths({"model_identifier": active}, via_api_key = True)
+        assert model == status_view["model_identifier"]
+    else:
+        assert model == active
 
 
 def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):

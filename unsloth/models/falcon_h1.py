@@ -133,14 +133,13 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     window = (-1, -1)
     use_varlen = (
-        attention_mask is None
-        and seq_info is not None
-        and past_key_value is None
-        and window == (-1, -1)
+        attention_mask is None and seq_info is not None and not had_cache and window == (-1, -1)
     )
 
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)

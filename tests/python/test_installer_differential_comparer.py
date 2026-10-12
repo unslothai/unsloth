@@ -236,6 +236,26 @@ def test_winget_partial_progress_frames_do_not_fail(tmp_path: Path) -> None:
     assert result.returncode == 0, f"partial progress frames failed the lane: {result.stdout}"
 
 
+def test_a_repeated_full_bar_does_not_fail(tmp_path: Path) -> None:
+    """winget can redraw the finished bar once more; a second copy right after the first is noise."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + [full, full] + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + [full] + lines[1:]))
+    result = _run(base, head)
+    assert result.returncode == 0, f"a repeated full bar failed the lane: {result.stdout}"
+
+
+def test_a_second_download_still_compares(tmp_path: Path) -> None:
+    """Two downloads leave two full bars with a "Downloading" line between them; losing one is reported."""
+    full = "  ██████████████████████████████  17.2 MB / 17.2 MB"
+    lines = BASELINE.split("\n")
+    twice = [full, "Downloading https://example.invalid/uv.zip", full]
+    base = _write(tmp_path / "base", transcript = "\n".join(lines[:1] + twice + lines[1:]))
+    head = _write(tmp_path / "head", transcript = "\n".join(lines[:1] + twice[:2] + lines[1:]))
+    assert _run(base, head).returncode == 2
+
+
 def test_a_download_that_never_finishes_still_compares(tmp_path: Path) -> None:
     """The full bar a finished download ends on is kept, so losing it is reported."""
     lines = BASELINE.split("\n")

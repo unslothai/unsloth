@@ -5,8 +5,9 @@
 
 Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
 of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
-``/v1/props``, ``/version``. Everything else in llama-server's table gets an explicit 404, on its real method as
-well as GET.
+``/v1/props``, ``/version``, plus a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
+``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only. Everything else in llama-server's table gets an
+explicit 404, on its real method as well as GET.
 
 Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
 and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
@@ -19,7 +20,9 @@ import asyncio
 import functools
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
@@ -63,6 +66,17 @@ _ENGINE_PROBE_PATHS = frozenset(
 
 # /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
+
+# Forwarded to the resident llama-server (#11705). Slot save / restore stays denied: Studio owns slot persistence.
+_PASSTHROUGH_ROUTES = frozenset(
+    {
+        ("GET", "metrics"),
+        ("GET", "slots"),
+        ("POST", "tokenize"),
+        ("POST", "detokenize"),
+    }
+)
+_PASSTHROUGH_TIMEOUT_S = 30.0
 
 # The /v1 entries Studio does not implement. A test asserts each is really absent from
 # the assembled app, so implementing one fails CI instead of being shadowed by a 404.
@@ -143,9 +157,10 @@ def _server_props() -> dict:
     # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
-    props["endpoint_slots"] = False
     props["endpoint_props"] = False
-    props["endpoint_metrics"] = False
+    passthrough = llama_loaded and not _caller_is_managed_account()
+    props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
+    props["endpoint_metrics"] = passthrough and props.get("endpoint_metrics") is True
 
     # Only when llama-server owns the resident model: with MLX loaded, reading the
     # unloaded llama backend describes a serving model as having no context or slots.
@@ -196,6 +211,76 @@ def _resident_hidden_from_caller() -> bool:
     return bool(slot) and account_access.resident_hidden("chat", slot)
 
 
+def _caller_is_managed_account() -> bool:
+    from hub.services.models import account_access
+    return account_access.managed_account()
+
+
+def _upstream_client() -> httpx.AsyncClient:
+    # verify=False: plain HTTP to loopback, skips loading the CA bundle per call (~35 ms).
+    return httpx.AsyncClient(trust_env = False, verify = False)
+
+
+def _engine_error(status_code: int, message: str) -> JSONResponse:
+    error_type = "unavailable_error" if status_code == 503 else "not_found_error"
+    return JSONResponse(
+        status_code = status_code,
+        content = {"error": {"code": status_code, "message": message, "type": error_type}},
+    )
+
+
+async def _forward_to_llama_server(request: Request, path: str) -> Response:
+    # Owner only: /slots and /metrics are server-wide, not scoped per account.
+    if await asyncio.to_thread(_caller_is_managed_account):
+        return _engine_error(404, "API endpoint not found")
+    llama_backend = _inference().get_llama_cpp_backend()
+    # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
+    port = getattr(llama_backend, "_port", None)
+    if not getattr(llama_backend, "is_loaded", False) or not port:
+        return _engine_error(503, "No llama.cpp model is loaded")
+    url = f"http://127.0.0.1:{port}/{path}"
+    headers = dict(llama_backend._auth_headers or {})
+    body = await request.body() if request.method == "POST" else None
+    if body is not None:
+        headers["Content-Type"] = request.headers.get("content-type", "application/json")
+    try:
+        async with _upstream_client() as client:
+            upstream = await client.request(
+                request.method,
+                url,
+                params = request.query_params,
+                content = body,
+                headers = headers,
+                timeout = _PASSTHROUGH_TIMEOUT_S,
+            )
+    except httpx.HTTPError as exc:
+        logger.info("llama-server passthrough %s /%s failed: %s", request.method, path, exc)
+        return _engine_error(503, "llama.cpp server is not reachable")
+    return Response(
+        content = upstream.content,
+        status_code = upstream.status_code,
+        media_type = upstream.headers.get("content-type"),
+    )
+
+
+def _make_passthrough(path: str):
+    async def passthrough(request: Request, current_subject: str = Depends(get_current_subject)):
+        return await _forward_to_llama_server(request, path)
+
+    passthrough.__name__ = f"llama_passthrough_{path}"
+    return passthrough
+
+
+for _method, _path in sorted(_PASSTHROUGH_ROUTES):
+    for _form in (f"/{_path}", f"/{_path}/"):
+        router.add_api_route(
+            _form,
+            _make_passthrough(_path),
+            methods = [_method],
+            include_in_schema = False,
+        )
+
+
 @router.get("/version", include_in_schema = False)
 @router.get("/version/", include_in_schema = False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
@@ -220,12 +305,16 @@ def _both_forms(path: str) -> tuple:
     return (path, path + "/")
 
 
+def _denied_methods(path: str) -> list:
+    return [m for m in _PROBE_DENIED_METHODS if (m, path) not in _PASSTHROUGH_ROUTES]
+
+
 for _probe_path in sorted(_ENGINE_PROBE_PATHS):
     for _form in _both_forms(f"/{_probe_path}"):
         router.add_api_route(
             _form,
             _probe_not_found,
-            methods = _PROBE_DENIED_METHODS,
+            methods = _denied_methods(_probe_path),
             include_in_schema = False,
         )
 
@@ -254,6 +343,8 @@ def add_get_denials(app) -> None:
     none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
+        if ("GET", path) in _PASSTHROUGH_ROUTES:
+            continue
         for form in _both_forms(f"/{path}"):
             app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
     for form in _both_forms("/slots/{id_slot}"):

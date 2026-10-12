@@ -67,6 +67,13 @@ try:
     )
 except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
+# Zoo >= unslothai/unsloth-zoo#1685 scores a biased output head; mirrored via RL_PRE_ITEMS.
+try:
+    UNSLOTH_ZOO_HAS_HEAD_BIAS = (
+        "lm_head_bias" in inspect.signature(chunked_hidden_states_selective_log_softmax).parameters
+    )
+except Exception:
+    UNSLOTH_ZOO_HAS_HEAD_BIAS = False
 # One-time PrefixGrouper gate; any import failure degrades to "PrefixGrouper off".
 _pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
 UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
@@ -2365,7 +2372,25 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            lm_head = unwrapped_model.get_output_embeddings().weight
+            from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax
+
+            output_embeddings = unwrapped_model.get_output_embeddings()
+            lm_head = output_embeddings.weight
+            lm_head_bias = getattr(output_embeddings, "bias", None)
+            if lm_head_bias is not None and not UNSLOTH_ZOO_HAS_HEAD_BIAS:
+                import warnings
+                warnings.warn(
+                    "Unsloth: this model's output head has a bias, which GRPO scoring needs "
+                    "a newer unsloth_zoo to include. Please upgrade: pip install -U unsloth_zoo",
+                    stacklevel = 2,
+                )
+                lm_head_bias = None
+            if lm_head_bias is not None:
+                from functools import partial
+                chunked_hidden_states_selective_log_softmax = partial(
+                    chunked_hidden_states_selective_log_softmax,
+                    lm_head_bias = lm_head_bias,
+                )
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
@@ -3289,6 +3314,14 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = 'torch.where(_keep, new' in _unsloth_inspect.getsource(_unsloth_zoo_RL['grpo_compute_loss'])\n"
     "except Exception:\n"
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False\n"
+)
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "try:\n"
+    "    import inspect as _unsloth_inspect\n"
+    "    from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax as _unsloth_chunked_lsm\n"
+    "    UNSLOTH_ZOO_HAS_HEAD_BIAS = 'lm_head_bias' in _unsloth_inspect.signature(_unsloth_chunked_lsm).parameters\n"
+    "except Exception:\n"
+    "    UNSLOTH_ZOO_HAS_HEAD_BIAS = False\n"
 )
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
@@ -4450,6 +4483,12 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
+    jsd_kwargs = {}
+    scaler = getattr(self.accelerator, "scaler", None)
+    if scaler is not None and scaler.is_enabled():
+        if "scaler" not in inspect.signature(distillation_chunked_jsd).parameters:
+            return _unsloth_gkd_note_fallback(self, "unsloth_zoo JSD has no GradScaler support")
+        jsd_kwargs["scaler"] = scaler
     try:
         missing = any(k not in inputs for k in ("input_ids", "attention_mask", "labels"))
     except Exception:
@@ -4573,6 +4612,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         teacher_final_logit_softcapping = teacher_softcap,
         # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
         temperature = 1.0,
+        **jsd_kwargs,
     )
     try:
         self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1

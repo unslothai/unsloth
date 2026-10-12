@@ -46,3 +46,26 @@ export function setAppliedInterfaceZoom(zoom: number): void {
   );
   for (const listener of appliedInterfaceZoomListeners) listener();
 }
+
+const ZOOMING_ATTRIBUTE = "data-interface-zooming";
+const ZOOMING_RELEASE_MS = 300;
+let zoomingRelease: ReturnType<typeof setTimeout> | null = null;
+
+export function holdSkippedContent(): void {
+  if (zoomingRelease !== null) clearTimeout(zoomingRelease);
+  zoomingRelease = null;
+  document.documentElement.setAttribute(ZOOMING_ATTRIBUTE, "");
+}
+
+export function releaseSkippedContent(): void {
+  if (zoomingRelease !== null) clearTimeout(zoomingRelease);
+  zoomingRelease = setTimeout(() => {
+    zoomingRelease = null;
+    document.documentElement.removeAttribute(ZOOMING_ATTRIBUTE);
+  }, ZOOMING_RELEASE_MS);
+}
+
+export function remeasureSkippedContent(): void {
+  holdSkippedContent();
+  releaseSkippedContent();
+}

@@ -2308,6 +2308,11 @@ DESKTOP_EOF
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
@@ -2317,8 +2322,12 @@ PLIST_EOF
         # Single-quoted heredoc + sed so $-vars in $_css_data_dir do not expand at launch.
         _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
         _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
+        # A script-only bundle may be started under Rosetta (#9467), and a translated shell hands the x86_64 slice of a universal2 venv python its arm64 wheels. LSArchitecturePriority asks Launch Services for arm64, and arch -arm64 also covers a bundle id whose Rosetta choice Launch Services already cached. hw.optional.arm64 is absent on Intel, so Intel keeps the plain exec.
         cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
 #!/bin/sh
+if [ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ] && [ -x /usr/bin/arch ]; then
+    exec /usr/bin/arch -arm64 '@@DATA_DIR@@/launch-studio.sh' "$@"
+fi
 exec '@@DATA_DIR@@/launch-studio.sh' "$@"
 STUB_EOF
         sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
@@ -3328,7 +3337,20 @@ _check_linux_deps() {
     fi
 
     if [ -n "$_optional_missing" ]; then
-        step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
+        # Off apt the Debian package names mean nothing (NixOS, Fedora, Arch, SteamOS: #4986), so name the commands probed above.
+        _shown_missing="$_optional_missing"
+        if ! command -v apt-get >/dev/null 2>&1; then
+            _shown_missing=""
+            for _m in $_optional_missing; do
+                case "$_m" in
+                    build-essential) _m="gcc" ;;
+                    libcurl4-openssl-dev) _m="curl-config" ;;
+                esac
+                _shown_missing="$_shown_missing $_m"
+            done
+            _shown_missing="${_shown_missing# }"
+        fi
+        step "deps" "using prebuilt llama.cpp (missing: $_shown_missing)" "$C_WARN"
         substep "Not required to run: Unsloth downloads a prebuilt inference engine."
         case " $_optional_missing " in
             *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
@@ -4467,6 +4489,7 @@ _TORCH_CEILING="2.12.0"
 _TORCHVISION_CEILING="0.27.0"
 _TORCHAUDIO_CEILING="2.12.0"
 # Default torch constraint; tightened for Python 3.13+ on arm64 macOS (no cp313 wheels below 2.6).
+# torch 2.4 is supported without torchcodec: install_python_stack.py's codec table starts at 2.5 (#10598).
 TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
@@ -6113,10 +6136,19 @@ _torch_release_in_window() {
     echo "no"
 }
 
-# "yes" when $1 is the cu130 index on Linux/WSL x86_64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
+# "yes" when $1 is the cu130 index on Linux/WSL x86_64 or aarch64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
 _cu130_torch213_route() {
     [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
+    [ "$(_cu130_torch213_host_ok)" = "yes" ] || { echo "no"; return; }
     _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# New installs only: torch 2.13 has no cp313t wheel, and the kernel wheels need glibc 2.35.
+_cu130_torch213_host_ok() {
+    _cth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
+    [ "$_cth_gil" = "gil-enabled" ] || { echo "no"; return; }
+    _cth_glibc=$(_uv_glibc_minor) || { echo "no"; return; }
+    [ "$_cth_glibc" -ge 35 ] 2>/dev/null && echo "yes" || echo "no"
 }
 
 # The local half of the route, with no network: it alone decides the preservation window, so a
@@ -6124,7 +6156,7 @@ _cu130_torch213_route() {
 _cu130_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
-    case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
+    case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
 }
@@ -7238,7 +7270,10 @@ _CU130_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
-    if { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+    # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
+       && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "$(_cu130_torch213_host_ok)" = "yes" ] \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi
@@ -8023,7 +8058,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.3}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.4}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -8036,7 +8071,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -8051,7 +8086,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -8280,7 +8315,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.3"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -8299,7 +8334,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.3"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.4"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8330,7 +8365,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.3" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.4" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
