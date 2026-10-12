@@ -3395,7 +3395,7 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         except ValueError:
             relative = path.name
         weights.append((path, relative))
-    # path and checkpoint keys isolate sibling builds sharing a quant.
+    # checkpoint-qualified keys isolate sibling builds that share a quant.
     keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
     for path, relative in weights:
         if keys[relative].lower() != variant.lower():

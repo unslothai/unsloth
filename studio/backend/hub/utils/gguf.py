@@ -434,7 +434,7 @@ def _fold_name(text: str, *, drop_quant: bool) -> str:
 
 
 def _checkpoint_identity(filename: str) -> Optional[str]:
-    """keep a quant directory's other words (``alpha-Q4_K_M/``) unless they repeat the file's name."""
+    """keep a quant directory's non-quant words unless they repeat the file's name."""
     parts = gguf_variant_family(filename.replace("\\", "/")).split("/")
     stem = _fold_name(parts.pop(), drop_quant = True)
     segments = []
