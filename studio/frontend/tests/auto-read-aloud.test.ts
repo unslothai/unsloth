@@ -43,6 +43,21 @@ test("stopped, failed and tool-approval replies stay silent", () => {
   }
 });
 
+test("a reply Studio marked cut off settles as complete but stays silent", () => {
+  for (const reason of [
+    "interrupted",
+    "length",
+    "cancelled",
+    "context_window",
+  ]) {
+    const cut = {
+      ...reply("complete"),
+      metadata: { custom: { incomplete: { reason } } },
+    };
+    assert.deepEqual(decideAutoRead([user, cut]), { kind: "skip" }, reason);
+  }
+});
+
 test("empty, reasoning-only and user-last threads stay silent", () => {
   assert.deepEqual(decideAutoRead([]), { kind: "skip" });
   assert.deepEqual(decideAutoRead([user]), { kind: "skip" });
@@ -67,4 +82,11 @@ test("auto read-aloud is opt-in and only a saved true turns it on", () => {
 test("the thread mounts it only where a composer is shown, not in Compare panes", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /\{!hideComposer && <AutoReadAloud \/>\}/);
+});
+
+test("a hidden chat stays silent and leaving a chat stops its own playback", () => {
+  const src = readSrc("components/assistant-ui/auto-read-aloud.tsx");
+  assert.match(src, /decision\.kind !== "speak" \|\| !active/);
+  assert.match(src, /threads\.getById\(\s*threadId,?\s*\)/);
+  assert.match(src, /speech\?\.messageId === spoken\)[\s\S]*stopSpeaking\(\)/);
 });
