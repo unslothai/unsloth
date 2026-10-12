@@ -74,6 +74,7 @@ import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
   NativeAttachmentTargetContext,
+  NativeAttachmentDragContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -3706,21 +3707,13 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  // Dropped documents go to the thread bar, which owns the RAG upload and can materialize a thread
-  // id for a chat that has not been sent to yet.
-  const handleNativeAttachmentDrop = useCallback(
-    (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
-    },
-    [artifactViewKey],
-  );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
-  const handleNativeOpenDocumentDrop = useCallback(
+  const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
@@ -3754,9 +3747,8 @@ export function ChatPage({
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
-    onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
-    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
+    onAttachDocuments: handleNativeDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
     onAttachVideo: handleNativeVideoDrop,
   });
@@ -4958,12 +4950,14 @@ export function ChatPage({
                     runtimeReady={projectRuntimeReady}
                   />
                 ) : (
+                  <NativeAttachmentDragContext.Provider value={nativeModelDropState.status === "attach"}>
                   <NativeAttachmentTargetContext.Provider
                     value={baseAttachmentTargetKey}
                   >
                     <TemporaryChatSaveBridge />
                     <SingleContent threadId={baseView.threadId} />
                   </NativeAttachmentTargetContext.Provider>
+                  </NativeAttachmentDragContext.Provider>
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
