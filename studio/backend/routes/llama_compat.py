@@ -316,36 +316,71 @@ def _catalog_id_match(catalog: list[dict], model_id: str) -> Optional[str]:
     return wanted if sep and base.strip().lower() in ids else None
 
 
+async def _chat_catalog() -> list[dict]:
+    # A task row (image, video, speech) loads through its own engine, not /load and /unload.
+    return [e for e in await _inference()._openai_catalog_objects() if e.get("task") is None]
+
+
 async def _catalog_model_id(model_id: str) -> str:
     # The caller's own catalog, so a managed account only reaches models listed to it.
-    matched = _catalog_id_match(await _inference()._openai_catalog_objects(), model_id)
+    matched = _catalog_id_match(await _chat_catalog(), model_id)
     if matched is None:
         raise HTTPException(status_code = 404, detail = "Model not found")
     return matched
 
 
-async def _resolve_load_target(model_id: str) -> tuple[str, Optional[str]]:
-    """``(model_path, gguf_variant)`` for /load, preferring the on-disk copy auto-switch would use."""
+def _resident_identifier(model_id: str) -> str:
+    """The primary resident's concrete identifier when ``model_id`` is the alias it advertises.
+
+    /unload matches the identifier and the id derived from it, not an alias such as an LM Studio
+    or scan-folder name. Kept slots route by alias inside /unload already.
+    """
+    inf = _inference()
+    from core.inference.openai_auto_download import split_model_ref
+
+    base = split_model_ref(model_id)[0]
+    backend = inf.get_llama_cpp_backend()
+    if getattr(backend, "is_loaded", False):
+        resident = getattr(backend, "model_identifier", None)
+    else:
+        backend = inf._peek_inference_backend()
+        resident = getattr(backend, "active_model_name", None)
+    advertised = getattr(backend, "_openai_advertised_id", None)
+    if resident and advertised and base.strip().lower() == advertised.strip().lower():
+        return resident
+    return model_id
+
+
+async def _resolve_load_target(model_id: str):
+    """A ``LoadRequest`` for /load, from the on-disk copy auto-switch would use when there is one."""
     from core.inference.local_model_resolver import (
         resolve_local_gguf,
         resolve_trusted_cached_local_gguf,
     )
     from core.inference.openai_auto_download import split_model_ref
+    from models.inference import LoadRequest
 
     public_id = await _catalog_model_id(model_id)
     resolved = resolve_trusted_cached_local_gguf(public_id) or await asyncio.to_thread(
         resolve_local_gguf, public_id
     )
-    if resolved is not None:
-        return resolved[0], resolved[1]
-    return split_model_ref(public_id)
+    if resolved is None:
+        model_path, variant = split_model_ref(public_id)
+        return LoadRequest(model_path = model_path, gguf_variant = variant)
+    model_path, variant, loader_id = resolved[:3]
+    request = LoadRequest(model_path = model_path, gguf_variant = variant)
+    # As auto-switch does: launch overrides keyed by the listed id, which stays the advertised id.
+    alias = loader_id or split_model_ref(public_id)[0]
+    request._override_alias_id = alias
+    request._advertised_id = alias
+    return request
 
 
 # Outside /v1: Open WebUI strips it for management calls (MODEL_MANAGEMENT_ENDPOINTS).
 @router.get("/models", include_in_schema = False)
 @router.get("/models/", include_in_schema = False)
 async def manage_list_models(current_subject: str = Depends(get_current_subject)):
-    return {"object": "list", "data": await _inference()._openai_catalog_objects()}
+    return {"object": "list", "data": await _chat_catalog()}
 
 
 # Delegate to Studio's own /load and /unload routes: same gates, account checks and tunnel padding.
@@ -356,13 +391,8 @@ async def manage_load_model(
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    from models.inference import LoadRequest
-    model_path, variant = await _resolve_load_target(body.model)
-    return await _inference().load_model(
-        LoadRequest(model_path = model_path, gguf_variant = variant),
-        fastapi_request,
-        current_subject,
-    )
+    request = await _resolve_load_target(body.model)
+    return await _inference().load_model(request, fastapi_request, current_subject)
 
 
 @router.post("/models/unload", include_in_schema = False)
@@ -371,9 +401,7 @@ async def manage_unload_model(
     body: _ModelManageBody, current_subject: str = Depends(get_current_subject)
 ):
     from models.inference import UnloadRequest
-
-    # The public id is enough: the unload matches advertised aliases (_names_the_resident_model).
-    model_id = await _catalog_model_id(body.model)
+    model_id = _resident_identifier(await _catalog_model_id(body.model))
     return await _inference().unload_model(UnloadRequest(model_path = model_id), current_subject)
 
 

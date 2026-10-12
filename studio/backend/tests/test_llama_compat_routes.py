@@ -1084,15 +1084,17 @@ def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
 
 # ── Open WebUI llama.cpp model management (#10610) ──────────────────────────
 
+QWEN = "unsloth/Qwen3.8-27B-GGUF"
 
-def _management(load_status = 200):
+
+def _management(load_status = 200, catalog = None):
     """The routes double plus Studio's /load and /unload, recording what they were asked."""
-    mod = _load()
+    mod = _load(catalog = catalog)
     double = mod._inference()
     calls = []
 
     async def _load_route(request, fastapi_request, current_subject):
-        calls.append(("load", request.model_path, request.gguf_variant))
+        calls.append(("load", request.model_path, request.gguf_variant, request._advertised_id))
         if load_status != 200:
             raise HTTPException(status_code = load_status, detail = "busy")
         return {"status": "loaded", "model": request.model_path}
@@ -1115,8 +1117,9 @@ def _no_local_gguf(monkeypatch):
     return resolver
 
 
-def test_management_list_is_the_v1_catalog():
-    mod, _ = _management()
+def test_management_list_is_the_v1_chat_catalog():
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, _ = _management(catalog = CATALOG + [media])
     with _client(mod) as c:
         for path in ("/models", "/models/"):
             r = c.get(path)
@@ -1127,43 +1130,41 @@ def test_management_list_is_the_v1_catalog():
 def test_management_load_resolves_a_listed_id_through_studios_load(_no_local_gguf):
     mod, calls = _management()
     with _client(mod) as c:
-        assert c.post("/models/load", json = {"model": "unsloth/Qwen3.8-27B-GGUF"}).status_code == 200
-        assert (
-            c.post("/models/load/", json = {"model": "unsloth/qwen3.8-27b-gguf:Q8_0"}).status_code
-            == 200
-        )
-    assert calls == [
-        ("load", "unsloth/Qwen3.8-27B-GGUF", None),
-        ("load", "unsloth/qwen3.8-27b-gguf", "Q8_0"),
-    ]
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+        assert c.post("/models/load/", json = {"model": QWEN.lower() + ":Q8_0"}).status_code == 200
+    assert calls == [("load", QWEN, None, None), ("load", QWEN.lower(), "Q8_0", None)]
 
 
-def test_management_load_prefers_the_on_disk_copy(monkeypatch, _no_local_gguf):
+def test_management_load_keeps_the_listed_alias_advertised(monkeypatch, _no_local_gguf):
+    """A path load would otherwise reappear in /v1/models under the path's basename."""
     monkeypatch.setattr(
         _no_local_gguf,
         "resolve_local_gguf",
-        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", requested),
+        lambda requested, **k: ("/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen"),
     )
     mod, calls = _management()
     with _client(mod) as c:
-        assert c.post("/models/load", json = {"model": "unsloth/Qwen3.8-27B-GGUF"}).status_code == 200
-    assert calls == [("load", "/models/qwen", "UD-Q4_K_XL")]
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert calls == [("load", "/models/qwen", "UD-Q4_K_XL", "lmstudio-community/qwen")]
 
 
-def test_management_unload_names_the_catalog_id():
+def test_management_unload_maps_the_advertised_alias_to_the_resident():
+    """/unload matches the resident's identifier, not an alias such as an LM Studio name."""
     mod, calls = _management()
     with _client(mod) as c:
-        assert (
-            c.post("/models/unload", json = {"model": "unsloth/qwen3.8-27b-gguf"}).status_code == 200
-        )
-    assert calls == [("unload", "unsloth/Qwen3.8-27B-GGUF")]
+        assert c.post("/models/unload", json = {"model": QWEN.lower()}).status_code == 200
+        assert c.post("/models/unload", json = {"model": CATALOG[1]["id"]}).status_code == 200
+    assert calls == [("unload", "/media/models/qwen/model.gguf"), ("unload", CATALOG[1]["id"])]
 
 
 @pytest.mark.parametrize("path", ["/models/load", "/models/unload"])
-def test_management_rejects_unlisted_or_missing_models(path, _no_local_gguf):
-    mod, calls = _management()
+def test_management_rejects_unlisted_task_or_missing_models(path, _no_local_gguf):
+    media = {"id": "unsloth/FLUX.2-klein-GGUF", "task": "text-to-image", "loaded": True}
+    mod, calls = _management(catalog = CATALOG + [media])
     with _client(mod) as c:
         assert c.post(path, json = {"model": "someone/else"}).status_code == 404
+        # Image, video and speech rows load through their own engines, not /load and /unload.
+        assert c.post(path, json = {"model": media["id"]}).status_code == 404
         assert c.post(path, json = {"model": ""}).status_code == 422
         assert c.post(path, json = {}).status_code == 422
     assert calls == []
@@ -1172,7 +1173,7 @@ def test_management_rejects_unlisted_or_missing_models(path, _no_local_gguf):
 def test_management_load_keeps_studios_error_status(_no_local_gguf):
     mod, _ = _management(load_status = 409)
     with _client(mod) as c:
-        assert c.post("/models/load", json = {"model": "unsloth/Qwen3.8-27B-GGUF"}).status_code == 409
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 409
 
 
 def test_management_requires_a_credential():
@@ -1182,7 +1183,7 @@ def test_management_requires_a_credential():
     with TestClient(app) as c:
         assert c.get("/models").status_code == 401
         for path in ("/models/load", "/models/unload"):
-            assert c.post(path, json = {"model": "unsloth/Qwen3.8-27B-GGUF"}).status_code == 401
+            assert c.post(path, json = {"model": QWEN}).status_code == 401
     assert calls == []
 
 

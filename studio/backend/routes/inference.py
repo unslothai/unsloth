@@ -18516,7 +18516,7 @@ async def _load_model_impl(
         ollama_advertised_id = (
             await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
             if resolved_ollama_path is not None
-            else None
+            else request._advertised_id
         )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
@@ -19288,7 +19288,7 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             if replacing:
                 await asyncio.to_thread(note_model_loaded, llama_backend)
-            # None elsewhere: only an Ollama load has an identifier no client should be handed.
+            # Else None, or the catalog id a /models/load named: only those loads have an alias to keep.
             llama_backend._openai_advertised_id = ollama_advertised_id
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
@@ -19503,6 +19503,8 @@ async def _load_model_impl(
                 list(request.gpu_ids) if request.gpu_ids else None
             )
 
+        if request._advertised_id:
+            backend._openai_advertised_id = request._advertised_id
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
         )
