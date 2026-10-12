@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import pickle
+import pickletools
 import struct
 import threading
 import time
@@ -124,12 +125,34 @@ _PLAIN_GLOBALS = {
 }
 
 
+# Opcodes ``data.pkl`` may hold before the probe answers "unknown". A real torch.save checkpoint spends
+# about 0.3 opcodes per byte on its state_dict skeleton: the hosted Z-Image-Turbo FP8 and INT8 files are
+# 40k and 60k opcodes. 4M is ~65x the larger, yet bounds what the unpickler can build (each opcode makes
+# at most one object) to a few hundred MB even for a hostile file, where the 64 MiB byte cap alone admits
+# tens of millions of objects before ``_plain``'s node cap ever runs.
+MAX_PICKLE_OPS = 4_000_000
+
+
+def _pickle_ops_within(raw: bytes, limit: Optional[int] = None) -> bool:
+    """Whether ``raw`` holds at most ``limit`` (default ``MAX_PICKLE_OPS``) opcodes. Only walks the bytes
+    (nothing is built), and stops at ``limit + 1``, so an oversized pickle costs a bounded scan rather
+    than an unbounded unpickle."""
+    limit = MAX_PICKLE_OPS if limit is None else limit
+    count = 0
+    for _ in pickletools.genops(raw):
+        count += 1
+        if count > limit:
+            return False
+    return True
+
+
 class _InertUnpickler(pickle.Unpickler):
     def find_class(self, module: str, name: str) -> Any:
         plain = _PLAIN_GLOBALS.get((module, name))
         if plain is not None:
             return plain
-        return type(f"_Inert_{name}", (_Inert,), {})
+        # ONE shared stand-in: a fresh class per GLOBAL opcode let a hostile pickle mint millions of types.
+        return _Inert
 
     def persistent_load(self, pid: Any) -> Any:
         return None
@@ -165,6 +188,9 @@ def _from_pickle_zip(handle: Any) -> Optional[dict]:
         if info.file_size > MAX_PROBE_BYTES:
             return None
         raw = archive.read(names[0])
+    # Over budget is "unknown", never a refusal: the caller falls back to today's behaviour.
+    if not _pickle_ops_within(raw):
+        return None
     ckpt = _InertUnpickler(io.BytesIO(raw)).load()
     if not isinstance(ckpt, dict):
         return None

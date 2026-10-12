@@ -494,3 +494,214 @@ def test_real_torchao_int8_weight_matches_the_other_generations_layout():
     assert pq._verify_packed_fingerprint(
         {"0.weight": other}, {"fingerprint": pq.canonical_weight_fingerprint(real)}
     )
+
+
+# -- planning asks the loader's question: offline means no request, and the requested base is checked --
+
+
+def _counting_hub(hub, monkeypatch):
+    """Counts every Hub HEAD the probe makes, on top of the byte count the range server keeps."""
+    import huggingface_hub
+
+    calls: list = []
+    real = huggingface_hub.get_hf_file_metadata
+
+    def counted(url, *args, **kwargs):
+        calls.append(url)
+        return real(url, *args, **kwargs)
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", counted)
+    return calls
+
+
+def _hosted_qwen_int8(hub, meta):
+    """Serve ``meta`` under the name planning probes for Qwen-Image-2512 int8; returns ``(fam, base)``."""
+    from core.inference.diffusion_families import detect_family
+
+    base = "Qwen/Qwen-Image-2512"
+    fam = detect_family(base)
+    src = pq.resolve_prequant_source(fam, "int8", base_repo = base)
+    name = next(n for n in pq.candidate_filenames_of(src) if n.endswith("INT8.safetensors"))
+    _write_safetensors(_repo_file(hub, src.location, name), meta)
+    return fam, base
+
+
+def _current_int8_meta(**overrides):
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    meta = _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image"))
+    meta.update(overrides)
+    return {k: v for k, v in meta.items() if v is not None}
+
+
+def test_an_offline_load_plans_without_any_hub_request(hub, monkeypatch):
+    """``local_files_only`` reaches the planning probe, explicitly or from the load's scope: a cache miss
+    is "unknown" (usable, today's answer) and costs no HEAD, no range read and no probe timeout."""
+    calls = _counting_hub(hub, monkeypatch)
+    fam, base = _hosted_qwen_int8(hub, _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+
+    assert (
+        pq.usable_prequant_source(fam, "int8", base_repo = base, local_files_only = True)
+        is not None
+    )
+
+    @pq.scoped_local_files_only
+    def offline_load(**kwargs):
+        return pq.usable_prequant_source(fam, "int8", base_repo = base)
+
+    assert offline_load(local_files_only = True) is not None
+    assert calls == [] and hub.server.sent == 0
+
+    # The same planner online still reads the header and refuses the stale file.
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base) is None
+    assert calls and hub.server.sent > 0
+    assert hub.downloads == []
+
+
+def test_an_offline_denoiser_seed_cache_check_makes_no_hub_request(hub, monkeypatch):
+    from core.inference.diffusion_denoiser_prequant import denoiser_prequant_cached
+
+    calls = _counting_hub(hub, monkeypatch)
+    fam, base = _hosted_qwen_int8(hub, _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    assert denoiser_prequant_cached(fam, "int8", base_repo = base) is False
+    assert calls == [] and hub.server.sent == 0
+
+
+def test_the_hub_token_and_cache_root_reach_the_planning_probe(hub, monkeypatch):
+    import huggingface_hub
+
+    seen: dict = {}
+    real = huggingface_hub.get_hf_file_metadata
+
+    def spy(url, token = None, **kwargs):
+        seen["token"] = token
+        return real(url, token = token, **kwargs)
+
+    def cached(source, **kwargs):
+        seen["cache_dir"] = kwargs.get("cache_dir")
+        return None
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", spy)
+    monkeypatch.setattr(pq, "cached_checkpoint_path", cached)
+    fam, base = _hosted_qwen_int8(hub, _current_int8_meta())
+    src = pq.usable_prequant_source(
+        fam, "int8", base_repo = base, hf_token = "hf_secret", cache_dir = "/live/cache"
+    )
+    assert src is not None
+    assert seen == {"token": "hf_secret", "cache_dir": "/live/cache"}
+
+
+@pytest.mark.parametrize(
+    "recorded, usable",
+    [
+        ("Qwen/Qwen-Image-2512", True),  # the requested base
+        ("unsloth/Qwen-Image-2512", True),  # a mirror of it: same tail, as the loader accepts
+        ("Qwen/Qwen-Image", False),  # a different base
+        (None, False),  # no base_model_id at all: the loader refuses it for a requested base
+    ],
+)
+def test_planning_checks_the_requested_base_like_the_loader(hub, recorded, usable):
+    fam, base = _hosted_qwen_int8(hub, _current_int8_meta(base_model_id = recorded))
+    src = pq.usable_prequant_source(fam, "int8", base_repo = base)
+    assert (src is not None) is usable
+    # Planning and the loader agree, so a file planning stages is one the loader then opens.
+    hosted = src or pq.resolve_prequant_source(fam, "int8", base_repo = base)
+    assert (pq.hosted_prequant_refusal(hosted, "int8", base = base) is None) is usable
+    assert hub.downloads == []
+
+
+def test_no_requested_base_skips_the_base_check(hub):
+    fam, _ = _hosted_qwen_int8(hub, _current_int8_meta(base_model_id = "Qwen/Qwen-Image"))
+    src = pq.resolve_prequant_source(fam, "int8", base_repo = "Qwen/Qwen-Image-2512")
+    assert pq.hosted_prequant_refusal(src, "int8") is None
+    assert pq.hosted_prequant_refusal(src, "int8", base = None) is None
+
+
+# -- the inert unpickle is bounded by opcodes, not only by bytes --
+
+
+def _pickle_zip(path, payload: bytes):
+    import zipfile
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("archive/data.pkl", payload)
+    return path
+
+
+def _metadata_pickle(inner: bytes) -> bytes:
+    """A protocol-2 ``{"format": PREQUANT_FORMAT, "metadata": {"x": <inner>}}`` around raw opcodes."""
+    import pickle
+
+    def s(text):
+        raw = text.encode()
+        return b"X" + len(raw).to_bytes(4, "little") + raw
+
+    return (
+        b"\x80\x02}("
+        + s("format")
+        + s(PREQUANT_FORMAT)
+        + s("metadata")
+        + b"}("
+        + s("x")
+        + inner
+        + b"u"  # SETITEMS (metadata)
+        + b"u"  # SETITEMS (outer)
+        + pickle.STOP
+    )
+
+
+def test_every_unknown_global_shares_one_inert_stand_in():
+    import io
+
+    from core.inference.prequant_header_probe import _InertUnpickler
+
+    unpickler = _InertUnpickler(io.BytesIO(b""))
+    first = unpickler.find_class("os", "system")
+    assert first is unpickler.find_class("subprocess", "Popen")
+    assert first is unpickler.find_class("torch._utils", "_rebuild_tensor_v2")
+
+
+def test_a_pickle_over_the_opcode_budget_is_unknown_fast_and_small(tmp_path):
+    """Millions of tiny objects fit easily under the 64 MiB byte cap; the probe must answer None
+    (unknown, never a refusal) without building them."""
+    import time
+    import tracemalloc
+
+    from core.inference import prequant_header_probe as probe
+
+    lists = getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000  # EMPTY_LIST + APPEND per element: over the budget
+    bomb = _pickle_zip(tmp_path / "bomb.pt", _metadata_pickle(b"]" + b"]a" * lists))
+    assert os.path.getsize(bomb) < probe.MAX_PROBE_BYTES
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        header = probe.read_local_checkpoint_header(str(bomb))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert header is None
+    # The raw pickle itself is ~8 MB; building the lists would cost hundreds of MB.
+    assert peak < 64 * 1024 * 1024, peak
+    assert time.monotonic() - started < 30
+
+
+def test_a_globals_flood_is_unknown_without_minting_classes(tmp_path):
+    from core.inference import prequant_header_probe as probe
+
+    count = getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000  # GLOBAL + POP each
+    flood = b"".join(b"cm\nn%d\n0" % i for i in range(count))
+    path = _pickle_zip(tmp_path / "flood.pt", _metadata_pickle(flood + b"N"))
+    assert os.path.getsize(path) < probe.MAX_PROBE_BYTES
+    assert probe.read_local_checkpoint_header(str(path)) is None
+
+
+def test_a_metadata_pickle_under_the_budget_still_reads(tmp_path):
+    from core.inference import prequant_header_probe as probe
+
+    small = _pickle_zip(tmp_path / "ok.pt", _metadata_pickle(b"]" + b"]a" * 1000))
+    header = probe.read_local_checkpoint_header(str(small))
+    assert header is not None and header["format"] == PREQUANT_FORMAT
+    assert len(header["metadata"]["x"]) == 1000
+    real = _write_pt(tmp_path / "real.pt", _qwen_int8_meta(["norm"]))
+    header = probe.read_local_checkpoint_header(str(real))
+    assert header["metadata"]["exclude_name_tokens"] == ["norm"]

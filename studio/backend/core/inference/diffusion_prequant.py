@@ -1764,7 +1764,9 @@ def hosted_prequant_refusal(
         if not names:
             return None
         local = cached_checkpoint_path(source, cache_dir = cache_dir, names = names)
-        if local is None and (local_files_only or hub_offline()):
+        # A load scoped by ``scoped_local_files_only`` counts as offline too: its planners reach this through
+        # helpers that never see the flag, and a cache miss must not turn into Hub requests (and a probe timeout).
+        if local is None and (local_files_only or _LOCAL_FILES_ONLY.get() or hub_offline()):
             return None
         request = (scheme, base or "", min_features, fast_accum, component or "")
         if local is not None:
@@ -1846,6 +1848,9 @@ def usable_prequant_source(
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
+    local_files_only: bool = False,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would accept it:
     inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise resolves to None
@@ -1865,6 +1870,11 @@ def usable_prequant_source(
     primary artifact is safetensors is usable on an install that could not open a pickle at all, and
     resolving first is what lets the source say so. Any one loadable name is enough, since the
     resolver tries them in order and the first that exists wins.
+
+    ``local_files_only`` / ``hf_token`` / ``cache_dir`` are the load's own, handed to the hosted header
+    probe so planning asks exactly what the loader will: an offline load makes no Hub request here
+    either, and a gated repo is read with the caller's token. ``base_repo`` doubles as the base the
+    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does.
     """
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
@@ -1915,7 +1925,20 @@ def usable_prequant_source(
             except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
                 pass
     # Refused metadata = no source, so planning budgets the dense path before any download.
-    if src.kind == "repo" and hosted_prequant_refusal(src, scheme) is not None:
+    # Same base and same fetch rules as the loader's own probe, so a file the loader would refuse for its
+    # base_model_id is not staged under a prequant plan, and an offline load never touches the Hub here.
+    if (
+        src.kind == "repo"
+        and hosted_prequant_refusal(
+            src,
+            scheme,
+            base = base_repo,
+            hf_token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        is not None
+    ):
         return None
     return src
 

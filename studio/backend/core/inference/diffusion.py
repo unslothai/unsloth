@@ -2921,6 +2921,9 @@ class DiffusionBackend:
                 scheme,
                 path_override = kwargs.get("transformer_prequant_path"),
                 base_repo = kwargs.get("base_repo"),
+                local_files_only = bool(kwargs.get("local_files_only")),
+                hf_token = kwargs.get("hf_token"),
+                cache_dir = hub_cache_dir(),
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
@@ -4177,6 +4180,8 @@ class DiffusionBackend:
                         rung,
                         base_repo = base,
                         path_override = transformer_prequant_path,
+                        local_files_only = local_files_only,
+                        cache_dir = hub_cache_dir(),
                     )
                     if source is None:
                         continue
@@ -4267,6 +4272,9 @@ class DiffusionBackend:
                         planned,
                         base_repo = kwargs.get("base_repo"),
                         path_override = kwargs.get("transformer_prequant_path"),
+                        local_files_only = bool(kwargs.get("local_files_only")),
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
                     )
                 return self._prequant_source_hub_entry(source, hf_token, scheme = planned)
             raw = kwargs.get("transformer_quant")
@@ -4322,6 +4330,9 @@ class DiffusionBackend:
                     scheme,
                     path_override = kwargs.get("transformer_prequant_path"),
                     base_repo = kwargs.get("base_repo"),
+                    local_files_only = bool(kwargs.get("local_files_only")),
+                    hf_token = hf_token,
+                    cache_dir = hub_cache_dir(),
                 )
 
                 if source is None and auto:
@@ -4340,6 +4351,9 @@ class DiffusionBackend:
                             retry,
                             path_override = kwargs.get("transformer_prequant_path"),
                             base_repo = kwargs.get("base_repo"),
+                            local_files_only = bool(kwargs.get("local_files_only")),
+                            hf_token = hf_token,
+                            cache_dir = hub_cache_dir(),
                         )
                         # The retry REPLACED the pick, so the readability question below is about
                         # the rung actually being planned, not the one the ladder started on.
@@ -4437,7 +4451,13 @@ class DiffusionBackend:
             if _has_active_lora(loras):
                 return False
             source = usable_prequant_source(
-                fam, TQ_NVFP4, path_override = path_override, base_repo = base
+                fam,
+                TQ_NVFP4,
+                path_override = path_override,
+                base_repo = base,
+                local_files_only = local_files_only,
+                hf_token = hf_token,
+                cache_dir = hub_cache_dir(),
             )
             if source is None:
                 return False
@@ -6235,6 +6255,9 @@ class DiffusionBackend:
                             TQ_NVFP4,
                             path_override = transformer_prequant_path,
                             base_repo = base,
+                            local_files_only = local_files_only,
+                            hf_token = hf_token,
+                            cache_dir = hub_cache_dir(),
                         )
                         is None,
                     )
@@ -6570,6 +6593,9 @@ class DiffusionBackend:
                                 scheme,
                                 path_override = transformer_prequant_path,
                                 base_repo = base,
+                                local_files_only = local_files_only,
+                                hf_token = hf_token,
+                                cache_dir = hub_cache_dir(),
                             )
                             if scheme is not None
                             else None
@@ -7087,6 +7113,9 @@ class DiffusionBackend:
                                                 pipeline_seed_scheme,
                                                 base_repo = base,
                                                 path_override = transformer_prequant_path,
+                                                local_files_only = local_files_only,
+                                                hf_token = hf_token,
+                                                cache_dir = hub_cache_dir(),
                                             ),
                                             next(iter(seeded.values()), None),
                                         )
