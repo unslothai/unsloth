@@ -224,7 +224,9 @@ class TestAParkedResumeWaitsThroughAMovingPool:
         from core.inference import llama_preemption
 
         source = inspect.getsource(llama_preemption.ControllerPreemptionPolicy.await_resume)
-        assert "future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0)" in source
+        # The inner wait is handed the same absolute bound, which the outer one shares.
+        assert "hard_deadline_at = hard_deadline," in source
+        assert "future.result(timeout = max(0.0, hard_deadline - time.monotonic()) + 5.0)" in source
         assert "future.cancel()" in source
 
     @pytest.mark.asyncio

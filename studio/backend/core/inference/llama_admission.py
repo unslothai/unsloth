@@ -592,12 +592,14 @@ class LlamaAdmissionLease:
         poll_s: float = 0.02,
         timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
         progress = None,
+        hard_deadline_at: Optional[float] = None,
     ) -> bool:
         """Take the room back after a preemption, waiting until the cache has it.
 
         ``progress`` is an optional callable whose result changes whenever the backend does
         work, which turns ``timeout_s`` into a stall bound that resets on each change,
-        capped at ``_MAX_REPARK_WAIT_MULTIPLE`` times itself.
+        capped at ``_MAX_REPARK_WAIT_MULTIPLE`` times itself. ``hard_deadline_at`` (monotonic)
+        is a caller's own absolute bound, which this wait does not start afresh.
 
         ``tokens`` is re-stated rather than remembered, because a resumed run carries the
         partial it already generated. No double-charge: both paths commit it themselves.
@@ -626,6 +628,10 @@ class LlamaAdmissionLease:
         hard_deadline = (
             None if patience is None else time.monotonic() + patience * _MAX_REPARK_WAIT_MULTIPLE
         )
+        if hard_deadline_at is not None:
+            hard_deadline = (
+                hard_deadline_at if hard_deadline is None else min(hard_deadline, hard_deadline_at)
+            )
         last_progress = progress() if progress is not None else None
         if commitment_only:
             # Stall, not wall clock: a resume queued behind a long answer waits through

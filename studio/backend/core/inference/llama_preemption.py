@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.inference.llama_admission import (
-    _MAX_REPARK_WAIT_MULTIPLE,
     LlamaAdmissionLease,
     _bool_env,
 )
@@ -2073,21 +2072,32 @@ class ControllerPreemptionPolicy:
             self._controller.end_resume(self._gen_id)
         try:
             try:
+                # The room wait's own hard deadline, not a fresh one: the absolute bound
+                # covers the whole pause, slot line included.
                 coro = lease.resume_async(
                     want,
                     timeout_s = timeout,
                     cancel_event = cancel_event,
                     progress = self._controller.progress_signature,
+                    hard_deadline_at = hard_deadline,
                 )
             except TypeError:
-                # An older lease without the stall-aware wait.
-                coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
+                try:
+                    coro = lease.resume_async(
+                        want,
+                        timeout_s = timeout,
+                        cancel_event = cancel_event,
+                        progress = self._controller.progress_signature,
+                    )
+                except TypeError:
+                    # An older lease without the stall-aware wait.
+                    coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             # A backstop for a loop that never runs the coroutine at all. resume_async resets
-            # its own bound on progress up to its hard deadline, so this waits as long, and on
-            # giving up cancels it: left running, it kept its place in the slot line.
+            # its own bound on progress up to the same hard deadline, so this waits as long,
+            # and on giving up cancels it: left running, it kept its place in the slot line.
             try:
-                got = bool(future.result(timeout = timeout * _MAX_REPARK_WAIT_MULTIPLE + 5.0))
+                got = bool(future.result(timeout = max(0.0, hard_deadline - time.monotonic()) + 5.0))
             except BaseException:
                 future.cancel()
                 raise
