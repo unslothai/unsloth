@@ -145,7 +145,9 @@ def open_chat_settings(page, url):
     notice = page.get_by_role("button", name = "Remind me later", exact = True)
     if notice.is_visible():
         notice.click()
-    expect(page.get_by_text("Tool output length", exact = True)).to_be_visible(timeout = 30000)
+    expect(page.get_by_role("combobox", name = "Tool output length", exact = True)).to_have_text(
+        "16,000 (default)", timeout = 30000
+    )
 
 
 def scene(playwright, engine, label, state, api, auth, evidence):
