@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import functools
 import inspect
 import os
 import sys
@@ -25,6 +26,15 @@ MARK = "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"
 class _Namespace(dict):
     def __missing__(self, name):
         return getattr(builtins, name, None)
+
+
+def _torch_or_stub():
+    """The fakes here are not nn.Modules, so without torch the lifted code takes its non-Module path."""
+    try:
+        import torch
+    except ImportError:
+        return types.SimpleNamespace(nn = types.SimpleNamespace(Module = type("_NoTorch", (), {})))
+    return torch
 
 
 def _fast_base_model():
@@ -48,10 +58,13 @@ def _fast_base_model():
             "_is_unarmed",
             "arm_gradient_checkpointing",
             "set_module_gradient_checkpointing",
+            "switch_training_mode",
+            "_mode_switch_class_info",
+            "_has_gradient_checkpointing",
         ):
             node.decorator_list = []
             wanted.insert(0, node)
-    namespace = _Namespace(os = os, inspect = inspect)
+    namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
     module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
     for name in ("for_inference", "for_training"):

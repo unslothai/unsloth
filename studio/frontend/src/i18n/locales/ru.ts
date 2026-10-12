@@ -1501,6 +1501,8 @@ export const ru = {
         sectionTitle: "Чтение вслух",
         buttonLabel: "Кнопка чтения вслух",
         buttonDescription: "Показывать в ответах ассистента",
+        autoLabel: "Читать ответы автоматически",
+        autoDescription: "Читать каждый ответ вслух сразу после завершения",
         engineLabel: "Движок TTS",
         engineSystemDescription: "Встроенные голоса устройства",
         engineStudioDescription: "Использует модель речи, загруженную в Аудио",
