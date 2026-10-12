@@ -701,15 +701,21 @@ def test_vscode_uses_insiders_only_without_stable(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "status, tools",
+    "status, tools, vision",
     [
-        ({"model_identifier": MODEL["id"], "supports_tools": False}, False),
-        ({"model_identifier": MODEL["id"], "supports_tools": True}, True),
-        ({"model_identifier": "unsloth/other-GGUF", "supports_tools": False}, True),
-        ({}, True),
+        ({"model_identifier": MODEL["id"], "supports_tools": False}, False, False),
+        ({"model_identifier": MODEL["id"], "supports_tools": True, "is_vision": True}, True, True),
+        (
+            {"model_identifier": "unsloth/other-GGUF", "supports_tools": False, "is_vision": True},
+            True,
+            False,
+        ),
+        ({}, True, False),
     ],
 )
-def test_vscode_offers_agent_mode_only_to_tool_capable_models(studio, monkeypatch, status, tools):
+def test_vscode_reads_tool_and_vision_support_from_the_served_model(
+    studio, monkeypatch, status, tools, vision
+):
     config = _vscode_config(studio, monkeypatch)
     monkeypatch.setattr(start, "_inference_status", lambda base, key: status)
 
@@ -717,5 +723,62 @@ def test_vscode_offers_agent_mode_only_to_tool_capable_models(studio, monkeypatc
 
     assert result.exit_code == 0, result.output
     (model,) = json.loads(config.read_text())[0]["models"]
-    assert model["toolCalling"] is tools
+    assert (model["toolCalling"], model["vision"]) == (tools, vision)
     assert ("Ask mode" in result.output) is not tools
+
+
+def test_vscode_keeps_what_the_user_put_in_an_unsloth_group(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    mine = {"id": "my/finetune", "name": "Mine", "url": "http://127.0.0.1:8888/v1"}
+    config.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "Unsloth",
+                    "vendor": "customendpoint",
+                    "apiType": "responses",
+                    "models": [mine],
+                }
+            ]
+        )
+    )
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    first = MODEL["id"]
+    monkeypatch.setitem(MODEL, "id", "unsloth/Qwen3.5-4B-GGUF")
+
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+
+    (group,) = json.loads(config.read_text())
+    assert group["apiType"] == "responses"
+    ids = [m["id"] for m in group["models"]]
+    assert ids == ["my/finetune", "unsloth/Qwen3.5-4B-GGUF"] and first not in ids
+    assert group["models"][0] == mine
+    assert group["models"][1]["apiType"] == "chat-completions"
+
+
+def test_vscode_mints_its_own_key_when_the_explicit_one_was_rejected(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    # _connect swapped an exported key meant for another server for one this server accepts.
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (BASE, CLI_KEY, dict(MODEL)))
+    monkeypatch.setenv("UNSLOTH_API_KEY", "sk-unsloth-elsewhere")
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    (model,) = json.loads(config.read_text())[0]["models"]
+    assert model["requestHeaders"] == {"Authorization": f"Bearer {APP_KEY}"}
+
+
+def test_vscode_under_wsl_writes_the_windows_vscode_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "linux"))
+    code = "/mnt/c/Users/me/AppData/Local/Programs/Microsoft VS Code/bin/code"
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda cmd: code)
+    monkeypatch.setattr(start, "_wsl_windows_user_profile", lambda exe, app: tmp_path / "win")
+    windows = tmp_path / "win" / "AppData" / "Roaming" / "Code" / "User" / "chatLanguageModels.json"
+    assert start._vscode_models_path() == windows
+
+    # A VS Code installed inside the distro keeps its own user dir.
+    (tmp_path / "linux" / "Code").mkdir(parents = True)
+    linux = tmp_path / "linux" / "Code" / "User" / "chatLanguageModels.json"
+    assert start._vscode_models_path() == linux

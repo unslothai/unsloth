@@ -3254,7 +3254,7 @@ def write_codex_subagent_bridge(
     return path
 
 
-def _wsl_windows_user_profile(executable: str) -> Path:
+def _wsl_windows_user_profile(executable: str, app: str = "Codex") -> Path:
     """Return the Windows user profile as a path accessible from WSL."""
     profile = os.environ.get("USERPROFILE", "").strip()
     if not profile:
@@ -3270,13 +3270,13 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             ).strip()
         except UnicodeDecodeError as exc:
             _fail(
-                f"Could not read the Windows user profile for Codex ({exc}); "
+                f"Could not read the Windows user profile for {app} ({exc}); "
                 "set USERPROFILE in the WSL environment, for example through WSLENV."
             )
         except (OSError, subprocess.CalledProcessError) as exc:
-            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+            _fail(f"Could not find the Windows user profile for {app}: {exc}")
     if not profile or profile == "%USERPROFILE%":
-        _fail("Could not find the Windows user profile for Codex.")
+        _fail(f"Could not find the Windows user profile for {app}.")
     if profile.startswith("/"):
         return Path(profile)
     try:
@@ -6118,6 +6118,10 @@ def _vscode_models_path() -> Path:
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        code = _wsl_windows_executable(["code"])
+        if code and not (root / "Code").exists() and not (root / "Code - Insiders").exists():
+            # Under WSL, Windows VS Code reads its own user dir, not the distro's.
+            root = _wsl_windows_user_profile(code, "VS Code") / "AppData" / "Roaming"
     app = "Code"
     if not (root / "Code").exists() and (root / "Code - Insiders").exists():
         app = "Code - Insiders"
@@ -6153,52 +6157,59 @@ def _vscode_models_text(
     entry: dict,
     max_tokens: Optional[int] = None,
     tool_calling: bool = True,
+    vision: bool = False,
+    replaced: frozenset = frozenset(),
 ) -> Optional[str]:
     groups = _vscode_groups(path, text)
     window = int(
         entry.get("context_length") or entry.get("max_context_length") or _VSCODE_DEFAULT_CONTEXT
     )
     output = _agent_output_limit(window, max_tokens)
-    # The key rides in a header: a raw apiKey is read as a secret-storage reference and dropped.
-    group = {
-        "name": _VSCODE_GROUP,
-        "vendor": "customendpoint",
+    model = {
+        "id": entry["id"],
+        "name": entry["id"],
+        "url": f"{base}/v1/chat/completions",
         "apiType": "chat-completions",
-        "models": [
-            {
-                "id": entry["id"],
-                "name": entry["id"],
-                "url": f"{base}/v1/chat/completions",
-                # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
-                "toolCalling": tool_calling,
-                "vision": False,
-                "contextWindow": window,
-                "maxInputTokens": window - output,
-                "maxOutputTokens": output,
-                "requestHeaders": {"Authorization": f"Bearer {key}"},
-            }
-        ],
+        # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
+        "toolCalling": tool_calling,
+        "vision": vision,
+        "contextWindow": window,
+        "maxInputTokens": window - output,
+        "maxOutputTokens": output,
+        # A raw apiKey is read as a secret-storage reference and dropped, so the key rides here.
+        "requestHeaders": {"Authorization": f"Bearer {key}"},
     }
     index = next((i for i, g in enumerate(groups) if _is_unsloth_vscode_group(g)), None)
     updated = list(groups)
     if index is None:
-        updated.append(group)
+        updated.append({"name": _VSCODE_GROUP, "vendor": "customendpoint", "models": [model]})
     else:
+        # Replace only the models this command wrote; the rest of the group is the user's.
+        group = dict(groups[index])
+        drop = replaced | {entry["id"]}
+        kept = [
+            m
+            for m in group.get("models") or []
+            if not (isinstance(m, dict) and m.get("id") in drop)
+        ]
+        group["models"] = [*kept, model]
         updated[index] = group
     if updated == groups:
         return text
     return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
 
 
-def _vscode_tool_calling(base: str, key: str, entry: dict) -> bool:
+def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     status = _inference_status(base, key)
     resident = any(
         _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
         for status_id in (status.get("active_model"), status.get("model_identifier"))
         if status_id
     )
-    # Only a status about this model can rule tools out; an older server reports nothing.
-    return not (resident and status.get("supports_tools") is False)
+    if not resident:
+        # Only a status about this model can vouch for it; an older server reports nothing.
+        return True, False
+    return status.get("supports_tools") is not False, status.get("is_vision") is True
 
 
 def _add_vscode_provider(
@@ -6207,6 +6218,7 @@ def _add_vscode_provider(
     entry: dict,
     max_tokens: Optional[int] = None,
     tool_calling: bool = True,
+    vision: bool = False,
 ) -> None:
     target = _AppTarget("vscode", "VS Code", _vscode_models_path())
     state, key_id = {}, None
@@ -6215,9 +6227,23 @@ def _add_vscode_provider(
             target, base, explicit_key, _vscode_groups
         )
         new_text = _vscode_models_text(
-            text, target.path, base, key, entry, max_tokens, tool_calling
+            text,
+            target.path,
+            base,
+            key,
+            entry,
+            max_tokens,
+            tool_calling,
+            vision,
+            frozenset(state.get("models") or ()),
         )
-        new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
+        new_state = {
+            "path": str(target.path),
+            "base": base,
+            "key": key,
+            "key_id": key_id,
+            "models": [entry["id"]],
+        }
         _save_app_config(target, state_path, state, new_state, text, new_text)
     except BaseException:
         _revoke_new_app_key(base, key_id, state)
@@ -7213,4 +7239,7 @@ def vscode(
         launch = launch,
         server_options = server_options,
     )
-    _add_vscode_provider(base, api_key, entry, max_tokens, _vscode_tool_calling(base, key, entry))
+    tool_calling, vision = _vscode_capabilities(base, key, entry)
+    # An explicit key _connect rejected for a server it just started must not be saved.
+    explicit = api_key if key == api_key else None
+    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision)
