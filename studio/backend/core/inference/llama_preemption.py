@@ -1108,9 +1108,16 @@ class PreemptionController:
             return need <= self._solo_ceiling_locked()
         return False
 
-    def observe(self, gen_id: str, generated: int) -> List["Participant"]:
+    def observe(
+        self,
+        gen_id: str,
+        generated: int,
+        *,
+        plan: bool = True,
+    ) -> List["Participant"]:
         """Live growth during generation, and THE watermark sweep. It cannot live only between
-        rounds: one round can generate thousands of tokens. Returns whoever must stop, signalled.
+        rounds: one round can generate thousands of tokens. Returns whoever must stop, signalled;
+        ``plan = False`` records the growth only, for a caller that reclaims before it plans.
 
         Gated first: off, the surfaces hand out `on_tokens = None` and no chat reaches here, but
         the tool loops re-baseline through `note_tokens`, and that sweeps."""
@@ -1136,6 +1143,8 @@ class PreemptionController:
                 # streaming only tool-call deltas left a chat unpreemptable past the ceiling.
                 if participant.state in _DECODES_WHEN_TOKENS_ARRIVE:
                     participant.state = ParticipantState.DECODING
+        if not plan:
+            return []
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 

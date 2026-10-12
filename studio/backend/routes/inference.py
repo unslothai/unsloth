@@ -3053,21 +3053,20 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
             # The growth goes on the ledger BEFORE any reading: the `/slots` round trip is
             # synchronous with a three second timeout, and the server keeps decoding while
             # it is out, so a count held back behind it can outrun the reaction headroom.
-            victims = controller.observe(completion_id, generated)
             if _server_parks_raw_streams(llama_backend):
                 # The server parks slots itself: no reading, no planning, no erase here.
+                controller.observe(completion_id, generated, plan = False)
                 return
             # A solo chat has nobody to preempt and nobody waiting for its cells, so the
             # round trip can decide nothing there. Admission and the resume wait pass
-            # `force`, so both fresh-read barriers still read. Contended, it is read even
-            # after a choice: the reclaim below plans from this reading.
-            if controller.contended():
+            # `force`, so both fresh-read barriers still read. Contended, the plan waits for
+            # the reading: the refresh erases idle residue first, and a chat signalled off the
+            # cached figure would be paused for room that erase was about to give.
+            contended = controller.contended()
+            victims = controller.observe(completion_id, generated, plan = not contended)
+            if contended:
                 _gguf_refresh_residency(controller)
-                # Again even after a choice: the fresh reading can show more growth than the
-                # cached one the first victims were picked against.
-                victims = list(victims) + [
-                    v for v in controller.plan_preemptions(needed = 0) if v not in victims
-                ]
+                victims = controller.plan_preemptions(needed = 0)
             if victims:
                 # Dead residue first: an idle slot's cache belongs to a finished request, so
                 # erasing it costs a future prefix hit where pausing costs a conversation.

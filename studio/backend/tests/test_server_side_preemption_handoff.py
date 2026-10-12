@@ -341,6 +341,18 @@ class TestADurableRunRelaysThePause:
             "recomputed",
         ]
 
+    def test_the_queue_comments_reach_a_follower_once_per_change(self):
+        # The legacy stream shows "Waiting for a free slot" off these; the wait repeats every
+        # keepalive while queued, and a later requeue is a change.
+        last: list = []
+        relayed = []
+        for piece in (": admission-wait\n\n",) * 4 + (
+            ": admission-done\n\n",
+            ": admission-wait\n\n",
+        ):
+            relayed += [c["_admissionStatus"] for c in _admission_status_chunks(piece, last)]
+        assert relayed == ["waiting", "admitted", "waiting"]
+
 
 class TestEverySignalTheClientReadsHasAProducer:
     """The one cross-language contract here: the client understands four comments, and a
