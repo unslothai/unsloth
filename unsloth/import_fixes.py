@@ -5219,6 +5219,52 @@ def patch_bitsandbytes_paged_optimizer_resume():
     Optimizer8bit.load_state_dict = _unsloth_load_state_dict
 
 
+def patch_bitsandbytes_optimizer_step_sync():
+    """Skip bitsandbytes' per-parameter device sync when the optimizer is not paged.
+    Optimizer8bit.step calls sync_gpu (torch.cuda.synchronize) after every parameter's update kernel; it
+    serialises the per-parameter prefetch of paged (unified-memory) state ("Changed prefetching", 41a9c708).
+    Non-paged state updates run in order on one stream, so there each sync only stalls the host: one per LoRA
+    tensor per step (1120 on SDXL), the step bit-identical without them. Paged optimizers keep every sync.
+    Older bitsandbytes inlines torch.cuda.synchronize() instead of sync_gpu and is left as is."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    step = getattr(Optimizer8bit, "step", None)
+    sync_gpu = getattr(bnb_optimizer, "sync_gpu", None)
+    if step is None or sync_gpu is None or getattr(step, "_unsloth_no_sync", False):
+        return
+    try:
+        if "sync_gpu(p)" not in inspect.getsource(step):
+            return
+    except (OSError, TypeError):
+        return
+    import contextvars
+
+    skip = contextvars.ContextVar("unsloth_bnb_skip_sync", default = False)
+
+    @functools.wraps(sync_gpu)
+    def _unsloth_sync_gpu(t):
+        if skip.get():
+            return None
+        return sync_gpu(t)
+
+    @functools.wraps(step)
+    def _unsloth_step(self, *args, **kwargs):
+        token = skip.set(not getattr(self, "is_paged", False))
+        try:
+            return step(self, *args, **kwargs)
+        finally:
+            skip.reset(token)
+
+    _unsloth_step._unsloth_no_sync = True
+    bnb_optimizer.sync_gpu = _unsloth_sync_gpu
+    Optimizer8bit.step = _unsloth_step
+
+
 def _raised_in_triton_host_build(exc):
     """Triton builds each kernel's launcher with the host C compiler in triton/runtime/build.py."""
     seen = set()
