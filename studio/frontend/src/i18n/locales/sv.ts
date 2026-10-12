@@ -897,6 +897,13 @@ export const sv = {
       loginHint:
         "Logga in som {username} med den här koden som lösenord och välj sedan ett nytt lösenord.",
       privateAccount: "Privat konto",
+      modelAccess: "Modellåtkomst",
+      modelAccessTitle: "Modellåtkomst för {username}",
+      modelAccessDescription: "Välj vilka Hugging Face-modeller det här kontot kan se, ladda ner, läsa in och använda via sina API-nycklar.",
+      modelAccessLabel: "Tillåtna modeller",
+      modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
+      modelAccessSave: "Spara",
+      modelAccessLimited: "Begränsad modellåtkomst",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",

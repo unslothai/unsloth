@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -378,6 +379,8 @@ _ACCOUNT_COLUMNS = (
     ("account_password_salt", "TEXT"),
     ("account_password_hash", "TEXT"),
     ("account_jwt_secret", "TEXT"),
+    # JSON list of repo ids / ``org/*`` patterns; NULL = every model (#11650).
+    ("model_allowlist", "TEXT"),
 )
 
 
@@ -614,6 +617,47 @@ def validate_account_username(username: str) -> str:
     return username
 
 
+MAX_MODEL_ALLOWLIST_ENTRIES = 500
+_MODEL_ALLOWLIST_ENTRY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9._*-]{1,96}")
+_HUB_URL_PREFIX = re.compile(r"^(?:https?://)?(?:www\.)?(?:hf\.co|huggingface\.co)/", re.IGNORECASE)
+
+
+def normalize_model_allowlist(entries) -> Optional[list[str]]:
+    """Repo ids or ``org/*`` patterns, lowercased and deduplicated; empty means unrestricted."""
+    if entries is None:
+        return None
+    normalized: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise ValueError("Model access entries must be strings")
+        entry = _HUB_URL_PREFIX.sub("", entry.strip()).split(":", 1)[0].strip("/")
+        if not entry:
+            continue
+        if _MODEL_ALLOWLIST_ENTRY.fullmatch(entry) is None:
+            raise ValueError(
+                f"{entry!r} is not a Hugging Face model id such as unsloth/Qwen3-4B-GGUF or unsloth/*"
+            )
+        entry = entry.lower()
+        if entry not in normalized:
+            normalized.append(entry)
+    if len(normalized) > MAX_MODEL_ALLOWLIST_ENTRIES:
+        raise ValueError(f"At most {MAX_MODEL_ALLOWLIST_ENTRIES} models can be listed")
+    return normalized or None
+
+
+def _decode_model_allowlist(raw) -> Optional[list[str]]:
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        # A corrupt row must not silently grant every model.
+        return []
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, str)]
+
+
 def _public_account(row) -> dict:
     return {
         "account_id": row["account_id"],
@@ -622,6 +666,11 @@ def _public_account(row) -> dict:
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
         "setup_code_pending": bool(row["setup_code_hash"]),
+        "model_allowlist": (
+            _decode_model_allowlist(row["model_allowlist"])
+            if "model_allowlist" in row.keys()
+            else None
+        ),
     }
 
 
@@ -816,6 +865,42 @@ def set_account_active(account_id: str, is_active: bool) -> dict:
         finally:
             conn.close()
     return result
+
+
+def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]]) -> dict:
+    from auth.policy import account_mutation
+
+    allowlist = normalize_model_allowlist(allowlist)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _managed_account(conn, account_id)
+                conn.execute(
+                    "UPDATE auth_user SET model_allowlist = ? WHERE account_id = ?",
+                    (None if allowlist is None else json.dumps(allowlist), account_id),
+                )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
+def account_model_allowlist(account_id: str) -> Optional[tuple[str, ...]]:
+    """``None`` = every model. The owner is never restricted."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT role, model_allowlist FROM auth_user WHERE account_id = ?", (account_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    # A deleted account is fenced by credential revocation, not here.
+    if row is None or row["role"] == "owner":
+        return None
+    allowlist = _decode_model_allowlist(row["model_allowlist"])
+    return None if allowlist is None else tuple(allowlist)
 
 
 def delete_account(account_id: str, retire) -> None:
