@@ -3866,7 +3866,24 @@ def _gemma_coerce_scalar(raw: str) -> Any:
     """Coerce an unquoted Gemma value to bool/int/float/None, else keep str (quotes stripped first
     so quoted/unquoted variants compare identical). Numbers are JSON number literals only."""
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+    if not raw:
+        return raw
+    first = raw[0]
+    if first in "-0123456789":
+        # Plain JSON integers skip the regex; isascii() rejects non-ASCII digits that int() would accept.
+        digits = raw[1:] if first == "-" else raw
+        if digits.isdigit() and digits.isascii() and (digits[0] != "0" or len(digits) == 1):
+            try:
+                return int(raw)
+            except ValueError:
+                # Past sys.get_int_max_str_digits(); json.loads refuses it too, so the wrapped form keeps a string.
+                return raw
+        if _GEMMA_JSON_NUMBER_RE.fullmatch(raw) is None:
+            return raw
+        value = float(raw)
+        # "1e999" overflows to inf, which json.dumps writes as a bare Infinity.
+        return raw if abs(value) == float("inf") else value
+    if len(raw) >= 2 and first == raw[-1] and first in "\"'":
         return raw[1:-1]
     if raw == "true":
         return True
@@ -3874,18 +3891,7 @@ def _gemma_coerce_scalar(raw: str) -> Any:
         return False
     if raw == "null":
         return None
-    number = _GEMMA_JSON_NUMBER_RE.fullmatch(raw)
-    if number is None:
-        return raw
-    if number.group(1) is None and number.group(2) is None:
-        try:
-            return int(raw)
-        except ValueError:
-            # Past sys.get_int_max_str_digits(); json.loads refuses it too, so the wrapped form keeps a string.
-            return raw
-    value = float(raw)
-    # "1e999" overflows to inf, which json.dumps writes as a bare Infinity.
-    return raw if abs(value) == float("inf") else value
+    return raw
 
 
 def _gemma_strip_quoted_leaves(value: Any) -> Any:
