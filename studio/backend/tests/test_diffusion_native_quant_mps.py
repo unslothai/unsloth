@@ -213,3 +213,39 @@ def test_image_gate_still_refuses_other_schemes_on_mps(monkeypatch, pinned):
 def test_image_gate_refuses_int8_on_a_gguf_load_on_mps(monkeypatch):
     with pytest.raises(RuntimeError, match = "transformer_quant"):
         _image_gate(monkeypatch, "z-image", "int8", model_kind = "gguf")
+
+
+def test_reloaded_scales_are_not_served_from_the_cache():
+    _, layer = _layer()
+    first = layer._int8pack_scale(torch.bfloat16, "cpu").clone()
+    state = layer.state_dict()
+    state["weight_scale"] = (state["weight_scale"].view(torch.float32) * 2).view(state["weight_scale"].dtype)
+    layer.load_state_dict(state)
+    assert torch.equal(layer._int8pack_scale(torch.bfloat16, "cpu").float(), first.float() * 2)
+
+
+def _reported_layer(engaged):
+    return types.SimpleNamespace(
+        scheme = "int8",
+        act_int8 = False,
+        bias = None,
+        weight_q = types.SimpleNamespace(device = torch.device("mps")),
+        int8pack_engaged = lambda dtype: engaged,
+    )
+
+
+@pytest.mark.parametrize("engaged", [True, False])
+def test_reason_names_the_metal_kernel_only_when_it_dispatches(monkeypatch, engaged):
+    monkeypatch.setattr(nq, "_first_native_linear", lambda module: _reported_layer(engaged))
+    assert ("Apple Silicon int8 kernel" in nq.native_quant_reason(object(), "int8")) is engaged
+
+
+def test_kill_switch_and_alignment_close_the_kernel_for_the_status_line(monkeypatch):
+    _, layer = _layer()
+    assert layer._int8pack_layer_ok(torch.bfloat16) is _HAS_OP
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "0")
+    assert not layer._int8pack_layer_ok(torch.bfloat16)
+    monkeypatch.delenv(nq.NATIVE_MPS_INT8PACK_ENV)
+    _, odd = _layer(n_out = 40)
+    assert not odd._int8pack_layer_ok(torch.bfloat16)
+    assert not layer.int8pack_engaged(torch.bfloat16)  # stored on CPU

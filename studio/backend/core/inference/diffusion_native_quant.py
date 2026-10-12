@@ -261,25 +261,39 @@ def native_linear_class():
         def _int8pack_scale(self, dtype: Any, device: Any) -> Any:
             """Per-row scale in ``dtype`` if that cast is exact (cached), else None: keep dequantise."""
             key = (dtype, str(device))
-            if key not in self._int8pack_scales:
+            # Keyed on the buffer's storage and version so load_state_dict / copy_ into it is never served stale.
+            stamp = (self.weight_scale.data_ptr(), self.weight_scale._version)
+            hit = self._int8pack_scales.get(key)
+            if hit is None or hit[0] != stamp:
                 scale = self.weight_scale.view(torch.float32)
                 cast = scale.to(dtype)
                 exact = bool(torch.equal(cast.float(), scale))
-                self._int8pack_scales[key] = cast.contiguous() if exact else None
-            return self._int8pack_scales[key]
+                hit = (stamp, cast.contiguous() if exact else None)
+                self._int8pack_scales[key] = hit
+            return hit[1]
 
-        def _int8pack_ok(self, x: Any) -> bool:
+        def _int8pack_layer_ok(self, dtype: Any) -> bool:
             return (
-                x.device.type == "mps"
-                and self.scheme == NATIVE_INT8
+                self.scheme == NATIVE_INT8
                 and not self.act_int8
                 and not self.rot_group
-                and x.dtype in (torch.bfloat16, torch.float16, torch.float32)
+                and dtype in (torch.bfloat16, torch.float16, torch.float32)
                 and self.in_features % _INT8PACK_ALIGN == 0
                 and self.out_features % _INT8PACK_ALIGN == 0
-                and x.numel() > 0
                 and hasattr(torch, "_weight_int8pack_mm")
                 and not mps_int8pack_disabled()
+            )
+
+        def _int8pack_ok(self, x: Any) -> bool:
+            return x.device.type == "mps" and x.numel() > 0 and self._int8pack_layer_ok(x.dtype)
+
+        def int8pack_engaged(self, dtype: Any) -> bool:
+            """Whether a ``dtype`` forward on the stored device takes the Metal int8 kernel."""
+            device = self.weight_q.device
+            return (
+                device.type == "mps"
+                and self._int8pack_layer_ok(dtype)
+                and self._int8pack_scale(dtype, device) is not None
             )
 
         def _forward_int8pack(self, x: Any) -> Any:
@@ -402,6 +416,19 @@ def native_quant_signature(module: Any) -> Optional[str]:
     return f"{layer.scheme}-w8a8" + (f"-rot{rot}" if rot else "")
 
 
+def _int8pack_reported(layer: Any) -> bool:
+    engaged = getattr(layer, "int8pack_engaged", None)
+    if engaged is None or getattr(getattr(layer, "weight_q", None), "device", None) is None:
+        return False
+    import torch
+
+    bias = getattr(layer, "bias", None)
+    try:
+        return bool(engaged(bias.dtype if bias is not None else torch.bfloat16))
+    except Exception:  # noqa: BLE001 -- a status line must not fail the load
+        return False
+
+
 def native_quant_reason(module: Any, scheme: str) -> str:
     layer = _first_native_linear(module)
     if layer is not None and getattr(layer, "act_int8", False):
@@ -411,12 +438,7 @@ def native_quant_reason(module: Any, scheme: str) -> str:
             + (f" with a g{rot} ConvRot rotation" if rot else "")
             + " (torchao-free; plain buffers, so the offload hooks can move it)"
         )
-    if (
-        layer is not None
-        and getattr(layer, "scheme", None) == NATIVE_INT8
-        and getattr(getattr(layer, "weight_q", None), "device", None) is not None
-        and layer.weight_q.device.type == "mps"
-    ):
+    if layer is not None and _int8pack_reported(layer):
         return (
             f"weight-only: {scheme} weights through the Apple Silicon int8 kernel "
             "(torchao-free; half the weight memory)"
