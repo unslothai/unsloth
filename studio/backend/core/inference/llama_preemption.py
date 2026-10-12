@@ -709,8 +709,9 @@ class PreemptionController:
         # True cells resident from the last GET /slots, None when unreadable. Includes the
         # residue of FINISHED requests, which the ledger cannot see.
         self._resident: Optional[int] = None
-        # Bumped per successful reading AND per `note_measured`, so a mark can be ordered
-        # against a probe that was already in flight when it was made.
+        # Bumped per successful reading, per `note_measured` and per probe start, so a mark can
+        # be ordered against a probe that was already in flight when it was made, and two
+        # probes against each other.
         self._resident_seq = 0
         # The clock as it stood when the last reading was recorded: a probe that started
         # before that is older than what is already here.
@@ -1095,13 +1096,15 @@ class PreemptionController:
             _log.debug("residency probe failed", exc_info = True)
 
     def residency_epoch(self) -> int:
-        """The ordering clock, read before a `/slots` probe is sent.
+        """The ordering clock, taken before a `/slots` probe is sent.
 
         Hand it back to `note_resident` as ``started_at_seq`` so a sample that was already
         in flight when a holder called `note_measured` is not mistaken for one taken after
-        its prefill.
+        its prefill. Advanced on every call, so two probes with nothing recorded between
+        their starts are still ordered, and the later one is not dropped as stale.
         """
         with self._lock:
+            self._resident_seq += 1
             return self._resident_seq
 
     def note_resident(
