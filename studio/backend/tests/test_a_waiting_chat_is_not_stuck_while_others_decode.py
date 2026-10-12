@@ -44,7 +44,9 @@ def _pinned_controller(key: str) -> PreemptionController:
     controller.configure(budget = _BUDGET, kv_unified = True)
     controller.register("holder", tokens = 1000, signal = PreemptSignal())
     controller.note_tokens("holder", 1000)
-    controller.note_resident(_RESIDENT)
+    # Measured, so a token it decodes lands inside the reading rather than on top of it.
+    controller.note_measured("holder")
+    controller.note_resident(_RESIDENT, started_at_seq = controller.residency_epoch())
     return controller
 
 
