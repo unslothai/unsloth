@@ -147,3 +147,23 @@ def test_for_training_does_not_swallow_unrelated_errors(module, class_name):
 
     with pytest.raises(RuntimeError):
         _for_training(module, class_name)(_Exploding())
+
+
+@pytest.mark.parametrize("module, class_name", SITES)
+def test_a_custom_train_on_the_wrapper_chain_has_the_final_say(module, class_name):
+    torch = pytest.importorskip("torch")
+
+    class _StaysInEval(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Linear(2, 2)
+
+        def train(self, mode = True):
+            super().train(mode)
+            self.training = False
+            return self
+
+    model = _StaysInEval()
+    _for_training(module, class_name)(model, use_gradient_checkpointing = False)
+    assert model.training is False
+    assert model.model.training is True

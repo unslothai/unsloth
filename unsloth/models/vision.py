@@ -5038,7 +5038,8 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
-        checkpointing = switch_training_mode(model, True)
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
             model, use_gradient_checkpointing, checkpointing
         )
@@ -5064,6 +5065,7 @@ class FastBaseModel:
             _for_training(m)
             m = m.model
         _for_training(m)
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)

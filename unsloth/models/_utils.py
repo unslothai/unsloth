@@ -8783,7 +8783,11 @@ def _has_gradient_checkpointing(module, on_class):
     )
 
 
-def switch_training_mode(model, training):
+def switch_training_mode(
+    model,
+    training,
+    defer = False,
+):
     """model.train() / model.eval() for for_inference / for_training, which GRPO calls every step.
 
     One walk over the tree replaces the recursive train() plus the modules() / parameters() scans that
@@ -8794,14 +8798,20 @@ def switch_training_mode(model, training):
     differs (a class override, an instance one such as _unsloth_freeze_norm_running_stats' partial,
     PreTrainedModel with kernels on, its own child traversal) gets its own train(mode) for its subtree, as
     the recursive call would; a root that differs, or overrides eval(), gets model.train() / model.eval().
+    defer=True returns (modules, apply) so the caller can set the mode after its own bookkeeping, as
+    for_training did by calling model.train() last.
     """
     if not isinstance(model, torch.nn.Module):
-        model.train() if training else model.eval()
         if training:
             for param in model.parameters():
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora
-        return [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        apply = model.train if training else model.eval
+        if defer:
+            return checkpointing, apply
+        apply()
+        return checkpointing
     flat, delegates, checkpointing = [], [], []
     seen = set()
     stack = [(model, False)]
@@ -8833,15 +8843,21 @@ def switch_training_mode(model, training):
                 if param is not None and "_fast_lora" in param.__dict__:
                     del param._fast_lora
         stack.extend((child, covered) for child in module._modules.values())
-    if delegates and delegates[0] is model:
-        model.train() if training else model.eval()
-        return checkpointing
-    for module, plain_setattr in flat:
-        # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
-        if plain_setattr:
-            module.__dict__["training"] = training
-        else:
-            module.training = training
-    for module in delegates:
-        module.train(training)
+
+    def apply():
+        if delegates and delegates[0] is model:
+            model.train() if training else model.eval()
+            return
+        for module, plain_setattr in flat:
+            # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
+            if plain_setattr:
+                module.__dict__["training"] = training
+            else:
+                module.training = training
+        for module in delegates:
+            module.train(training)
+
+    if defer:
+        return checkpointing, apply
+    apply()
     return checkpointing
