@@ -207,18 +207,27 @@ def test_unset_fields_take_the_generation_config_defaults_and_set_fields_win(ser
 
 
 def test_concurrent_requests_all_complete(served):
+    # 256 is well past socketserver's default listen backlog of 5: with that
+    # backlog a burst this size has connections reset every run, while 32 only
+    # tripped it now and then on a loaded runner.
     server, _ = served
-    results = [None] * 32
+    count = 256
+    results = [None] * count
+    errors = []
 
     def worker(i):
-        results[i] = _complete(server, [i])["choices"][0]["token_ids"]
+        try:
+            results[i] = _complete(server, [i])["choices"][0]["token_ids"]
+        except Exception as error:
+            errors.append(f"{i}: {type(error).__name__}: {error}")
 
-    threads = [threading.Thread(target = worker, args = (i,)) for i in range(32)]
+    threads = [threading.Thread(target = worker, args = (i,)) for i in range(count)]
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(10)
-    assert results == [[i + 1, i + 2] for i in range(32)]
+        thread.join(30)
+    assert not errors, errors[:5]
+    assert results == [[i + 1, i + 2] for i in range(count)]
 
 
 def test_pause_holds_new_requests_until_resume(served):
