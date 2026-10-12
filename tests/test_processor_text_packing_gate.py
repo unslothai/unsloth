@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A processor passed as `processing_class` with a text-only dataset may pack.
-
-FastModel returns a processor for Gemma 3 / Gemma 4 / most VLMs, and notebooks pass it straight
-to SFTTrainer. On a text-only dataset TRL tokenizes and collates through the processor's
-tokenizer, so packing and padding-free are exactly as safe as with the tokenizer passed
-directly. Anything that might carry media, or a model whose packed mask needs more than 2D
-`position_ids` (multimodal RoPE), keeps the old block.
-"""
+"""A processor `processing_class` on a text-only dataset may pack; media or mRoPE keeps the block."""
 
 from types import SimpleNamespace
 
