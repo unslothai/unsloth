@@ -233,6 +233,12 @@ def _unify_batch_schemas(base_dataset_path: Path) -> None:
         names = list(dict.fromkeys(name for table in tables for name in table.column_names))
         columns = {}
         for name in names:
+            chunks = [table.column(name) for table in tables if name in table.column_names]
+            if len(chunks) == len(tables) and all(c.type == chunks[0].type for c in chunks):
+                columns[name] = pyarrow.chunked_array(
+                    [chunk for column in chunks for chunk in column.chunks], chunks[0].type
+                )
+                continue
             values = [
                 value
                 for table in tables
