@@ -24,6 +24,8 @@ from models.inference import ChatCompletionRequest
 from state import active_generations
 from storage import chat_generation_runs_db as db
 
+from utils.first_token_timeout import track_first_token_wait
+
 logger = get_logger(__name__)
 _EVENT_BATCH_SIZE = 16
 # Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
@@ -691,9 +693,19 @@ class ChatGenerationSupervisor:
 
     async def _produce(
         self,
+        run_id,
+        cancel_event = None,
+        activity = None,
+    ) -> None:
+        with track_first_token_wait() as first_token_wait:
+            await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+
+    async def _produce_run(
+        self,
         run_id: str,
         cancel_event: threading.Event | None = None,
         activity: InferenceActivityReservation | None = None,
+        first_token_wait = None,
     ) -> None:
         cancel_event = cancel_event or threading.Event()
         if activity is None:
@@ -787,8 +799,21 @@ class ChatGenerationSupervisor:
                     if pending
                     else None
                 )
+                # Poll only to renew a backend-authorized prefill wait. Its own deadline
+                # stays authoritative; decode stalls and abandoned workers still expire.
+                renew_interval = _renew_interval_seconds()
+                timeout = renew_interval if timeout is None else min(timeout, renew_interval)
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
+                if (
+                    first_token_wait is not None
+                    and first_token_wait.active()
+                    and time.monotonic() - last_keepalive >= renew_interval
+                ):
+                    await self._try_touch_progress(run_id)
+                    last_keepalive = time.monotonic()
                 if not ready:
+                    if not pending:
+                        continue
                     await asyncio.to_thread(
                         db.append_events,
                         run_id,

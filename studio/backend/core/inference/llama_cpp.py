@@ -1394,6 +1394,12 @@ def _has_answer_artifact(text: str) -> bool:
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+)
+
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 
 
@@ -36784,7 +36790,7 @@ class LlamaCppBackend:
             trust_env = False,
             verify = _local_ssl_context(),
         ) as client:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
                 url,
@@ -36847,7 +36853,7 @@ class LlamaCppBackend:
         """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
         if first_token_deadline is None:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
         last_chunk_at: Optional[float] = None
         last_prefill_progress: Optional[float] = None
         prefill_sse_buffer = ""
@@ -36860,7 +36866,7 @@ class LlamaCppBackend:
                     remaining_s = first_token_deadline - time.monotonic()
                     if remaining_s <= 0:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
-                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
+                    LlamaCppBackend._set_stream_read_timeout(response, socket_timeout(remaining_s))
                 chunk = next(text_iter)
                 starts_output = last_chunk_at is not None
                 if chunk and last_chunk_at is None:
@@ -36878,8 +36884,9 @@ class LlamaCppBackend:
                             last_prefill_progress is None or processed > last_prefill_progress
                         ):
                             last_prefill_progress = processed
-                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            first_token_deadline = start_first_token_wait()
                 if chunk and starts_output:
+                    finish_first_token_wait()
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -36899,7 +36906,9 @@ class LlamaCppBackend:
                 continue
 
     @staticmethod
-    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
+    def _set_stream_read_timeout(
+        response: "httpx.Response", read_timeout_s: Optional[float]
+    ) -> None:
         """Lower only post-header stream reads; keep prefill timeout long."""
         try:
             timeout_ext = response.request.extensions.get("timeout")
@@ -37046,11 +37055,11 @@ class LlamaCppBackend:
 
         try:
             if first_token_deadline is None:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = start_first_token_wait()
             prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = prefill_read_timeout,
+                read = socket_timeout(prefill_read_timeout),
                 write = 10,
                 pool = 10,
             )
