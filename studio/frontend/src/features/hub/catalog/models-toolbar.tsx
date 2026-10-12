@@ -454,7 +454,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           <ModelSearchFiltersControl
             value={searchFilters}
             onChange={onSearchFiltersChange}
-            className={cn(triggerBase, "h-9 rounded-full px-3 text-ui-12p5")}
+            className={cn(
+              triggerBase,
+              "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+            )}
           />
         )}
 

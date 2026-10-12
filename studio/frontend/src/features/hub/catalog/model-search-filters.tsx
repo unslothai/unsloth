@@ -7,6 +7,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { FilterIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
 import {
   type ModelSearchFilters,
@@ -42,15 +49,33 @@ export function ModelSearchFiltersControl({
         setOpen(next);
       }}
     >
-      <PopoverTrigger asChild={true}>
-        <button
-          type="button"
-          className={className}
-          aria-label="Model size and publisher filters"
-        >
-          More filters{hasModelSearchFilters(value) ? " •" : ""}
-        </button>
-      </PopoverTrigger>
+      {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <PopoverTrigger asChild={true}>
+            <button
+              type="button"
+              className={className}
+              aria-label="Model size and publisher filters"
+            >
+              <HugeiconsIcon
+                icon={FilterIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {hasModelSearchFilters(value) && (
+                <span
+                  aria-hidden="true"
+                  className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary"
+                />
+              )}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          More filters
+        </TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="end"
         sideOffset={8}
