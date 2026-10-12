@@ -294,6 +294,8 @@ export const en = {
       pathCopied: "Path copied",
       openFailed: "Couldn't open {name}.",
       wrap: "Wrap lines",
+      reactNeedsNode: "React previews need Node.js 20.19 or newer. Install it if it's missing, then re-run Unsloth setup.",
+      reactFailed: "Couldn't prepare this preview. Run it again to retry.",
     },
     video: {
       play: "Play",

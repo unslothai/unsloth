@@ -328,6 +328,8 @@ export const he = {
       pathCopied: "הנתיב הועתק",
       openFailed: "לא ניתן לפתוח את {name}.",
       wrap: "גלישת שורות",
+      reactNeedsNode: "תצוגות מקדימות של React דורשות Node.js 20.19 ומעלה. התקן אותו אם הוא חסר, ואז הרץ שוב את ההתקנה של Unsloth.",
+      reactFailed: "לא ניתן היה להכין את התצוגה המקדימה. הרץ אותה שוב כדי לנסות שוב.",
     },
     pages: {
       searchDownloads: "חיפוש בהיסטוריית ההורדות",
