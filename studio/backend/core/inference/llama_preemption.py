@@ -971,14 +971,15 @@ class PreemptionController:
             return need <= self._solo_ceiling_locked()
         return False
 
-    def observe(self, gen_id: str, generated: int) -> List["Participant"]:
+    def observe(self, gen_id: str, generated: int, *, plan: bool = True) -> List["Participant"]:
         """Live growth during generation, and the eviction check that follows it.
 
         THE watermark sweep. Admission deliberately overcommits, so what prevents the cache
         filling is being told, often, how big each generation has become; a check only
         between rounds is too late, since one round can generate thousands of tokens.
 
-        Returns whoever must stop, already signalled.
+        Returns whoever must stop, already signalled. ``plan = False`` records the growth only,
+        for a caller that reads the cache and reclaims idle residue before it plans.
 
         Gated first: with the switch off the surfaces hand out ``on_tokens = None`` and this
         is unreachable from a chat, but the tool loops publish a round's charge through
@@ -1008,6 +1009,8 @@ class PreemptionController:
                 # until the cache overran and llama-server ended both chats.
                 if participant.state in _DECODES_WHEN_TOKENS_ARRIVE:
                     participant.state = ParticipantState.DECODING
+        if not plan:
+            return []
         # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
