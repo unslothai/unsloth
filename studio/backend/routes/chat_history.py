@@ -69,6 +69,11 @@ from storage.studio_db import (
     get_chat_message,
     list_chat_attachments_page,
     list_chat_projects,
+    count_chat_projects,
+    list_chat_sidebar_rows,
+    lookup_chat_sidebar_row_ids,
+    SidebarCursorError,
+    SIDEBAR_ROWS_MAX_LIMIT,
     list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
@@ -330,6 +335,8 @@ class ChatProject(BaseModel):
     archived: bool = False
     createdAt: int
     updatedAt: int
+    # Read only: its own last edit or its newest unarchived chat, whichever is later.
+    lastActivityAt: Optional[int] = None
 
 
 class ChatProjectWorkingFolder(BaseModel):
@@ -361,6 +368,52 @@ class ChatThreadListResponse(BaseModel):
 
 class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
+    # Projects matching the filter, whatever page was asked for.
+    total: Optional[int] = None
+
+
+# Bounds the request body: the id lists come from the user's own pins and sections.
+_SIDEBAR_ID_LIST_MAX = 10_000
+
+
+class ChatSidebarRowsRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: bool = False
+    projectId: Optional[str] = None
+    unfiledOnly: bool = False
+    includeIds: Optional[list[str]] = Field(default = None, max_length = _SIDEBAR_ID_LIST_MAX)
+    excludeIds: list[str] = Field(default_factory = list, max_length = _SIDEBAR_ID_LIST_MAX)
+    sort: Literal["updated", "manual"] = "updated"
+    manualOrder: Optional[list[str]] = Field(default = None, max_length = _SIDEBAR_ID_LIST_MAX)
+    limit: int = Field(default = 20, ge = 1, le = SIDEBAR_ROWS_MAX_LIMIT)
+    cursor: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class ChatSidebarRow(BaseModel):
+    """One sidebar row, shaped as the frontend's SidebarItem."""
+
+    id: str
+    type: Literal["single", "compare"]
+    threadIds: list[str]
+    title: str
+    createdAt: int
+    updatedAt: int
+    modifiedAt: Optional[int] = None
+    modelIds: Optional[list[str]] = None
+    isFork: Optional[bool] = None
+    projectId: Optional[str] = None
+
+
+class ChatSidebarRowsResponse(BaseModel):
+    rows: list[ChatSidebarRow]
+    nextCursor: Optional[str] = None
+    hasMore: bool
+    total: int
+
+
+class ChatSidebarThreadRowsResponse(BaseModel):
+    rowIdByThreadId: dict[str, str]
 
 
 class ChatMessageListResponse(BaseModel):
@@ -669,6 +722,52 @@ def list_threads(
         include_archived = include_archived,
     )
     return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
+
+
+# Unset optional fields stay absent, as groupThreads leaves them off a SidebarItem.
+@router.post(
+    "/sidebar/rows",
+    response_model = ChatSidebarRowsResponse,
+    response_model_exclude_unset = True,
+)
+def list_sidebar_rows(
+    payload: ChatSidebarRowsRequest, current_subject: str = Depends(get_current_subject)
+):
+    """One page of sidebar rows, compare pairs grouped before the limit. GET /threads is the
+    whole list; this is what the sidebar pages through 20 at a time."""
+    try:
+        page = list_chat_sidebar_rows(
+            archived = payload.archived,
+            project_id = payload.projectId,
+            unfiled_only = payload.unfiledOnly,
+            include_ids = payload.includeIds,
+            exclude_ids = payload.excludeIds,
+            sort = payload.sort,
+            manual_order = payload.manualOrder,
+            limit = payload.limit,
+            cursor = payload.cursor,
+        )
+    except SidebarCursorError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ChatSidebarRowsResponse(**page)
+
+
+_SIDEBAR_THREAD_ROWS_MAX = 500
+
+
+@router.get("/sidebar/thread-rows", response_model = ChatSidebarThreadRowsResponse)
+def sidebar_thread_rows(
+    thread_ids: list[str] = Query(default_factory = list),
+    current_subject: str = Depends(get_current_subject),
+):
+    """The sidebar row each thread belongs to, for threads whose row is not loaded. Takes
+    repeated `thread_ids` params; unknown ids are left out of the map."""
+    if len(thread_ids) > _SIDEBAR_THREAD_ROWS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_SIDEBAR_THREAD_ROWS_MAX} thread ids per request",
+        )
+    return ChatSidebarThreadRowsResponse(rowIdByThreadId = lookup_chat_sidebar_row_ids(thread_ids))
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
@@ -1173,13 +1272,32 @@ def delete_attachment(
 
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
-    include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
+    include_archived: bool = Query(False),
+    sort: Optional[Literal["updated", "name", "created"]] = Query(None),
+    limit: Optional[int] = Query(None, ge = 1, le = 200),
+    offset: int = Query(0, ge = 0),
+    current_subject: str = Depends(get_current_subject),
 ):
+    """Every project by default; `limit`/`offset`/`sort` page them for the sidebar."""
+    projects = list_chat_projects(
+        include_archived = include_archived, sort = sort, limit = limit, offset = offset
+    )
+    total = (
+        count_chat_projects(include_archived = include_archived)
+        if limit is not None
+        else len(projects)
+    )
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
-            for project in list_chat_projects(include_archived = include_archived)
-        ]
+            ChatProject(
+                **{
+                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    "lastActivityAt": project["lastActivityAt"],
+                }
+            )
+            for project in projects
+        ],
+        total = total,
     )
 
 
