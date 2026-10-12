@@ -5082,9 +5082,9 @@ async def _aiter_llama_stream_items(
         and stall_grace is not None
         and _install_park_aware_read(response, stall_grace)
     )
-    # Only when the grace was not installed below: there the wrapper reads the notices off the
-    # wire, and a second reader above it would only see what it already acted on.
-    park_above = None if grace_below or stall_grace is None else ServerParkNotices(stall_grace)
+    # Kept beside the grace below too: the wrapper waits a park out only on a bounded read, and
+    # an unbounded one (prefill progress) leaves the deadline to this pump.
+    park_above = None if stall_grace is None else ServerParkNotices(stall_grace)
     if track_prefill_progress:
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -5172,7 +5172,10 @@ async def _aiter_llama_stream_items(
             else:
                 stall_timeout_s = _post_first_timeout_s()
                 hard_deadline = None if stall_timeout_s is None else last_item_at + stall_timeout_s
-            if hard_deadline is not None and grace_below:
+            read_waits_out_parks = grace_below and isinstance(
+                _live_read_timeout(response), (int, float)
+            )
+            if hard_deadline is not None and read_waits_out_parks:
                 # The read below decides at the deadline and waits a park out there; this is
                 # only a backstop for a read that never returns, and firing first would end
                 # the body before the wrapper is asked.
@@ -5211,7 +5214,9 @@ async def _aiter_llama_stream_items(
                         if now >= hard_deadline:
                             # The read is neither cancelled nor restarted, so an excused
                             # deadline just widens the window this same read waits in.
-                            if not await _deadline_excused(now, waiting_first_item):
+                            if read_waits_out_parks or not await _deadline_excused(
+                                now, waiting_first_item
+                            ):
                                 raise httpx.ReadTimeout(timed_out_message)
                             continue
                     # Must not advance last_item_at, or the stall guard never fires.
@@ -5230,7 +5235,10 @@ async def _aiter_llama_stream_items(
                 if not _async_iterator_is_closed(async_iter) and (
                     hard_deadline is None
                     or now < hard_deadline
-                    or await _deadline_excused(now, waiting_first_item)
+                    or (
+                        not read_waits_out_parks
+                        and await _deadline_excused(now, waiting_first_item)
+                    )
                 ):
                     item_task = None
                     continue
@@ -5349,8 +5357,11 @@ async def _aiter_llama_stream_items(
                 last_item_at = now
                 park_since = None
             if park_above is not None:
-                # `aiter_lines` strips the newline the notices are matched on.
-                park_above.feed_line(item)
+                # `aiter_lines` strips the newline the notices are matched on; bytes keep theirs.
+                if isinstance(item, (bytes, bytearray)):
+                    park_above.feed(item)
+                else:
+                    park_above.feed_line(item)
             yield item
     finally:
         if item_task is not None:

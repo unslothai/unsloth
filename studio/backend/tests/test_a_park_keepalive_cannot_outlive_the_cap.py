@@ -365,3 +365,42 @@ def test_a_probe_excused_deadline_renews_the_configured_window():
     excused = excused[: excused.index("return True")]
     assert "first_token_deadline = now + _first_token_timeout_s()" in excused
     assert "_DEFAULT_FIRST_TOKEN_TIMEOUT_S" not in excused
+
+
+class TestAnUnboundedReadGetsNoParkGraceWithoutAPark:
+    """A prefill-progress read runs with no socket timeout, so the grace below never asks."""
+
+    @staticmethod
+    def _stalled(monkeypatch, parked: bool) -> float:
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 1.0)
+        monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 0.1)
+        monkeypatch.setattr(inference, "_install_park_aware_read", lambda response, grace: True)
+        monkeypatch.setattr(inference, "_set_stream_response_read_timeout", lambda *a, **k: None)
+        monkeypatch.setattr(inference, "_live_read_timeout", lambda response: None)
+
+        async def relay():
+            async def upstream():
+                await asyncio.sleep(30)
+                yield "never sent"
+
+            async for _ in inference._aiter_llama_stream_items(
+                upstream(),
+                first_token_deadline = time.monotonic() + 0.05,
+                response = object(),
+                track_prefill_progress = True,
+                stall_grace = lambda: parked,
+            ):
+                pass
+
+        started = time.monotonic()
+        with pytest.raises(httpx.ReadTimeout):
+            asyncio.run(relay())
+        return time.monotonic() - started
+
+    def test_a_stalled_prefill_times_out_on_its_own_window(self, monkeypatch):
+        assert self._stalled(monkeypatch, parked = False) < 0.5, "a stall got the park cap"
+
+    def test_a_parked_prefill_still_waits_up_to_the_cap(self, monkeypatch):
+        assert 0.5 < self._stalled(monkeypatch, parked = True) < 5
