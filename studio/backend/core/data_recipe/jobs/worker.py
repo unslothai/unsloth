@@ -17,7 +17,12 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable_row
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from ..service import (
+    build_config_builder,
+    create_data_designer,
+    install_public_egress_guard,
+    write_parquet_with_unified_types,
+)
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
@@ -217,10 +222,21 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
         return
 
     dataframe = read_parquet_dataset(parquet_dir)
+    # Written beside the shards first: a failed write must not take the generated batches with it.
+    staged_file = base_dataset_path / "batch_00000.parquet.merging"
+    try:
+        write_parquet_with_unified_types(
+            dataframe,
+            staged_file,
+            lambda frame: frame.to_parquet(staged_file, index = False),
+        )
+    except BaseException:
+        staged_file.unlink(missing_ok = True)
+        raise
     shutil.rmtree(parquet_dir)
     parquet_dir.mkdir(parents = True, exist_ok = True)
     merged_file = parquet_dir / "batch_00000.parquet"
-    dataframe.to_parquet(merged_file, index = False)
+    staged_file.replace(merged_file)
     _rewrite_merged_metadata(
         base_dataset_path = base_dataset_path,
         parquet_file = merged_file,
