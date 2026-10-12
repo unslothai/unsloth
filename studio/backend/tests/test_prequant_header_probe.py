@@ -540,10 +540,7 @@ def test_an_offline_load_plans_without_any_hub_request(hub, monkeypatch):
     calls = _counting_hub(hub, monkeypatch)
     fam, base = _hosted_qwen_int8(hub, _qwen_int8_meta(_STALE_INT8_EXCLUDES))
 
-    assert (
-        pq.usable_prequant_source(fam, "int8", base_repo = base, local_files_only = True)
-        is not None
-    )
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base, local_files_only = True) is not None
 
     @pq.scoped_local_files_only
     def offline_load(**kwargs):
@@ -573,7 +570,11 @@ def test_the_hub_token_and_cache_root_reach_the_planning_probe(hub, monkeypatch)
     seen: dict = {}
     real = huggingface_hub.get_hf_file_metadata
 
-    def spy(url, token = None, **kwargs):
+    def spy(
+        url,
+        token = None,
+        **kwargs,
+    ):
         seen["token"] = token
         return real(url, token = token, **kwargs)
 
@@ -622,7 +623,6 @@ def test_no_requested_base_skips_the_base_check(hub):
 
 def _pickle_zip(path, payload: bytes):
     import zipfile
-
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("archive/data.pkl", payload)
     return path
@@ -669,7 +669,9 @@ def test_a_pickle_over_the_opcode_budget_is_unknown_fast_and_small(tmp_path):
 
     from core.inference import prequant_header_probe as probe
 
-    lists = getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000  # EMPTY_LIST + APPEND per element: over the budget
+    lists = (
+        getattr(probe, "MAX_PICKLE_OPS", 4_000_000) // 2 + 1000
+    )  # EMPTY_LIST + APPEND per element: over the budget
     bomb = _pickle_zip(tmp_path / "bomb.pt", _metadata_pickle(b"]" + b"]a" * lists))
     assert os.path.getsize(bomb) < probe.MAX_PROBE_BYTES
     tracemalloc.start()
