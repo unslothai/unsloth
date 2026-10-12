@@ -145,7 +145,9 @@ fn redact_env(caps: &Captures) -> Option<String> {
 // quote; anything else after the sentinel makes it a real value.
 fn is_sentinel(value: &str) -> bool {
     let value = match value.chars().last() {
-        Some(c) if c != '>' => &value[..value.len() - c.len_utf8()],
+        Some(c) if c.is_whitespace() || "\"'\\,}];&".contains(c) => {
+            &value[..value.len() - c.len_utf8()]
+        }
         _ => value,
     };
     matches!(
@@ -319,7 +321,7 @@ fn token_re() -> &'static Regex {
 fn env_secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|"[^"\r\n]*"?|'[^'\r\n]*'?|[^\s;&"'][^\s;&]*)"#).unwrap()
+        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|(?:"[^"\r\n]*"?|'[^'\r\n]*'?)[^\s;&]*|[^\s;&"'][^\s;&]*)"#).unwrap()
     })
 }
 
@@ -633,6 +635,8 @@ mod tests {
             ("DATABASE_PASSWORD=<hunter2secret>", "hunter2secret", ""),
             ("DATABASE_PASSWORD=<redacted-but-real>", "but-real", ""),
             (r#"ACCESS_KEY="don't-share-this""#, "share-this", ""),
+            (r#"ACCESS_KEY="quoted"opaque0123456789"#, "opaque", ""),
+            ("DATABASE_PASSWORD=<redacted>x", "<redacted>x", ""),
             (r#"{"password":"bearer"}"#, "bearer", ""),
             ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
             (
