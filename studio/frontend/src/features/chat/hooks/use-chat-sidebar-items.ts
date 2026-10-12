@@ -6,6 +6,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -358,6 +359,8 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
+    // after the delete lands, so a rolled-back delete keeps its bookmarks
+    useBookmarkedTurnsStore.getState().forgetThreads(threadIds);
     // retain the head until deletion succeeds so a restored chat reopens on the same branch.
     for (const id of threadIds) clearBranchHead(id);
     // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
