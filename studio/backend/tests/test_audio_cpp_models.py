@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files
+from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -2101,11 +2101,17 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
 
 def test_yue2_runs_to_its_own_ending_whatever_the_token_budget():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
+    srv.backend = "cpu"
+    waits = []
+    post = srv.post_json
+    srv.post_json = lambda path, payload, **kw: waits.append(kw["timeout"]) or post(path, payload)
     for budget in (125, 1500, 6000):
         b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = budget)
-    for call in srv.calls:
-        options = call[1]["request"]["options"]
+    for _path, body in srv.calls:
+        options = body["request"]["options"]
         assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
+    # The wait covers the song's own end on CPU too, past the flat 3600 s.
+    assert waits == [audio_cpp_music.self_ending_timeout("yue2", cpu = True)] * 3 == [4 * 3600.0] * 3
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():

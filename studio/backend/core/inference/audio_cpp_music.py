@@ -59,6 +59,14 @@ def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu:
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
 
 
+def self_ending_timeout(family: Optional[str], cpu: bool) -> Optional[float]:
+    """The wait for a model that ends the song itself, whatever length or token count was asked."""
+    music = MUSIC_SPECS.get(str(family or ""))
+    if music is None or not music.self_ending_s:
+        return None
+    return timeout_seconds(family, music.self_ending_s, 1, cpu)
+
+
 def frames_for(seconds: float, variations: int = 1) -> int:
     return int(math.ceil(max(0.0, float(seconds)) * 25 * max(1, int(variations))))
 
