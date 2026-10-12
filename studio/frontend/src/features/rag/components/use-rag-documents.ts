@@ -111,8 +111,7 @@ export function useRagDocuments(
   }, [documents]);
   // documentId -> signature; forgotten on delete, cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
-  // Row id -> the File it came from, so a failed upload or index can be retried. Files only: a
-  // native drop's path token is spent by its first upload.
+  // Row id -> source File for retry. Files only: a native drop's path token is spent on first use.
   const retryItems = useRef<Map<string, RagUploadItem>>(new Map());
   // Skip a re-selected file only if a matching doc is healthy or still indexing. A doc
   // that completed with 0 chunks is re-ingestable (e.g. a scan attached before a vision
@@ -192,13 +191,11 @@ export function useRagDocuments(
         numChunks?: number | null,
       ) => {
         if (stale()) return forget();
-        // Only a failure is retried; anything else lets the File go.
         if (status !== "failed") retryItems.current.delete(documentId);
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
         } else if (status === "failed") {
-          // Keep the row as failed so it can be retried or removed; it no longer blocks a re-pick.
           sigByDocId.current.delete(documentId);
           patchDoc(documentId, {
             status: "failed",
@@ -302,8 +299,7 @@ export function useRagDocuments(
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
-        // live "running %" chip. Failed docs hidden (toast warned at upload), except ones this
-        // session can retry: a poll can see the failure before the upload marks the row.
+        // live "running %" chip. Failed docs hidden, except ones this session can retry.
         const rows = (await lister()).filter(
           (row) => row.status !== "failed" || retryItems.current.has(row.id),
         );
@@ -587,7 +583,6 @@ export function useRagDocuments(
         if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
         if (item.kind === "file") {
-          // Kept as failed so it can be retried; a native drop's token is spent, so its chip goes.
           retryItems.current.set(tempId, item);
           patchDoc(tempId, { status: "failed", error: message, progress: null });
         } else {
@@ -722,14 +717,12 @@ export function useRagDocuments(
     [scope, uploadOne, sigBlocksReupload],
   );
 
-  /** Resolves to whether the document is gone; a failed delete puts the row back. */
   const remove = useCallback(
     async (documentId: string): Promise<boolean> => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
       const prevRetry = retryItems.current.get(documentId);
       retryItems.current.delete(documentId);
-      // An upload that failed never reached the server, so there is nothing to delete there.
       if (documentId.startsWith("pending_")) return true;
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
@@ -765,18 +758,15 @@ export function useRagDocuments(
     [documents, scope],
   );
 
-  /** Whether `retry` can re-send this failed row: its original File is still here. */
   const canRetry = useCallback(
     (documentId: string) => retryItems.current.has(documentId),
     [],
   );
 
-  /** Re-uploads a failed row's file, replacing the row and the failed document. */
   const retry = useCallback(
     async (documentId: string) => {
       const item = retryItems.current.get(documentId);
       if (!item) return;
-      // A failed document the server still holds would sit beside its replacement.
       if (!(await remove(documentId))) return;
       await upload([item]);
     },

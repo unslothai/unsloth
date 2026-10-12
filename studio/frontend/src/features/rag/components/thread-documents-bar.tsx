@@ -1083,9 +1083,7 @@ export function ThreadDocumentsBar({
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
 
-  // A drop or pick during an upload waits for it rather than being refused. Keyed by the chat's
-  // list item, whose local id holds while a new chat gets its stored id mid-upload, so a queue is
-  // dropped on switching chats but not by the first upload materializing this one.
+  // Keyed by the list item id, stable while a new chat materializes, so only a real switch drops the queue.
   const threadItemId = useAuiState(({ threadListItem }) => threadListItem.id);
   const { enqueue: queueAttach, queued } = useUploadQueue<RagUploadItem>(
     attach,
@@ -1312,8 +1310,7 @@ export function ThreadDocumentsBar({
     );
   }
 
-  // block attachments until the chat's project is known to avoid guessing their scope. An upload
-  // in flight only queues new files, but the scope stays fixed until the queue has drained.
+  // Block attachments until the chat's project is known; the scope stays locked until the queue drains.
   const busy = projectUnresolved;
   const scopeLocked = busy || uploading || projectUploading || queued > 0;
   // Still claim a drop while busy, or it falls through and attaches to the message instead.

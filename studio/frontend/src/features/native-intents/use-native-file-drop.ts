@@ -158,8 +158,7 @@ export function useNativeFileDrop(
   // dragenter/dragleave fire per child, so a raw boolean flickers on inner moves.
   const dragDepth = useRef(0);
 
-  // Callers pass the options from drop time: reading `latest` after an await would hand the
-  // files to whatever destination the zone shows by then.
+  // Options from drop time: `latest` after an await may name another destination.
   const deliver = useCallback(
     (files: File[], current: NativeFileDropOptions) => {
       if (files.length === 0) return;
@@ -187,7 +186,6 @@ export function useNativeFileDrop(
         toastNothingAccepted(
           paths.map(nativeFileName),
           current.accept,
-          // The desktop links a folder instead, which also keeps it in sync.
           current.folders
             ? "Use Link folder to keep a whole folder indexed and in sync."
             : undefined,

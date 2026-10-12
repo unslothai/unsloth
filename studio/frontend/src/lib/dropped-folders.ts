@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Folders dropped or picked in the browser, flattened to their files. The desktop app links a
-// folder instead; the browser has no lasting handle to one, so it can only copy it in once.
+// Browser folder drops and picks, flattened to files (the desktop links folders instead).
 
 export const MAX_FOLDER_FILES = 2000;
 
-// Same spirit as the linked-folder scan: dependency, VCS and cache trees, and hidden folders.
 const SKIPPED_DIRS = new Set([
   "node_modules",
   "bower_components",
@@ -18,8 +16,7 @@ function skippedDir(name: string): boolean {
   return name.startsWith(".") || SKIPPED_DIRS.has(name.toLowerCase());
 }
 
-// .env files and Terraform state can hold plaintext secrets; lockfiles are noise. Mirrors
-// _is_ignored_scan_file in the backend's folder_sync.py.
+// Mirrors _is_ignored_scan_file in folder_sync.py: secrets and lockfiles.
 function skippedFile(name: string): boolean {
   const lower = name.toLowerCase();
   return (
@@ -52,10 +49,7 @@ function entryFile(entry: FileSystemFileEntry): Promise<File> {
   return new Promise((resolve, reject) => entry.file(resolve, reject));
 }
 
-/**
- * The files in a drop, walking any folders in it. Must be called inside the drop handler: the
- * browser empties `items` once the event returns, so the entries are taken synchronously here.
- */
+/** Call inside the drop handler: the browser empties `items` once the event returns. */
 export function filesFromDrop(
   dataTransfer: DataTransfer,
   /** Inside a folder, files this rejects are left out before the cap counts them. */
@@ -84,20 +78,17 @@ async function walkEntries(
   while (pending.length > 0) {
     const entry = pending.shift() as FileSystemEntry;
     if (entry.isFile) {
-      // A file dropped on its own is the user's explicit choice; inside a folder, skip secrets.
       const root = roots.indexOf(entry) >= 0;
       if (!root && (skippedFile(entry.name) || !keep(entry.name))) continue;
       if (files.length >= MAX_FOLDER_FILES) {
-        // Stop here: walking the rest of a huge tree only to count it would stall the drop.
         truncated = 1;
         break;
       }
       try {
         const file = await entryFile(entry as FileSystemFileEntry);
-        // An empty file has nothing to index and the upload refuses it (__init__.py and the like).
+        // The upload refuses empty files.
         if (file.size > 0 || root) files.push(file);
       } catch {
-        // Unreadable (permissions, vanished mid-walk): leave it out.
       }
       continue;
     }
@@ -108,7 +99,7 @@ async function walkEntries(
       continue;
     }
     const reader = (entry as FileSystemDirectoryEntry).createReader();
-    // readEntries hands back at most ~100 entries per call; an empty batch ends the folder.
+    // readEntries returns ~100 entries per call; an empty batch ends the folder.
     for (;;) {
       let batch: FileSystemEntry[];
       try {
@@ -123,7 +114,6 @@ async function walkEntries(
   return { files, truncated, hadFolder: true };
 }
 
-/** Files from a `webkitdirectory` input, minus hidden and dependency folders and empty files. */
 export function filesFromFolderInput(
   list: FileList | File[],
   /** Files this rejects are left out before the cap counts them. */
@@ -131,7 +121,7 @@ export function filesFromFolderInput(
 ): FolderFiles {
   const all = Array.from(list).filter((file) => {
     const segments = (file.webkitRelativePath || file.name).split("/");
-    // The first segment is the folder the user chose, whatever it is called.
+    // Segment 0 is the chosen folder itself.
     return (
       file.size > 0 &&
       !segments.slice(1, -1).some(skippedDir) &&
@@ -143,7 +133,7 @@ export function filesFromFolderInput(
   return { files, truncated: all.length - files.length, hadFolder: true };
 }
 
-/** Opens the folder chooser. Call from a click handler (needs user activation). */
+/** Call from a click handler (needs user activation). */
 export function openFolderPicker(
   onFiles: (folder: FolderFiles) => void,
   keep?: (name: string) => boolean,

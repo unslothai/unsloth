@@ -81,8 +81,7 @@ export function useLinkedFolders(
     [projectWorkScopeId],
   );
 
-  // Jobs a click here started; a periodic pass that fails again is shown on the folder row
-  // instead of toasting every 30 s.
+  // Only syncs started here toast on failure; periodic failures show on the folder row.
   const userStartedJobs = useRef(new Set<string>());
 
   const notifySourcesChanged = useCallback(

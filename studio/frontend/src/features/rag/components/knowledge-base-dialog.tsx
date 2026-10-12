@@ -447,8 +447,6 @@ function KnowledgeBaseDocuments({
   const handleLinkedSourcesChanged = useCallback(() => {
     void refresh({ quiet: true });
   }, [refresh]);
-  // upload() tracks one run at a time, so a second batch would clear the in-flight guard the
-  // first one is still relying on: later files wait in a queue instead.
   const uploadNow = useCallback(
     (items: RagUploadItem[]) => void upload(items),
     [upload],

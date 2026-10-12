@@ -166,7 +166,6 @@ export function useSourceDrop({
             files,
             (file) => file.name,
           );
-          // Inside a folder, files of other types are expected and not worth a toast each.
           if (!hadFolder) reportUnsupported(unsupported);
           if (hadFolder && supported.length === 0) {
             toast.info("No supported files in that folder", {

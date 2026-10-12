@@ -78,7 +78,6 @@ export function skippedSummary(folder: LinkedFolder): string | null {
   return parts.length > 0 ? `Skipped ${parts.join(" · ")}` : null;
 }
 
-/** What the last pass left out and every file it could not index; the job error names only three. */
 function FolderReport({ folder }: { folder: LinkedFolder }) {
   const [open, setOpen] = useState(false);
   const skipped = skippedSummary(folder);

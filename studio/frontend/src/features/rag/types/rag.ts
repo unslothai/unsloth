@@ -133,8 +133,7 @@ export function linkedFolderSourcesChanged(
     return (
       prior !== undefined &&
       (prior.documentCount !== folder.documentCount ||
-        // lastSyncedAt moves on every periodic pass; comparing it refetched every document list
-        // in the project every 30 s. A backend without lastChangedAt still falls back to it.
+        // lastSyncedAt moves every pass; older backends without lastChangedAt fall back to it.
         (prior.lastChangedAt ?? prior.lastSyncedAt) !==
           (folder.lastChangedAt ?? folder.lastSyncedAt))
     );

@@ -69,7 +69,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     },
     [projectId, upload],
   );
-  // A drop or pick during an upload waits for it rather than being refused.
   const { enqueue: handleItems } = useUploadQueue(
     uploadNow,
     uploading,
@@ -170,7 +169,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     folders: true,
   });
 
-  // A browser upload copies a folder in once; the desktop links it, which also keeps it in sync.
   const addFolderButton = isTauri ? null : (
     <Button
       type="button"

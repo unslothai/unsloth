@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# A .gitignore is a few KB; a huge one is not worth parsing on every 30 s scan.
 MAX_GITIGNORE_BYTES = 256 * 1024
 _MAX_GLOBSTARS = 3
 
@@ -22,7 +21,7 @@ class Rule:
 
 
 def _tokens(pattern: str) -> list[tuple[str, str]]:
-    """(kind, regex) pairs: "star", "char" (exactly one non-"/" character), or "other"."""
+    """(kind, regex) pairs: "star", "char" (one non-"/" character), or "other"."""
     out: list[tuple[str, str]] = []
     i, n = 0, len(pattern)
     while i < n:
@@ -33,10 +32,8 @@ def _tokens(pattern: str) -> list[tuple[str, str]]:
                 after = i + 2 == n or pattern[i + 2] == "/"
                 if before and after:
                     if i + 2 == n:
-                        # Trailing "/**": everything inside.
                         out.append(("other", ".*"))
                     else:
-                        # Leading "**/" or a middle "/**/": zero or more directories.
                         out.append(("other", "(?:.*/)?"))
                         i += 1
                     i += 2
@@ -48,7 +45,6 @@ def _tokens(pattern: str) -> list[tuple[str, str]]:
             start = i + 1
             if pattern[start : start + 1] in ("!", "^"):
                 start += 1
-            # A "]" right after the opening (or its negation) is a literal member.
             if pattern[start : start + 1] == "]":
                 start += 1
             end = pattern.find("]", start)
@@ -71,7 +67,6 @@ def _tokens(pattern: str) -> list[tuple[str, str]]:
 
 
 def _translate(pattern: str) -> str:
-    """Glob to regex over a "/"-separated path relative to the rule's base."""
     tokens = _tokens(pattern)
     out: list[str] = []
     i, n = 0, len(tokens)
@@ -88,9 +83,8 @@ def _translate(pattern: str) -> str:
             end += 1
         chunk = "".join(regex for _, regex in tokens[i:end])
         if end < n and tokens[end][0] == "star":
-            # Another "*" follows in this name, so the earliest fit of the fixed-width chunk is as
-            # good as any later one: commit to it (an atomic group, written as fnmatch.translate
-            # does for Python < 3.11). Plain [^/]* groups backtrack exponentially on "*a*a*a...b".
+            # Atomic group (as fnmatch.translate on Python < 3.11): plain [^/]* groups backtrack
+            # exponentially on "*a*a*a...b", and the earliest fit is as good as any when "*" follows.
             group = f"g{len(out)}"
             out.append(f"(?=(?P<{group}>[^/]*?{chunk}))(?P={group})")
         else:
@@ -103,7 +97,6 @@ def parse(text: str, base: str) -> list[Rule]:
     rules: list[Rule] = []
     for raw in text.splitlines():
         line = raw.rstrip("\r")
-        # Trailing spaces are dropped unless escaped with a backslash.
         stripped = line.rstrip(" ")
         if stripped.endswith("\\") and len(stripped) < len(line):
             stripped += " "
@@ -119,14 +112,13 @@ def parse(text: str, base: str) -> list[Rule]:
         line = line.rstrip("/")
         if not line:
             continue
-        # A slash at the start or middle anchors the pattern to the .gitignore's directory;
-        # otherwise it matches at any depth below it.
+        # A leading or middle slash anchors to the .gitignore's directory; else any depth.
         anchored = "/" in line
         line = line.lstrip("/")
         body = _translate(line)
         if not anchored:
             body = "(?:.*/)?" + body
-        # Each "**/" tries every directory depth, multiplied across them; real rules use one or two.
+        # Each "**/" multiplies the depths tried; real rules use one or two.
         if body.count("(?:.*/)?") > _MAX_GLOBSTARS:
             continue
         try:

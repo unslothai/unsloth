@@ -4,11 +4,8 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/**
- * Holds files added while an upload is running and starts them once it finishes, so a second
- * drop or pick waits its turn instead of being refused. `key` names the destination (a chat, a
- * project): files queued for one are dropped, with a toast, if the surface moves to another.
- */
+/** Queues items added during an upload and runs them when it ends; items queued for one `key`
+ *  (destination) are dropped with a toast if the surface moves to another. */
 export function useUploadQueue<T>(
   run: (items: T[]) => void,
   busy: boolean,
@@ -24,8 +21,7 @@ export function useUploadQueue<T>(
   const enqueue = useCallback(
     (items: T[]) => {
       if (items.length === 0) return;
-      // A folder walk resolves after the fact: the surface may show another destination by now,
-      // and latestRun would upload there.
+      // A folder walk resolves late: latestRun may point at another destination by now.
       if (key !== latestKey.current) {
         toast.info(
           items.length === 1

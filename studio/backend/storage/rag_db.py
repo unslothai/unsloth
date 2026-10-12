@@ -299,7 +299,6 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
     if folder_cols and "failed_files" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN failed_files TEXT")
-    # Last pass's skipped counts and full failure list, and when the indexed set last changed.
     if folder_cols and "scan_report" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN scan_report TEXT")
     if folder_cols and "last_change_at" not in folder_cols:

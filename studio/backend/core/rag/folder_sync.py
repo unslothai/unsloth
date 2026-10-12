@@ -90,8 +90,7 @@ def _is_ignored_scan_dir(name: str, path: str) -> bool:
     )
 
 
-# Build output, skipped only beside a manifest of the project that produces it: a bare "build"
-# folder in a document vault is the user's own.
+# Build output is skipped only beside a project manifest: a bare "build" folder in a vault is content.
 _BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "out", "target", "coverage", "htmlcov", "vendor"})
 _PROJECT_MANIFESTS = (
     "package.json",
@@ -118,8 +117,7 @@ def _is_build_output_dir(name: str, parent: str) -> bool:
 
 
 def _read_gitignore(directory: str, base: str) -> list[gitignore.Rule]:
-    """The rules of `directory`'s .gitignore. One that exists but cannot be read fails the scan:
-    indexing without it would take in files the user excluded, and a failed scan deletes nothing."""
+    """An unreadable .gitignore fails the scan: indexing without it would take in excluded files."""
     path = os.path.join(directory, ".gitignore")
     if not os.path.isfile(path) or os.path.islink(path):
         return []
@@ -1105,7 +1103,7 @@ def _scan(
     expected_identity: tuple[int, int] | None = None,
     report: dict[str, int] | None = None,
 ) -> tuple[dict[str, dict], tuple[int, int]]:
-    """Map relative path -> metadata. `report` collects counts of what was deliberately left out."""
+    """Map relative path -> metadata; `report` receives counts of deliberately skipped entries."""
     from hub.storage.scan_folders import contains_sensitive_path_component, is_denied_system_path
 
     identity = _root_identity(root)
@@ -1117,8 +1115,7 @@ def _scan(
     mount_points = _mount_points()
     root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
     pending = [(root, frozenset({_path_key(root)}), root_identities, 0, ())]
-    # Collected past the cap so the kept set is the first FOLDER_MAX_FILES paths in sorted order,
-    # stable from scan to scan; only far past it does the scan give up.
+    # Collect past the cap so the kept set is the sorted first FOLDER_MAX_FILES, stable across scans.
     hard_cap = config.FOLDER_MAX_FILES * 2 if config.FOLDER_MAX_FILES else 0
     while pending:
         directory, ancestor_paths, ancestor_identities, depth, rules = pending.pop()
@@ -1203,7 +1200,7 @@ def _scan(
                         # authoritative for
                         # deletion.
                         pass
-                # Nothing to index, and ingest fails every pass on it (an empty __init__.py).
+                # Ingest fails on every pass for an empty file (e.g. __init__.py).
                 if st.st_size == 0:
                     continue
                 if (
@@ -1709,7 +1706,6 @@ def _reconcile_folder(job_id: str) -> None:
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
     added = changed_count = 0
     failures: list[str] = []
-    # relative path -> why, for the folder's full failure list (the job error names only a few)
     failure_errors: dict[str, str] = {}
     withheld: set[str] = set()
     processed = 0
@@ -1977,8 +1973,7 @@ def _reconcile_folder(job_id: str) -> None:
         ],
         "failureCount": len(set(failures)),
     }
-    # last_scan_at moves on every pass; last_change_at only when the indexed set did, so a periodic
-    # pass that found nothing new does not make every open client refetch the scope's documents.
+    # last_change_at moves only when the indexed set did, so idle passes don't make clients refetch.
     changed_sources = added + changed_count + deleted + renamed > 0
     now = _now()
     with closing(rag_db.get_connection()) as conn:
