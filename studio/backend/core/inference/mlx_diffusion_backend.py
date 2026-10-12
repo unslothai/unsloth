@@ -75,6 +75,23 @@ class MlxCancelled(Exception):
     """Raised inside the mflux step callback to stop a generation at the next step boundary."""
 
 
+def drop_exception_frames(exc: Optional[BaseException]) -> None:
+    """Clear the locals of every finished frame an exception chain still references, so a cancelled
+    generation does not keep the model (and its arrays) alive through a retained traceback."""
+    import traceback
+
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if exc.__traceback__ is not None:
+            traceback.clear_frames(exc.__traceback__)
+            exc.__traceback__ = None
+        nxt = exc.__cause__ or exc.__context__
+        exc.__cause__ = None
+        exc.__context__ = None
+        exc = nxt
+
+
 def _total_ram_bytes() -> int:
     try:
         return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
@@ -218,6 +235,7 @@ class MfluxRuntime:
 
         callback = _StepCallback()
         model.callbacks.register(callback)
+        cancelled = False
         try:
             result = model.generate_image(
                 seed = int(seed),
@@ -229,12 +247,17 @@ class MfluxRuntime:
                 guidance = guidance,
             )
         except StopImageGenerationException as exc:
-            raise MlxCancelled(str(exc)) from exc
+            # The unwound mflux frames hold the model and its in-flight graph; measured on a Mac, a
+            # cancelled run kept all 6.3 GB resident through unload() until they were cleared.
+            drop_exception_frames(exc)
+            cancelled = True
         finally:
             try:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
+        if cancelled:
+            raise MlxCancelled("cancelled")
         return result.image
 
     def cache_text_encodings(self, model: Any, size: int = _ENCODING_CACHE_SIZE) -> None:
@@ -814,7 +837,8 @@ class MlxDiffusionBackend:
                     "localized_edit": None,
                 }
             except MlxCancelled as exc:
-                raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                drop_exception_frames(exc)
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG) from None
             finally:
                 self._gen = None
                 with self._lock:

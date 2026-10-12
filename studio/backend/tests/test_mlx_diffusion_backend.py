@@ -403,3 +403,27 @@ def test_a_replacing_load_frees_the_old_model_first(env):
     assert seen == [False]
     assert runtime.freed == freed_before + 1
     assert backend.status()["loaded"] is True
+
+
+def test_a_cancelled_run_releases_its_frames():
+    # A cancel unwinds through the model's own frames; clearing them is what lets unload() free the model.
+    import gc
+    import weakref
+
+    class Model:
+        pass
+
+    def _inner(model):
+        raise mb.MlxCancelled("stop")
+
+    model = Model()
+    ref = weakref.ref(model)
+    try:
+        _inner(model)
+    except mb.MlxCancelled as exc:
+        kept = exc
+        mb.drop_exception_frames(exc)
+    del model
+    gc.collect()
+    assert ref() is None
+    assert kept.__traceback__ is None
