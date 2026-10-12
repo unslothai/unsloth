@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The `self_note` content part: how the model's note round-trips through the client.
-
-The part is how the note stays stateless -- it rides on the assistant message and the
-client re-sends it, so nothing is stored server-side.
-"""
+"""The `self_note` content part: how the model's note round-trips through the client."""
 
 from __future__ import annotations
 
@@ -39,8 +35,6 @@ def test_self_note_part_survives_a_round_trip_through_dump():
 
 
 def test_an_unknown_part_type_still_degrades_rather_than_raising():
-    # Back-compat: the union falls back to UnknownContentPart, so a client that
-    # has never heard of a part type does not 400.
     message = ChatMessage.model_validate(
         {
             "role": "assistant",

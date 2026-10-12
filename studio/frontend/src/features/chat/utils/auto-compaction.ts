@@ -10,7 +10,6 @@
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
 
-// omitted when unset so the server-side UNSLOTH_SELF_NOTE default applies
 function selfNoteRequestFields(options: {
   selfNoteEnabled?: boolean;
   selfNoteReserveTokens?: number;
@@ -77,7 +76,6 @@ export function apiCompactionRequestFields(options: {
 
 export const DEFAULT_SELF_NOTE_ENABLED = false;
 export const DEFAULT_SELF_NOTE_RESERVE_TOKENS = 256;
-// mirrors the backend ge/le bounds
 export const SELF_NOTE_RESERVE_MIN = 64;
 export const SELF_NOTE_RESERVE_MAX = 4096;
 export const SELF_NOTE_RESERVE_CHOICES = [128, 256, 512, 1024] as const;

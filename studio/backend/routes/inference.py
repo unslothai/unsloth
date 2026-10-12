@@ -1002,18 +1002,7 @@ def _request_compaction_headroom_ratio(payload) -> Optional[float]:
 
 
 def _apply_request_self_note_settings(payload) -> None:
-    """Install the request's self-note toggle and reserve for this request's context.
-
-    The chat settings carry `selfNoteEnabled` / `selfNoteReserveTokens`; without this they
-    were accepted, validated and then read by nobody, so the toggle and slider the feature
-    asks for did not actually exist. Set here, at the one entry point every chat path goes
-    through, rather than threaded as a parameter: `self_note.enabled()` is consulted from
-    the prompt nudge, the stream extractor and the checkpoint render, and a ContextVar is
-    how this package already scopes per-request values.
-
-    Unset on the request leaves UNSLOTH_SELF_NOTE in force, so DEFAULT OFF is unchanged and
-    a client that never sends the fields behaves exactly as before. Never raises.
-    """
+    """Install the request's self-note toggle and reserve for this request's context."""
     try:
         from core.inference import self_note
         self_note.apply_request_settings(
@@ -1059,7 +1048,6 @@ def _quote_cut_sse_chunk(completion_id: str, model_name: str) -> str:
 
 
 def _self_note_sse_chunk(completion_id: str, model_name: str, note: str) -> str:
-    # Same `_toolEvent` shape external_provider.py uses for compaction_block.
     data = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -6704,12 +6692,7 @@ def _apply_compaction_nudge(
 
 
 def _apply_self_note_nudge(nudge: str) -> str:
-    """Append the self-note instruction when the feature is on.
-
-    Gated on the feature toggle alone: unlike the compaction nudge there is no tool to key
-    on, and a model that is never going to have its note carried should not be told to
-    write one.
-    """
+    """Append the self-note instruction when the feature is on."""
     from core.inference import self_note
 
     text = self_note.note_instruction()
@@ -16892,13 +16875,7 @@ def _model_json_response_with_context_truncation(
 
 
 def _extract_and_strip_self_note(text: str) -> tuple[str, str]:
-    """``(user_visible_text, note)`` -- the `<remember>` block pulled out of ``text``.
-
-    ``note`` is "" when there is none, disabled, or ``text`` is not parseable; the caller
-    never needs to branch on failure, only on whether ``note`` is truthy. Never raises: a
-    note is convenience carried across a compaction the user did not ask for, so a bug in
-    reading it must degrade to "no note" rather than break the reply it rides on.
-    """
+    """``(user_visible_text, note)`` -- the `<remember>` block pulled out of ``text``."""
     try:
         from core.inference import self_note
 
@@ -16916,22 +16893,7 @@ _SELF_NOTE_CLOSE = "</remember>"
 
 
 class _SelfNoteStreamExtractor:
-    """Hold back a `<remember>...</remember>` block from the GGUF SSE visible stream.
-
-    Same holdback technique as ``_ResponsesReasoningExtractor`` (see ``_responses_marker_holdback``,
-    line ~28717): once the trailing buffered text could be the start of ``<remember>`` or
-    ``</remember>``, it is held rather than emitted, so no fragment of the tag ever reaches the
-    client mid-sequence -- the same reason that extractor's own comment gives ("Held-back
-    markers can make this the FIRST output of all"). Simpler than that extractor because there
-    is no second output channel: text is either safe to show now, held because it might be a
-    tag, or (once a real ``<remember>`` opens) held because it is inside the note and must never
-    be shown at all.
-
-    Case-insensitive on the open/close tags, matching ``self_note.extract_note``'s
-    ``re.IGNORECASE``, so `<Remember>` is caught too -- but only the literal ASCII tag text is
-    folded; note BODY text is passed through untouched once inside the block, exactly as
-    ``extract_note`` does not touch its captured group's case.
-    """
+    """Hold back a `<remember>...</remember>` block from the GGUF SSE visible stream."""
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -16946,12 +16908,9 @@ class _SelfNoteStreamExtractor:
             if self._in_note:
                 close_idx = lowered.find(_SELF_NOTE_CLOSE)
                 if close_idx != -1:
-                    # The note body (and its close tag) is never visible: drop it.
                     self._buffer = self._buffer[close_idx + len(_SELF_NOTE_CLOSE) :]
                     self._in_note = False
                     continue
-                # Entirely inside the block: hold everything, including a trailing
-                # partial close tag, so a split close never leaks a fragment.
                 break
             open_idx = lowered.find(_SELF_NOTE_OPEN)
             if open_idx != -1:
@@ -16968,18 +16927,7 @@ class _SelfNoteStreamExtractor:
         return "".join(visible_parts)
 
     def finish(self) -> str:
-        """Remaining buffered text once the stream ends with no more tokens coming.
-
-        An unterminated `<remember>` (generation cut off mid-note) is NOT flushed as visible
-        text: `extract_note` already treats an unterminated block as no note at all (see its
-        docstring -- "a note cut off by the token limit is exactly the case where taking
-        everything after the opening tag would promote a half-sentence"), so a half-written
-        note leaking into the reply here would contradict that. The held-back text is simply
-        dropped. A false-positive holdback with no note ever opening (buffered text that only
-        ever LOOKED like it might become `<remember>`, e.g. a reply ending in `<reme`) is the
-        same tradeoff `_ResponsesReasoningExtractor.finish()` already makes for `<think>`: rare,
-        and a truncated reply already lost its tail to the token limit either way.
-        """
+        """Remaining buffered text once the stream ends with no more tokens coming."""
         self._buffer = ""
         self._in_note = False
         return ""
@@ -16992,16 +16940,7 @@ def _model_json_response_with_self_note(
     context_truncation: Optional[dict] = None,
     status_code: int = 200,
 ) -> Response:
-    """Serialize ``model`` as JSON, attaching ``note`` as a `self_note` content part on
-    the assistant message so the client persists and re-sends it.
-
-    ``CompletionMessage.content`` is a plain ``Optional[str]`` (it is not this task's to
-    change), so the part cannot be attached through the pydantic model itself. This mirrors
-    ``_model_json_response_with_context_truncation``: dump to a dict and splice in the
-    extra shape at the JSON layer, matching how ``external_provider.py`` attaches
-    `compaction_block` state onto the assistant message for the client to round-trip.
-    Composes with ``context_truncation`` so a response can carry both.
-    """
+    """Serialize ``model`` as JSON, attaching ``note`` as a `self_note` content part on"""
     if not note:
         return _model_json_response_with_context_truncation(model, context_truncation)
     content = model.model_dump()
@@ -30477,9 +30416,6 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
-    # Before anything reads `self_note.enabled()`: the prompt nudge, the stream extractor
-    # and the checkpoint render all consult it, and the first of those is reached inside
-    # this call.
     _apply_request_self_note_settings(payload)
     # Opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once so every stream
     # generator below shares one answer.
@@ -32101,18 +32037,10 @@ async def produce_openai_chat_completions(
                     _stream_timings = None
                     _stream_finish = None
                     approval_flush_pending = False
-                    # Gated once here rather than per-token: with the feature off, the
-                    # extractor is never constructed and `.feed()` is never called, so the
-                    # stream is byte-identical to before this task (no holdback, no latency).
                     from core.inference import self_note as _self_note_mod
 
                     _self_note_on = _self_note_mod.enabled()
                     _self_note_extractor = _SelfNoteStreamExtractor() if _self_note_on else None
-                    # The reasoning extractor's own visible text, concatenated across the
-                    # WHOLE stream (every tool iteration, not just the current one) so the
-                    # final `extract_note()` sees the complete reply. `extract_note` keeps
-                    # the LAST `<remember>` block, matching a model that writes its note only
-                    # once tool calls are done.
                     _self_note_full_text = ""
 
                     def _flush_reasoning_extractor():
@@ -32129,11 +32057,6 @@ async def produce_openai_chat_completions(
                             )
                         if final_visible:
                             _self_note_full_text += final_visible
-                            # Tool-iteration boundary, not stream end: don't call .finish() on
-                            # the self-note extractor here, only .feed() -- a `<remember>`
-                            # spanning this boundary (unusual, but not impossible if the model
-                            # opens one right before a tool call) stays held rather than being
-                            # flushed as an unterminated tail mid-reply.
                             shown = (
                                 _self_note_extractor.feed(final_visible)
                                 if _self_note_extractor is not None
@@ -32316,9 +32239,6 @@ async def produce_openai_chat_completions(
                             )
                         if visible_delta:
                             _self_note_full_text += visible_delta
-                            # Holds back a `<remember>` block (and any fragment of its tags)
-                            # from the client. Disabled: `_self_note_extractor` is None and
-                            # `shown` is exactly `visible_delta`, unchanged.
                             shown = (
                                 _self_note_extractor.feed(visible_delta)
                                 if _self_note_extractor is not None
@@ -32331,9 +32251,6 @@ async def produce_openai_chat_completions(
                     for chunk in _flush_reasoning_extractor():
                         yield chunk
 
-                    # True stream end (all tool iterations done): resolve anything the
-                    # self-note extractor is still holding. An unterminated `<remember>` is
-                    # dropped here, not flushed -- see `_SelfNoteStreamExtractor.finish()`.
                     _self_note_captured = ""
                     if _self_note_extractor is not None:
                         _self_note_extractor.finish()
@@ -32355,9 +32272,6 @@ async def produce_openai_chat_completions(
                     # clients can detect stop/length/tool_calls.
                     yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     if _self_note_captured:
-                        # Synthetic tool_event, same mechanism as external_provider.py's
-                        # compaction_block: the chat adapter persists this onto the
-                        # assistant message as a self_note content part for round-trip.
                         yield _self_note_sse_chunk(completion_id, model_name, _self_note_captured)
                     usage_line = _openai_stream_usage_chunk(
                         payload,
@@ -32677,8 +32591,6 @@ async def produce_openai_chat_completions(
                         payload, llama_backend
                     ),
                 )
-                # Final-assembly only (see `_extract_and_strip_self_note`): a no-op when the
-                # feature is off, so the byte-identical-when-disabled invariant holds.
                 visible_text, _self_note = _extract_and_strip_self_note(visible_text)
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:

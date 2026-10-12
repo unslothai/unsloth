@@ -317,7 +317,6 @@ def test_self_note_reserve_rejects_above_ceiling():
 
 
 def test_self_note_settings_are_optional():
-    # Every existing client omits them, and an omitted field must not change a save.
     payload = ChatSettingsPayload.model_validate({})
     assert payload.selfNoteEnabled is None
     assert payload.selfNoteReserveTokens is None

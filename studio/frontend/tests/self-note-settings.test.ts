@@ -25,8 +25,6 @@ test("the enabled flag takes a boolean and nothing else", () => {
 });
 
 test("the reserve clamps into the range the backend accepts", () => {
-  // The backend is ge=64 le=4096 and 400s the whole save on one bad field, so
-  // the client must never send an out-of-range value.
   assert.equal(sanitizeSelfNoteReserveTokens(8), 64);
   assert.equal(sanitizeSelfNoteReserveTokens(100000), 4096);
   assert.equal(sanitizeSelfNoteReserveTokens(512), 512);
@@ -49,12 +47,6 @@ test("the default reserve is inside its own range", () => {
   );
 });
 
-// --------------------------------------------------------------------------
-// Wiring: selfNoteEnabled/selfNoteReserveTokens reaching the outbound request
-// body through ggufCompactionRequestFields, the same builder the chat adapter
-// calls. These exercise the request-field shape a caller (the adapter) sees,
-// not selfNoteRequestFields directly -- it is not exported, by design.
-// --------------------------------------------------------------------------
 
 test("toggle on with a reserve set sends self_note_enabled true and the sanitized reserve", () => {
   const fields = ggufCompactionRequestFields({
@@ -79,8 +71,6 @@ test("toggle off sends self_note_enabled false and no reserve", () => {
 });
 
 test("an out-of-range reserve is clamped before it reaches the request body", () => {
-  // The backend 400s the whole save on a reserve outside ge=64/le=4096, so the
-  // client must never forward a raw out-of-range value.
   const tooLow = ggufCompactionRequestFields({
     isGguf: true,
     autoCompactEnabled: true,
@@ -109,12 +99,6 @@ test("selfNoteEnabled undefined omits both fields, leaving the server env defaul
   assert.equal("self_note_reserve_tokens" in fields, false);
 });
 
-// --------------------------------------------------------------------------
-// Store + adapter wiring: selfNoteRequestFields is only useful once its two
-// inputs are threaded from the runtime store through the adapter's request
-// body, mirroring compactionHeadroomRatio's journey. Source-level checks
-// here pin that wiring so it cannot silently regress back to "never called".
-// --------------------------------------------------------------------------
 
 test("the chat runtime store holds selfNoteEnabled/selfNoteReserveTokens with the documented defaults", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
@@ -125,7 +109,6 @@ test("the chat runtime store holds selfNoteEnabled/selfNoteReserveTokens with th
   );
   assert.match(store, /setSelfNoteEnabled:/);
   assert.match(store, /setSelfNoteReserveTokens:/);
-  // Persisted like every other scalar setting, or a reload silently reverts it.
   assert.match(store, /"selfNoteEnabled"/);
   assert.match(store, /"selfNoteReserveTokens"/);
 });
@@ -153,10 +136,6 @@ test("the persisted chat settings type and sanitizer carry the self-note fields,
   );
 });
 
-// Store instantiation (hydration, cross-tab mirroring, etc.) needs the
-// registerStoreStubResolver + installLocalStorageFake harness that
-// min-p-settings-store.test.ts uses; that harness is real, reusable test
-// infra (not one-off mocking), so the defaults are also verified live below.
 test("a freshly constructed store carries selfNoteEnabled=false and selfNoteReserveTokens=256", async () => {
   const { installLocalStorageFake, registerStoreStubResolver } = await import(
     "./helpers/kit.ts"

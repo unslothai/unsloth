@@ -2350,12 +2350,7 @@ class CompactionContentPart(BaseModel):
 
 
 class SelfNoteContentPart(BaseModel):
-    """A note the model wrote to itself, round-tripped so it survives compaction.
-
-    Stateless by construction: the note rides on the assistant message and the client
-    re-sends it with the branch, so checkpoint compaction keeps its "NOTHING IS STORED"
-    invariant. See ``core/inference/self_note.py``.
-    """
+    """A note the model wrote to itself, round-tripped so it survives compaction."""
 
     type: Literal["self_note"]
     content: str = Field(

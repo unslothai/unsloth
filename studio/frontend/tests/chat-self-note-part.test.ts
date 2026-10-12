@@ -10,30 +10,12 @@ import { readSrc } from "./helpers/kit.ts";
 
 const adapter = readSrc("features/chat/api/chat-adapter.ts");
 
-// --------------------------------------------------------------------------
-// Part 1: the streaming tool-event branch that latches a `self_note` chunk
-// (`{"_toolEvent": {"type": "self_note", "content": "<note>"}}`, emitted from
-// routes/inference.py's `_self_note_sse_chunk`) into `selfNotePart`, and that
-// it does so BEFORE the unconditional `closeReasoningContent()` call that
-// follows -- so a self_note event does not force-close an open reasoning
-// block, unlike tool_start/tool_end which legitimately do.
-// --------------------------------------------------------------------------
 
-/**
- * Executes the adapter's real tool-event dispatch, from the container_ready
- * branch through the self_note branch and into the unconditional
- * closeReasoningContent() call that follows -- the exact region whose
- * ordering this test is about. Mirrors the slice-and-vm-execute technique
- * `generation-tool-recovery.test.ts` uses for the same switch.
- */
 function runToolEventDispatch(toolEvent: Record<string, unknown>): {
   selfNotePart: { type: string; content: string } | undefined;
   reasoningClosed: boolean;
 } {
   const start = adapter.indexOf('if (toolEvent.type === "container_ready") {');
-  // tool_start is the first branch reachable only after the unconditional
-  // closeReasoningContent() call, so stopping just before its `if` captures
-  // that call without pulling in the (heavily-dependent) tool_start body.
   const end = adapter.indexOf('if (toolEvent.type === "tool_start") {', start);
   assert.ok(start > 0 && end > start, "adapter tool-event region not found");
   const body = adapter.slice(start, end);
@@ -59,17 +41,11 @@ function runToolEventDispatch(toolEvent: Record<string, unknown>): {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  // resolvedThreadId is a free variable the container_ready/container_invalidated
-  // branches read; irrelevant to self_note, but they sit in the same slice and
-  // must still evaluate. Left undefined/falsy so their `if` bodies are skipped.
   const context = vm.createContext({ resolvedThreadId: undefined });
   vm.runInContext(compiled, context);
   const gen = context.receive(toolEvent);
   let step = gen.next();
   while (!step.done) step = gen.next();
-  // Round-tripped in the HOST realm: the vm realm's JSON.parse/stringify still
-  // produces vm-realm objects, whose prototype differs from this file's
-  // Object even when every field matches deepStrictEqual field-by-field.
   return JSON.parse(JSON.stringify(step.value));
 }
 
@@ -97,11 +73,6 @@ test("an empty or non-string note is not latched", () => {
 });
 
 test("a self_note event does not force-close an open reasoning block", () => {
-  // Deliberate choice (see the brief's gap #2): self_note is state-only, like
-  // container_ready/context_window_exceeded, so it is handled and `continue`s
-  // BEFORE the unconditional closeReasoningContent() call that tool_start/
-  // tool_end rely on. This asserts that choice directly: reasoning must stay
-  // open across a self_note event.
   const { reasoningClosed } = runToolEventDispatch({
     type: "self_note",
     content: "note",
@@ -114,9 +85,6 @@ test("a self_note event does not force-close an open reasoning block", () => {
 });
 
 test("a sibling event (context_window_exceeded) also skips the unconditional close, for comparison", () => {
-  // Not asserting new behaviour -- confirms the harness captures the real
-  // control flow, since context_window_exceeded's own early return means it
-  // never reaches the loop's yield in this sliced region either.
   const { reasoningClosed } = runToolEventDispatch({
     type: "container_invalidated",
   });
@@ -143,12 +111,6 @@ test("the self_note branch sits before the unconditional closeReasoningContent()
   );
 });
 
-// --------------------------------------------------------------------------
-// Part 2: the final assistant content the adapter yields at end-of-stream
-// carries the latched note as a `self_note` part, spliced in next to
-// `documentCitationParts` (both are tool-event-derived parts that only
-// materialize in the FINAL content, never in an interim streamed yield).
-// --------------------------------------------------------------------------
 
 test("the final yielded content splices in the self_note part", () => {
   const finalContentAt = adapter.indexOf("            ...finalContent,\n");
@@ -158,9 +120,6 @@ test("the final yielded content splices in the self_note part", () => {
 });
 
 test("an assistant message with no note produces no self_note part in the final content splice", () => {
-  // selfNotePart starts undefined and only the self_note branch (Part 1)
-  // assigns it, so a stream carrying none never enters the spread -- verified
-  // structurally alongside the declaration and initial value.
   const declAt = adapter.indexOf("let selfNotePart:");
   assert.ok(declAt > 0);
   assert.match(
@@ -169,13 +128,6 @@ test("an assistant message with no note produces no self_note part in the final 
   );
 });
 
-// --------------------------------------------------------------------------
-// Part 3: the re-send path. `collectAssistantSelfNote` reads the part back
-// off a stored assistant message; `attachAssistantSelfNotePart` writes it
-// onto the OUTBOUND SerializedMessage so the backend's `latest_self_note`
-// (checkpoint.py) can read it on the next request. Both are small, dependency
-// -free functions, executed directly rather than only pattern-matched.
-// --------------------------------------------------------------------------
 
 function loadSelfNoteHelpers(): {
   collectAssistantSelfNote: (message: { content?: unknown }) => string | undefined;
@@ -240,10 +192,6 @@ test("attachAssistantSelfNotePart re-sends the note in the outbound request body
   attachAssistantSelfNotePart(messages, "Task: finish the migration.");
   const assistant = messages[1] as { role: string; content: unknown };
   assert.ok(Array.isArray(assistant.content), "content must become a list -- latest_self_note only reads list-shaped content");
-  // Round-tripped: attachAssistantSelfNotePart builds the part inside the vm
-  // realm, so its object identity/prototype differs from this test's `Object`
-  // even when every field matches -- exactly the cross-realm distinction that
-  // wire serialisation (this function's whole purpose) also erases.
   const parts = JSON.parse(JSON.stringify(assistant.content)) as Array<
     Record<string, unknown>
   >;
@@ -251,7 +199,6 @@ test("attachAssistantSelfNotePart re-sends the note in the outbound request body
     parts.find((p) => p.type === "self_note"),
     { type: "self_note", content: "Task: finish the migration." },
   );
-  // The original text must survive alongside the note, not be replaced by it.
   assert.deepEqual(
     parts.find((p) => p.type === "text"),
     { type: "text", text: "hi there" },
@@ -276,10 +223,6 @@ test("attachAssistantSelfNotePart promotes null content to a list so the part is
 });
 
 test("serializeAssistantReplayMessages wires the note through on every call, not just the thought-signature path", () => {
-  // Structural: confirms attachAssistantSelfNotePart is actually invoked from
-  // the function that builds every outbound assistant replay, immediately
-  // alongside the pre-existing attachAssistantThoughtSignature call it
-  // mirrors -- so the wiring in Part 3 above is not dead code.
   const fnStart = adapter.indexOf("function serializeAssistantReplayMessages(");
   const fnEnd = adapter.indexOf("function toOpenAIMessages(", fnStart);
   assert.ok(fnStart > 0 && fnEnd > fnStart);

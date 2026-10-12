@@ -1416,7 +1416,6 @@ function collectAssistantSelfNote(message: RunMessage): string | undefined {
   return undefined;
 }
 
-// checkpoint.py's latest_self_note reads only list-shaped content, so a string is promoted
 function attachAssistantSelfNotePart(
   messages: SerializedMessage[],
   note: string | undefined,
@@ -7544,7 +7543,6 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "self_note") {
-                  // state only: latched and spliced into the final content, never rendered
                   const note = toolEvent.content;
                   if (typeof note === "string" && note.trim()) {
                     selfNotePart = { type: "self_note", content: note };
@@ -8829,7 +8827,6 @@ export function createOpenAIStreamAdapter(
         yield {
           content: [
             ...finalContent,
-            // inert for the renderer; only round-trips back to the backend
             ...(selfNotePart
               ? [selfNotePart as unknown as (typeof finalContent)[number]]
               : []),

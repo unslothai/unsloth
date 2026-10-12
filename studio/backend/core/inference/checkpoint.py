@@ -81,7 +81,6 @@ _NOT_SEARCHABLE = (
     "Everything else that was dropped is still stored, but you cannot retrieve it on this "
     "turn, so answer from what you have rather than saying you will look it up."
 )
-# only the delimiters themselves; `self_note` too, since that section renders inside this block
 _DELIMITERS = re.compile(r"</?(?:self_note|carried_forward)>", re.IGNORECASE)
 # How the composer starts each attachment it appends after the typed words.
 _ATTACHMENT = re.compile(
@@ -371,21 +370,13 @@ def render_checkpoint(
     # and reads back as just its heading.
     lines = "\n".join("- " + item.replace("\n", "\n" + _CONTINUATION) for item in items)
     tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
-    # The note goes AFTER the user's bullets and in its own delimited section: merged, a
-    # model guess would be indistinguishable from the user's own words, which is the one
-    # thing the block's header promises it is not. An empty note renders nothing, so the
-    # disabled path is byte-identical to the block this function has always produced.
     note = self_note_module.render_self_note(self_note)
     body = f"{lines}\n\n{note}" if note else lines
     return f"{_OPEN}\n{_HEADER}{tail}\n\n{body}\n{_CLOSE}"
 
 
 def latest_self_note(messages: list[dict]) -> str:
-    """The newest note carried on any assistant message, or "".
-
-    Newest wins: a note is the model's current working state, and an older one it has
-    already revised is exactly what should not outlive it.
-    """
+    """The newest note carried on any assistant message, or ""."""
     for message in reversed(messages):
         if message.get("role") != "assistant":
             continue
@@ -410,16 +401,6 @@ _BLOCK = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# The self-note section rendered inside a captured block is the model's own speculation,
-# not the user's words, so it must not reach the bullet walk below: a note containing
-# markdown bullets would otherwise be laundered into "the user's own earlier instructions,
-# quoted verbatim" on the next reset. A terminated section is cut out whole; an unterminated
-# one (a block truncated mid-note) has no closing tag to anchor on, so everything from the
-# opening tag to the end of the body is cut instead of falling through to the bullet walk.
-# Anchored to line-start (`^` with MULTILINE) for defence in depth: `render_self_note`
-# always emits the opening tag at the start of its own line, so the anchor costs the real
-# section nothing, while a stray tag mid-line -- which `_neutralise` should now have
-# defanged before it ever got here -- can no longer trigger the greedy cut to end-of-body.
 _SELF_NOTE_SECTION = re.compile(
     r"^<self_note>.*?(?:</self_note>|\Z)", re.IGNORECASE | re.DOTALL | re.MULTILINE
 )
@@ -599,27 +580,13 @@ def fit_checkpoint_context(
             # re-capped away, so the recount stayed over budget and the request was refused or pushed back to rolling
             # even though the base system prompt plus the newest turn fits with room to spare.
             return _without_block(kept), ""
-        # Gated on the toggle, so a disabled install renders the block it always did.
         note = latest_self_note(messages) if self_note_module.enabled() else ""
         if note:
-            # One budget, and the user's instructions are served first: the note is the
-            # model's commentary on the user's words, so it is worth less than the words.
-            # `budget` is already what the block may spend; what the items left is what
-            # the note may have, capped again by its own ceiling.
             spent = sum(estimate_message({"role": "user", "content": item}) for item in items)
-            # `max_note_tokens()`, not the module constant: the chat settings slider is
-            # a per-request override, and reading the constant directly would ignore it.
             room = min(self_note_module.max_note_tokens(), max(0, budget - spent))
             if room <= 0:
                 note = ""
             elif estimate_message({"role": "user", "content": note}) > room:
-                # Trim rather than drop: the opening of a note says what it is about, and
-                # half a note is worth more here than none. The 4 chars/token guess is only
-                # a starting point -- JSON-escaping doubles the cost of `"` and `\`, so a
-                # note quoting JSON or a Windows path can estimate at ~2x the char count.
-                # Verify against the real estimator and shrink until it actually fits,
-                # rather than trusting the ratio; bounded so this stays a few halvings,
-                # never a per-character loop.
                 candidate = note[: max(0, room * 4)].rstrip()
                 for _ in range(8):
                     if not candidate:
@@ -627,14 +594,9 @@ def fit_checkpoint_context(
                     cost = estimate_message({"role": "user", "content": candidate})
                     if cost <= room:
                         break
-                    # Shrink by the measured overshoot, not a flat half, so a mildly-over
-                    # candidate does not lose more than it has to.
                     shrink = min(0.5, room / cost)
                     candidate = candidate[: int(len(candidate) * shrink)].rstrip()
                 else:
-                    # Ran out of shrink attempts without fitting: half a note is worth more
-                    # than none only while it still says something, so give up rather than
-                    # keep cutting past that point.
                     candidate = ""
                 note = candidate
         text = render_checkpoint(items, searchable = _resolved(searchable), self_note = note)
