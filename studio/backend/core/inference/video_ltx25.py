@@ -84,6 +84,8 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
+# The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
+LTX25_LATENT_UPSAMPLER_GB = 1.0
 
 # The split single-file release. A DiT picked from it assembles from the companion files beside it (no Diffusers pack):
 # connectors from the DiT file plus the encoder file's text projections, the conv VAE, the audio VAE + vocoder and the

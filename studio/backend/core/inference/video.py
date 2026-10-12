@@ -1204,7 +1204,9 @@ def _resolve_load_family_with_source(
     if family_override:
         fam = detect_video_family(repo_id, family_override)
         if fam is not None and fam.name in LTX_FAMILIES:
-            _assert_local_ltx_header_matches(repo_id, gguf_filename, fam.name)
+            # ltx_file, not the raw filename: an explicit pipeline load never opens a child file, so its folder answers
+            # by its model_index.json instead.
+            _assert_local_ltx_header_matches(repo_id, ltx_file, fam.name)
         return fam, False
     fam = (
         (display_repo_id and detect_video_family(display_repo_id))
@@ -3048,7 +3050,15 @@ class VideoBackend:
             if kind in ("gguf", "single_file")
             else ()
         )
-        _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
+        # A local copy of the split LTX-2.5 release has no model_index.json by design: its companion files beside the
+        # DiTs are the base (assemble_ltx25_single_file_pipeline).
+        split_ltx25_base = False
+        if fam.name == "ltx-2.5" and kind in ("gguf", "single_file") and base_repo:
+            from .video_ltx25 import is_ltx25_single_file_base
+
+            split_ltx25_base = is_ltx25_single_file_base(base_repo)
+        if not split_ltx25_base:
+            _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         local_file = Path(repo_id).expanduser().is_file()
@@ -6453,11 +6463,20 @@ class VideoBackend:
             # hard refusal.
             vae_gb = components[2] if components is not None else 0.0
             if components is not None and fam.name == "ltx-2.5":
-                from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
+                from .video_ltx25 import (
+                    LTX25_LATENT_UPSAMPLER_GB,
+                    LTX25_WORKER_RESIDENT_GB,
+                    ltx25_uses_upsampler,
+                )
 
                 # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
                 # resident on every tier, even when its weights are off the card.
                 vae_gb += LTX25_WORKER_RESIDENT_GB
+                # The table's companions include the latent upsampler, which a dev (single stage) load never attaches.
+                if not ltx25_uses_upsampler(
+                    _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
+                ):
+                    vae_gb -= LTX25_LATENT_UPSAMPLER_GB
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale

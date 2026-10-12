@@ -186,8 +186,9 @@ def local_ltx_pipeline_family(path: Optional[str]) -> Optional[str]:
         return None
     encoder = spec.get("text_encoder")
     encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    # An empty or null component entry is absent, like a malformed text_encoder above.
     if str(encoder_class).startswith("Gemma4") or any(
-        isinstance(spec.get(k), list) and spec.get(k)[0]
+        isinstance(spec.get(k), list) and bool(spec.get(k)) and spec.get(k)[0]
         for k in ("diffusion_decoder", "duration_head")
     ):
         return LTX25_FAMILY
