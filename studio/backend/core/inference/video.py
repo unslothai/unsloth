@@ -3436,6 +3436,7 @@ class VideoBackend:
         prebuilt install, and every file resolved from the cache."""
         from huggingface_hub import HfApi
 
+        from . import sd_cpp_args as sd_cpp_args_mod
         from .sd_cpp_args import (
             GRAPH_CUT_STREAM_FLAGS,
             GRAPH_CUT_VRAM_FLAGS,
@@ -3512,6 +3513,9 @@ class VideoBackend:
             selected_card,
         )
         native_device = target.device
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend: CPU policy, and no VIDEO claim held.
+        if sd_cpp_args_mod.forces_cpu_backend(native_device):
+            native_device = "cpu"
         # What the accelerator decision below was made on, or None when it was never asked (a CPU or MPS target never
         # consults it). Re-checked under the reader claim, so a replacement that arrives mid-load cannot silently change
         # the answer this device choice rests on.

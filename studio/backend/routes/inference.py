@@ -46517,6 +46517,7 @@ async def load_diffusion_model_gated(
     )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
+    from core.inference.sd_cpp_args import forces_cpu_backend
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46700,6 +46701,13 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
+        if (
+            activated == ENGINE_SD_CPP
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        ):
+            needs_gpu = False
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,
