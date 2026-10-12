@@ -396,7 +396,10 @@ def _uses_multimodal_rope(model_config) -> bool:
     return False
 
 
-_PROCESSOR_TEXT_PACKING_MODELS = frozenset({"gemma3", "gemma4", "gemma4_unified"})
+# The *_text names are the same decoders loaded text-only (FastLanguageModel on a multimodal checkpoint).
+_PROCESSOR_TEXT_PACKING_MODELS = frozenset(
+    {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+)
 
 
 def _processor_text_only(

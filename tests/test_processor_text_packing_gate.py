@@ -175,7 +175,10 @@ def test_processors_outside_the_verified_families_stay_blocked(model_type):
     assert _blocked(model = _Model(_Cfg(model_type = model_type)))
 
 
-@pytest.mark.parametrize("model_type", ["gemma3", "gemma4", "gemma4_unified"])
+@pytest.mark.parametrize(
+    "model_type",
+    ["gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"],
+)
 def test_verified_families_are_unblocked(model_type):
     assert not _blocked(model = _Model(_Cfg(model_type = model_type)))
 
