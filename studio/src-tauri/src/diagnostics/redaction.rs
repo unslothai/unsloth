@@ -24,7 +24,7 @@ pub(crate) fn redact_text(text: &str, report: &mut RedactionReport) -> String {
     out = replace_with(auth_value_re(), &out, redact_auth_value, report);
     out = replace_with(secret_flag_re(), &out, redact_kv, report);
     out = replace_with(bearer_re(), &out, redact_bearer, report);
-    out = replace_regex(cookie_re(), &out, "$1<redacted>", report);
+    out = replace_with(cookie_re(), &out, redact_cookie, report);
     out = replace_regex(sk_key_re(), &out, "$1<redacted token>", report);
     out = replace_regex(token_re(), &out, "$1<redacted token>", report);
     out = replace_with(env_secret_re(), &out, redact_env, report);
@@ -154,6 +154,16 @@ fn is_sentinel(value: &str) -> bool {
         value.trim_start_matches(['"', '\'']),
         "<redacted>" | "<redacted token>" | "<redacted private key>"
     )
+}
+
+// A quoted cookie value ends at its own quote, so later fields on the line survive;
+// an unquoted header runs to the end of the line.
+fn redact_cookie(caps: &Captures) -> Option<String> {
+    let quote = ["eq", "dq", "sq"]
+        .iter()
+        .find_map(|name| caps.name(name))
+        .map_or("", |m| m.as_str());
+    Some(format!("{}{quote}{REDACTED}{quote}", &caps[1]))
 }
 
 fn redact_bearer(caps: &Captures) -> Option<String> {
@@ -306,7 +316,7 @@ fn bearer_re() -> &'static Regex {
 fn cookie_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:set-)?cookie(?:\\*["'])?[ \t]*[:=][ \t]*)(?:[^\r\n\\]|\\[^rnt])+"#).unwrap()
+        Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:set-)?cookie(?:\\*["'])?[ \t]*[:=][ \t]*)(?:(?P<eq>\\")(?:[^"\\\r\n]|\\{2,}"|\\+[^"\\\r\n])+\\"|(?P<dq>")(?:[^"\\\r\n]|\\.)+"|(?P<sq>')(?:[^'\\\r\n]|\\.)+'|(?:[^\r\n\\]|\\[^rnt])+)"#).unwrap()
     })
 }
 
@@ -641,6 +651,16 @@ mod tests {
             (r#"ACCESS_KEY="quoted"opaque0123456789"#, "opaque", ""),
             (r#"ACCESS_KEY="opaque\"still secret""#, "secret", ""),
             ("serve --password abcde --port 8888", "abcde", "--port 8888"),
+            (
+                r#"headers={"Cookie": "session=opaque0123456789", "error": "CUDA OOM"}"#,
+                "opaque0123456789",
+                r#""Cookie": "<redacted>", "error": "CUDA OOM"}"#,
+            ),
+            (
+                r#"{"event": "h {\"cookie\": \"s=opaque0123456789\", \"n\": 1}"}"#,
+                "opaque0123456789",
+                r#"\"cookie\": \"<redacted>\", \"n\": 1}"#,
+            ),
             (
                 "serve --password abcdef,opaque0123 --port 1",
                 "opaque0123",
