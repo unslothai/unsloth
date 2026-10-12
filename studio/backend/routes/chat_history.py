@@ -334,7 +334,6 @@ class ChatProject(BaseModel):
     archived: bool = False
     createdAt: int
     updatedAt: int
-    # Read only: its own last edit or its newest unarchived chat, whichever is later.
     lastActivityAt: Optional[int] = None
 
 
@@ -369,7 +368,6 @@ class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
 
 
-# Bounds the request body: the id lists come from the user's own pins and sections.
 _SIDEBAR_ID_LIST_MAX = 10_000
 
 
@@ -730,8 +728,7 @@ def list_threads(
 def list_sidebar_rows(
     payload: ChatSidebarRowsRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """One page of sidebar rows, compare pairs grouped before the limit. GET /threads is the
-    whole list; this is what the sidebar pages through 20 at a time."""
+    """One page of sidebar rows, compare pairs grouped before the limit."""
     try:
         page = list_chat_sidebar_rows(
             archived = payload.archived,
@@ -757,8 +754,7 @@ def sidebar_thread_rows(
     thread_ids: list[str] = Query(default_factory = list),
     current_subject: str = Depends(get_current_subject),
 ):
-    """The sidebar row each thread belongs to, for threads whose row is not loaded. Takes
-    repeated `thread_ids` params; unknown ids are left out of the map."""
+    """Thread id -> sidebar row id for repeated `thread_ids`; unknown ids are left out."""
     if len(thread_ids) > _SIDEBAR_THREAD_ROWS_MAX:
         raise HTTPException(
             status_code = 400,

@@ -2503,7 +2503,6 @@ def list_chat_threads(
 SIDEBAR_ROWS_CURSOR_VERSION = 2
 SIDEBAR_ROWS_MAX_LIMIT = 200
 
-# A sidebar row is a compare pair or a lone thread, keyed as the frontend's groupThreads keys it.
 _SIDEBAR_ROW_ID_SQL = "COALESCE(NULLIF(pair_id, ''), id)"
 _SIDEBAR_ACTIVITY_SQL = "COALESCE(updated_at, created_at)"
 
@@ -2549,13 +2548,8 @@ def list_chat_sidebar_rows(
     limit: int = 20,
     cursor: str | None = None,
 ) -> dict:
-    """One page of sidebar rows, grouped and ordered as the frontend's groupThreads does.
-
-    Grouping happens before the limit, so a compare pair is never split across pages. A row's title
-    and project come from its most recently active member, its times are the maxima over members.
-    `sort="updated"` pages by a (updatedAt, id) keyset; `sort="manual"` follows applyManualOrder
-    (unranked rows first, newest first, then ranked rows by rank) and pages by offset.
-    """
+    """One page of sidebar rows, grouped (before the limit) and ordered as the frontend's groupThreads
+    does. `updated` pages by keyset; `manual` follows applyManualOrder and pages by offset."""
     if sort not in ("updated", "manual"):
         raise ValueError(f"Unknown sort {sort!r}")
     if not 1 <= limit <= SIDEBAR_ROWS_MAX_LIMIT:
@@ -2631,7 +2625,6 @@ def list_chat_sidebar_rows(
         if position is not None:
             where = "WHERE (updated_at, lead_created_at, -lead_rowid) < (?, ?, ?)"
             page_values += [position["u"], position["c"], -position["r"]]
-        # The window counts every eligible row before the keyset cuts it: one grouping pass, not two.
         page_sql = (
             f"{base} SELECT * FROM (SELECT *, COUNT(*) OVER () AS total FROM eligible) {where} "
             "ORDER BY updated_at DESC, lead_created_at DESC, lead_rowid ASC LIMIT ?"
@@ -2653,14 +2646,12 @@ def list_chat_sidebar_rows(
         if page:
             total = page[0]["total"]
         else:
-            # Past the last row, or nothing eligible: the window had no row to ride on.
             total = conn.execute(f"{base} SELECT COUNT(*) FROM eligible", base_values).fetchone()[0]
         has_more = len(page) > limit
         page = page[:limit]
         members_by_row: dict[str, list[sqlite3.Row]] = {row["row_id"]: [] for row in page}
         if page:
             row_ids = json.dumps(list(members_by_row))
-            # Both halves hit an index (pair_id, primary key) rather than the row-id expression.
             for member in conn.execute(
                 f"""
                 SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id
@@ -3286,8 +3277,7 @@ def get_chat_project(id: str) -> Optional[dict]:
 
 
 def list_chat_projects(include_archived: bool = False) -> list[dict]:
-    """Projects, each with `lastActivityAt`: its own last edit or its newest unarchived chat,
-    whichever is later, so the sidebar can order folders without reading every chat."""
+    """Projects with `lastActivityAt`: their own last edit or newest unarchived chat, whichever is later."""
     conn = get_connection()
     try:
         where = "" if include_archived else "WHERE p.archived = 0"

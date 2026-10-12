@@ -511,9 +511,7 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
-/** Runs this session's browser-history import, as the full listing does, and says whether the
- *  server alone now holds every chat. A paged sidebar reads only the server, so until then it
- *  lists through `listStoredChatThreads` instead. */
+/** Runs this session's legacy import; true once the server alone holds every chat. */
 export async function settleLegacyChatImport(): Promise<boolean> {
   await importLegacyChatsIfNeeded().catch(() => undefined);
   await Promise.allSettled([...pendingLegacyThreadImports]);

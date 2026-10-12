@@ -13,8 +13,7 @@ import {
 /** mounts the next page this far below the sidebar's visible edge. */
 const PRELOAD_PX = 800;
 
-// A server page loads only after the user scrolls the sidebar, one page per scroll: a tall window
-// or the preload margin alone never reads page after page.
+// one server page per user scroll, so a tall window or the preload margin never drains pages
 const ARMING_EVENTS = ["scroll", "wheel", "touchmove"] as const;
 
 /** preserves mounted rows when the list grows because `render` remains stable. */
@@ -25,9 +24,7 @@ const Row = memo(function Row<T>({
   return render(item);
 }) as <T>(props: { item: T; render: (item: T) => ReactNode }) => ReactNode;
 
-/** pages mounted rows to bound Radix keydown listeners while callers retain the loaded list. When
- *  the caller holds only part of the list (`hasMore`), reaching the end asks it for the next page
- *  through `onReachEnd`, once the user has scrolled the sidebar. */
+/** pages mounted rows to bound Radix keydown listeners; with `hasMore`, the end asks `onReachEnd` for more. */
 export function ProgressiveRows<T extends { id: string }>({
   items,
   pageSize,
@@ -40,9 +37,7 @@ export function ProgressiveRows<T extends { id: string }>({
   pageSize: number;
   renderItem: (item: T) => ReactNode;
   end?: ReactNode;
-  /** More rows exist than `items` holds. */
   hasMore?: boolean;
-  /** Fetches the next page; the sentinel waits for it before asking again. */
   onReachEnd?: () => Promise<void> | void;
 }) {
   const [limit, setLimit] = useState(pageSize);
@@ -85,7 +80,6 @@ export function ProgressiveRows<T extends { id: string }>({
       { root, rootMargin: `0px 0px ${PRELOAD_PX}px 0px` },
     );
     observer.observe(sentinel);
-    // a scroll arms the next fetch and loads a sentinel that was already in view
     const onArm = () => {
       armedRef.current = true;
       if (intersectingRef.current) advance(root);

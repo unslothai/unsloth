@@ -12,7 +12,6 @@ import {
 import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
-/** The route's own cap on one request. */
 const MAX_REQUEST_LIMIT = 200;
 const RUNNING_POLL_MS = 5000;
 const INITIAL_RETRY_DELAYS_MS = [500, 1500, 3500];
@@ -27,7 +26,6 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
   const [loaded, setLoaded] = useState(false);
   const [total, setTotal] = useState(0);
   const controllerRef = useRef<AbortController | null>(null);
-  // How many runs the sidebar holds, so a refresh or a poll re-reads every page scrolled into.
   const loadedCountRef = useRef(0);
   useEffect(() => {
     loadedCountRef.current = items.length;
@@ -68,8 +66,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
   }, []);
 
   const hasMore = loaded && items.length < total;
-  // The next page, when the list is scrolled to its end. Shares the in-flight guard, so a poll and
-  // a page never race to write the list.
+  // shares the in-flight guard so a poll and a page never race to write the list
   const loadMore = useCallback(async (): Promise<void> => {
     if (controllerRef.current && !controllerRef.current.signal.aborted) {
       return;
@@ -91,7 +88,6 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
       });
       setTotal(result.total);
     } catch {
-      // the next scroll retries
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;

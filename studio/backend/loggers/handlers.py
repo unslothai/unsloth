@@ -182,8 +182,7 @@ _SELF_READ_PATHS = {
 }
 
 
-# Reads sent as POST because their id lists outgrow a query string. The sidebar pages through this one on every
-# chat-history refresh, as it did GET /api/chat/threads, so it is quiet on the same terms.
+# POST only because the id lists outgrow a query string; refreshed like GET /api/chat/threads, so quiet alike.
 _CHAT_LIST_POST_READ_PATHS = frozenset({"/api/chat/sidebar/rows"})
 
 

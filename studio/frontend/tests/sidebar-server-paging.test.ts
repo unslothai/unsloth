@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The sidebar reads each chat list a page at a time: what the pager asks for, what it keeps, and
-// how a server without the paged route is answered from the full list in the same order.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -36,7 +34,6 @@ function rows(count: number, prefix = "c"): Row[] {
   }));
 }
 
-/** A server over `all`, offset cursors, recording every request. */
 function fakeServer(all: () => Row[]) {
   const calls: { limit: number; cursor: string | null }[] = [];
   const fetchPage = async (
@@ -121,7 +118,6 @@ test("a refresh re-reads the loaded window from the top in one request", async (
   await list.loadMore();
   await list.loadMore();
   server.calls.length = 0;
-  // a streamed reply bumps an old chat to the top
   data = [
     { id: "c300", updatedAt: 10_000 },
     ...data.filter((r) => r.id !== "c300"),
@@ -176,7 +172,6 @@ test("a page landing after the query changed is dropped", async () => {
   release?.();
   await late;
   assert.ok(list.getState().rows.every((row) => row.id.startsWith("b")));
-  // a new query keeps the depth the user had scrolled to
   assert.equal(list.getState().rows.length, 20);
 });
 
@@ -260,7 +255,6 @@ test("the full-list fallback filters and orders like the server", () => {
   assert.deepEqual(ids({ unfiledOnly: true, excludeIds: ["c"] }), ["a", "e"]);
   assert.deepEqual(ids({ projectId: "p" }), ["b", "d"]);
   assert.deepEqual(ids({ includeIds: ["e", "a"] }), ["a", "e"]);
-  // applyManualOrder: unranked first in incoming order, then ranked by rank
   assert.deepEqual(ids({ sort: "manual", manualOrder: ["d", "a"] }), [
     "b",
     "c",
@@ -268,7 +262,6 @@ test("the full-list fallback filters and orders like the server", () => {
     "d",
     "a",
   ]);
-  // a manual order is ignored under "updated"
   assert.deepEqual(ids({ sort: "updated", manualOrder: ["e"] }), [
     "a",
     "b",
@@ -293,7 +286,6 @@ test("a manual order written from loaded rows keeps every unloaded row after the
   assert.deepEqual(mergeManualOrderTail(["x"], []), ["x"]);
 });
 
-// The hook module against a stubbed server: the paged route when present, the full list otherwise.
 function loadRowPages(options: {
   server: "paged" | "old";
   legacyDone?: boolean;
@@ -383,7 +375,6 @@ test("an old server is answered from the full list, sliced in pages, read once",
   assert.ok(first.rows.every((row) => !row.projectId));
   assert.equal(first.hasMore, true);
   const second = await mod.fetchSidebarRowPage(query, 20, first.nextCursor);
-  // once told the route is missing, the hook stops asking for it
   assert.equal(requests.length, 1);
   assert.equal(
     new Set([...first.rows, ...second.rows].map((r) => r.id)).size,
@@ -455,7 +446,6 @@ test("a server page is asked for only after a scroll, one page per scroll", () =
     advance,
     /if \(!fetchMore \|\| fetchingRef\.current \|\| !root \|\| !armedRef\.current\) return;\n\s*armedRef\.current = false;/,
   );
-  // mounting rows already loaded needs no scroll, as before
   assert.ok(
     advance.indexOf("items.length > limit") < advance.indexOf("armedRef"),
     "local mounting waits for a scroll",

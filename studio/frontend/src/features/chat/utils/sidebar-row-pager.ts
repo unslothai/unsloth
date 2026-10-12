@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** One page as a fetcher returns it. `nextCursor` continues after its last row. */
 export interface RowPageResult<T> {
   rows: T[];
   nextCursor: string | null;
@@ -19,18 +18,14 @@ export interface RowPagerState<T> {
   rows: T[];
   hasMore: boolean;
   total: number | null;
-  /** The first window has answered, rows or error. */
   loaded: boolean;
   loading: boolean;
   error: unknown;
 }
 
 export interface RowPagerOptions {
-  /** Rows the first request asks for. */
   initialLimit: number;
-  /** Rows each further page asks for. */
   pageSize: number;
-  /** The most one request may ask for; longer windows are read in steps. */
   maxRequestLimit?: number;
 }
 
@@ -47,10 +42,8 @@ function dedupeAppend<T extends { id: string }>(head: T[], tail: T[]): T[] {
   return out;
 }
 
-/** One sidebar list read a page at a time. Holds only what was asked for: the first window, then
- *  a page per `loadMore`. A refresh re-reads the whole loaded window from the top in one go, so a
- *  history update costs what is on screen, not the whole history. Every change of query or refresh
- *  starts a new generation, and an answer from an older one is dropped. */
+/** One sidebar list read a page at a time; a refresh re-reads only the loaded window, and answers
+ *  from an older generation (query change or refresh) are dropped. */
 export class RowPager<Q, T extends { id: string }> {
   private state: RowPagerState<T> = {
     rows: [],
@@ -101,7 +94,6 @@ export class RowPager<Q, T extends { id: string }> {
     for (const listener of this.listeners) listener();
   }
 
-  /** Reads `count` rows after `cursor`, a request of at most `maxRequestLimit` at a time. */
   private async read(
     cursor: string | null,
     count: number,
@@ -127,15 +119,13 @@ export class RowPager<Q, T extends { id: string }> {
     return { rows, cursor: next, hasMore, total };
   }
 
-  /** Loads the first window, once. */
   start(): Promise<void> {
     if (this.state.loaded || this.state.loading)
       return this.pending ?? Promise.resolve();
     return this.refresh();
   }
 
-  /** Points the list at a new query, keeping as many rows as were loaded so a re-sort or a pin
-   *  does not throw the user back to the first page. */
+  /** Keeps the loaded depth, so a re-sort or a pin does not reset the scroll to page one. */
   setQuery(query: Q, queryKey: string): Promise<void> {
     if (queryKey === this.queryKey) return Promise.resolve();
     this.query = query;
@@ -144,7 +134,6 @@ export class RowPager<Q, T extends { id: string }> {
     return this.refresh();
   }
 
-  /** Re-reads the loaded window from the top. */
   refresh(): Promise<void> {
     const generation = ++this.generation;
     const window = Math.max(this.options.initialLimit, this.state.rows.length);
@@ -192,7 +181,7 @@ export class RowPager<Q, T extends { id: string }> {
       } catch (error) {
         if (generation !== this.generation) return;
         if ((error as { cursorRejected?: boolean } | null)?.cursorRejected) {
-          // The cursor went stale under the server: read the same depth again from the top.
+          // stale cursor: re-read the same depth from the top
           this.patch({ loading: false });
           await this.refresh();
           return;
@@ -204,15 +193,12 @@ export class RowPager<Q, T extends { id: string }> {
     return run;
   }
 
-  /** The next page. A no-op while a request is out, once the list is exhausted, or after an error. */
   loadMore(): Promise<void> {
     return this.extend(this.options.pageSize);
   }
 
-  /** Every remaining row, for actions that mean the whole list (Select All, a manual reorder). */
   async loadAll(): Promise<void> {
     await this.start();
-    // A refresh landing meanwhile restarts the window; keep going until nothing is left.
     for (let guard = 0; guard < 10_000; guard++) {
       if (this.state.loading) {
         await this.pending;
@@ -223,7 +209,6 @@ export class RowPager<Q, T extends { id: string }> {
     }
   }
 
-  /** Clears an error so the next scroll tries again. */
   retry(): Promise<void> {
     if (!this.state.error) return Promise.resolve();
     if (this.state.rows.length === 0) return this.refresh();

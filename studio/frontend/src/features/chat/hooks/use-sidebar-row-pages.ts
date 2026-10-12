@@ -22,13 +22,11 @@ import {
 } from "../utils/sidebar-row-query";
 import { type SidebarItem, groupThreads } from "./use-chat-sidebar-items";
 
-/** Same debounce the full listing used: a streamed reply fires the event per chunk. */
 const SIDEBAR_REFRESH_DEBOUNCE_MS = 300;
-/** Marks a cursor as an offset into the full list, so a page continues on the path that began it. */
 const FALLBACK_CURSOR = "full:";
 
 function toSidebarItem(row: SidebarRowRecord): SidebarItem | null {
-  // A delete tombstones its threads before the server forgets them; the full listing hid them too.
+  // a delete tombstones its threads before the server forgets them
   const threadIds = (row.threadIds?.length ? row.threadIds : [row.id]).filter(
     (id) => !isChatThreadDeleted(id),
   );
@@ -47,11 +45,9 @@ function toSidebarItem(row: SidebarRowRecord): SidebarItem | null {
   };
 }
 
-// Null until the first answer says whether the server pages.
 let serverPages: boolean | null = null;
 
-// The full list against a server without the paged route, read once per history change and
-// shared by every list on screen.
+// Without the paged route: one full read per history change, shared by every list.
 let fullList: {
   epoch: number;
   session: number;
@@ -68,7 +64,6 @@ function readFullList() {
   ) {
     const promise = listStoredChatThreads({ includeArchived: true });
     fullList = { epoch: fullListEpoch, session, promise };
-    // A failed read must not stick for the rest of this epoch.
     promise.catch(() => {
       if (fullList?.promise === promise) fullList = null;
     });
@@ -98,8 +93,6 @@ async function fullListPage(
   };
 }
 
-/** One page of a sidebar list: the server's paged route when it has one and holds every chat,
- *  else the full list sliced the same way. */
 export async function fetchSidebarRowPage(
   query: SidebarRowQuery,
   limit: number,
@@ -128,8 +121,7 @@ export async function fetchSidebarRowPage(
   return fullListPage(query, limit, continuesFullList ? cursor : null);
 }
 
-/** Every row id a list holds, in its order, without loading them into the list. For a manual order
- *  written from a partly loaded list: the rows past the loaded ones keep their places. */
+/** Every row id in order, so a manual order written from a partly loaded list keeps unloaded rows. */
 export async function readAllSidebarRowIds(
   query: SidebarRowQuery,
 ): Promise<string[]> {
@@ -150,7 +142,6 @@ export async function readAllSidebarRowIds(
 
 type SidebarPager = RowPager<SidebarRowQuery, SidebarItem>;
 
-// Every list on screen refreshes its loaded window after a history change, one debounce for all.
 const livePagers = new Set<SidebarPager>();
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -183,7 +174,6 @@ function unregisterPager(pager: SidebarPager) {
 
 export interface SidebarRowSlot {
   query: SidebarRowQuery;
-  /** Rows the first request asks for. Defaults to a page. */
   initialLimit?: number;
 }
 
@@ -212,8 +202,7 @@ const IDLE_LIST: SidebarRowPages = {
   retry: () => Promise.resolve(),
 };
 
-/** The sidebar's chat lists, each read a page at a time. `items` is every loaded row once, in slot
- *  order, the stand-in for the full list the sidebar used to derive everything from. */
+/** `items` is every loaded row once, in slot order: what the sidebar derives its lists from. */
 export function useSidebarRowPages(
   slots: Record<string, SidebarRowSlot | null>,
   enabled: boolean,
@@ -310,7 +299,7 @@ export function useSidebarRowPages(
         retry: () => pager.retry(),
       };
     }
-    // Same rows, same array: every sidebar list derives from this one.
+    // keep identity: every sidebar memo depends on this array
     const previous = unionRef.current;
     if (
       previous.parts.length !== parts.length ||

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Paged sidebar rows: parity with the frontend's groupThreads + applyManualOrder, page edges,
-keyset cursors, filters, project activity, and the thread -> row lookup."""
+"""Paged sidebar rows: parity with the frontend's groupThreads + applyManualOrder."""
 
 import inspect
 import os
@@ -188,7 +187,6 @@ def test_full_traversal_matches_get_threads_and_group_threads(client):
     for i in range(70):
         base = {"created_at": 1_000 + i * 10, "updated_at": 1_000 + i * 10 + 3}
         if i % 7 == 0:
-            # A compare pair whose members differ in title, model and activity.
             threads.append(
                 {
                     **base,
@@ -305,7 +303,6 @@ def test_manual_sort_matches_apply_manual_order(client):
     expected = _apply_manual_order(_group_threads(listed), order)
     rows = _page_all(client, {"sort": "manual", "manualOrder": order, "limit": 20})
     assert rows == expected
-    # Ranked rows land last, the duplicate id at its later rank.
     assert [row["id"] for row in rows[-4:]] == ["t0040", "t0010", "t0002", "t0033"]
     assert _page_all(client, {"sort": "manual"}) == _group_threads(listed)
 
@@ -349,7 +346,6 @@ def test_projects_last_activity(client, db):
     data = client.get("/api/chat/projects").json()
     by_id = {p["id"]: p for p in data["projects"]}
     assert {k: v["lastActivityAt"] for k, v in by_id.items()} == {"a": 1_000, "b": 500, "c": 40}
-    # No params: the order and set stay the old ones.
     assert [p["id"] for p in data["projects"]] == ["b", "c", "a"]
 
 

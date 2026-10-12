@@ -26,7 +26,6 @@ export interface ProjectRecord {
   archived: boolean;
   createdAt: number;
   updatedAt: number;
-  /** Server-computed: its own edits or its newest chat, whichever is later. Absent on older servers. */
   lastActivityAt?: number | null;
 }
 

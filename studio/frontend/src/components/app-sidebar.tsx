@@ -1461,13 +1461,10 @@ export function AppSidebar() {
   const setProjectsSection = useSidebarOrganizationStore((s) => s.setProjectsSection);
   const setPagesSection = useSidebarOrganizationStore((s) => s.setPagesSection);
   const setSectionHidden = useSidebarOrganizationStore((s) => s.setSectionHidden);
-  // Each chat list reads a page at a time from the server: Recents, Pinned, every custom section
-  // and every open folder. `allChatItems` is what they hold between them, not the whole history.
+  // `allChatItems` is only what the paged lists have loaded, not the whole history.
   const sectionFiledChatIds = useMemo(() => Object.keys(sectionByChatId), [sectionByChatId]);
-  // Folders whose chats are on screen, set below once the folder lists are known.
   const [openFolderIds, setOpenFolderIds] = useState<readonly string[]>([]);
   const chatRowSlots = useMemo(() => {
-    // Recents and folders skip what Pinned and the sections draw, whether or not it is loaded.
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
     const slots: Record<string, SidebarRowSlot | null> = {
       recents: {
@@ -1478,7 +1475,7 @@ export function AppSidebar() {
           manualOrder: manualOrder[RECENTS_ORDER_SCOPE],
         }),
       },
-      // Pin order is known here, so a manual Pinned asks for it in full: unranked pins keep it.
+      // the full pin order, so unranked pins keep their pin order
       pinned: pinnedIds.length
         ? {
             query: sidebarRowQuery({
@@ -1508,7 +1505,7 @@ export function AppSidebar() {
     }
     for (const projectId of openFolderIds) {
       slots[`folder:${projectId}`] = {
-        // One past the preview, so the folder knows whether to offer Show more.
+        // one past the preview, so the folder knows whether to offer Show more
         initialLimit: PROJECT_CHAT_LIMIT + 1,
         query: sidebarRowQuery({
           projectId,
@@ -1542,7 +1539,7 @@ export function AppSidebar() {
     (projectId: string) => chatRowLists[`folder:${projectId}`],
     [chatRowLists],
   );
-  // "No chats yet" means none at all, archived ones included, and those are not listed here.
+  // "No chats yet" also needs zero archived chats, which are not listed here.
   const [hasArchivedChats, setHasArchivedChats] = useState(false);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
@@ -1617,7 +1614,6 @@ export function AppSidebar() {
     const map = new Map<string, number>();
     for (const project of projects) {
       const newest = chatsByProjectId.get(project.id)?.[0]?.updatedAt ?? 0;
-      // The server reads every chat's activity; the loaded ones are only part of the folder.
       map.set(
         project.id,
         Math.max(project.lastActivityAt ?? 0, project.updatedAt ?? project.createdAt, newest),
@@ -1694,7 +1690,6 @@ export function AppSidebar() {
   // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
   // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
   // rebuild this array and schedule the effect again, without end.
-  // "Show more" opens the list a page of folders at a time, each open folder reading its own chats.
   const [projectPageLimit, setProjectPageLimit] = useState(SIDEBAR_PAGE_SIZE);
   const visibleProjectRecords = useMemo(
     () =>
@@ -2071,7 +2066,6 @@ export function AppSidebar() {
   // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
-  // Folders list their own chats, so only an open folder on screen reads them.
   const wantedFolderIds = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project") return "";
     const ids = new Set<string>();
@@ -2263,8 +2257,6 @@ export function AppSidebar() {
     attentionItemIds,
     activeThreadId,
   ]);
-  // The chords walk the published rows; reaching the last loaded one reads the next page, so the
-  // next step has somewhere to go.
   const lastRecentId = visibleRecentItems[visibleRecentItems.length - 1]?.id;
   const loadMoreRecents = recentsPages?.hasMore ? recentsPages.loadMore : undefined;
   useEffect(() => {
@@ -2370,8 +2362,6 @@ export function AppSidebar() {
     });
   }, [chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds]);
 
-  // Select All means every chat in the open lists, not just the pages read so far: those lists
-  // read their remaining pages first, and the selection is taken once they are drawn.
   const [selectAllPending, setSelectAllPending] = useState(false);
   const selectAllChats = useCallback(() => {
     if (!chatRowsOnScreen) return;
@@ -2414,8 +2404,7 @@ export function AppSidebar() {
     selectRenderedChats();
   }, [selectAllPending, selectRenderedChats]);
 
-  // A drag orders the rows it can see. In a list read only partly, the rows past them keep their
-  // places after them: written at once from the saved order, then again from the list in full.
+  // in a partly loaded list, unloaded rows keep their places after the dragged ones
   const manualOrderWritesRef = useRef(new Map<string, number>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[]) => {
@@ -2919,7 +2908,6 @@ export function AppSidebar() {
         markThreadsUnread(completedThreadIds, rowIdByThreadId);
         clearThreadsUnread([...activeVisibleThreadIdSet]);
       });
-      // A chat whose row is not loaded still counts once: ask the server which row it is.
       const unlisted = completedThreadIds.filter((id) => !rowIdByThreadId[id]);
       if (unlisted.length > 0) {
         void fetchSidebarThreadRows(unlisted)
@@ -5551,7 +5539,6 @@ export function AppSidebar() {
         >
           <SidebarMenuButton
             onClick={() => {
-              // The folder holds one row past its preview; asking for more is the click itself.
               if (!showAll) void folderPages(project.id)?.loadMore();
               toggleProjectShowAll(project.id);
             }}

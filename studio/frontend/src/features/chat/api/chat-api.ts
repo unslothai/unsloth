@@ -942,7 +942,6 @@ export async function listChatThreads(
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
-/** One sidebar row as the server groups it: a chat, or a compare pair under its pair id. */
 export interface SidebarRowRecord {
   id: string;
   type: "single" | "compare";
@@ -956,7 +955,6 @@ export interface SidebarRowRecord {
   projectId?: string | null;
 }
 
-/** Which rows one sidebar list holds, and in what order. Mirrors POST /api/chat/sidebar/rows. */
 export interface SidebarRowsRequest {
   archived: boolean;
   projectId: string | null;
@@ -976,8 +974,6 @@ export interface SidebarRowsPage {
   total?: number | null;
 }
 
-/** The server no longer accepts a cursor (malformed, or minted for another sort): the list has to
- *  be read again from the top. */
 export class SidebarCursorRejectedError extends Error {
   readonly cursorRejected = true;
   constructor() {
@@ -986,16 +982,14 @@ export class SidebarCursorRejectedError extends Error {
   }
 }
 
-/** One page of a sidebar list. Null when the server predates the route, so the caller falls back
- *  to the full thread list. */
+/** Null on a server without the route: the caller falls back to the full list. */
 export async function fetchSidebarRows(
   request: SidebarRowsRequest,
 ): Promise<SidebarRowsPage | null> {
-  // An empty include list names no rows; the route agrees, so the request is not worth sending.
   if (request.includeIds && request.includeIds.length === 0) {
     return { rows: [], nextCursor: null, hasMore: false, total: 0 };
   }
-  // The route rejects unknown fields, so only these go out.
+  // the route rejects unknown fields
   const body: SidebarRowsRequest = {
     archived: request.archived,
     projectId: request.projectId,
@@ -1025,13 +1019,10 @@ export async function fetchSidebarRows(
 
 const SIDEBAR_THREAD_ROWS_MAX = 500;
 
-/** The sidebar row each thread belongs to (a compare pane's pair id, else its own id). Null on an
- *  older server. Unknown ids are left out. */
 export async function fetchSidebarThreadRows(
   threadIds: string[],
 ): Promise<Record<string, string> | null> {
   const out: Record<string, string> = {};
-  // The route takes at most this many ids per request.
   for (let start = 0; start < threadIds.length; start += SIDEBAR_THREAD_ROWS_MAX) {
     const params = new URLSearchParams();
     for (const id of threadIds.slice(start, start + SIDEBAR_THREAD_ROWS_MAX)) {

@@ -3,10 +3,8 @@
 
 import type { SidebarRowsRequest } from "../api/chat-api";
 
-/** Rows a sidebar list fetches up front and per scroll. */
 export const SIDEBAR_PAGE_SIZE = 20;
 
-/** One sidebar list, without its page window. */
 export type SidebarRowQuery = Omit<SidebarRowsRequest, "limit" | "cursor">;
 
 export function sidebarRowQuery(
@@ -17,7 +15,6 @@ export function sidebarRowQuery(
     projectId: query.projectId ?? null,
     unfiledOnly: query.unfiledOnly ?? false,
     includeIds: query.includeIds ?? null,
-    // Sorted so the same set is the same list however the stores happened to order it.
     excludeIds: [...new Set(query.excludeIds ?? [])].sort(),
     sort: query.sort ?? "updated",
     manualOrder: query.sort === "manual" ? (query.manualOrder ?? []) : null,
@@ -33,8 +30,7 @@ interface QueryRow {
   projectId?: string | null;
 }
 
-/** The server's filter and order, run over rows already grouped and newest first. Used against a
- *  server without the paged route, so both paths list the same rows in the same order. */
+/** The server's filter and order on the client, for a server without the paged route. */
 export function applySidebarRowQuery<T extends QueryRow>(
   rows: readonly T[],
   query: SidebarRowQuery,
@@ -54,13 +50,11 @@ export function applySidebarRowQuery<T extends QueryRow>(
     return true;
   });
   if (query.sort !== "manual" || !query.manualOrder?.length) return out;
-  // applyManualOrder: unranked rows first in incoming order, then ranked rows by rank.
   const rank = new Map(query.manualOrder.map((id, index) => [id, index]));
   return out.sort((a, b) => (rank.get(a.id) ?? -1) - (rank.get(b.id) ?? -1));
 }
 
-/** A manual order written from a partly loaded list: `next` orders the loaded rows, and every row
- *  of `full` it does not mention keeps its place after them, so unloaded rows are never dropped. */
+/** `next` orders the loaded rows; rows of `full` it omits keep their places after them. */
 export function mergeManualOrderTail(
   next: readonly string[],
   full: readonly string[],
