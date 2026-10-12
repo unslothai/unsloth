@@ -200,6 +200,8 @@ export function lanAccessAddressChoices(
   selected: string[],
 ): LanAccessAddressChoice[] {
   const detected = status?.availableAddresses ?? [];
+  // a -H launch skips detection, so an address missing from the list is unknown, not down
+  const detectionSkipped = status?.managedBy === "launch";
   const choices: LanAccessAddressChoice[] = detected.map((entry) => ({
     ...entry,
     detected: true,
@@ -209,7 +211,7 @@ export function lanAccessAddressChoices(
       choices.push({
         address,
         public: status?.configuredPublicAddresses.includes(address) ?? false,
-        detected: false,
+        detected: detectionSkipped,
       });
     }
   }

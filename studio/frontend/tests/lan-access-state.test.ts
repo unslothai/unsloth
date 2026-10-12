@@ -390,6 +390,18 @@ test("a saved address that is not up right now is still offered", () => {
   ]);
 });
 
+test("a launch-managed status never reports saved addresses as down", () => {
+  const s = withAddresses([WIFI], {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    managed_by: "launch",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    available_addresses: [],
+  });
+  assert.deepEqual(lanAccessAddressChoices(s, [WIFI]), [
+    { address: WIFI, public: false, detected: true },
+  ]);
+});
+
 test("a saved public address that is down keeps its public warning", () => {
   const s = withAddresses(["203.0.114.7"], {
     // biome-ignore lint/style/useNamingConvention: API schema
