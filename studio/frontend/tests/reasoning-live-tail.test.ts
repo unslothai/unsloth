@@ -87,7 +87,10 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
 });
 
 test("a bounded transcript corrects nothing through the thread and mounts the tail", () => {
-  assert.match(transcript, /!bounded &&\s*virtualizer\.scrollElement !== null/);
+  assert.match(
+    transcript,
+    /shouldAdjustScrollPositionOnItemSizeChange = \(item, delta\) => \{\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*if \(bounded\) return false;/,
+  );
   assert.match(transcript, /if \(passage && !bounded\)\s*adjustAbove/);
   assert.match(transcript, /if \(readingAnchor && !bounded\)/);
   assert.match(

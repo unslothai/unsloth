@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -395,6 +396,7 @@ def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 install_torchao_int_mm_patch()
 
 
@@ -3220,6 +3222,102 @@ class DiffusionBackend:
             )
         return overrides
 
+    def _comfy_text_encoders(
+        self,
+        fam: Optional[DiffusionFamily],
+        kind: str,
+        repo_id: str,
+        gguf_filename: Optional[str],
+        base: str,
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        text_encoder_quant: Optional[str] = None,
+    ) -> list[str]:
+        """Text-encoder files from the ComfyUI layout beside a local DiT, used when the request names none, so a
+        ComfyUI user's ``text_encoders/`` copy replaces the base repo's multi-GB download. Empty whenever any part
+        cannot be settled: the load then takes the base repo's encoder, as before."""
+        if (
+            fam is None
+            or kind not in ("gguf", "single_file")
+            or not gguf_filename
+            or not _is_local_path(repo_id)
+            or getattr(fam, "single_file_is_pipeline", False)
+            or getattr(fam, "pipeline_only", False)
+            or os.environ.get("UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS", "").strip().lower()
+            in ("0", "false", "off", "no")
+        ):
+            return []
+        started = time.monotonic()
+        try:
+            from hub.utils.comfy_models import comfy_text_encoder_files
+
+            dit = resolve_local_gguf_child(Path(repo_id).expanduser(), gguf_filename)
+            try:
+                from hub.storage.scan_folders import list_scan_folders
+                scan_folders = [row["path"] for row in list_scan_folders()]
+            except Exception:  # noqa: BLE001 - the layout above the file still answers
+                scan_folders = []
+            candidates = [str(p) for p in comfy_text_encoder_files(dit, scan_folders)]
+            if candidates:
+                from hub.services.models import account_access
+                if account_access.managed_account():
+                    candidates = [
+                        p for p in candidates if account_access.model_visible(os.path.realpath(p))
+                    ]
+            if not candidates:
+                return []
+            from .diffusion_comfy_components import (
+                pick_comfy_text_encoders,
+                read_model_index,
+                verify_override_fit,
+            )
+
+            mirror = prefer_ungated_mirror(base, hf_token)
+            index = read_model_index(
+                mirror,
+                base_local_dir = base if _is_local_path(base) else None,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                cache_dir = hub_cache_dir(),
+            )
+            planned_quant, auto = resolve_te_quant_request(
+                text_encoder_quant, getattr(fam, "te_quant_auto", None)
+            )
+
+            def _fits(overrides: Any) -> None:
+                verify_override_fit(
+                    overrides,
+                    base = base if _is_local_path(base) else mirror,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    family = fam.name,
+                    cache_dir = hub_cache_dir(),
+                    text_encoder_quant = text_encoder_quant,
+                )
+
+            picked = pick_comfy_text_encoders(
+                candidates,
+                model_index = index,
+                family = fam.name,
+                fits = _fits,
+                auto_scheme = planned_quant if auto else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - the base repo's encoder is always the fallback
+            logger.info(
+                "diffusion.comfy_text_encoders: none taken from the ComfyUI folder (%s)",
+                type(exc).__name__,
+            )
+            return []
+        if picked:
+            logger.info(
+                "diffusion.comfy_text_encoders: %s from the ComfyUI folder beside %s (%.1fs)",
+                ", ".join(os.path.basename(p) for p in picked),
+                gguf_filename,
+                time.monotonic() - started,
+            )
+        return picked
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -3564,6 +3662,22 @@ class DiffusionBackend:
                     kwargs.get("gguf_filename"),
                 )
             kwargs["base_repo"] = base
+            discovered = False
+            if not kwargs.get("text_encoder_files") and not kwargs.get("vae_file"):
+                kwargs["text_encoder_files"] = (
+                    self._comfy_text_encoders(
+                        fam,
+                        kind,
+                        kwargs["repo_id"],
+                        kwargs.get("gguf_filename"),
+                        base,
+                        kwargs.get("hf_token"),
+                        local_files_only = local_files_only,
+                        text_encoder_quant = kwargs.get("text_encoder_quant"),
+                    )
+                    or None
+                )
+                discovered = bool(kwargs["text_encoder_files"])
             # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
             from .diffusion_comfy_components import hub_repo_ids
 
@@ -3590,6 +3704,9 @@ class DiffusionBackend:
                 cancel_event = cancel_event,
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
             )
+            if discovered and component_overrides is not None:
+                component_overrides.discovered = True
+                component_overrides.te_quant_request = kwargs.get("text_encoder_quant")
             kwargs["_component_overrides"] = component_overrides
             replaced = tuple(component_overrides.components) if component_overrides else ()
             if component_overrides is not None and component_overrides.text_encoder_components:
@@ -4711,6 +4828,20 @@ class DiffusionBackend:
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
         component_overrides = None
+        if not load_kwargs.get("text_encoder_files") and not load_kwargs.get("vae_file"):
+            # The same pick the load makes, so the plan stages no encoder the load will not open.
+            load_kwargs["text_encoder_files"] = (
+                self._comfy_text_encoders(
+                    fam,
+                    kind,
+                    repo_id,
+                    gguf_filename,
+                    base,
+                    hf_token,
+                    text_encoder_quant = text_encoder_quant,
+                )
+                or None
+            )
         if (
             load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")
         ) and fam is not None:
@@ -5673,8 +5804,10 @@ class DiffusionBackend:
         Uncached checkpoints are priced from the family table (``exact=False``). Never raises."""
         try:
             from .diffusion_te_prequant import (
+                TE_INT8_CONVROT_BUDGET_SCALE,
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
+                int8_convrot_te_runs_on,
                 te_candidate_filenames,
                 te_candidate_is_readable,
                 te_prequant_sources_for_base,
@@ -5756,7 +5889,13 @@ class DiffusionBackend:
                 if table is None:
                     return None
                 share = table_priced / max(1, len(sources))
-                total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
+                # MPS only takes the int8 ConvRot file, smaller than the fp8 one.
+                scale = (
+                    TE_INT8_CONVROT_BUDGET_SCALE
+                    if int8_convrot_te_runs_on(target)
+                    else TE_PREQUANT_BUDGET_SCALE
+                )
+                total += int(table[1] * (1000.0**3) * scale * share)
             if total <= 0:
                 return None
             return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
@@ -5872,6 +6011,11 @@ class DiffusionBackend:
         # "none"/"off" -> the released bf16 encoder; an explicit scheme pins itself. Also validates the raw request,
         # which is why it runs before this load evicts the previous pipeline.
         text_encoder_quant_requested = text_encoder_quant
+        from .diffusion_comfy_components import active_component_overrides
+
+        discovered_components = active_component_overrides()
+        if discovered_components is not None and discovered_components.discovered:
+            text_encoder_quant_requested = discovered_components.te_quant_request
         text_encoder_quant, text_encoder_quant_auto = resolve_te_quant_request(
             text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
@@ -9593,8 +9737,12 @@ class DiffusionBackend:
                         base_local_dir,
                     )
                 ) // (1024 * 1024)
-                # Never below scanned dense shards: a bad checkpoint falls back to opening them.
-                precast_mib = max(int(precast_mib), scanned_te)
+                from .diffusion_te_prequant import int8_convrot_te_runs_on
+
+                # Never below scanned dense shards: a bad checkpoint falls back to opening them. Not on MPS, where
+                # that failure raises instead (_te_prequant_pipe_kwargs, #11792).
+                if not int8_convrot_te_runs_on(target):
+                    precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
                     precast_mib
                 )

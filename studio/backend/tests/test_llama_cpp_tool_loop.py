@@ -342,6 +342,80 @@ def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
     assert "cache_prompt" not in payloads[0]
 
 
+def test_reuse_prompt_cache_keeps_fixed_seed_without_disabling_slot_reuse():
+    """Tool-loop continuations opt out of #9979's cold-cache pin (#10698)."""
+    from core.inference.llama_cpp import _apply_seeded_llama_request
+
+    cold: dict = {}
+    _apply_seeded_llama_request(cold, 3407)
+    assert cold == {"seed": 3407, "cache_prompt": False}
+
+    warm: dict = {}
+    _apply_seeded_llama_request(warm, 3407, reuse_prompt_cache = True)
+    assert warm == {"seed": 3407}
+    assert "cache_prompt" not in warm
+
+
+def test_seeded_tool_loop_keeps_prompt_cache_after_the_first_round(monkeypatch):
+    """#10698: round 0 stays cold (#9979); later rounds keep the seed and the cache."""
+    streams = [
+        _structured_tool_call("web_search", {"query": "kernel"}, "call_search"),
+        [_sse({"content": "Linux 6.10."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search then answer"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            seed = 3407,
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) >= 2
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+    for later in payloads[1:]:
+        assert later["seed"] == 3407
+        assert "cache_prompt" not in later, later
+
+
+def test_seeded_zero_tool_iterations_keeps_cold_cache_on_the_final_pass(monkeypatch):
+    """max_tool_iterations=0 never sends an in-loop request; the final pass is round 0."""
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [[_sse({"content": "no tools this turn"}), _done()]],
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "just answer"}],
+            tools = [],
+            seed = 3407,
+            max_tool_iterations = 0,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),
@@ -6668,6 +6742,39 @@ def test_mcp_images_are_not_sent_to_a_text_only_model(monkeypatch):
     assert "__MCP_IMAGES__" not in messages[-1]["content"]
 
 
+def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(monkeypatch):
+    """#11358: a note after the image array broke its parse and sent the base64 as text."""
+    tool = "mcp__browser__screenshot"
+    # A window-cut result: the repeat key ignores the arguments, so three distinct calls repeat.
+    fitted = (
+        "page\n\n... (truncated to 4 chars for the model; 99 chars total.)\n" + _mcp_image_result()
+    )
+    streams = [_structured_tool_call(tool, {"page": page}, f"call_{page}") for page in range(3)] + [
+        [_sse({"content": "done"}), _done()]
+    ]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "screenshot each page"}],
+            tools = [{"type": "function", "function": {"name": tool}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    tool_texts = [m["content"] for m in payloads[-1]["messages"] if m["role"] == "tool"]
+    assert len(tool_texts) == 3
+    assert "returned exactly this 3 times" in tool_texts[-1]
+    assert not any(_MCP_PNG_B64 in text for text in tool_texts)
+    saved = [e["result"] for e in events if e.get("type") == "tool_end"][-1]
+    assert saved.endswith("}]")
+    assert saved.index("returned exactly this 3 times") < saved.index("__MCP_IMAGES__")
+
+
 @pytest.mark.parametrize("wanted", [True, False])
 def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
     """Verbose alone would attach the whole prompt, so it travels with the narrowing."""
@@ -6908,6 +7015,36 @@ def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypa
         )
     )
     assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_textual_mcp_listing_runs_again_after_an_mcp_write(monkeypatch):
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": listing + create + listing}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["[]", "created", "[a]"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(arguments.get("action"))
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["list", "create", "list"]
 
 
 def _structured_batch(spec: list) -> list:
