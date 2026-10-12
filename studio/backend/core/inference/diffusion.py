@@ -7967,6 +7967,10 @@ class DiffusionBackend:
                         getattr(target, "dtype", None),
                         logger = logger,
                     )
+                    # After quantization, so int8 weight-only layers keep their storage.
+                    from .diffusion_mps_fp16 import install_mps_fp16
+
+                    install_mps_fp16(getattr(pipe, "transformer", None), target, logger = logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
