@@ -35,9 +35,9 @@ def test_the_newer_probe_is_kept_after_the_older_one_returns_first():
     newer = controller.residency_epoch()
     assert newer > older
     assert controller.note_resident(3000, started_at_seq = older) is not None
-    assert controller.note_resident(9000, started_at_seq = newer) is not None, (
-        "the probe that started after the mark was dropped as stale"
-    )
+    assert (
+        controller.note_resident(9000, started_at_seq = newer) is not None
+    ), "the probe that started after the mark was dropped as stale"
     assert controller._resident == 9000
 
 

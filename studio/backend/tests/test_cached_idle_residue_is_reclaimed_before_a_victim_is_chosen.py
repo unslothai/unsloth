@@ -50,7 +50,12 @@ def _setup(monkeypatch):
     monkeypatch.setattr(inference, "read_slot_occupancy", read)
     erased: list = []
 
-    def reclaim(occupancy, erase, *, needed = 0):
+    def reclaim(
+        occupancy,
+        erase,
+        *,
+        needed = 0,
+    ):
         if not occupancy.get("idle"):
             return 0
         # Who the plan had signalled by the time the residue went.

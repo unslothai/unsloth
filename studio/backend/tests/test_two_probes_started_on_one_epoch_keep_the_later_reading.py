@@ -28,9 +28,9 @@ def test_the_later_probe_is_kept_after_the_earlier_one_lands():
     earlier = controller.residency_epoch()
     later = controller.residency_epoch()
     assert controller.note_resident(3000, started_at_seq = earlier) is not None
-    assert controller.note_resident(9000, started_at_seq = later) is not None, (
-        "a probe that started after the recorded one was dropped as stale"
-    )
+    assert (
+        controller.note_resident(9000, started_at_seq = later) is not None
+    ), "a probe that started after the recorded one was dropped as stale"
     assert controller._resident == 9000
 
 

@@ -40,9 +40,9 @@ def _revoked_into_a_tool():
 
 def test_the_wait_follows_the_replacement():
     controller, revoked, replacement = _revoked_into_a_tool()
-    assert controller.wait_released([revoked], 0.2) is False, (
-        "the holder went upstream while the chat chosen in the revoked one's place decoded"
-    )
+    assert (
+        controller.wait_released([revoked], 0.2) is False
+    ), "the holder went upstream while the chat chosen in the revoked one's place decoded"
 
 
 def test_it_ends_once_the_replacement_lets_go():
@@ -56,4 +56,3 @@ def test_it_ends_once_the_replacement_lets_go():
     started = time.monotonic()
     assert controller.wait_released([revoked], 2.0) is True
     assert time.monotonic() - started >= 0.15
-

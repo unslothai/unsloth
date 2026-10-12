@@ -38,9 +38,9 @@ def test_the_growth_is_counted_on_top_of_the_reading():
     controller = _measured_holder_beside_residue()
     # A tool result of 5000 tokens: the next request prefills it.
     controller.note_tokens("chat", 9000, 9000)
-    assert controller.snapshot().committed == 10000 + 5000, (
-        "the round's growth was folded into a reading taken before it was sent"
-    )
+    assert (
+        controller.snapshot().committed == 10000 + 5000
+    ), "the round's growth was folded into a reading taken before it was sent"
 
 
 def test_a_probe_in_flight_does_not_confirm_it():

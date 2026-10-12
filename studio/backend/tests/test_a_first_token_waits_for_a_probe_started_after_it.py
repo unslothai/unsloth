@@ -38,9 +38,9 @@ def test_a_probe_in_flight_does_not_fold_the_new_prompt_in():
     controller.observe("new", 1)
     controller.note_resident(3000 + 4000, started_at_seq = in_flight)
     assert controller.participant("new").measured is False
-    assert controller.snapshot().committed >= 7000 + 5001, (
-        "the new prompt was folded into a reading taken before its prefill"
-    )
+    assert (
+        controller.snapshot().committed >= 7000 + 5001
+    ), "the new prompt was folded into a reading taken before its prefill"
 
 
 def test_a_probe_started_after_the_token_folds_it_in():

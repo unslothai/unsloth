@@ -102,7 +102,12 @@ class TestTheMessagesLoopPublishesItsCount:
         noted: list = []
 
         class _Controller:
-            def note_tokens(self, gen_id, tokens, prompt_tokens = None):
+            def note_tokens(
+                self,
+                gen_id,
+                tokens,
+                prompt_tokens = None,
+            ):
                 noted.append((gen_id, tokens, prompt_tokens))
 
         monkeypatch.setattr(

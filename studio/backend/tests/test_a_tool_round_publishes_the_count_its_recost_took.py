@@ -111,7 +111,12 @@ def test_the_publication_records_the_count_not_an_estimate(monkeypatch):
     noted: list = []
 
     class _Controller:
-        def note_tokens(self, gen_id, tokens, prompt_tokens = None):
+        def note_tokens(
+            self,
+            gen_id,
+            tokens,
+            prompt_tokens = None,
+        ):
             noted.append((gen_id, tokens, prompt_tokens))
 
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: _Controller())
