@@ -22912,11 +22912,7 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC. A chosen project folder in Auto keeps
-    # that cmd (the syntax the request advertised) but runs it with software safeguards (_prepare_tool_launch).
-    chosen_folder = tool_execution_mode == "auto" and _is_user_project_folder(
-        session_id, _project_workdir_for(session_id) or ""
-    )
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
     profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
@@ -23002,6 +22998,9 @@ def _bash_exec(
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
+        # advertised) but runs it with software safeguards (_prepare_tool_launch).
+        chosen_folder = _is_user_project_folder(session_id, workdir)
         if (
             profile == "cmd_isolated"
             and requested_mode == "auto"
@@ -23031,7 +23030,7 @@ def _bash_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_reach_approved,
-                user_folder = _is_user_project_folder(session_id, workdir),
+                user_folder = chosen_folder,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)

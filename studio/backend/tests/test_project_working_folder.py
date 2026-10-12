@@ -217,6 +217,26 @@ def test_windows_cmd_isolated_keeps_cmd_in_auto_for_the_users_folder(env, monkey
     assert seen == [("cmd.exe", "required", False), ("cmd.exe", "auto", True)]
 
 
+def test_cmd_isolated_stays_required_when_the_call_resolves_to_the_managed_folder(env, monkeypatch):
+    from core.inference import os_sandbox
+
+    seen = []
+
+    def stop(plan, **kw):
+        seen.append((plan.requested_mode, kw.get("user_folder")))
+        raise os_sandbox.SandboxUnavailableError("stop here")
+
+    _use_repo(env)
+    managed = os.path.realpath(env.project["sandboxPath"])
+    # The folder was cleared or went away by the time this call resolved its workdir.
+    monkeypatch.setattr(env.tools, "_get_workdir", lambda _sid: managed)
+    monkeypatch.setattr(env.tools, "_terminal_profile", lambda keep_host = False: "cmd_isolated")
+    monkeypatch.setattr(env.tools, "_windows_system_cmd", lambda: "cmd.exe", raising = False)
+    monkeypatch.setattr(env.tools, "_prepare_tool_launch", stop)
+    env.tools.execute_tool("terminal", {"command": "dir"}, session_id = "project-p1")
+    assert seen == [("required", False)]
+
+
 def test_a_linked_attachment_directory_is_never_written_through(env, monkeypatch, tmp_path):
     from core import chat_originals
 
