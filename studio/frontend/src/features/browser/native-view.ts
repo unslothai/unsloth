@@ -13,6 +13,7 @@ import { getAppliedInterfaceZoom, subscribeAppliedInterfaceZoom } from "@/featur
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR, cornerInsets } from "@/lib/toast-offset";
 import { hostOf } from "./address";
+import { agentDownloadRule } from "./agent/agent-store";
 import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
@@ -167,7 +168,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       ? Promise.resolve(false)
       : saveAs
         ? approveChosenDownload(url, name)
-        : approveDownload(url, name, asking);
+        : approveDownload(url, name, asking, tab ? agentDownloadRule(tab.id, asking, url) : null);
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {

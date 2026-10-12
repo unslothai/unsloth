@@ -356,6 +356,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/composer-toggle";
 import {
   BranchNextIcon,
   BranchPrevIcon,
@@ -5562,6 +5563,7 @@ const Composer: FC<{
               ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
+              <BrowserAgentPill glyph={(icon) => <PillGlyph>{icon}</PillGlyph>} />
               <ImagesToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {mcpEnabledForChat ? (
@@ -7172,8 +7174,13 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
+        {/* Browser use sits right under Chat with files, or leads this section without it. */}
+        {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
         {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+          <Fragment key={id}>
+            {plusMenuNodes[id]}
+            {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
+          </Fragment>
         ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
