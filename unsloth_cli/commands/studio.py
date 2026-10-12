@@ -1822,7 +1822,15 @@ def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
         if not path.is_dir():
             typer.echo(f"Error: --models-dir {raw} is not an existing folder.", err = True)
             raise typer.Exit(2)
-        resolved.append(str(path.resolve()))
+        resolved_path = str(path.resolve())
+        if os.pathsep in resolved_path:
+            typer.echo(
+                f"Error: --models-dir {raw} contains '{os.pathsep}', which cannot be passed "
+                "to Studio. Rename the folder or add it from Custom Folders in the model picker.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        resolved.append(resolved_path)
     existing = [p for p in os.environ.get(_MODELS_DIRS_ENV, "").split(os.pathsep) if p]
     merged = list(dict.fromkeys(existing + resolved))
     os.environ[_MODELS_DIRS_ENV] = os.pathsep.join(merged)

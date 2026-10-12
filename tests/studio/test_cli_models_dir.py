@@ -47,6 +47,19 @@ def test_missing_folder_exits_before_launch(tmp_path, monkeypatch):
     assert ENV not in os.environ
 
 
+def test_folder_name_with_pathsep_is_refused(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    odd = tmp_path / f"qwen{os.pathsep}Q4"
+    try:
+        odd.mkdir()
+    except OSError:
+        pytest.skip("this filesystem cannot name a folder with the path separator")
+    with pytest.raises(typer.Exit) as exc:
+        studio_cli._export_models_dirs([odd])
+    assert exc.value.exit_code == 2
+    assert ENV not in os.environ
+
+
 def test_option_is_registered_on_studio():
     import inspect
     param = inspect.signature(studio_cli.studio_default).parameters["models_dir"]
