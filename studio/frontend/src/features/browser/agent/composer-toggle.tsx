@@ -7,11 +7,14 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
+import { useBrowserPanelAvailable } from "../panel-availability";
 import { useBrowserAgentStore } from "./agent-store";
 
-/** Like MCP: the model needs Studio's tool loop, so only a loaded model without tools rules it out. */
+/** Like MCP: the model needs Studio's tool loop, so a loaded model without tools rules it out; so
+ *  does a chat with nowhere to show the panel (mobile, compare), where no browser tool is sent. */
 function useBrowserAgentDisabled(): boolean {
-  return useChatRuntimeStore((s) => !!s.params.checkpoint && !s.modelLoading && !s.supportsTools);
+  const noTools = useChatRuntimeStore((s) => !!s.params.checkpoint && !s.modelLoading && !s.supportsTools);
+  return noTools || !useBrowserPanelAvailable();
 }
 
 export function BrowserAgentMenuItem() {

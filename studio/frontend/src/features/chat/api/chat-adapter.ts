@@ -7457,7 +7457,8 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
-                          scope: threadKey,
+                          // Resolved per action: a first turn is re-keyed from "__default" to its id.
+                          scope: liveThreadKey(serverCancel),
                           userText,
                           signal: runSignal,
                         });

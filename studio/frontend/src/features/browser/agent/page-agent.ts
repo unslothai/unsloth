@@ -471,8 +471,10 @@ export function installPageAgent(): PageAgent {
   /** No ref: the focused element, which a key press would act on. */
   const describe = (ref: string, value?: unknown): Record<string, unknown> => {
     const found = ref ? lookup(ref) : (document.activeElement ?? document.body);
-    // Clicking a label clicks its control, which may be a submit button.
-    const el = found instanceof HTMLLabelElement && found.control ? found.control : found;
+    // A click on text inside a button or label reaches that control (a label's being its field or
+    // button), which may submit.
+    const holder = found.closest("button, label") ?? found;
+    const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;
     const form = (field.form ?? el.closest("form")) as HTMLFormElement | null;
     const anchor = el.closest("a[href]") as HTMLAnchorElement | null;

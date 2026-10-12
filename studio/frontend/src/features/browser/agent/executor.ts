@@ -89,12 +89,9 @@ let scope: string | undefined;
 
 function enterScope(next: string | undefined): void {
   if (next === scope) return;
-  // A new chat's first turn runs as "__default" until it is saved under its own id.
-  if (scope !== "__default") {
-    knownHosts.clear();
-    reachedHosts.clear();
-    pageLinks = new Set();
-  }
+  knownHosts.clear();
+  reachedHosts.clear();
+  pageLinks = new Set();
   scope = next;
 }
 
