@@ -169,6 +169,21 @@ fn ensure_changeable(install: &crate::install::InstallState) -> Result<(), Strin
     Ok(())
 }
 
+/// Written under the install lock: the dialog can stay open while an install starts, and an
+/// installer already given the old root must not see the pointer move under it.
+fn commit_choice(
+    install: &crate::install::InstallState,
+    home: &Path,
+    root: &Path,
+) -> Result<(), String> {
+    crate::install::while_install_idle(install, || {
+        if crate::process::find_unsloth_binary().is_some_and(|bin| bin.exists()) {
+            return Err("Unsloth is already installed in this location.".to_string());
+        }
+        write_choice_for_home(home, root)
+    })
+}
+
 #[tauri::command]
 pub fn studio_install_location() -> Result<StudioInstallLocation, String> {
     Ok(location_for_home(&home_dir()?))
@@ -199,10 +214,8 @@ pub async fn choose_studio_install_location(
         .into_path()
         .map_err(|_| "Choose a folder on a local drive.".to_string())?;
     validate_picked_folder(&picked)?;
-    // Re-checked: the dialog can stay open while an install starts.
-    ensure_changeable(install.inner())?;
     let home = home_dir()?;
-    write_choice_for_home(&home, &root_for_picked_folder(&picked))?;
+    commit_choice(install.inner(), &home, &root_for_picked_folder(&picked))?;
     Ok(Some(location_for_home(&home)))
 }
 
@@ -214,7 +227,7 @@ pub fn reset_studio_install_location(
     crate::native_intents::ensure_main_window(&webview)?;
     ensure_changeable(install.inner())?;
     let home = home_dir()?;
-    write_choice_for_home(&home, &default_root_for_home(&home))?;
+    commit_choice(install.inner(), &home, &default_root_for_home(&home))?;
     Ok(location_for_home(&home))
 }
 

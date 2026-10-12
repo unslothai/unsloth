@@ -103,3 +103,57 @@ def test_desktop_passes_the_chosen_root_only_to_the_installer_with_its_flag():
     studio_home = (TAURI_SRC / "studio_home.rs").read_text(encoding = "utf-8")
     assert '"UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME"' in studio_home
     assert "$env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME" in _validation_block()
+
+
+def _custom_uninstall_roots(tmp_path: Path, pointer: str | None) -> list[str]:
+    # Function definitions are lifted out of uninstall.ps1 by AST; its body stops processes and
+    # edits the registry, so it is never run here.
+    profile = tmp_path / "profile"
+    (profile / ".unsloth").mkdir(parents = True)
+    if pointer is not None:
+        (profile / ".unsloth" / "desktop_studio_home").write_text(pointer, encoding = "utf-8")
+    script = """
+$ErrorActionPreference = "Stop"
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:TEST_UNINSTALL_PS1, [ref]$tokens, [ref]$errors)
+foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    . ([scriptblock]::Create($fn.Extent.Text))
+}
+foreach ($root in @(_CustomStudioRoots)) { Write-Output "ROOT=$root" }
+Write-Output "done"
+"""
+    env = os.environ.copy()
+    for name in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_HOME"):
+        env.pop(name, None)
+    env["USERPROFILE"] = str(profile)
+    env["LOCALAPPDATA"] = str(tmp_path / "localappdata")
+    env["TEST_UNINSTALL_PS1"] = str(REPO_ROOT / "scripts" / "uninstall.ps1")
+    handle, name = tempfile.mkstemp(suffix = ".ps1")
+    os.close(handle)
+    try:
+        Path(name).write_text(script, encoding = "utf-8-sig")
+        result = run_pwsh(
+            [PWSH, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
+            check = False,
+            capture_output = True,
+            text = True,
+            env = env,
+            verdict = "done",
+        )
+    finally:
+        os.unlink(name)
+    assert result.returncode == 0 and "done" in result.stdout, result.stderr
+    return [line[5:] for line in result.stdout.splitlines() if line.startswith("ROOT=")]
+
+
+@pytest.mark.skipif(PWSH is None, reason = "PowerShell is required")
+def test_uninstaller_finds_the_folder_desktop_installed_into(tmp_path: Path):
+    chosen = tmp_path / "D" / "Apps" / "Unsloth" / "studio"
+    chosen.mkdir(parents = True)
+    roots = _custom_uninstall_roots(tmp_path, f"{chosen}\n")
+    assert [Path(root) for root in roots] == [chosen]
+
+
+@pytest.mark.skipif(PWSH is None, reason = "PowerShell is required")
+def test_uninstaller_without_a_desktop_choice_finds_no_custom_root(tmp_path: Path):
+    assert _custom_uninstall_roots(tmp_path, None) == []

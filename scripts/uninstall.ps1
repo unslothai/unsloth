@@ -815,6 +815,13 @@ Environment:
             $confRoot = _RootFromConf (Join-Path $env:LOCALAPPDATA "Unsloth Studio\studio.conf")
             if ($confRoot) { & $emit $confRoot }
         }
+        # The folder Unsloth Desktop was told to install into (studio_home.rs), one path per file.
+        if ($env:USERPROFILE) {
+            $desktopChoice = Join-Path $env:USERPROFILE ".unsloth\desktop_studio_home"
+            if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+                try { & $emit ([System.IO.File]::ReadAllText($desktopChoice).Trim()) } catch {}
+            }
+        }
     }
 
     # Return $true iff the PID's image path lives under one of $KnownRoots, so an unrelated
@@ -1308,6 +1315,18 @@ Environment:
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
                                  Where-Object { $_.Name -match $script:StaleLockPattern })) {
                 _RemoveLockFile $stale.FullName
+            }
+        }
+    }
+    # Desktop's install-location choice goes with the folder it names, so a reinstall starts
+    # from the default again; a folder this run had to keep keeps its choice too.
+    if ($defaultUnslothHome) {
+        $desktopChoice = Join-Path $defaultUnslothHome "desktop_studio_home"
+        if (Test-Path -LiteralPath $desktopChoice -PathType Leaf) {
+            $chosenRoot = $null
+            try { $chosenRoot = [System.IO.File]::ReadAllText($desktopChoice).Trim() } catch {}
+            if (-not $chosenRoot -or -not (Test-Path -LiteralPath $chosenRoot)) {
+                _RemovePath $desktopChoice
             }
         }
     }

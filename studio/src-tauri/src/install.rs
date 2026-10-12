@@ -1208,6 +1208,19 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
+/// Runs `operation` with the install lock held and no installer running, so an install cannot
+/// start part way through it. spawn_script reads the Studio root under the same lock.
+pub fn while_install_idle<T>(
+    state: &InstallState,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let install = state.lock().map_err(|e| e.to_string())?;
+    if install.child.is_some() {
+        return Err("Installation is already running.".to_string());
+    }
+    operation()
+}
+
 /// True while an installer runs; quitting now would leave a broken venv.
 pub fn is_install_running(state: &InstallState) -> bool {
     state
