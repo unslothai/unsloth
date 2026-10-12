@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Builds the one HTML document a React preview runs as. It goes through the same sandboxed frame and
-// strict CSP as an HTML page: every script is inline, so nothing here needs eval, blob: or a module.
+// Same sandboxed frame and strict CSP as an HTML page: every script is inline (no eval, blob: or modules).
 
 export type RuntimeScript = { name: string; code: string };
 
@@ -120,13 +119,11 @@ export function buildReactPreviewHtml({
   title,
   file,
 }: {
-  /** Compiled module-runner code. */
   code: string;
   /** Library files in load order, React first. */
   runtimes: readonly RuntimeScript[];
   /** Tailwind's browser build, or null when the source has no className. */
   tailwind: string | null;
-  /** Every specifier a preview can import, for the unknown-import message. */
   available: readonly string[];
   title: string;
   file: string;
@@ -144,8 +141,7 @@ ${inline(componentScript(code, file))}
 </html>`;
 }
 
-// A document that reports each diagnostic as an error, so the frame's console, banner and Fix
-// with model handle compile errors like any other.
+// Diagnostics as ErrorEvents, so the console, banner and Fix with model treat them like runtime errors.
 export function buildCompileErrorHtml(diagnostics: readonly CompileDiagnostic[], title: string): string {
   const messages = diagnostics.map(({ message, line, column }) => {
     const where = line > 0 ? (column > 0 ? `line ${line}, column ${column}` : `line ${line}`) : "";

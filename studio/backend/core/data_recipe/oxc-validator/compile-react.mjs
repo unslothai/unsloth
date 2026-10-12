@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Compiles one chat React component for the preview frame: TSX/JSX to plain JS,
-// then to the module-runner shape the frame's bootstrap links. The source is
-// only ever parsed and printed here, never evaluated.
+// TSX/JSX -> module-runner JS for the preview frame. The source is parsed and printed, never run.
 
 const DYNAMIC_IMPORT_MESSAGE =
   "Dynamic import() isn't supported in previews; import the module at the top of the file.";
 const MAX_DIAGNOSTICS = 20;
-// Linking rewrites every use of an imported binding to its imported name, so a long name
-// under a short alias made 256 KB of source into 480 MB of output. Real exports are short.
+// Linking spells the imported name at every use of its alias: 256 KB once printed 480 MB.
 const MAX_IMPORT_NAME_CHARS = 64;
 // Under the backend's 4 MB stdout cap, so an oversized component reads as a compile error.
 const MAX_CODE_CHARS = 3 * 1024 * 1024;
@@ -32,8 +29,7 @@ function write(result) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-// oxc reports label offsets in UTF-8 bytes; the UI counts columns in
-// UTF-16 code units, like the editor and the browser do.
+// oxc offsets are UTF-8 bytes; the UI counts UTF-16 columns.
 function lineColumn(bytes, offset) {
   if (!bytes || !Number.isInteger(offset) || offset < 0) {
     return { line: 0, column: 0 };
@@ -68,7 +64,6 @@ function errorMessage(message) {
   return { status: "error", diagnostics: [{ message, line: 0, column: 0 }] };
 }
 
-// The module-level problems linking cannot report, as a message, or null.
 function moduleProblem(parser, code) {
   const { module } = parser.parseSync("App.js", code, { sourceType: "module" });
   // Every import(), not just the string-literal ones linking lists in dynamicDeps.

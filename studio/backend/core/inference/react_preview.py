@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compile a chat React component for the preview frame.
+"""Compile a chat React component for the preview frame (Node + oxc-transform, never evaluated).
 
-Node runs ``compile-react.mjs`` (oxc-transform only) over the source and prints
-the compiled module; neither side evaluates it. The result is one of
-``{"status": "ok", "code", "deps"}``, ``{"status": "error", "diagnostics"}`` or
-``{"status": "unavailable", "reason"}``, never an exception, so a missing Node
-reads as a message in the preview instead of a 500.
+Always returns a status dict (ok / error / unavailable), never raises, so a missing Node is a
+message in the preview rather than a 500.
 """
 
 from __future__ import annotations
@@ -48,8 +45,7 @@ _TOOL_DIR = Path(__file__).resolve().parents[1] / "data_recipe" / "oxc-validator
 _SCRIPT = _TOOL_DIR / "compile-react.mjs"
 _TRANSFORM_PACKAGE = _TOOL_DIR / "node_modules" / "oxc-transform" / "package.json"
 
-# Made on first use: on Python 3.9 a semaphore created at import binds to the main thread's
-# loop, but Studio serves from a loop in another thread, so a queued compile would fail.
+# Per loop, made on first use: on 3.9 an import-time semaphore binds to the main thread's loop.
 _semaphores: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
     weakref.WeakKeyDictionary()
 )
@@ -153,7 +149,6 @@ def _run_compiler(source: str, lang: str) -> dict[str, Any]:
         env["TMPDIR"] = tmp_dir
         env["TMP"] = tmp_dir
         env["TEMP"] = tmp_dir
-        # Resolved node's dir first on the child PATH, as the OXC validator does.
         node_bin_dir = os.path.dirname(node_executable)
         if node_bin_dir:
             env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")
@@ -216,8 +211,7 @@ async def compile_react_preview_async(source: str, lang: str) -> dict[str, Any]:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            # The thread keeps its Node child until it exits; hold the slot until then
-            # so the cap counts compilers, not requests. anyio re-cancels at every await.
+            # Hold the slot until Node exits (the cap counts compilers); anyio re-cancels every await.
             while not task.done():
                 try:
                     await asyncio.wait({task})

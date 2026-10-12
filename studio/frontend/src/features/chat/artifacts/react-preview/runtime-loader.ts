@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Picks and fetches the bundled library files a preview imports. Each file is fetched once per
-// session; the frame is an opaque origin, so the parent inlines them into the page.
+// The frame is an opaque origin, so the parent fetches (once per session) and inlines the files.
 
 export type PreviewRuntimeManifest = {
   files: Record<string, { url: string; bytes: number; version: string }>;

@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The libraries a React preview can import, built from Studio's own locked versions.
- *
- * Each library file is an IIFE that registers module namespaces in `globalThis.__unslothModules`,
- * keyed by import specifier. Every file except `react` reads React back from that registry, so a
- * preview page has exactly one React. Tailwind is `@tailwindcss/browser` copied as a classic script.
- *
- * Nothing in the app imports these files, so the eager set is untouched. The lazy preview loader
- * gets their hashed names from `virtual:preview-runtime-manifest` instead of fetching a manifest:
- * the `/assets` mount caches as immutable, so an unhashed manifest there would go stale.
- */
+// React preview libraries: IIFEs registering namespaces in `globalThis.__unslothModules`; all but
+// `react` read React from it (one React per page). Hashed names come from the virtual manifest:
+// `/assets` caches as immutable, so an unhashed manifest file would go stale.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -38,13 +30,10 @@ export type PreviewRuntimeFile = {
 };
 
 type PreviewRuntimeSpec = {
-  /** File stem and manifest key. */
   name: string;
-  /** Package whose version goes into the manifest. */
   versionOf: string;
   /** Registered specifier -> the specifier it is bundled from. */
   modules?: Record<string, string>;
-  /** A prebuilt classic script copied as is. */
   classic?: string;
 };
 
@@ -93,12 +82,8 @@ export const PREVIEW_RUNTIME_SPECS: readonly PreviewRuntimeSpec[] = [
   },
 ];
 
-/**
- * A preview runs under a CSP without 'unsafe-eval', so code that evaluates strings would fail there
- * at runtime. The only ones allowed are the exact global-object fallbacks below, never reached in a
- * browser (`globalThis` exists), at exactly the measured count per file: a new one, or one more or
- * fewer, fails the build so somebody looks at it.
- */
+// Previews have no 'unsafe-eval': only these global-object fallbacks (dead in browsers) may
+// evaluate strings, at exactly the measured count per file, or the build fails.
 const EVAL_PATTERN = /\beval\s*\(|\bnew\s+Function\b|(?<![\w$.])Function\s*\(/;
 /** `Function("return this")`, in whichever quotes the minifier picked (it prints backticks). */
 const EVAL_ALLOWED = /(?<![\w$.])Function\((["'`])return this\1\)/g;
@@ -111,7 +96,6 @@ const ENTRY = "\0preview-runtime-entry";
 const SHARED_PREFIX = "\0preview-runtime-shared:";
 const REACT_INTERNALS =
   /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/;
-/** The last node_modules segment of a module id names the package that owns the file. */
 const OWNING_PACKAGE =
   /^(.*[\\/]node_modules[\\/])((?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/;
 
@@ -267,10 +251,7 @@ async function bundleOne(
   }
 }
 
-/**
- * Builds every runtime file and the manifest that names them. `assetsDir` is Vite's
- * `build.assetsDir`, so the files sit under the `/assets` mount (gzip, immutable caching, a real 404).
- */
+/** `assetsDir` is Vite's `build.assetsDir`: the `/assets` mount gives gzip, immutable caching, a real 404. */
 export async function buildPreviewRuntime(
   root: string,
   assetsDir = "assets",
@@ -310,14 +291,9 @@ export async function buildPreviewRuntime(
 }
 
 const RESOLVED_MANIFEST = `\0${MANIFEST_MODULE}`;
-/** The file name a dev request asks for, after the middleware's mount prefix is stripped. */
 const REQUESTED_NAME = /^\/?([^?#]*)/;
 
-/**
- * Emits the runtime files into the client build, serves them in dev, and provides
- * `virtual:preview-runtime-manifest`. The libraries are only bundled when something needs them:
- * at build start for a production build, and on first request in dev.
- */
+/** Bundled at build start in production, on first request in dev. */
 export function previewRuntime(): Plugin {
   let root = process.cwd();
   let assetsDir = "assets";
