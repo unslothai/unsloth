@@ -537,7 +537,8 @@ def test_pack_download_keeps_only_what_a_load_reads():
     assert "connectors/diffusion_pytorch_model.safetensors" not in names
     assert "connectors/diffusion_pytorch_model-00001-of-00002.safetensors" in names
     transformer = sorted(n for n in names if n.startswith("transformer/") and n.endswith(".safetensors"))
-    assert len(transformer) == 8 and all("-of-00008" in n for n in transformer)
+    # No index read: the coarsest set, the one the official pack's index names.
+    assert len(transformer) == 4 and all("-of-00004" in n for n in transformer)
     for kept in (
         "model_index.json",
         "connectors/config.json",
@@ -575,6 +576,59 @@ def test_pack_download_follows_the_shard_index():
         "connectors/diffusion_pytorch_model-00001-of-00002.safetensors",
         "connectors/diffusion_pytorch_model.safetensors.index.json",
     }
+
+
+def test_download_plan_reads_the_pack_indexes(monkeypatch, tmp_path):
+    from core.inference.video import VideoBackend
+    from utils import hf_xet_fallback
+
+    pack = _PACK
+    indexes = {
+        # Pointing at the 8-shard set proves the plan follows the index rather than the listing-only choice.
+        "transformer/diffusion_pytorch_model.safetensors.index.json": {
+            "weight_map": {f"w{i}": f"diffusion_pytorch_model-0000{i}-of-00008.safetensors" for i in range(1, 9)}
+        },
+        "connectors/diffusion_pytorch_model.safetensors.index.json": {
+            "weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors"}
+        },
+    }
+    fetched = []
+
+    def fake_download(repo, name, token, **_k):
+        fetched.append((repo, name))
+        component = name.split("/", 1)[0]
+        payload = indexes.get(name) or {
+            "weight_map": {
+                n: n.split("/", 1)[1]
+                for n, _ in pack
+                if n.startswith(component + "/") and n.endswith(".safetensors") and "-of-" in n
+            }
+        }
+        path = tmp_path / name.replace("/", "__")
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", fake_download)
+    info = _info(pack)
+    shards = VideoBackend._ltx25_plan_shards(info, "Lightricks/LTX-2.5-Diffusers", None)
+    # Only the components a load stages: never transformer_full/.
+    assert ("Lightricks/LTX-2.5-Diffusers", "transformer/diffusion_pytorch_model.safetensors.index.json") in fetched
+    assert not any(n.startswith("transformer_full/") for _, n in fetched)
+    names = {n for n, _ in VideoBackend._base_download_files(info, "pipeline", ltx25_shards = shards)}
+    transformer = sorted(n for n in names if n.startswith("transformer/") and n.endswith(".safetensors"))
+    assert transformer == [f"transformer/diffusion_pytorch_model-0000{i}-of-00008.safetensors" for i in range(1, 9)]
+    assert "text_encoder/model-00005-of-00005.safetensors" in names
+
+    def offline(*_a, **_k):
+        raise OSError("offline")
+
+    monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", offline)
+    assert VideoBackend._ltx25_plan_shards(info, "Lightricks/LTX-2.5-Diffusers", None) is None
+    # Another family's repo never reads anything.
+    fetched.clear()
+    monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", fake_download)
+    ltx2 = _info([(n, sz) for n, sz in pack if not n.startswith(("duration_head/", "diffusion_decoder/"))])
+    assert VideoBackend._ltx25_plan_shards(ltx2, "Lightricks/LTX-2", None) is None and fetched == []
 
 
 def test_single_file_pick_skips_the_pack_dit():
@@ -1258,6 +1312,24 @@ def test_a_failed_load_stops_only_its_own_encoder_worker():
     backend._ltx25_pending_encoder = (3, other)
     backend._close_pending_ltx25_encoder()
     assert other.closed and backend._ltx25_pending_encoder is None
+
+
+
+def test_unload_stops_a_pending_encoder_worker():
+    from core.inference import video as vid
+
+    class _Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    backend = vid.VideoBackend()
+    pending = _Client()
+    backend._ltx25_pending_encoder = (backend._load_token, pending)
+    backend.unload()
+    # Stopped by unload itself, not when the cancelled load thread finally unwinds.
+    assert pending.closed and backend._ltx25_pending_encoder is None
 
 
 def test_encoder_worker_is_spawned_on_the_lifetime_thread(monkeypatch):

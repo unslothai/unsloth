@@ -266,8 +266,9 @@ def ltx25_pack_files(
 
     Drops the unused components above, and the duplicate weight sets the pack ships: ``transformer/`` carries both a
     4-shard and an 8-shard set and ``connectors/`` a sharded and an unsharded copy. With ``shards`` (component ->
-    file names its ``*.index.json`` lists) only the indexed set stays; without it (planning, before any index is read)
-    the unsharded copy goes when an index exists and one shard set is kept, which prices the same bytes."""
+    file names its ``*.index.json`` lists) only the indexed set stays. Without it (an index that could not be read)
+    the unsharded copy goes when an index exists and the coarsest shard set is kept, the one the official indexes
+    name."""
     names = {name for name, _ in files}
     kept: list[tuple[str, int]] = []
     by_component: dict[str, dict[str, list[tuple[str, int]]]] = {}
@@ -296,8 +297,8 @@ def ltx25_pack_files(
                 continue
         kept.append((name, size))
     for sets in by_component.values():
-        # Planning only: one set (the one with the most files, i.e. the finest split).
-        best = max(sets.items(), key = lambda item: (len(item[1]), item[0]))[1]
+        # No index read: one set, the coarsest split (the official pack indexes its 4-shard transformer, not the 8).
+        best = min(sets.items(), key = lambda item: (len(item[1]), item[0]))[1]
         kept.extend(best)
     order = {name: i for i, (name, _) in enumerate(files)}
     return sorted(kept, key = lambda item: order.get(item[0], 0))

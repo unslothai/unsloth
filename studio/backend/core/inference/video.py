@@ -1155,6 +1155,15 @@ def _assert_local_ltx_header_matches(
         )
 
 
+def _stop_ltx25_encoder(client: Any) -> None:
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception as exc:  # noqa: BLE001 -- cleanup is best-effort
+        logger.warning("video.ltx25_te: could not stop a pending encoder worker: %s", exc)
+
+
 def _resolve_load_family_with_source(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -4157,16 +4166,12 @@ class VideoBackend:
         """Stop an LTX-2.5 encoder worker whose load never committed (failed, cancelled or superseded).
 
         With ``token``, only the worker that load started: a newer load's worker is left alone."""
-        pending = self._ltx25_pending_encoder
-        if pending is None or (token is not _ANY_LOAD and pending[0] != token):
-            return
-        self._ltx25_pending_encoder = None
-        client = pending[1]
-        if client is not None:
-            try:
-                client.close()
-            except Exception as exc:  # noqa: BLE001 -- cleanup is best-effort
-                logger.warning("video.ltx25_te: could not stop a pending encoder worker: %s", exc)
+        with self._lock:
+            pending = self._ltx25_pending_encoder
+            if pending is None or (token is not _ANY_LOAD and pending[0] != token):
+                return
+            self._ltx25_pending_encoder = None
+        _stop_ltx25_encoder(pending[1])
 
     def _rollback_precommit_globals(self, token: Optional[int]) -> None:
         """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled
@@ -5150,6 +5155,36 @@ class VideoBackend:
             files = ltx25_pack_files(files, ltx25_shards)
         return files
 
+    @staticmethod
+    def _ltx25_plan_shards(
+        info: Any, base: str, hf_token: Optional[str]
+    ) -> Optional[dict[str, frozenset[str]]]:
+        """For an LTX-2.5 pack, the shard set each component's ``*.index.json`` names, so a plan stages the copy the load
+        opens (the pack ships two transformer sets); None for any other repo, or when an index cannot be read."""
+        from .video_ltx25 import _PACK_SKIP_PREFIXES, is_ltx25_pack, ltx25_shards_from_indexes
+
+        names = [s.rfilename for s in (info.siblings or [])]
+        if not is_ltx25_pack(names):
+            return None
+        import json
+
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        indexes: dict[str, Any] = {}
+        try:
+            for name in names:
+                if (
+                    "/" in name
+                    and name.endswith(".safetensors.index.json")
+                    and not name.startswith(_PACK_SKIP_PREFIXES)
+                ):
+                    local = hf_hub_download_with_xet_fallback(base, name, hf_token, reuse_other_cache_root = True)
+                    indexes[name] = json.loads(Path(local).read_text(encoding = "utf-8"))
+        except Exception as exc:  # noqa: BLE001 -- the plan falls back to ltx25_pack_files' listing-only choice
+            logger.debug("video.ltx25_plan_shards: %s", exc)
+            return None
+        return ltx25_shards_from_indexes(indexes)
+
     def _estimate_download_bytes(
         self,
         repo_id: str,
@@ -5209,6 +5244,7 @@ class VideoBackend:
                         skip_transformer_weights = skip_transformer_weights,
                         skip_transformer_components = skip_transformer_components,
                         h3_task = h3_task,
+                        ltx25_shards = self._ltx25_plan_shards(info, base, hf_token),
                     )
                 )
             return total or None
@@ -5480,6 +5516,8 @@ class VideoBackend:
                         ),
                         skip_transformer_components = _planned_denoiser_components(fam, kind),
                         h3_task = h3_task,
+                        # The pack's indexes pick the transformer / connectors copy, as _predownload_base does.
+                        ltx25_shards = self._ltx25_plan_shards(info, base, hf_token),
                     ),
                     revision = getattr(info, "sha", None),
                     # A pipeline pick has no single file: the base IS the selected model (base = repo_id above). Under a
@@ -6608,7 +6646,15 @@ class VideoBackend:
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
             )
-            self._ltx25_pending_encoder = (_load_token, ltx25_client)
+            # Installed only while this load is current: a load superseded during the start must not overwrite the
+            # newer load's worker (whose token-scoped cleanup could then never find it).
+            with self._lock:
+                superseded = _load_token is not None and _load_token != self._load_token
+                if not superseded:
+                    self._ltx25_pending_encoder = (_load_token, ltx25_client)
+            if superseded:
+                _stop_ltx25_encoder(ltx25_client)
+                raise RuntimeError("Video load was cancelled or superseded.")
 
         # ── build the pipeline.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
@@ -10951,6 +10997,12 @@ class VideoBackend:
             # Fence generations queued behind the active one too: they hold no cancel event, so the signal cannot reach
             # them.
             self._teardown_waiters += 1
+            # A cancelled LTX-2.5 load's encoder worker: the load thread may sit in from_pretrained for minutes, so stop
+            # the worker now rather than when that thread unwinds.
+            pending_encoder = getattr(self, "_ltx25_pending_encoder", None)
+            self._ltx25_pending_encoder = None
+        if pending_encoder is not None:
+            _stop_ltx25_encoder(pending_encoder[1])
         # Barrier: wait for the signalled generation to exit before freeing the pipeline, else we report the VRAM free
         # while the clip still holds it.
         with self._generate_lock:
