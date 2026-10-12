@@ -465,7 +465,7 @@ def _loader_visible_members(members: Sequence[str]) -> list[str]:
 
 
 def _listed_identity(members: Sequence[str]) -> Optional[str]:
-    """use the first lister-visible file, ignoring hidden big-endian files."""
+    """prefer the first lister-visible file over hidden big-endian members."""
     selectable = _loader_visible_members(members)
     return _checkpoint_identity((selectable or members)[0])
 

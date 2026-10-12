@@ -283,7 +283,7 @@ def _rank_complete_snapshots(
 
 
 def _main_gguf_variant_keys(target_repo) -> dict[Path, str]:
-    """use the lister's cross-snapshot keys so unlisted builds cannot claim the row."""
+    """use the lister's cross-snapshot readiness ranking so unlisted builds cannot claim the row."""
     revisions = sorted(
         getattr(target_repo, "revisions", ()), key = _revision_selection_key, reverse = True
     )
