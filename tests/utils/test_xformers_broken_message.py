@@ -63,8 +63,7 @@ def test_broken_xformers_is_reported():
 
 
 def test_version_guard_keeps_its_own_fix():
-    # Blackwell + xformers <= 0.0.32.post2 is refused on purpose; install-kernels maps torch 2.8 back to that same
-    # release, so pointing there would leave xformers off.
+    # install-kernels maps torch 2.8 back to 0.0.32.post2, so it cannot fix this guard.
     old_blackwell_xformers = (
         "import torch, xformers\n"
         "xformers.__version__ = '0.0.32.post2'\n"

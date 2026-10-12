@@ -3849,7 +3849,7 @@ except Exception as e:
         # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
         print(str(e))
     elif DEVICE_TYPE == "cuda":
-        # xformers' own warning is silenced above, so without this the banner's "Xformers = None" is the only trace. Usually a wheel built for another CUDA, e.g. PyPI's cu128 Windows wheel beside a cu130 torch (#4381).
+        # xformers' own warning is silenced above; usually PyPI's cu128 wheel beside a cu130 torch (#4381).
         _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
         print(
             "Unsloth: xformers is installed but cannot load with torch "
