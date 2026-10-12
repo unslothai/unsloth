@@ -101,7 +101,7 @@ SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
-VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss", "nemotron_h")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
