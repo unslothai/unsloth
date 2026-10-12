@@ -4059,8 +4059,17 @@ def _fit_on_moe(
         (["--fit-target", "512"], {}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "512"}, []),
         ([], {"LLAMA_ARG_FIT_TARGET": "0"}, []),
+        (["--fit-target", "512,4096"], {}, []),
+        ([], {"LLAMA_ARG_FIT_TARGET": "512,4096"}, []),
     ],
-    ids = ["default_margin", "argv_lower_target", "env_lower_target", "env_zero_target"],
+    ids = [
+        "default_margin",
+        "argv_lower_target",
+        "env_lower_target",
+        "env_zero_target",
+        "argv_per_device_list",
+        "env_per_device_list",
+    ],
 )
 def test_a_lower_fit_target_is_the_fitters_margin(
     tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub

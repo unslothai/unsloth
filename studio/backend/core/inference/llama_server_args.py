@@ -1145,7 +1145,10 @@ def fit_ctx_in(
 
 
 def fit_target_margin_in(
-    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    device: Optional[int] = None,
 ) -> Optional[float]:
     """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
 
@@ -1177,7 +1180,12 @@ def fit_target_margin_in(
             values.append(float(part))
         except ValueError:
             return None
-    return max(values) if values else None
+    if not values:
+        return None
+    # One known child device: its own entry, a single value being broadcast.
+    if device is not None and len(values) > 1:
+        return values[device] if 0 <= device < len(values) else None
+    return max(values)
 
 
 def split_policy_starves_devices(

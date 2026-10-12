@@ -540,6 +540,20 @@ def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, 
     assert fit_target_margin_in(extras, env) == expected
 
 
+@pytest.mark.parametrize(
+    "extras, device, expected",
+    [
+        (["--fit-target", "512,4096"], 0, 512.0),
+        (["--fit-target", "512,4096"], 1, 4096.0),
+        (["--fit-target", "2048"], 1, 2048.0),
+        (["--fit-target", "512,4096"], None, 4096.0),
+    ],
+)
+def test_a_known_child_device_reads_its_own_fit_target_entry(extras, device, expected):
+    from core.inference.llama_server_args import fit_target_margin_in
+    assert fit_target_margin_in(extras, None, device = device) == expected
+
+
 # ------------------------------------------------------- the policy chain
 
 

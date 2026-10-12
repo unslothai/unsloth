@@ -27947,12 +27947,15 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        # The child sees one device, so a per-device list applies entry 0.
+                        _margin_mib = fit_target_margin_in(_child_extras or (), None, device = 0)
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
-                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            _env_mib = (
+                                None if _emits else fit_target_margin_in((), _child_env, device = 0)
+                            )
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
                         _need = (
