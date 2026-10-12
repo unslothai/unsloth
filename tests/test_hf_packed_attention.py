@@ -872,6 +872,29 @@ def test_a_refusing_efficient_kernel_hands_the_call_back(_efficient_fresh, monke
 
 @_CUDA
 @_EFFICIENT_HOST
+def test_the_efficient_kill_switch_is_read_on_every_call(_efficient_fresh, monkeypatch):
+    q = torch.randn(1, 4, 12, 512, device = "cuda", dtype = torch.bfloat16)
+    assert hpa._efficient_varlen_takes(q, None)
+    monkeypatch.setenv(hpa._EFFICIENT_ENV, "0")
+    assert not hpa._efficient_varlen_takes(q, None)
+    monkeypatch.delenv(hpa._EFFICIENT_ENV)
+    assert hpa._efficient_varlen_takes(q, None)
+
+
+@_CUDA
+@_EFFICIENT_HOST
+def test_a_non_contiguous_head_dim_is_copied_not_refused(_efficient_fresh):
+    cu = torch.tensor([0, 5, 12], device = "cuda", dtype = torch.int32)
+    base = torch.randn(1, 4, 12, 1024, device = "cuda", dtype = torch.bfloat16)
+    q = base[..., ::2]  # head dim 512 with stride 2
+    assert q.stride(-1) == 2
+    out = hpa._efficient_varlen(q, q, q, cu, 7, 512**-0.5, None)
+    ref = hpa._efficient_varlen(q.contiguous(), q.contiguous(), q.contiguous(), cu, 7, 512**-0.5, None)
+    torch.testing.assert_close(out, ref)
+
+
+@_CUDA
+@_EFFICIENT_HOST
 def test_a_cuda_fault_in_the_efficient_kernel_is_not_a_refusal(_efficient_fresh, monkeypatch):
     if hpa._ACCELERATOR_ERROR is None:
         pytest.skip("this torch has no AcceleratorError")

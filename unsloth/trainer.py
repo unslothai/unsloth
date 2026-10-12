@@ -303,6 +303,16 @@ _MULTIMODAL_DATASET_KEYS = _VISION_DATASET_KEYS | frozenset(
     }
 )
 _MULTIMODAL_FEATURE_TYPES = ("Image", "Audio", "Video", "Pdf")
+# Any column or nested key naming media (image_path, audio_url, input_values, image_patches, ...)
+# may be loaded by the processor, so it is not text even when stored as a string.
+_MEDIA_NAME_PARTS = ("image", "audio", "video", "pixel", "input_values", "input_features")
+
+
+def _is_media_name(name) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _MULTIMODAL_DATASET_KEYS or any(part in lowered for part in _MEDIA_NAME_PARTS)
 
 
 def _features_have_media(features) -> bool:
@@ -318,6 +328,8 @@ def _features_have_media(features) -> bool:
         if type(node).__name__ in _MULTIMODAL_FEATURE_TYPES:
             return True
         if isinstance(node, dict):
+            if any(_is_media_name(key) for key in node):
+                return True
             stack.extend(node.values())
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
@@ -338,7 +350,7 @@ def _is_text_only_dataset(dataset) -> bool:
     column_names = getattr(dataset, "column_names", None)
     if column_names is None:
         return False
-    if not _MULTIMODAL_DATASET_KEYS.isdisjoint(column_names):
+    if any(_is_media_name(name) for name in column_names):
         return False
     # with_transform / set_transform rows can carry images the stored columns do not show.
     if (getattr(dataset, "format", None) or {}).get("type") == "custom":
@@ -388,12 +400,18 @@ def _uses_multimodal_rope(model_config) -> bool:
     return False
 
 
+_PROCESSOR_TEXT_PACKING_MODELS = frozenset({"gemma3", "gemma4", "gemma4_unified"})
+
+
 def _processor_text_only(
     processing_class, data_collator, train_dataset, eval_dataset, model_config
 ) -> bool:
     """A processor trained on text-only rows tokenizes exactly like its tokenizer, so packing
     and padding-free are as safe as with the tokenizer passed directly."""
-    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1") == "0":
+    if os.environ.get("UNSLOTH_PROCESSOR_TEXT_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    # Only families whose packed text rows are verified to equal each document alone.
+    if getattr(model_config, "model_type", None) not in _PROCESSOR_TEXT_PACKING_MODELS:
         return False
     # TRL < 1.10 refuses packing / padding-free for any processor; skip a doomed __init__.
     if Version(trl.__version__) < Version("1.10.0"):
@@ -1830,6 +1848,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 packing_active = False
                 auto_padding_free_active = False
                 blocked = True
+                # The failed attempt's frames can hold a model it loaded: release them before retrying.
+                exc.__traceback__ = None
                 original_init(self, *args, **kwargs)
             elif packing_active and _should_skip_auto_packing_error(exc):
                 logger.info(

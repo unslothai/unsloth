@@ -163,8 +163,10 @@ _EFFICIENT_DEVICES = {}
 def _efficient_varlen_takes(query, window) -> bool:
     """SDPA's memory-efficient kernel, given cu_seqlens: the kernel SDPA itself runs over the dense mask
     at these widths, one launch for the row and no T x T bias. Off under any policy that asks for SDPA."""
+    if os.environ.get(_EFFICIENT_ENV, "1").lower() in ("0", "false", "no", "off"):
+        return False
     if not _EFFICIENT_VARLEN:
-        ok = os.environ.get(_EFFICIENT_ENV, "1").lower() not in ("0", "false", "no", "off")
+        ok = True
         try:
             schema = torch.ops.aten._efficient_attention_forward.default._schema
             names = {argument.name for argument in schema.arguments}
@@ -258,7 +260,9 @@ def _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     n_kv_heads = key.shape[1]
 
     def heads_last(x):
-        return x[0].transpose(0, 1).unsqueeze(0)
+        x = x[0].transpose(0, 1).unsqueeze(0)
+        # The kernel needs a unit stride on the head dim; a refusal would turn the route off for good.
+        return x if x.stride(-1) == 1 else x.contiguous()
 
     q, k, v = heads_last(query), heads_last(key), heads_last(value)
     if n_kv_heads != n_heads:
@@ -468,6 +472,8 @@ def _sdpa_packed_varlen(
         except torch.OutOfMemoryError:
             raise
         except RuntimeError as exc:
+            if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
+                raise
             # A build whose varlen picks a backend without causal GQA (cuDNN) refuses at forward: stop
             # using it and give this call to the wrapped sdpa.
             _TORCH_VARLEN[:] = [None]

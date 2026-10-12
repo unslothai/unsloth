@@ -140,6 +140,37 @@ def test_an_image_feature_nested_in_messages_stays_blocked():
     assert _blocked(train_dataset = ds)
 
 
+@pytest.mark.parametrize("column", ["image_path", "audio_url", "input_values", "image_patches", "Video_File"])
+def test_media_named_string_columns_stay_blocked(column):
+    ds = datasets.Dataset.from_dict({"text": ["a"], column: ["x"]})
+    assert not _is_text_only_dataset(ds)
+    assert _blocked(train_dataset = ds)
+
+
+def test_an_image_path_string_inside_messages_stays_blocked():
+    ds = datasets.Dataset.from_dict(
+        {"messages": [[{"role": "user", "content": [{"type": "image", "image": "cat.png"}]}]]}
+    )
+    assert not _is_text_only_dataset(ds)
+    assert _blocked(train_dataset = ds)
+
+
+@pytest.mark.parametrize("model_type", ["mllama", "paligemma", "llava", "mistral3", "qwen2_vl"])
+def test_processors_outside_the_verified_families_stay_blocked(model_type):
+    assert _blocked(model = _Model(_Cfg(model_type = model_type)))
+
+
+@pytest.mark.parametrize("model_type", ["gemma3", "gemma4", "gemma4_unified"])
+def test_verified_families_are_unblocked(model_type):
+    assert not _blocked(model = _Model(_Cfg(model_type = model_type)))
+
+
+@pytest.mark.parametrize("value", ["false", "OFF", "no"])
+def test_kill_switch_spellings(monkeypatch, value):
+    monkeypatch.setenv("UNSLOTH_PROCESSOR_TEXT_PACKING", value)
+    assert _blocked()
+
+
 def test_unknown_schema_stays_blocked():
     assert _blocked(train_dataset = [{"text": "a"}])
 
