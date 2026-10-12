@@ -978,6 +978,7 @@ class TestTheResumeWait:
         controller = _controller(key = key)
         controller.register("holder", tokens = 1000, signal = PreemptSignal())
         controller.note_tokens("holder", 1000)
+        controller.note_measured("holder")
         # Far above the ledger's own sum, which pins `committed` at a number the decoders
         # do not move, and past the ceiling, which keeps a waiter refused.
         controller.note_resident(16384)
@@ -1038,7 +1039,8 @@ class TestTheResumeWait:
     def test_a_stalled_wait_still_ends_near_its_timeout(self):
         controller = _controller(key = "stalled")
         controller.register("holder", tokens = 14000, signal = PreemptSignal())
-        controller.note_tokens("holder", 14000)  # measured, and going nowhere
+        controller.note_tokens("holder", 14000)
+        controller.note_measured("holder")  # measured, and going nowhere
         policy, loop = self._waiting_policy(controller, "waiter", 8000)
         try:
             started = time.monotonic()

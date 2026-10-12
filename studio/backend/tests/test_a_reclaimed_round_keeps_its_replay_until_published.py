@@ -56,6 +56,8 @@ def test_the_marker_is_spent_by_that_round():
     controller.note_tokens("chat", 6500, 6500)
     # The next round is growth again: the prompt plus the 10 tokens written are resident.
     assert controller.snapshot().prefilling == 6500 - 6410
+    # In once a reading taken after its first token lands.
+    controller.note_resident(6500, started_at_seq = controller.residency_epoch())
     assert controller.participant("chat").measured is True
 
 

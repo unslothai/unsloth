@@ -1329,8 +1329,12 @@ class PreemptionController:
                     participant.unconfirmed_growth += growth
                     self._resident_seq += 1
                     participant.growth_at_seq = self._resident_seq
-                participant.measured = not replayed
-                participant.measured_at_seq = None
+                if replayed:
+                    participant.measured = False
+                    participant.measured_at_seq = None
+                # Otherwise as it was: one not yet measured (the first round, published before
+                # its request opens) is in no reading, and folded in here a probe from before its
+                # prefill swallowed the whole prompt. Its first token stamps it as usual.
                 participant.cells_reclaimed = False
                 participant.replay_pending = False
 

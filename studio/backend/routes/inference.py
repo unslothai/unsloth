@@ -3156,6 +3156,21 @@ def _openai_llama_note_self_erased(llama_backend, parked: Optional[dict]) -> Non
         logger.debug("could not record the approval erase", exc_info = True)
 
 
+def _openai_llama_self_erased(llama_backend, gen_id: str) -> bool:
+    """Whether a reclaim took this holder's cells since it last decoded. The route's own
+    approval erase sets its flag; the generic idle-slot reclaim tells only the ledger, and a
+    round recosting after it must be allowed to wait for room as it would after its own."""
+    if not preemption_enabled():
+        return False
+    try:
+        participant = get_preemption_controller(_preempt_key(llama_backend)).participant(gen_id)
+    except Exception:
+        return False
+    return participant is not None and bool(
+        participant.cells_reclaimed or participant.replay_pending
+    )
+
+
 def _openai_llama_publish_round_charge(
     *,
     llama_backend,
@@ -3165,6 +3180,7 @@ def _openai_llama_publish_round_charge(
     conversation,
     rendered_tools,
     observe_tokens,
+    counted_prompt_tokens: Optional[int] = None,
 ) -> None:
     """Hand a tool round's re-costed charge to the preemptor, then sweep on it.
 
@@ -3187,6 +3203,9 @@ def _openai_llama_publish_round_charge(
     catalogue, which is deliberate and separate: a charge may cover what a request does not
     send, a residency figure may not.
 
+    ``counted_prompt_tokens`` is the recost's tokenizer count of what the round sends, where it
+    took one: estimated again, dense text undercounts and overwrites the count arming used.
+
     Nothing to publish to when the switch is off: there is no participant, and
     ``observe_tokens`` is None on that path for the reason
     ``_openai_llama_inert_residency_observer`` gives.
@@ -3207,6 +3226,7 @@ def _openai_llama_publish_round_charge(
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
                 injected_tools = rendered_tools,
                 markup = _openai_llama_admission_markup(llama_backend),
+                counted_prompt_tokens = counted_prompt_tokens,
             ),
         )
         observe_tokens(0)
@@ -4008,13 +4028,15 @@ def _openai_llama_admission_recost(
     wire_tools = None,
     count_prepared_prompt: bool = False,
     cache_is_empty: bool = False,
+    counted_out: Optional[dict] = None,
 ) -> Optional[int]:
     """Re-cost the current tool conversation and return its output allowance.
 
     Waiting releases the old commitment, so it needs reclaimable idle KV or `cache_is_empty`;
     otherwise growth that cannot fit is refused. `wire_tools` is None for the final answer.
 
-    `count_prepared_prompt` charges the ledger the tokenizer's exact count of the round.
+    `count_prepared_prompt` charges the ledger the tokenizer's exact count of the round, and
+    `counted_out["prompt"]` gets that count of what the round sends, for the preemptor.
 
     Raise LlamaAdmissionRecostRefused before dispatching unreserved growth, or
     LlamaAdmissionCancelled on Stop/release. None preserves the current allowance."""
@@ -4067,6 +4089,8 @@ def _openai_llama_admission_recost(
                 vision = vision,
             )
         )
+        if counted_out is not None and wire_counted:
+            counted_out["prompt"] = wire_prompt_tokens
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
         share = max(1, budget // max(1, capacity))
@@ -33367,6 +33391,7 @@ async def produce_openai_chat_completions(
                     erased = _gguf_decode["erased"]
                     _gguf_decode["slot"] = None
                     _gguf_decode["erased"] = False
+                _round_counted: dict = {}
                 # RE-COST FIRST: the publish below reads `lease.tokens`, and the recost is
                 # what grows it for the round that just began, so reading it first swept on
                 # the PREVIOUS round's figure -- at exactly the boundary where the prompt
@@ -33389,8 +33414,11 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
-                    # Erased cells make yielding honest, so a grown round may wait.
-                    cache_is_empty = erased,
+                    # Erased cells make yielding honest, so a grown round may wait, whichever
+                    # erase took them.
+                    cache_is_empty = erased
+                    or _openai_llama_self_erased(llama_backend, completion_id),
+                    counted_out = _round_counted,
                 )
                 _openai_llama_publish_round_charge(
                     llama_backend = llama_backend,
@@ -33401,6 +33429,7 @@ async def produce_openai_chat_completions(
                     # What this round SENDS: None on the final pass, which renders none.
                     rendered_tools = round_tools,
                     observe_tokens = _gguf_observe_tokens,
+                    counted_prompt_tokens = _round_counted.get("prompt"),
                 )
                 return _recosted_allowance
 
@@ -44151,6 +44180,8 @@ async def anthropic_messages(
             injected_tools = openai_tools,
             wire_tools = round_tools,
             cancel_event = cancel_event,
+            # Erased by an idle-slot reclaim while parked: yielding is honest, so it may wait.
+            cache_is_empty = _openai_llama_self_erased(llama_backend, message_id),
         )
         _openai_llama_publish_round_charge(
             llama_backend = llama_backend,
