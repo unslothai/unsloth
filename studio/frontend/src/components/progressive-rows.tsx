@@ -14,6 +14,8 @@ import {
 const PRELOAD_PX = 800;
 /** frees a fetch that drew no rows (an error or the end), past the sidebar's render batching. */
 const FETCH_SETTLE_MS = 250;
+/** a scroll this soon after a page is drawn is the same gesture's own scroll, not a new one. */
+const GESTURE_TAIL_MS = 200;
 
 // one server page per user scroll, so a tall window or the preload margin never drains pages
 const ARMING_EVENTS = ["scroll", "wheel", "touchmove"] as const;
@@ -49,6 +51,7 @@ export function ProgressiveRows<T extends { id: string }>({
   const armedRef = useRef(false);
   const fetchFromRef = useRef(0);
   const itemCountRef = useRef(items.length);
+  const drawnAtRef = useRef(0);
   const mountedMore = items.length > limit;
   const fetchMore = hasMore && Boolean(onReachEnd);
   const showSentinel = mountedMore || fetchMore;
@@ -77,7 +80,10 @@ export function ProgressiveRows<T extends { id: string }>({
   // a scroll between the answer and the rows being drawn sees the old sentinel and would fetch again
   useEffect(() => {
     itemCountRef.current = items.length;
-    if (fetchingRef.current && items.length > fetchFromRef.current) fetchingRef.current = false;
+    if (fetchingRef.current && items.length > fetchFromRef.current) {
+      fetchingRef.current = false;
+      drawnAtRef.current = performance.now();
+    }
   }, [items.length]);
 
   // re-observe because IntersectionObserver does not repeat while the sentinel stays intersecting
@@ -95,8 +101,8 @@ export function ProgressiveRows<T extends { id: string }>({
     );
     observer.observe(sentinel);
     const onArm = () => {
-      // a scroll during a fetch arms nothing, or the page landing would fetch another unasked
-      if (fetchingRef.current) return;
+      // a scroll during a fetch, or the wheel's own scroll just after it, arms nothing
+      if (fetchingRef.current || performance.now() - drawnAtRef.current < GESTURE_TAIL_MS) return;
       armedRef.current = true;
       if (intersectingRef.current) advance(root);
     };

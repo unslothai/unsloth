@@ -157,7 +157,11 @@ test("a page landing after the query changed is dropped", async () => {
   });
   const fetchPage = async (query: unknown, limit: number) => {
     const prefix = (query as { name: string }).name;
-    if (slow) await new Promise<void>((resolve) => (release = resolve));
+    if (slow) {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    }
     return answer(prefix, limit);
   };
   const list = new RowPager<unknown, Row>(fetchPage, { name: "a" }, "a", {
@@ -473,8 +477,10 @@ test("a server page is asked for only after a scroll, one page per scroll", () =
   // a scroll while a page is in flight must not arm the next one
   assert.match(
     src,
-    /const onArm = \(\) => \{\n(?:\s*\/\/.*\n)?\s*if \(fetchingRef\.current\) return;\n\s*armedRef\.current = true;/,
+    /const onArm = \(\) => \{\n(?:\s*\/\/.*\n)?\s*if \(fetchingRef\.current \|\| performance\.now\(\) - drawnAtRef\.current < GESTURE_TAIL_MS\) return;\n\s*armedRef\.current = true;/,
   );
+  // nor can the scroll a wheel notch makes just after its page is drawn
+  assert.match(src, /fetchingRef\.current = false;\n\s*drawnAtRef\.current = performance\.now\(\);/);
   assert.match(
     src,
     /const ARMING_EVENTS = \["scroll", "wheel", "touchmove"\] as const;/,
@@ -575,4 +581,13 @@ test("\"No chats yet\" asks for any chat, archived or in an unloaded folder, bef
   assert.match(src, /\[sidebarRowQuery\(\{\}\), sidebarRowQuery\(\{ archived: true \}\)\]/);
   assert.match(src, /!hasUnlistedChats && \(/);
   assert.match(src, /\.then\(\(\) => setSelectAllPending\(true\)\)\n\s*\.catch\(\(\) => undefined\);/);
+});
+
+test("a hidden or hand-ordered section still loads its newest chat, which orders Move to", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /if \(hiddenSectionSet\.has\(section\.id\) \|\| section\.sort === "manual"\) \{\n\s*slots\[`latest:\$\{section\.id\}`\] = \{\n\s*initialLimit: 1,/);
+  const latest = src.indexOf("slots[`latest:${section.id}`]");
+  assert.ok(latest > 0 && latest < src.indexOf("if (hiddenSectionSet.has(section.id)) continue;"));
+  // it is never paged past that row
+  assert.match(src, /name === "recents" \|\| name\.startsWith\("latest:"\) \|\| !list\.hasMore/);
 });
