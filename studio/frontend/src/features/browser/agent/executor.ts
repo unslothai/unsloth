@@ -667,6 +667,11 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
     await pageCall(tab, { op: "mask", on: false }).catch(() => null);
   }
   if (!blob) return { ok: false, error: "the screenshot failed." };
+  // A page that moved during the capture is one nobody checked or masked: no picture of it.
+  const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+  if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
+    return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
+  }
   const image = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
