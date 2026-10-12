@@ -1164,6 +1164,24 @@ def _assert_local_ltx_header_matches(
         )
 
 
+def _ltx25_dev_load(
+    fam: Any,
+    kind: str,
+    gguf_filename: Optional[str],
+    repo_id: Optional[str],
+    display_repo_id: Optional[str] = None,
+) -> bool:
+    """Whether an LTX-2.5 load is the dev DiT (single stage, no latent upsampler). A pipeline load opens no single file,
+    so its repo names the variant (the official pack is distilled); a single file decides by its own name first."""
+    if getattr(fam, "name", None) != "ltx-2.5":
+        return False
+    from .video_families import ltx25_is_dev
+
+    if kind == "pipeline":
+        return ltx25_is_dev(display_repo_id, repo_id)
+    return ltx25_is_dev(gguf_filename, repo_id)
+
+
 def _stop_ltx25_encoder(client: Any) -> None:
     if client is None:
         return
@@ -3283,6 +3301,9 @@ class VideoBackend:
                 allow_network = not local_files_only,
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
+            ltx25_dev = _ltx25_dev_load(
+                fam, kind, kwargs.get("gguf_filename"), kwargs["repo_id"], kwargs.get("display_repo_id")
+            )
             from .video_minimax_h3 import is_h3_native
 
             if is_h3_native(fam, kind):
@@ -3399,6 +3420,7 @@ class VideoBackend:
                 h3_task = kwargs.get("h3_task"),
                 h3_te_scheme = h3_te_scheme,
                 local_files_only = local_files_only,
+                ltx25_dev = ltx25_dev,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -3496,6 +3518,7 @@ class VideoBackend:
                         h3_task = kwargs.get("h3_task"),
                         h3_te_scheme = h3_te_scheme,
                         local_files_only = local_files_only,
+                        ltx25_dev = ltx25_dev,
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
@@ -3574,6 +3597,7 @@ class VideoBackend:
                 h3_task = kwargs.get("h3_task"),
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
+                ltx25_dev = ltx25_dev,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets
             # the warmed cache.
@@ -5062,6 +5086,7 @@ class VideoBackend:
         skip_transformer_components: tuple[str, ...] = (),
         h3_task: Optional[str] = None,
         ltx25_shards: Optional[dict[str, frozenset[str]]] = None,
+        ltx25_dev: bool = False,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -5158,10 +5183,10 @@ class VideoBackend:
             files.append((name, int(size)))
         if is_ltx25_single_file_listing(s.rfilename for s in siblings):
             # The split single-file release as a base: only the companion files beside the picked DiT.
-            return ltx25_single_file_companions(files)
+            return ltx25_single_file_companions(files, dev = ltx25_dev)
         if ltx25_pack:
             # Unused components and the duplicate shard sets the LTX-2.5 pack ships (see ltx25_pack_files).
-            files = ltx25_pack_files(files, ltx25_shards)
+            files = ltx25_pack_files(files, ltx25_shards, dev = ltx25_dev)
         return files
 
     @staticmethod
@@ -5208,6 +5233,7 @@ class VideoBackend:
         h3_task: Optional[str] = None,
         h3_te_scheme: Optional[str] = None,
         local_files_only: bool = False,
+        ltx25_dev: bool = False,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
@@ -5253,6 +5279,7 @@ class VideoBackend:
                         skip_transformer_weights = skip_transformer_weights,
                         skip_transformer_components = skip_transformer_components,
                         h3_task = h3_task,
+                        ltx25_dev = ltx25_dev,
                         ltx25_shards = self._ltx25_plan_shards(info, base, hf_token),
                     )
                 )
@@ -5309,6 +5336,8 @@ class VideoBackend:
             return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo, repo_id)
         h3_task = _h3_single_file_task(fam, kind, gguf_filename, h3_task)
+        # A dev LTX-2.5 load is single stage and never opens the latent upsampler.
+        ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
         # would then arrive outside this plan.
@@ -5525,6 +5554,7 @@ class VideoBackend:
                         ),
                         skip_transformer_components = _planned_denoiser_components(fam, kind),
                         h3_task = h3_task,
+                        ltx25_dev = ltx25_dev,
                         # The pack's indexes pick the transformer / connectors copy, as _predownload_base does.
                         ltx25_shards = self._ltx25_plan_shards(info, base, hf_token),
                     ),
@@ -5844,6 +5874,7 @@ class VideoBackend:
         h3_task: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
+        ltx25_dev: bool = False,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
@@ -5879,6 +5910,7 @@ class VideoBackend:
                 skip_transformer_weights = skip_transformer_weights,
                 skip_transformer_components = skip_transformer_components,
                 h3_task = h3_task,
+                ltx25_dev = ltx25_dev,
             )
             from .video_ltx25 import (
                 is_ltx25_pack,
@@ -5914,6 +5946,7 @@ class VideoBackend:
                     skip_transformer_weights = skip_transformer_weights,
                     skip_transformer_components = skip_transformer_components,
                     h3_task = h3_task,
+                    ltx25_dev = ltx25_dev,
                     ltx25_shards = ltx25_shards_from_indexes(indexes),
                 )
 
@@ -6643,12 +6676,7 @@ class VideoBackend:
             from .video_families import ltx25_is_dev
             from .video_ltx25 import encoder_resident_for_plan, start_text_encoder
 
-            # A pipeline load opens no single file, so its repo names the variant (the official pack is distilled).
-            ltx25_dev = (
-                ltx25_is_dev(display_repo_id, repo_id)
-                if kind == "pipeline"
-                else ltx25_is_dev(gguf_filename, repo_id)
-            )
+            ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
             # A stale load's pending worker goes only while this load is current; a superseded load that resumes here
             # must not stop the newer load's worker.
             with self._lock:
@@ -6786,6 +6814,7 @@ class VideoBackend:
                     # no-op there -- but the flag is carried rather than defaulted so the top-up can never become the
                     # one call that reaches the Hub.
                     local_files_only = local_files_only,
+                    ltx25_dev = ltx25_dev,
                 )
                 or _base_local_dir
             )
@@ -9580,9 +9609,11 @@ class VideoBackend:
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
+                # The same identifiers, in the same order, as the status defaults the UI shows.
                 default_steps, default_guidance = default_video_generation_params(
                     state.variant_id,
                     state.gguf_filename,
+                    state.display_repo_id,
                     state.repo_id,
                     state.base_repo,
                     fallback = (fam.default_steps, fam.default_guidance),

@@ -261,6 +261,7 @@ def _shard_set(name: str) -> Optional[str]:
 def ltx25_pack_files(
     files: list[tuple[str, int]],
     shards: Optional[dict[str, frozenset[str]]] = None,
+    dev: bool = False,
 ) -> list[tuple[str, int]]:
     """The files of an LTX-2.5 pack a load reads.
 
@@ -268,12 +269,15 @@ def ltx25_pack_files(
     4-shard and an 8-shard set and ``connectors/`` a sharded and an unsharded copy. With ``shards`` (component ->
     file names its ``*.index.json`` lists) only the indexed set stays. Without it (an index that could not be read)
     the unsharded copy goes when an index exists and the coarsest shard set is kept, the one the official indexes
-    name."""
+    name. A ``dev`` load (single stage) also drops the latent upsampler, which only the two-stage recipe attaches."""
     names = {name for name, _ in files}
     kept: list[tuple[str, int]] = []
     by_component: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    skip = _PACK_SKIP_PREFIXES
+    if not ltx25_uses_upsampler(dev):
+        skip = skip + (f"{LATENT_UPSAMPLER_SUBFOLDER}/",)
     for name, size in files:
-        if name.startswith(_PACK_SKIP_PREFIXES):
+        if name.startswith(skip):
             continue
         component = _component(name)
         leaf = name.rsplit("/", 1)[-1]
@@ -456,9 +460,17 @@ def is_ltx25_single_file_listing(names: Any) -> bool:
     return all(name in present for name in LTX25_SINGLE_COMPANIONS)
 
 
-def ltx25_single_file_companions(files: list[tuple[str, int]]) -> list[tuple[str, int]]:
+def ltx25_uses_upsampler(dev: bool) -> bool:
+    """Whether a load attaches the latent upsampler: only the two-stage distilled recipe runs it."""
+    return not dev and two_stage_enabled()
+
+
+def ltx25_single_file_companions(files: list[tuple[str, int]], dev: bool = False) -> list[tuple[str, int]]:
     """The (rfilename, size) entries a load from the single-file release reads besides the picked DiT."""
-    return [(name, size) for name, size in files if name in LTX25_SINGLE_COMPANIONS]
+    wanted = set(LTX25_SINGLE_COMPANIONS)
+    if not ltx25_uses_upsampler(dev):
+        wanted.discard(LTX25_SINGLE_UPSAMPLER)
+    return [(name, size) for name, size in files if name in wanted]
 
 
 def ltx25_default_base(repo_id: Optional[str]) -> Optional[str]:
@@ -500,9 +512,15 @@ def ltx25_transformer_config_dir() -> str:
     )
     if not target.is_file() or target.read_text(encoding = "utf-8") != payload:
         target.parent.mkdir(parents = True, exist_ok = True)
-        scratch = target.with_suffix(f".{os.getpid()}.tmp")
-        scratch.write_text(payload, encoding = "utf-8")
-        os.replace(scratch, target)
+        # A per-call scratch name: two loads in one process (a superseded one still building) may both get here.
+        fd, scratch = tempfile.mkstemp(dir = target.parent, prefix = "config.", suffix = ".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding = "utf-8") as fh:
+                fh.write(payload)
+            os.replace(scratch, target)
+        except BaseException:
+            Path(scratch).unlink(missing_ok = True)
+            raise
     return str(root)
 
 
@@ -1136,6 +1154,33 @@ def render(
 ) -> Any:
     """Run one LTX-2.5 request. ``kwargs`` is the generic video call (prompt, size, frames, steps, guidance,
     frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``)."""
+    try:
+        return _render(
+            pipe, kwargs, dev = dev, image = image, upsampler = upsampler, on_step = on_step, cancel = cancel
+        )
+    finally:
+        if image is not None:
+            # The condition pipeline shares pipe's modules but not its offload-hook list, so on every exit (dev,
+            # single stage, two stage, cancel) pipe's own hooks are reset here, or its last onloaded module stays on
+            # the card.
+            free = getattr(pipe, "maybe_free_model_hooks", None)
+            if callable(free):
+                try:
+                    free()
+                except Exception:  # noqa: BLE001 -- best-effort offload reset
+                    pass
+
+
+def _render(
+    pipe: Any,
+    kwargs: dict[str, Any],
+    *,
+    dev: bool,
+    image: Any = None,
+    upsampler: Any = None,
+    on_step: Optional[Callable[..., Any]] = None,
+    cancel: Optional[threading.Event] = None,
+) -> Any:
     import inspect
 
     import torch
@@ -1301,12 +1346,4 @@ def render(
         stage2["callback_on_step_end"] = cb
     _keep(half_w * 2, half_h * 2, frames)
     with ltx23_verbatim_sigmas(pipe):
-        output = runner(**stage2)
-    if runner is not pipe:
-        free = getattr(pipe, "maybe_free_model_hooks", None)
-        if callable(free):
-            try:
-                free()
-            except Exception:  # noqa: BLE001 -- best-effort offload reset
-                pass
-    return output
+        return runner(**stage2)

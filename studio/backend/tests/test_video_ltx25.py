@@ -671,6 +671,27 @@ def test_single_file_pick_skips_the_pack_dit():
     assert "latent_upsampler/diffusion_pytorch_model.safetensors" in names
 
 
+def test_dev_loads_skip_the_latent_upsampler(monkeypatch):
+    from core.inference.video import VideoBackend, _ltx25_dev_load
+
+    upsampler = "latent_upsampler/diffusion_pytorch_model.safetensors"
+    dev = {n for n, _ in VideoBackend._base_download_files(_info(_PACK), "gguf", ltx25_dev = True)}
+    assert upsampler not in dev and "vae/diffusion_pytorch_model.safetensors" in dev
+    single = [n for n, _ in VideoBackend._base_download_files(_info(_SINGLE_REPO), "single_file", ltx25_dev = True)]
+    assert sorted(single) == sorted(set(v25.LTX25_SINGLE_COMPANIONS) - {v25.LTX25_SINGLE_UPSAMPLER})
+    # The two-stage switch off: no load attaches the upsampler, so no plan stages it.
+    monkeypatch.setenv(v25.TWO_STAGE_ENV, "0")
+    assert upsampler not in {n for n, _ in VideoBackend._base_download_files(_info(_PACK), "gguf")}
+    monkeypatch.delenv(v25.TWO_STAGE_ENV)
+    fam = detect_video_family("", override = LTX25_FAMILY)
+    assert _ltx25_dev_load(fam, "single_file", "ltx-2.5-22b-dev-bf16.safetensors", "Lightricks/LTX-2.5")
+    assert not _ltx25_dev_load(fam, "single_file", "ltx-2.5-22b-distilled-bf16.safetensors", "Lightricks/LTX-2.5")
+    # A pipeline decides by its display / repo id; the official pack is distilled.
+    assert not _ltx25_dev_load(fam, "pipeline", None, "Lightricks/LTX-2.5-Diffusers")
+    assert _ltx25_dev_load(fam, "pipeline", None, "/models/opaque", "someone/LTX-2.5-dev-Diffusers")
+    assert not _ltx25_dev_load(detect_video_family("", override = "ltx-2"), "gguf", "ltx-2.3-dev.gguf", "x")
+
+
 def test_other_packs_are_untouched():
     from core.inference.video import VideoBackend
 
@@ -1009,6 +1030,40 @@ def test_two_stage_i2v_conditions_both_stages(monkeypatch):
     assert pipe.freed == 1
 
 
+def test_every_image_path_resets_the_offload_hooks(monkeypatch):
+    import threading
+
+    image = object()
+    # dev, single stage
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    pipe._unsloth_ltx25_condition_pipe = _FakePipe(pipe.scheduler)
+    v25.render(pipe, dict(_kwargs(), num_inference_steps = 30), dev = True, image = image)
+    assert pipe.freed == 1
+    # a cancel during the upsample
+    cancel = threading.Event()
+
+    class _CancellingUpsampler(_Upsampler):
+        def __call__(self, latents):
+            cancel.set()
+            return super().__call__(latents)
+
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    pipe._unsloth_ltx25_condition_pipe = _FakePipe(pipe.scheduler)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        v25.render(pipe, _kwargs(), dev = False, image = image, upsampler = _CancellingUpsampler(), cancel = cancel)
+    assert pipe.freed == 1
+    # distilled with the two-stage recipe off
+    monkeypatch.setenv(v25.TWO_STAGE_ENV, "0")
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    pipe._unsloth_ltx25_condition_pipe = _FakePipe(pipe.scheduler)
+    v25.render(pipe, _kwargs(), dev = False, image = image)
+    assert pipe.freed == 1
+    # text-to-video runs pipe itself, whose own call resets its hooks
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    v25.render(pipe, _kwargs(), dev = False)
+    assert pipe.freed == 0
+
+
 def test_dev_and_single_stage_paths(monkeypatch):
     pipe = _FakePipe(SimpleNamespace())
     v25.render(pipe, dict(_kwargs(), num_inference_steps = 30, guidance_scale = 3.0), dev = True)
@@ -1206,6 +1261,28 @@ def test_text_encoder_key_mapping_reaches_the_gemma4_names():
     assert mapped("vision_model.pos_embedding") == "model.vision_embedder.pos_embedding"
     assert mapped("model.language_model.norm.weight") == "model.language_model.norm.weight"
     assert mapped("text_embedding_projection.video_aggregate_embed.weight").startswith("text_embedding_projection.")
+
+
+def test_config_dir_survives_a_concurrent_writer(monkeypatch, tmp_path):
+    import os
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    real_replace = os.replace
+    nested = []
+
+    def replace(src, dst):
+        # Another load in this process writes the same config between this one's scratch write and its replace.
+        if not nested:
+            nested.append(True)
+            v25.ltx25_transformer_config_dir()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    folder = Path(v25.ltx25_transformer_config_dir())
+    config = folder / "transformer" / "config.json"
+    assert nested and json.loads(config.read_text(encoding = "utf-8"))["ff_bias"] is False
+    assert [p.name for p in config.parent.iterdir()] == ["config.json"]
 
 
 def test_embedded_transformer_config_matches_the_tested_layout():
