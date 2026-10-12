@@ -278,10 +278,10 @@ fn secret_flag_re() -> &'static Regex {
     RE.get_or_init(|| {
         Regex::new(&format!(
             r"(?i)(?:^|\s|\\[nrt])--(?P<key>{SECRET_KEYS})[ \t]+{}",
-            // A flag names its value outright, so any length counts; a following flag does not.
+            // A flag names its whole argv word, at any length; a following flag is not its value.
             SECRET_VALUE.replace(
                 r#"(?P<uv>[^"'\\\s,;}\]<>]{6,})"#,
-                r#"(?P<uv>[^-"'\\\s,;}\]<>][^"'\\\s,;}\]<>]*)"#
+                r#"(?P<uv>[^-"'\\\s][^"'\\\s]*)"#
             )
         ))
         .unwrap()
@@ -641,6 +641,11 @@ mod tests {
             (r#"ACCESS_KEY="quoted"opaque0123456789"#, "opaque", ""),
             (r#"ACCESS_KEY="opaque\"still secret""#, "secret", ""),
             ("serve --password abcde --port 8888", "abcde", "--port 8888"),
+            (
+                "serve --password abcdef,opaque0123 --port 1",
+                "opaque0123",
+                "--port 1",
+            ),
             ("DATABASE_PASSWORD=<redacted>x", "<redacted>x", ""),
             (r#"{"password":"bearer"}"#, "bearer", ""),
             ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
