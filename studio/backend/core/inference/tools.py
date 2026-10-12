@@ -8,6 +8,7 @@ import ast
 import codecs
 import copy
 from collections import deque
+from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
@@ -21601,6 +21602,98 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
     finally:
         for fd in fds:
             os.close(fd)
+
+
+class SandboxUploadExists(Exception):
+    """The upload's name is taken and the caller did not ask to replace it."""
+
+
+def sandbox_upload_name(name: "str | None") -> str:
+    """The name an uploaded file is saved under at the sandbox root, one the download route serves back."""
+    base = _UNSAFE_NAME_CHARS.sub("_", re.split(r"[\\/]", name or "")[-1]).strip(" .") or "upload"
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    if len(base.encode()) > 255:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        base = stem.encode()[: 255 - len(ext.encode())].decode("utf-8", "ignore").rstrip(" .") + ext
+    return base if _servable_segment(base) else "upload"
+
+
+def save_sandbox_upload(
+    session_id: "str | None",
+    name: "str | None",
+    chunks: "Iterable[bytes]",
+    overwrite: bool = False,
+) -> dict:
+    """Write an uploaded file into the root of a chat's sandbox. Raises SandboxUploadExists when the
+    name is taken, unless ``overwrite``."""
+    name = sandbox_upload_name(name)
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        # Registered as a call, so a tool call running meanwhile does not offer the upload as its own file.
+        token = _call_started(workdir)
+        try:
+            replaced = _install_upload(workdir, name, chunks, overwrite)
+        finally:
+            _call_finished(token)
+    return {"name": name, "path": os.path.join(workdir, name), "replaced": replaced}
+
+
+def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrite: bool) -> bool:
+    """Stream into a fresh O_EXCL file, then link it in or, when replacing, rename onto the name. Through a
+    directory descriptor where the platform has one, like the spill writer, so no link is followed."""
+    dir_fd = (
+        os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if _DIR_FD_WRITES else None
+    )
+    tmp, dest = f".tmp-{uuid.uuid4().hex[:12]}", name
+    if dir_fd is None:
+        tmp, dest = os.path.join(workdir, tmp), os.path.join(workdir, name)
+    at = {} if dir_fd is None else {"dir_fd": dir_fd}
+    pair = {} if dir_fd is None else {"src_dir_fd": dir_fd, "dst_dir_fd": dir_fd}
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        with os.fdopen(os.open(tmp, flags, 0o600, **at), "wb") as out:
+            for chunk in chunks:
+                out.write(chunk)
+        try:
+            os.stat(dest, follow_symlinks = False, **at)
+            existed = True
+        except FileNotFoundError:
+            existed = False
+        if existed and not overwrite:
+            raise SandboxUploadExists(name)
+        if not existed:
+            try:
+                # link, not rename: it fails when a tool took the name since the check.
+                os.link(tmp, dest, **pair)
+                return False
+            except FileExistsError:
+                if not overwrite:
+                    raise SandboxUploadExists(name) from None
+            except OSError:
+                # A volume without hard links: claim the name exclusively, then rename onto the claim.
+                try:
+                    os.close(os.open(dest, flags, 0o600, **at))
+                except FileExistsError:
+                    if not overwrite:
+                        raise SandboxUploadExists(name) from None
+        try:
+            os.replace(tmp, dest, **pair)
+        except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:
+            # A folder holds the name (Windows reports that as access denied).
+            raise SandboxUploadExists(name) from exc
+        return existed
+    finally:
+        _quiet_unlink(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
