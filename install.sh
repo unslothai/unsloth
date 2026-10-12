@@ -2308,6 +2308,11 @@ DESKTOP_EOF
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>
@@ -2317,8 +2322,12 @@ PLIST_EOF
         # Single-quoted heredoc + sed so $-vars in $_css_data_dir do not expand at launch.
         _css_sq_dir=$(printf '%s' "$_css_data_dir" | sed "s/'/'\\\\''/g")
         _css_sed_dir=$(printf '%s' "$_css_sq_dir" | sed 's/[\\&|]/\\&/g')
+        # A script-only bundle may be started under Rosetta (#9467), and a translated shell hands the x86_64 slice of a universal2 venv python its arm64 wheels. LSArchitecturePriority asks Launch Services for arm64, and arch -arm64 also covers a bundle id whose Rosetta choice Launch Services already cached. hw.optional.arm64 is absent on Intel, so Intel keeps the plain exec.
         cat > "$_css_macos_dir/launch-studio" << 'STUB_EOF'
 #!/bin/sh
+if [ "$(/usr/sbin/sysctl -in hw.optional.arm64 2>/dev/null)" = "1" ] && [ -x /usr/bin/arch ]; then
+    exec /usr/bin/arch -arm64 '@@DATA_DIR@@/launch-studio.sh' "$@"
+fi
 exec '@@DATA_DIR@@/launch-studio.sh' "$@"
 STUB_EOF
         sed "s|@@DATA_DIR@@|$_css_sed_dir|g" "$_css_macos_dir/launch-studio" \
@@ -3328,7 +3337,20 @@ _check_linux_deps() {
     fi
 
     if [ -n "$_optional_missing" ]; then
-        step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
+        # Off apt the Debian package names mean nothing (NixOS, Fedora, Arch, SteamOS: #4986), so name the commands probed above.
+        _shown_missing="$_optional_missing"
+        if ! command -v apt-get >/dev/null 2>&1; then
+            _shown_missing=""
+            for _m in $_optional_missing; do
+                case "$_m" in
+                    build-essential) _m="gcc" ;;
+                    libcurl4-openssl-dev) _m="curl-config" ;;
+                esac
+                _shown_missing="$_shown_missing $_m"
+            done
+            _shown_missing="${_shown_missing# }"
+        fi
+        step "deps" "using prebuilt llama.cpp (missing: $_shown_missing)" "$C_WARN"
         substep "Not required to run: Unsloth downloads a prebuilt inference engine."
         case " $_optional_missing " in
             *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
@@ -7238,7 +7260,9 @@ _CU130_NEW_INSTALL_ROUTE=false
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
     # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
-    if { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+    # The PyPI check reads unsloth's metadata, so a --package other than unsloth keeps the default.
+    if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
+       && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
         _CU130_NEW_INSTALL_ROUTE=true
     fi

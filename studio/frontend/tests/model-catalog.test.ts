@@ -169,14 +169,20 @@ test("DeepSeek direct maps the snapshot ladder onto its low / high / max wire", 
   assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-unknown").supportsReasoning, false);
 });
 
-test("Qwen and Kimi only have a wire toggle, so a ladder collapses to on/off", () => {
-  for (const [provider, model] of [["qwen", "qwen3.5-plus"], ["kimi", "kimi-k3"]] as const) {
-    const caps = getExternalReasoningCapabilities(provider, model);
-    assert.equal(caps.reasoningStyle, "enable_thinking", model);
-    assert.equal(caps.supportsReasoning, true, model);
-    assert.equal(caps.supportsReasoningOff, true, model);
-  }
+test("Qwen only has a wire toggle, so a ladder collapses to on/off", () => {
+  const caps = getExternalReasoningCapabilities("qwen", "qwen3.5-plus");
+  assert.equal(caps.reasoningStyle, "enable_thinking");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.supportsReasoningOff, true);
   assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
+});
+
+test("Kimi K3's documented always-on effort ladder outranks the catalog's toggle", () => {
+  // models.dev lists a toggle, but the Kimi API has no thinking switch for kimi-k3.
+  const caps = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.deepEqual([...caps.reasoningEffortLevels], ["low", "high", "max"]);
 });
 
 test("Mistral models outside the table get the documented none / high form", () => {

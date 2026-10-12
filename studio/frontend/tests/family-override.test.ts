@@ -12,8 +12,13 @@ import {
   resolvedFamilyOverrideSelection,
   taskOpaqueArtifactSupportsFamilyOverride,
 } from "../src/features/model-picker/components/model-selector/family-override.ts";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "../src/lib/diffusion-pipeline-load-target.ts";
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+// diffusion-pipeline-load-target.ts imports through the `@/` alias.
+registerBundlerResolver();
+const { diffusionPipelineLoadTarget, diffusionStagingEntries } = await import(
+  "../src/lib/diffusion-pipeline-load-target.ts"
+);
 
 test("an explicit family selects exactly one structurally loadable artifact kind", () => {
   for (const [family, modular, want] of [
@@ -104,11 +109,11 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
       "displayRepoId: l.displayRepoId",
       "opaqueKind={opaqueKind}",
       "loadedModelIdOverride={selectorModelId}",
-      "diffusionStagingEntries(plan.entries, repoId, opts)",
       "!pipelineTarget.onDevice",
     ]) {
       assert.ok(text.includes(needle), needle);
     }
+    assert.match(text, /diffusionStagingEntries\(plan\.entries, repoId, \{\s*\.\.\.opts,/);
     if (page.includes("images")) assert.ok(text.includes("downloadOnly ? currentLoadAdvanced(repoId, false)"));
   });
 }

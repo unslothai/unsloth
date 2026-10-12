@@ -4794,6 +4794,19 @@ def test_mask_creation():
         assert torch.all(correct_mask == our_mask)
 
 
+def _forward_takes_use_cache(model) -> bool:
+    """False for a forward naming packed_seq_lengths without use_cache / **kwargs (the key would raise)."""
+    takes = getattr(model, "_unsloth_forward_takes_use_cache", None)
+    if takes is None:
+        from unsloth.trainer import _forward_accepts_packing_kwargs
+        takes = _forward_accepts_packing_kwargs(model, "use_cache")
+        try:
+            model._unsloth_forward_takes_use_cache = takes
+        except Exception:
+            pass
+    return takes
+
+
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -4803,6 +4816,14 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             kwargs.pop("num_items_in_batch")
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
+
+    # Training twin of the #3470 prediction_step guard: a KV cache drops the packed-sequence mask.
+    if (
+        "packed_seq_lengths" in inputs
+        and "use_cache" not in inputs
+        and _forward_takes_use_cache(model)
+    ):
+        inputs = {**inputs, "use_cache": False}
 
     if (
         num_items_in_batch is None
@@ -4855,8 +4876,28 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             if _has_ccm and _inner.training:
                 inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
+    _unsloth_attach_accelerator_scaler(self, model)
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
+
+
+def _unsloth_attach_accelerator_scaler(trainer, model):
+    # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
+    scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
+    if scaler is None or getattr(model, "accelerator_scaler", None) is scaler:
+        return
+    current, seen = model, set()
+    while isinstance(current, torch.nn.Module) and id(current) not in seen:
+        seen.add(id(current))
+        current.accelerator_scaler = scaler
+        current = next(
+            (
+                getattr(current, attr)
+                for attr in _UNSLOTH_WRAPPED_MODULE_ATTRS + ("model",)
+                if isinstance(getattr(current, attr, None), torch.nn.Module)
+            ),
+            None,
+        )
 
 
 # The attributes a training wrapper keeps its wrappee under. DDP, FSDP1 and DataParallel use
@@ -6732,6 +6773,190 @@ def snapshot_residual_lora_init(model, init_lora_weights):
         }
         if initial:
             module._unsloth_initial_lora = initial
+    if init_lora_weights in CONVERT_ON_SAVE_LORA_WEIGHTS:
+        save_lora_relative_to_original_base(model)
+
+
+# PEFT cannot rebuild these residual bases when it loads an adapter (LoRA-GA needs the training gradients and
+# silently falls back to a random init), so a native adapter reloads onto the wrong base.
+CONVERT_ON_SAVE_LORA_WEIGHTS = ("lora_ga",)
+
+
+def _residual_lora_rows(model, adapters):
+    from transformers.pytorch_utils import Conv1D
+    for name, module in model.named_modules():
+        initial = getattr(module, "_unsloth_initial_lora", None)
+        if not initial or not isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):
+            continue
+        # LoRA-GA only rewrites Linear / Conv1D bases; embeddings and convolutions keep PEFT's default init.
+        if not isinstance(module.get_base_layer(), (torch.nn.Linear, Conv1D)):
+            continue
+        for k in initial:
+            if k in adapters and k in module.lora_A:
+                yield module, k, name
+
+
+def _unconverted_patterns(model, converted, adapter):
+    import re
+    from peft.tuners.lora import LoraLayer
+
+    ranks, alphas = {}, {}
+    for name, module in model.named_modules():
+        if id(module) in converted or not isinstance(module, LoraLayer):
+            continue
+        if adapter not in getattr(module, "r", {}):
+            continue
+        key = re.escape(name.removeprefix("base_model.model."))
+        ranks[key] = module.r[adapter]
+        alphas[key] = module.lora_alpha[adapter]
+    return ranks, alphas
+
+
+def _convertible_adapters(model, selected):
+    names = set()
+    for k in selected:
+        config = model.peft_config.get(k)
+        if config is None or getattr(config, "use_dora", False):
+            continue
+        if config.use_rslora and (config.rank_pattern or config.alpha_pattern):
+            continue  # PEFT refuses this conversion too
+        names.add(k)
+    return names
+
+
+def save_lora_relative_to_original_base(model):
+    """Saves (and pushes) write PEFT's `path_initial_model_for_weight_conversion` form: a plain rank-2r LoRA on the
+    original base, `s0 * [B * s / s0, -B0] @ [A; A0]`, loadable anywhere. `load_adapter` into this live model, as
+    Trainer resume and load_best_model_at_end do, slices it back to rank r."""
+    import inspect
+    import json
+    import os
+
+    # On the model: patch_saving_functions later rebinds save_pretrained around this wrapper.
+    if getattr(model, "_unsloth_residual_save", False):
+        return
+    original_save = model.save_pretrained
+    original_load = model.load_adapter
+    save_signature = inspect.signature(original_save)
+
+    def _converted_state_dict(rows, state_dict):
+        state_dict = dict(model.state_dict() if state_dict is None else state_dict)
+        for module, k, name in rows:
+            key_A, key_B = f"{name}.lora_A.{k}.weight", f"{name}.lora_B.{k}.weight"
+            A0, B0, scaling0 = module._unsloth_initial_lora[k]
+            if key_A not in state_dict or key_B not in state_dict or not scaling0:
+                return None
+            A, B = state_dict[key_A].detach(), state_dict[key_B].detach()
+            state_dict[key_A] = torch.cat([A, A0.to(A)], 0)
+            state_dict[key_B] = torch.cat([B * (module.scaling[k] / scaling0), -B0.to(B)], 1)
+        return state_dict
+
+    @functools.wraps(original_save)
+    def save_pretrained(save_directory, *args, **kwargs):
+        bound = save_signature.bind_partial(save_directory, *args, **kwargs).arguments
+        if bound.get("path_initial_model_for_weight_conversion") is not None:
+            return original_save(save_directory, *args, **kwargs)
+        extra = bound.get("kwargs", {})
+        selected = bound.get("selected_adapters")
+        adapters = _convertible_adapters(
+            model, list(model.peft_config) if selected is None else selected
+        )
+        rows = list(_residual_lora_rows(model, adapters))
+        state_dict = _converted_state_dict(rows, extra.get("state_dict")) if rows else None
+        if state_dict is None:
+            return original_save(save_directory, *args, **kwargs)
+        out = original_save(save_directory, *args, **{**kwargs, "state_dict": state_dict})
+        if bound.get("is_main_process", True):
+            for k in {k for _, k, _ in rows}:
+                folder = save_directory if k == "default" else os.path.join(save_directory, k)
+                path = os.path.join(folder, "adapter_config.json")
+                with open(path, encoding = "utf-8") as f:
+                    config = json.load(f)
+                # Same rewrite as PEFT's save_pretrained(path_initial_model_for_weight_conversion = ...).
+                config["init_lora_weights"] = True
+                config["r"] *= 2
+                config["lora_alpha"] *= 2**0.5 if config.get("use_rslora") else 2
+                kept = _unconverted_patterns(model, {id(m) for m, j, _ in rows if j == k}, k)
+                for pattern, pinned in zip(("rank_pattern", "alpha_pattern"), kept):
+                    doubled = {key: 2 * v for key, v in (config.get(pattern) or {}).items()}
+                    if pinned or doubled:
+                        config[pattern] = {**pinned, **doubled}
+                config.pop("lora_ga_config", None)
+                with open(path, "w", encoding = "utf-8") as f:
+                    # No sort_keys: PEFT matches patterns first-come, and the exact pins go first.
+                    json.dump(config, f, indent = 2)
+        return out
+
+    @functools.wraps(original_load)
+    def load_adapter(
+        model_id,
+        adapter_name = None,
+        *args,
+        **kwargs,
+    ):
+        native = None
+        if adapter_name in model.peft_config and isinstance(model_id, (str, os.PathLike)):
+            folder = os.path.join(os.fspath(model_id), kwargs.get("subfolder") or "")
+            if os.path.isdir(folder):
+                native = _native_from_converted(model, adapter_name, folder)
+        if native is None:
+            return original_load(model_id, adapter_name, *args, **kwargs)
+        import shutil
+        import tempfile
+        from safetensors.torch import save_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            save_file(
+                native, os.path.join(tmp, "adapter_model.safetensors"), metadata = {"format": "pt"}
+            )
+            shutil.copy(os.path.join(folder, "adapter_config.json"), tmp)
+            kwargs.pop("subfolder", None)
+            return original_load(tmp, adapter_name, *args, **kwargs)
+
+    model._unsloth_residual_save = True
+    model.save_pretrained = save_pretrained
+    model.load_adapter = load_adapter
+
+
+@torch.no_grad()
+def _native_from_converted(model, adapter_name, folder):
+    """Rank-r weights of a converted adapter for the live residual model, or None if `folder` is not one.
+    A differing snapshot (a fresh run re-initialized) has its base re-based onto the saved A0 / B0."""
+    import os
+
+    if not any(
+        os.path.isfile(os.path.join(folder, n))
+        for n in ("adapter_model.safetensors", "adapter_model.bin")
+    ):
+        return None
+    rows = list(_residual_lora_rows(model, {adapter_name}))
+    if not rows:
+        return None
+    from peft.utils import load_peft_weights
+
+    weights = load_peft_weights(folder, device = "cpu")
+    plan = []
+    for module, k, name in rows:
+        key_A, key_B = f"{name}.lora_A.weight", f"{name}.lora_B.weight"
+        A, B = weights.get(key_A), weights.get(key_B)
+        r = module.lora_A[k].weight.shape[0]
+        if A is None or B is None or A.shape[0] != 2 * r or B.shape[1] != 2 * r:
+            return None
+        plan.append((module, k, key_A, key_B, r))
+    for module, k, key_A, key_B, r in plan:
+        A, B = weights[key_A], weights[key_B]
+        A0_live, B0_live, scaling0 = module._unsloth_initial_lora[k]
+        A0, B0 = A[r:].to(A0_live), -B[:, r:].to(B0_live)
+        weights[key_A] = A[:r].contiguous()
+        weights[key_B] = (B[:, :r] * (scaling0 / module.scaling[k])).contiguous()
+        if not (torch.equal(A0, A0_live) and torch.equal(B0, B0_live)):
+            base = module.get_base_layer().weight
+            delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
+            if getattr(module, "fan_in_fan_out", False):
+                delta = delta.T
+            base.data.add_(delta.to(base))
+            module._unsloth_initial_lora[k] = (A0.clone(), B0.clone(), scaling0)
+    return weights
 
 
 @contextlib.contextmanager
@@ -7212,8 +7437,22 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
         return torch.no_grad()
-    else:
-        return torch.inference_mode()
+    # FSDP keeps the parameters it all-gathers for one forward and reuses them in the next, so a
+    # gather under inference mode poisons the training step: "Inference tensors cannot be saved
+    # for backward" (unsloth#3551). TRL generates under no_grad for the same reason.
+    import os, sys
+
+    if os.environ.get("ACCELERATE_USE_FSDP", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
+        return torch.no_grad()
+    accelerate_state = sys.modules.get("accelerate.state", None)
+    shared_state = getattr(
+        getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
+    )
+    if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    return torch.inference_mode()
 
 
 def hf_login(token: Optional[str] = None) -> Optional[str]:

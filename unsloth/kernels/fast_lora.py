@@ -12,6 +12,7 @@
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
+    _has_active_dora_adapter,
     _has_active_lora_bias,
     _has_multiple_active_adapters,
     addmm_,
@@ -245,6 +246,7 @@ def apply_lora_mlp_swiglu(
 ):
     if any(
         _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
@@ -288,6 +290,7 @@ def apply_lora_mlp_geglu_exact(
 ):
     if any(
         _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
@@ -327,6 +330,7 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 def apply_lora_mlp_geglu_approx(self, X):
     if any(
         _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
@@ -552,6 +556,7 @@ def apply_lora_qkv(
 ):
     if any(
         _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_activation_fake_quantizer(proj)
         for proj in (self.q_proj, self.k_proj, self.v_proj)
@@ -659,6 +664,7 @@ class LoRA_W(torch.autograd.Function):
 def apply_lora_o(self, X):
     if (
         _has_multiple_active_adapters(self.o_proj)
+        or _has_active_dora_adapter(self.o_proj)
         or _has_active_lora_bias(self.o_proj)
         or _has_activation_fake_quantizer(self.o_proj)
     ):

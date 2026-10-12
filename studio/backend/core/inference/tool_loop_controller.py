@@ -995,6 +995,11 @@ _WORKSPACE_READ_TOOLS = frozenset({"view_image"})
 _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
 
 
+def _reruns_after_new_work(tool_name: Any) -> bool:
+    """An MCP tool can change state too (`list, create, list`), so it follows the workspace rerun rule (#10348)."""
+    return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
+
+
 # `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
 # the way to the model, which is where it would leave the machine. The mask carries neither prefix,
 # so re-running is a no-op.
@@ -1315,7 +1320,7 @@ class ToolLoopController:
         # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
-        if decision.tool_name in _WORKSPACE_TOOLS:
+        if _reruns_after_new_work(decision.tool_name):
             if (
                 decision.tool_name not in _WORKSPACE_READ_TOOLS
                 and decision.key not in self._workspace_ran
@@ -1325,7 +1330,7 @@ class ToolLoopController:
             stale = {
                 key
                 for key in self._successful_keys
-                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                if _reruns_after_new_work(key.partition(":")[0])
                 and self._workspace_novel_at.get(key, 0) < self._workspace_novel
             }
             self._successful_keys -= stale
