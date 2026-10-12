@@ -80,6 +80,12 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
+def _default_output_dir(model_name: str) -> str:
+    ensure_studio_backend_path()
+    from utils.paths import default_run_dir_name, resolve_output_dir
+    return str(resolve_output_dir(f"{default_run_dir_name(model_name)}_{int(time.time())}"))
+
+
 @add_options_from_config(Config)
 def train(
     config: Optional[Path] = typer.Option(
@@ -187,6 +193,8 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
+    if cfg.training.output_dir == Path("outputs"):
+        training_kwargs["output_dir"] = _default_output_dir(cfg.model)
     training_kwargs["wandb_token"] = wandb_token
     training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)

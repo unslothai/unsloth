@@ -77,7 +77,7 @@ def _run(tmp_path, monkeypatch, trainer, sleep):
         encoding = "utf-8",
     )
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *args: trainer)
-    monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep = sleep))
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep = sleep, time = time.time))
     app = typer.Typer()
     app.command()(train_module.train)
     return CliRunner().invoke(app, ["--config", str(config)])
