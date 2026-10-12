@@ -4102,8 +4102,9 @@ def _openai_llama_admission_recost(
                 payload, message_video_clips = _conversation_video_clips(conversation)
             )
         # Price the actual outgoing catalogue separately from the reservation catalogue.
-        # The tokenizer's count stands only when it counted that same catalogue.
-        wire_counted = prompt_exact and wire_tools is injected_tools
+        # The tokenizer's count stands only when it counted that same catalogue; compared by
+        # value, since the tool loop hands each round a copy.
+        wire_counted = prompt_exact and wire_tools == injected_tools
         wire_prompt_tokens = (
             prompt_tokens
             if wire_counted
@@ -43903,6 +43904,7 @@ async def anthropic_messages(
     def _anthropic_recost(conversation, round_tools = None) -> Optional[int]:
         # RE-COST FIRST, as the GGUF loop does: the publish below reads `lease.tokens`,
         # and this is what grows it for the round that just began.
+        _anthropic_counted: dict = {}
         _recosted_allowance = _openai_llama_admission_recost(
             _anthropic_admission_hold["reservation"],
             conversation,
@@ -43914,9 +43916,12 @@ async def anthropic_messages(
             output_tokens = payload.max_tokens,
             injected_tools = openai_tools,
             wire_tools = round_tools,
+            # Counted as the GGUF loop counts: tool results estimate far below their tokens.
+            count_prepared_prompt = True,
             cancel_event = cancel_event,
             # Erased by an idle-slot reclaim while parked: yielding is honest, so it may wait.
             cache_is_empty = _openai_llama_self_erased(llama_backend, message_id),
+            counted_out = _anthropic_counted,
         )
         _openai_llama_publish_round_charge(
             llama_backend = llama_backend,
@@ -43927,6 +43932,7 @@ async def anthropic_messages(
             # What this round SENDS: None on the final pass, which renders none.
             rendered_tools = round_tools,
             observe_tokens = _anthropic_observe_tokens,
+            counted_prompt_tokens = _anthropic_counted.get("prompt"),
         )
         return _recosted_allowance
 
