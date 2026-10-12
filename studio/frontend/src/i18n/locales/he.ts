@@ -1884,6 +1884,14 @@ export const he = {
         switchFailed: "לא ניתן להחליף את מודל ההטמעה",
         back: "חזרה למקורות",
         menuSubtitle: "מפעיל את חיפוש הקבצים",
+        device: "התקן הטמעה",
+        deviceDescription:
+          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Studio מופעל מחדש.",
+        deviceAuto: "אוטומטי",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "מוגדר על ידי {name}.",
+        deviceSaveError: "לא ניתן היה לשנות את התקן ההטמעה",
       },
       storage: {
         sectionTitle: "אחסון",

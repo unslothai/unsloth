@@ -1785,6 +1785,14 @@ export const hi = {
         switchFailed: "एम्बेडिंग मॉडल नहीं बदला जा सका",
         back: "स्रोतों पर वापस जाएँ",
         menuSubtitle: "फ़ाइल खोज के लिए",
+        device: "एम्बेडिंग डिवाइस",
+        deviceDescription:
+          "एम्बेडिंग मॉडल कहाँ चलता है, हर मॉडल के लिए। GPU बड़े दस्तावेज़ संग्रह तेज़ी से इंडेक्स करता है, लेकिन Studio के रीस्टार्ट होने तक कुछ VRAM इस्तेमाल में रखता है।",
+        deviceAuto: "स्वचालित",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "{name} द्वारा सेट।",
+        deviceSaveError: "एम्बेडिंग डिवाइस नहीं बदला जा सका",
       },
       storage: {
         sectionTitle: "स्टोरेज",

@@ -1841,6 +1841,14 @@ export const en = {
         switchFailed: "Couldn't switch the embedding model",
         back: "Back to sources",
         menuSubtitle: "Powers file search",
+        device: "Embedding device",
+        deviceDescription:
+          "Where the embedding model runs, for every model. GPU indexes large document sets faster but keeps some VRAM in use until Studio restarts.",
+        deviceAuto: "Automatic",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Set by {name}.",
+        deviceSaveError: "Couldn't change the embedding device",
       },
       storage: {
         sectionTitle: "Storage",

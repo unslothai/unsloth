@@ -1794,6 +1794,14 @@ export const ptBR = {
         switchFailed: "Não foi possível trocar o modelo de embedding",
         back: "Voltar às fontes",
         menuSubtitle: "Para busca em arquivos",
+        device: "Dispositivo de embeddings",
+        deviceDescription:
+          "Onde o modelo de embeddings é executado, para todos os modelos. A GPU indexa grandes conjuntos de documentos mais rápido, mas mantém um pouco de VRAM em uso até o Studio reiniciar.",
+        deviceAuto: "Automático",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Definido por {name}.",
+        deviceSaveError: "Não foi possível alterar o dispositivo de embeddings",
       },
       storage: {
         sectionTitle: "Armazenamento",

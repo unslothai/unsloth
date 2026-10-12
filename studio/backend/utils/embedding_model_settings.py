@@ -329,3 +329,55 @@ def reset_rag_embedding_model() -> str:
     )
     _invalidate_cache()
     return restored
+
+
+EMBEDDING_DEVICE_SETTING_KEY = "rag_embedding_device"
+EMBEDDING_DEVICE_CHOICES = ("auto", "cpu", "gpu")
+# One embedder per process, so the device is installation-wide: read from the owner's store whoever is asking.
+_device_cached: list = []  # [(monotonic time, value)]
+
+
+def get_stored_embedding_device() -> str:
+    """The device chosen in Settings: ``auto`` when unset, unreadable or unrecognized."""
+    now = time.monotonic()
+    with _lock:
+        if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
+            return _device_cached[0][1]
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        from storage.studio_db import get_app_setting
+        value = get_app_setting(EMBEDDING_DEVICE_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001 - store unavailable: the hardware default
+        value = None
+    finally:
+        reset_account(token)
+    device = value if value in EMBEDDING_DEVICE_CHOICES else "auto"
+    with _lock:
+        _device_cached[:] = [(now, device)]
+    return device
+
+
+def forget_cached_embedding_device() -> None:
+    with _lock:
+        _device_cached.clear()
+
+
+def set_embedding_device(device: str) -> bool:
+    """Persist the device; returns whether it changed, so an unchanged save keeps the embedder resident."""
+    if device not in EMBEDDING_DEVICE_CHOICES:
+        raise ValueError("Device must be auto, cpu or gpu.")
+    forget_cached_embedding_device()
+    if get_stored_embedding_device() == device:
+        return False
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        upsert_app_settings({EMBEDDING_DEVICE_SETTING_KEY: device}, read_back = False)
+    finally:
+        reset_account(token)
+        forget_cached_embedding_device()
+    return True

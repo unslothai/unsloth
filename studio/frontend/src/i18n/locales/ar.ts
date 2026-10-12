@@ -1782,6 +1782,14 @@ export const ar = {
         switchFailed: "تعذّر تبديل نموذج التضمين",
         back: "العودة إلى المصادر",
         menuSubtitle: "يشغّل البحث في الملفات",
+        device: "جهاز التضمين",
+        deviceDescription:
+          "مكان تشغيل نموذج التضمين، لكل النماذج. تفهرس GPU مجموعات المستندات الكبيرة أسرع، لكنها تُبقي جزءًا من VRAM مستخدمًا حتى إعادة تشغيل Studio.",
+        deviceAuto: "تلقائي",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "مضبوط بواسطة {name}.",
+        deviceSaveError: "تعذّر تغيير جهاز التضمين",
       },
       storage: {
         sectionTitle: "التخزين",

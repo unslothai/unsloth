@@ -1805,6 +1805,14 @@ export const fr = {
         switchFailed: "Impossible de changer le modèle d'embedding",
         back: "Retour aux sources",
         menuSubtitle: "Pour la recherche de fichiers",
+        device: "Appareil d'embedding",
+        deviceDescription:
+          "Où s'exécute le modèle d'embedding, pour tous les modèles. Le GPU indexe plus vite les grands ensembles de documents, mais garde un peu de VRAM occupée jusqu'au redémarrage de Studio.",
+        deviceAuto: "Automatique",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Défini par {name}.",
+        deviceSaveError: "Impossible de changer l'appareil d'embedding",
       },
       storage: {
         sectionTitle: "Stockage",

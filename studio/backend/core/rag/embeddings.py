@@ -64,7 +64,7 @@ def _device() -> str:
 
     The trade is small at these sizes: one 128-token chunk takes 18.7ms on CPU against 5.2ms on
     CUDA. Bulk indexing is where it shows (batch 64: 445 chunks/s on CPU against 3174/s), and
-    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+    Settings (GPU) or ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
 
     This reads the same setting as the llama-server backend but resolves ``auto`` differently, which
     is intended: that backend offloads inside its own subprocess, where the context dies with the

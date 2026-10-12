@@ -1767,6 +1767,14 @@ export const ja = {
         switchFailed: "埋め込みモデルを切り替えられませんでした",
         back: "ソースに戻る",
         menuSubtitle: "ファイル検索に使用",
+        device: "埋め込みデバイス",
+        deviceDescription:
+          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Studio を再起動するまで一部の VRAM を使用し続けます。",
+        deviceAuto: "自動",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "{name} で設定されています。",
+        deviceSaveError: "埋め込みデバイスを変更できませんでした",
       },
       storage: {
         sectionTitle: "ストレージ",

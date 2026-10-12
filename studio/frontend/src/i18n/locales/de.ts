@@ -1807,6 +1807,14 @@ export const de = {
         switchFailed: "Embedding-Modell konnte nicht gewechselt werden",
         back: "Zurück zu den Quellen",
         menuSubtitle: "Für die Dateisuche",
+        device: "Embedding-Gerät",
+        deviceDescription:
+          "Wo das Embedding-Modell läuft, für jedes Modell. Die GPU indexiert große Dokumentmengen schneller, belegt aber etwas VRAM bis zum Neustart von Studio.",
+        deviceAuto: "Automatisch",
+        deviceCpu: "CPU",
+        deviceGpu: "GPU",
+        deviceLocked: "Festgelegt durch {name}.",
+        deviceSaveError: "Das Embedding-Gerät konnte nicht geändert werden",
       },
       storage: {
         sectionTitle: "Speicher",
