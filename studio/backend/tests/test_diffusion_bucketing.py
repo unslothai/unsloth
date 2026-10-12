@@ -188,7 +188,6 @@ def test_canvases_follow_each_image(tmp_path):
 
 
 def test_an_all_square_dataset_keeps_the_unbucketed_run(tmp_path):
-    # Same sampler, cache plan and cache keys as before bucketing existed, so an existing square cache stays warm.
     paths = [_img(tmp_path / f"s{i}.png", 700 + i, 700) for i in range(3)]
     cfg = _cfg(tmp_path).normalized()
     assert cfg.bucketing is True

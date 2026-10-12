@@ -1000,7 +1000,6 @@ class DiffusionLoraConfig:
     lr_warmup_steps: int = 0
     center_crop: bool = False
     random_flip: bool = True
-    # None: on for a fresh run, the bundle's recorded value on a resume.
     bucketing: Optional[bool] = None
     caption_column: str = "text"
     adapter_name: str = "default"
@@ -1712,7 +1711,7 @@ def plan_image_canvases(
         rw, rh = cover_resize_dims(w0, h0, bw, bh)
         canvases.append((bw, bh))
         room.append((rw - bw, rh - bh))
-    # Every image in the square bucket is the unbucketed run: keep its sampler, cache plan and cache keys.
+    # All-square datasets keep the unbucketed sampler and cache keys, so existing caches stay warm.
     if all(c == (cfg.resolution, cfg.resolution) for c in canvases):
         return None, None
     return canvases, room
