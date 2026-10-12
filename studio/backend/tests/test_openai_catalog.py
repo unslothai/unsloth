@@ -15,6 +15,17 @@ if str(_BACKEND) not in sys.path:
 import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
 import routes.models as models_mod
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _no_host_default_hf_cache(monkeypatch, tmp_path):
+    """/v1/models appends media rows from a scan that walks every known HF cache home, a host
+    HF_HOME and the platform default included; keep it off whatever the host has downloaded."""
+    from utils import hf_cache_settings
+
+    monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
 
 
 class _Info:
