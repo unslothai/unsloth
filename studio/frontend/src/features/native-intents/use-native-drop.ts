@@ -297,9 +297,9 @@ export function useNativeModelDrop(
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) =>
-        getCurrentWindow().onDragDropEvent(async (event) => {
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent(async (event) => {
           const currentOptions = optionsRef.current;
           if (event.payload.type === "leave") {
             draggedPaths = [];
