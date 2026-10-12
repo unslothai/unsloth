@@ -53,6 +53,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  Refresh01Icon,
   Settings02Icon,
   Upload01Icon,
   ViewIcon,
@@ -139,6 +140,8 @@ export interface ChatsActions {
   toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
+  /** Retitles the chat from its latest turns. Only the Library offers it. */
+  regenerateTitle: (chat: SidebarItem) => void;
   togglePin: (chat: SidebarItem) => void;
   setFavorite: (chats: SidebarItem[], favorite: boolean) => void;
   toggleFavoriteProject: (projectId: string) => void;
@@ -345,6 +348,21 @@ export function MoveSubmenu({
   );
 }
 
+/** Off while the chat is generating: the reply is still changing the topic. */
+function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
+  const t = useT();
+  const actions = useChatsActions();
+  const generating = useChatRuntimeStore((s) => Boolean(s.runningByThreadId[chat.id]));
+  return (
+    <MenuItem
+      icon={Refresh01Icon}
+      label={t("library.menu.regenerateTitle")}
+      disabled={generating}
+      onSelect={() => actions.regenerateTitle(chat)}
+    />
+  );
+}
+
 /** Off while generating or forking, as in the sidebar. Mounts only when the menu opens. */
 function ForkItem({ chat }: { chat: SidebarItem }) {
   const t = useT();
@@ -472,6 +490,7 @@ function ChatMenu({
             label={t("common.rename")}
             onSelect={() => actions.rename(chat)}
           />
+          <RegenerateTitleItem chat={chat} />
           {!archived && (
             <>
               <MenuItem
