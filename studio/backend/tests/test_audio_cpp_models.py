@@ -1438,7 +1438,7 @@ def test_yue2_takes_the_description_as_its_required_style():
     assert request["options"] == {
         "style": "rock, male vocal",
         "lyrics": "[chorus] oh",
-        "semantic_max_tokens": 2048,
+        "semantic_max_tokens": 3072,
         "semantic_min_tokens": 200,
     }
     with pytest.raises(RuntimeError, match = "style"):
@@ -2108,11 +2108,13 @@ def test_yue2_length_follows_the_requested_duration():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
     options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the 200-frame default lowered to fit.
-    assert options["semantic_max_tokens"] == 125 and options["semantic_min_tokens"] == 125
+    # 5 s at 25 frames per second, with the 200-frame default lowered to fit; the cap is 1.5x.
+    assert options["semantic_max_tokens"] == 188 and options["semantic_min_tokens"] == 125
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
     options = srv.calls[1][1]["request"]["options"]
-    assert options["semantic_max_tokens"] == 1500 and options["semantic_min_tokens"] == 200
+    assert options["semantic_max_tokens"] == 2250 and options["semantic_min_tokens"] == 200
+    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 6000)
+    assert srv.calls[2][1]["request"]["options"]["semantic_max_tokens"] == 9000
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():

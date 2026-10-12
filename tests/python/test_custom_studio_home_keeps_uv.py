@@ -149,7 +149,11 @@ def test_ps1_custom_home_isolates_a_usable_cache_and_the_python_store():
     isolate = INSTALL_PS1.rindex("if ($script:StudioKeepsTools -and", 0, configured)
     # An unusable Studio cache falls through to the selector, as it does without the override.
     assert "Test-StudioUvCacheUsable -Cache" in INSTALL_PS1[isolate:configured]
-    python = _between(INSTALL_PS1, "    if ($PythonFromUv) {\n", "Resolve-UvManagedPython\n")
+    python = _between(
+        INSTALL_PS1,
+        "    # The venv is built on this interpreter, so a custom home keeps it too.\n",
+        "    $DetectedPython = Resolve-UvManagedPython -Minor",
+    )
     assert "$script:StudioKeepsTools" in python
     assert '$env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"' in python
     # Restored for `irm | iex`, where the session is the user's own.

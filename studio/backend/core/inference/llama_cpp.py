@@ -479,6 +479,7 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -777,11 +778,21 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
-    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+def _apply_seeded_llama_request(
+    payload: dict,
+    seed: Optional[int],
+    *,
+    reuse_prompt_cache: bool = False,
+) -> None:
+    """Disable prompt caching for fixed seeds so repeated requests stay reproducible.
+
+    ``reuse_prompt_cache``: a tool-loop continuation of this run; cold, it re-prefills (#10698).
+    """
     if seed is None:
         return
     payload["seed"] = seed
+    if reuse_prompt_cache:
+        return
     # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
@@ -7449,6 +7460,33 @@ def _backfill_usage_from_timings(usage, timings):
         out.get("completion_tokens") or 0
     )
     return out
+
+
+def _context_usage_event(usage, timings):
+    """UI frame pricing the context one finished tool-loop pass leaves behind, or None.
+
+    ``timings.prompt_n`` excludes the KV-cache hit (``cache_n``) while ``usage.prompt_tokens``
+    includes it, so a prompt read from timings adds the hit back.
+    """
+    usage = usage or {}
+    timings = timings or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or timings.get(
+        "cache_n"
+    )
+    prompt = usage.get("prompt_tokens")
+    if not prompt and timings.get("prompt_n") is not None:
+        prompt = int(timings.get("prompt_n") or 0) + int(timings.get("cache_n") or 0)
+    completion = usage.get("completion_tokens") or timings.get("predicted_n")
+    if not prompt:
+        return None
+    prompt, completion = int(prompt), int(completion or 0)
+    return {
+        "type": "context_usage",
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "context_tokens": prompt + completion,
+        "cached_tokens": int(cached or 0),
+    }
 
 
 def _llama_chunk_has_generated_output(data: dict) -> bool:
@@ -21058,6 +21096,7 @@ class LlamaCppBackend:
     _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
+            "qwen_image21",
             "flux",
         )
     )
@@ -21149,6 +21188,16 @@ class LlamaCppBackend:
             return moe_pick_pairs(fam, gguf_path) and _video_family_buildable(fam)
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for video arch: %s", e)
+            return True
+
+    @staticmethod
+    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
+        """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
+        try:
+            from routes.models import _gguf_family_buildable
+            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for image arch: %s", e)
             return True
 
     @staticmethod
@@ -21259,9 +21308,16 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
-                    "cannot run as a chat model. Open it from the Images page instead."
+                    "cannot run as a chat model. No image engine installed here can build "
+                    "this model family, so the Images page does not list it either. "
+                    "Updating Unsloth may add support for it."
                 )
             if arch in self._AMBIGUOUS_IMAGE_ARCHES:
                 if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
@@ -22070,7 +22126,10 @@ class LlamaCppBackend:
                     "a chat/completion model. Unsloth cannot assemble this particular "
                     "model from a GGUF, so the Video page does not list it either."
                 )
-            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+            if (
+                arch in LlamaCppBackend._IMAGE_ARCHES
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
+            ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
             ):
@@ -22079,6 +22138,13 @@ class LlamaCppBackend:
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. No image engine "
+                    "installed here can build this model family, so Unsloth's Images page "
+                    "does not list it either. Updating Unsloth may add support for it."
                 )
             if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
                 # Same shared-arch resolution as the pre-launch refusal: unresolved means
@@ -38135,6 +38201,12 @@ class LlamaCppBackend:
         _reprompt_count = 0
         # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
         _post_tool_reprompts = 0
+        # A browser task is many steps, each a chance to announce the next one and stop: there the
+        # budget is one nudge per tool turn, as in the external loop, not one per request.
+        _browser_turns = any(
+            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
+            for tool in (tools or [])
+        )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
@@ -38308,6 +38380,8 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
+        _prompt_sent = False
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38580,7 +38654,8 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            _apply_seeded_llama_request(payload, seed)
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = _prompt_sent)
+            _prompt_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -39950,6 +40025,9 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+                # Refreshes the context meter from the usage llama-server already reported (no
+                # recount). Sent once the first tool is running, so it never delays a tool.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
@@ -39980,7 +40058,8 @@ class LlamaCppBackend:
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
-                        elif _key in _seen_keys:
+                        # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -40149,6 +40228,10 @@ class LlamaCppBackend:
                             ),
                         }
                         yield start_event
+                        if needs_confirm and _pending_context_usage is not None:
+                            # Nothing runs while a human decides, so the meter need not wait for it.
+                            yield _pending_context_usage
+                            _pending_context_usage = None
 
                         _decision = (
                             wait_tool_decision(
@@ -40787,12 +40870,17 @@ class LlamaCppBackend:
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the
                         # tool's failure; the other two loops hand it back.
+                        _started_events = (
+                            (_pending_context_usage,) if _pending_context_usage is not None else ()
+                        )
+                        _pending_context_usage = None
                         try:
                             result = yield from stream_tool_execution(
                                 _invoke_tool,
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
                                 cancel_event = cancel_event,
+                                started_events = _started_events,
                             )
                         except _LlamaStreamCancelled:
                             # Subclasses Exception, so the arm below would eat
@@ -41105,6 +41193,11 @@ class LlamaCppBackend:
                             "provenance": provisional_tool_provenance(_pname),
                         }
 
+                # No call in the batch ran (denied, duplicate, capped), so nothing was waiting on it.
+                if _pending_context_usage is not None:
+                    yield _pending_context_usage
+                    _pending_context_usage = None
+
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
@@ -41114,6 +41207,8 @@ class LlamaCppBackend:
                 # extra tool rounds; a no-op correction turn doesn't consume budget (GGUF parity).
                 if _turn_executed_real_tool:
                     _tool_iters_done += 1
+                    if _browser_turns:
+                        _post_tool_reprompts = 0
                     if _tool_iters_done >= max_tool_iterations:
                         break
                 continue
@@ -41322,7 +41417,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        _apply_seeded_llama_request(stream_payload, seed)
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _prompt_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.

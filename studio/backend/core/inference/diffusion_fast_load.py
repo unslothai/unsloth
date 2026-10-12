@@ -320,6 +320,9 @@ def start_load_prefetch(
                 prequant_scheme,
                 base_repo = prequant_base_repo or base,
                 path_override = prequant_path_override,
+                # Only a cached file is prefetched, so its header is judged from the cache, never the Hub.
+                local_files_only = True,
+                cache_dir = cache_dir,
             )
             if source is not None:
                 location = None

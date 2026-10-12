@@ -140,6 +140,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.menu.title",
   ],
   browser: [
+    "browser.agentSettings.title",
+    "browser.agentSettings.enable",
+    "browser.agentSettings.history",
+    "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",
     "browser.openFilesSetting",
@@ -244,6 +248,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
     "settings.voice.readAloud.buttonLabel",
+    "settings.voice.readAloud.autoLabel",
     "settings.voice.readAloud.engineLabel",
     "settings.voice.readAloud.voiceLabel",
     "settings.voice.readAloud.speedLabel",
