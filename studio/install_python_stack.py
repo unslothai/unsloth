@@ -10522,13 +10522,10 @@ def _mlx_diffusion_engine_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-
         for spec in _MLX_DIFFUSION_DEPS:
             requirement = Requirement(spec)
             installed = _installed_distribution_version(requirement.name)
-            if installed is None or not requirement.specifier.contains(
-                installed, prereleases = True
-            ):
+            if installed is None or not requirement.specifier.contains(installed, prereleases = True):
                 return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False

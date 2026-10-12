@@ -465,8 +465,16 @@ def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
     assert names == {"mflux", "piexif", "platformdirs", "toml"}
     # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
-    assert not names & {"opencv-python", "opencv-python-headless", "matplotlib", "torch",
-                        "transformers", "mlx", "mlx-metal", "mlx-lm"}
+    assert not names & {
+        "opencv-python",
+        "opencv-python-headless",
+        "matplotlib",
+        "torch",
+        "transformers",
+        "mlx",
+        "mlx-metal",
+        "mlx-lm",
+    }
     (pin,) = stack._MLX_DIFFUSION_PINS
     assert pin.startswith("mflux==0.22.")
 

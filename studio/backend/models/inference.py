@@ -5246,7 +5246,8 @@ class DiffusionStatusResponse(BaseModel):
         "Null when nothing is loaded.",
     )
     engine: Optional[str] = Field(
-        None, description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)"
+        None,
+        description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)",
     )
     native_mode: Optional[str] = Field(
         None,

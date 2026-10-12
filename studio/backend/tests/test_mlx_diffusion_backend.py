@@ -35,7 +35,12 @@ class FakeRuntime:
 
     def build(self, model_path, *, model_config, precision, te_bits):
         self.builds.append(
-            dict(model_path = model_path, model_config = model_config, precision = precision, te_bits = te_bits)
+            dict(
+                model_path = model_path,
+                model_config = model_config,
+                precision = precision,
+                te_bits = te_bits,
+            )
         )
         return {"model": model_config}
 
@@ -45,10 +50,16 @@ class FakeRuntime:
     def supports_guidance(self, model):
         return model["model"] == "z-image"
 
-    def generate(self, model, *, prompt, negative_prompt, seed, steps, width, height, guidance, on_step):
+    def generate(
+        self, model, *, prompt, negative_prompt, seed, steps, width, height, guidance, on_step
+    ):
         from PIL import Image
 
-        self.generates.append(dict(prompt = prompt, seed = seed, steps = steps, width = width, height = height, guidance = guidance))
+        self.generates.append(
+            dict(
+                prompt = prompt, seed = seed, steps = steps, width = width, height = height, guidance = guidance
+            )
+        )
         for t in range(steps):
             if self.step_gate is not None:
                 self.in_step.set()
@@ -79,7 +90,15 @@ def env(monkeypatch, tmp_path):
         calls["fetch_base"].append((base_repo, local_files_only))
         return str(base_dir)
 
-    def _convert(gguf, out_dir, *, dense_bits, cancel_event = None, progress = None, **_):
+    def _convert(
+        gguf,
+        out_dir,
+        *,
+        dense_bits,
+        cancel_event = None,
+        progress = None,
+        **_,
+    ):
         calls["convert"] += 1
         calls["dense_bits"] = dense_bits
         out = Path(out_dir) / "transformer"
@@ -167,7 +186,9 @@ def test_load_then_status_and_guards(env):
     assert _load(backend)["phase"] == "ready"
     status = backend.status()
     assert status["loaded"] and status["engine"] == "mlx"
-    assert status["repo_id"] == REPO and status["base_repo"] == BASE and status["family"] == "z-image"
+    assert (
+        status["repo_id"] == REPO and status["base_repo"] == BASE and status["family"] == "z-image"
+    )
     assert status["gguf_filename"] == GGUF and status["model_kind"] == "gguf"
     assert status["workflows"] == ["txt2img"]
     assert status["mlx"]["precision"] == "float16" and status["mlx"]["text_encoder_bits"] == 4
@@ -247,7 +268,11 @@ def test_generate_batch_seeds_and_progress(env):
     assert result["seeds"] == [7, 8] and result["seed"] == 7
     assert len(result["images"]) == 2
     assert result["images"][0].size == (256, 240)  # rounded down to multiples of 16
-    assert result["model_kind"] == "gguf" and result["gguf_filename"] == GGUF and result["workflow"] == "txt2img"
+    assert (
+        result["model_kind"] == "gguf"
+        and result["gguf_filename"] == GGUF
+        and result["workflow"] == "txt2img"
+    )
     assert [p["step"] for p in seen] == [1, 2, 3, 4, 5, 6]
     assert all(p["active"] and p["total_steps"] == 6 for p in seen)
     assert backend.generate_progress()["active"] is False
@@ -287,7 +312,9 @@ def test_generate_without_a_model_and_with_a_replaced_model(env):
     with pytest.raises(DiffusionModelReplacedError):
         backend.generate(prompt = "x", steps = 1, expected_load = stale)
     ok = load_identity(REPO, BASE, "z-image")
-    assert backend.generate(prompt = "x", steps = 1, seed = 1, width = 64, height = 64, expected_load = ok)["images"]
+    assert backend.generate(prompt = "x", steps = 1, seed = 1, width = 64, height = 64, expected_load = ok)[
+        "images"
+    ]
 
 
 def test_cancel_stops_at_the_next_step(env):
@@ -352,7 +379,11 @@ def test_unload_during_load_discards_the_result(env, monkeypatch):
 
 
 def test_policy_helpers(monkeypatch):
-    for name in ("UNSLOTH_DIFFUSION_MLX_TE_BITS", "UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "UNSLOTH_DIFFUSION_MLX_PRECISION"):
+    for name in (
+        "UNSLOTH_DIFFUSION_MLX_TE_BITS",
+        "UNSLOTH_DIFFUSION_MLX_DENSE_BITS",
+        "UNSLOTH_DIFFUSION_MLX_PRECISION",
+    ):
         monkeypatch.delenv(name, raising = False)
     gib = 1024**3
     assert mb.text_encoder_bits(8 * gib) == 4 and mb.text_encoder_bits(16 * gib) == 4
@@ -378,7 +409,9 @@ def test_importing_the_engine_does_not_import_mlx():
         "print(any(k == 'mlx' or k.startswith(('mlx.', 'mflux')) for k in sys.modules))"
     )
     backend_root = Path(__file__).resolve().parent.parent
-    out = subprocess.run([sys.executable, "-c", code], cwd = backend_root, capture_output = True, text = True, timeout = 300)
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd = backend_root, capture_output = True, text = True, timeout = 300
+    )
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == "False"
 

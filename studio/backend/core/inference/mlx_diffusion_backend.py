@@ -141,12 +141,7 @@ class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
     def build(
-        self,
-        model_path: str,
-        *,
-        model_config: str,
-        precision: str,
-        te_bits: Optional[int],
+        self, model_path: str, *, model_config: str, precision: str, te_bits: Optional[int]
     ) -> Any:
         import mlx.core as mx
         import mlx.nn as nn
@@ -236,7 +231,11 @@ class MfluxRuntime:
             raise MlxCancelled("cancelled")
         return result.image
 
-    def cache_text_encodings(self, model: Any, size: int = _ENCODING_CACHE_SIZE) -> None:
+    def cache_text_encodings(
+        self,
+        model: Any,
+        size: int = _ENCODING_CACHE_SIZE,
+    ) -> None:
         original = model._encode_prompts
         cache: OrderedDict = OrderedDict()
 
@@ -258,7 +257,6 @@ class MfluxRuntime:
         gc.collect()
         try:
             import mlx.core as mx
-
             mx.clear_cache()
         except Exception:  # noqa: BLE001
             pass
@@ -359,7 +357,6 @@ def _link_base_components(model_dir: Path, base_dir: str) -> None:
             link.unlink()
         elif link.is_dir():
             import shutil
-
             shutil.rmtree(link)
         os.symlink(str(source.resolve()), str(link), target_is_directory = True)
 
@@ -377,7 +374,6 @@ def _round16(value: Optional[int], default: int) -> int:
 
 
 class MlxDiffusionBackend:
-
     runs_off_torch_device = False
 
     def __init__(self, runtime_factory: Optional[Callable[[], Any]] = None) -> None:
@@ -434,7 +430,9 @@ class MlxDiffusionBackend:
     ) -> dict[str, Any]:
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
         if not gguf_filename:
-            raise ValueError("gguf_filename is required: the MLX engine loads GGUF checkpoints only.")
+            raise ValueError(
+                "gguf_filename is required: the MLX engine loads GGUF checkpoints only."
+            )
         if model_kind and model_kind != "gguf":
             raise ValueError("The MLX engine loads GGUF checkpoints only.")
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
@@ -480,7 +478,12 @@ class MlxDiffusionBackend:
         ).start()
         return self.status()
 
-    def _set_phase(self, token: int, phase: str, fraction: float = 0.0) -> None:
+    def _set_phase(
+        self,
+        token: int,
+        phase: str,
+        fraction: float = 0.0,
+    ) -> None:
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.phase = phase
@@ -541,7 +544,9 @@ class MlxDiffusionBackend:
                 )
                 timings["convert_cached"] = False
                 timings["convert_summary"] = {
-                    k: v for k, v in (summary or {}).items() if isinstance(v, (int, float, str, dict))
+                    k: v
+                    for k, v in (summary or {}).items()
+                    if isinstance(v, (int, float, str, dict))
                 }
             timings["convert_s"] = round(time.perf_counter() - t1, 3)
             _link_base_components(Path(out_dir), base_dir)
@@ -626,9 +631,10 @@ class MlxDiffusionBackend:
         kwargs.setdefault("memory_verdict", False)
         return get_diffusion_backend().download_plan(repo_id, **kwargs)
 
-    def preflight_base_access(self, repo_id: str, fam: Optional[DiffusionFamily], **kwargs: Any) -> None:
+    def preflight_base_access(
+        self, repo_id: str, fam: Optional[DiffusionFamily], **kwargs: Any
+    ) -> None:
         from core.inference.diffusion import get_diffusion_backend
-
         get_diffusion_backend().preflight_base_access(repo_id, fam, **kwargs)
 
     def load_progress(self) -> dict[str, Any]:
@@ -741,7 +747,11 @@ class MlxDiffusionBackend:
                     started = time.perf_counter()
                     marks: list[float] = []
 
-                    def _on_step(done: int, offset = offset, marks = marks) -> None:
+                    def _on_step(
+                        done: int,
+                        offset = offset,
+                        marks = marks,
+                    ) -> None:
                         marks.append(time.perf_counter())
                         gen = self._gen
                         if gen is not None:
@@ -749,7 +759,9 @@ class MlxDiffusionBackend:
                             gen.step = min(offset + done, gen.total_steps)
                             if gen.first_step_at == 0.0:
                                 gen.first_step_at = now
-                            gen.eta_seconds = _eta(gen.total_steps, gen.step, gen.first_step_at, now)
+                            gen.eta_seconds = _eta(
+                                gen.total_steps, gen.step, gen.first_step_at, now
+                            )
                         if cancel.is_set():
                             raise MlxCancelled("cancelled")
 
@@ -823,7 +835,13 @@ class MlxDiffusionBackend:
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
-            return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+            return {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+            }
         return {
             "active": True,
             "step": gen.step,

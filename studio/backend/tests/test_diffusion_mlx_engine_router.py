@@ -57,7 +57,13 @@ def _device(monkeypatch, backend):
     )
 
 
-def _host(monkeypatch, *, system = "darwin", machine = "arm64", macos = "15.1"):
+def _host(
+    monkeypatch,
+    *,
+    system = "darwin",
+    machine = "arm64",
+    macos = "15.1",
+):
     monkeypatch.setattr(r, "sys", SimpleNamespace(platform = system, modules = sys.modules))
     monkeypatch.setattr(
         r,
@@ -66,7 +72,12 @@ def _host(monkeypatch, *, system = "darwin", machine = "arm64", macos = "15.1"):
     )
 
 
-def _runtime(monkeypatch, *, mlx = True, mflux = True):
+def _runtime(
+    monkeypatch,
+    *,
+    mlx = True,
+    mflux = True,
+):
     present = {"mlx": mlx, "mflux": mflux}
     real_find_spec = r.importlib.util.find_spec
     monkeypatch.setattr(
@@ -90,12 +101,20 @@ def _apple(monkeypatch, backend = "mps"):
     _runtime(monkeypatch)
 
 
-def _select(fam = "z-image", gguf = _Q4, kind = "gguf"):
+def _select(
+    fam = "z-image",
+    gguf = _Q4,
+    kind = "gguf",
+):
     r.select_and_activate_engine(detect_family(fam), model_kind = kind, gguf_filename = gguf)
     return r.active_engine_name()
 
 
-def _predict(fam = "z-image", gguf = _Q4, kind = "gguf"):
+def _predict(
+    fam = "z-image",
+    gguf = _Q4,
+    kind = "gguf",
+):
     return r.predict_engine(detect_family(fam), model_kind = kind, gguf_filename = gguf)
 
 
@@ -178,7 +197,9 @@ def test_default_keeps_sd_cpp_where_sd_cpp_is_chosen_today(monkeypatch):
         ("z-image", "model.safetensors", "single_file", "GGUF picks only"),
     ],
 )
-def test_unsupported_family_quant_or_kind_falls_back_with_reason(monkeypatch, fam, gguf, kind, needle):
+def test_unsupported_family_quant_or_kind_falls_back_with_reason(
+    monkeypatch, fam, gguf, kind, needle
+):
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     predicted = _predict(fam, gguf, kind)
@@ -231,7 +252,11 @@ def test_real_linux_host_never_gets_mlx(monkeypatch):
 
 @pytest.mark.parametrize(
     "mlx, mflux, needle",
-    [(False, True, "mlx not installed"), (True, False, "mflux not installed"), (False, False, "mlx and mflux")],
+    [
+        (False, True, "mlx not installed"),
+        (True, False, "mflux not installed"),
+        (False, False, "mlx and mflux"),
+    ],
 )
 def test_missing_runtime_falls_back(monkeypatch, mlx, mflux, needle):
     _host(monkeypatch)
@@ -313,7 +338,10 @@ def test_cancel_and_retire_scan_the_mlx_singleton(monkeypatch):
         cancel_generate = lambda expected_account = None: calls.append(expected_account) or True,
     )
     monkeypatch.setattr(mb, "_mlx_diffusion_backend", fake)
-    assert ("core.inference.mlx_diffusion_backend", "_mlx_diffusion_backend") in r._ENGINE_SINGLETONS
+    assert (
+        "core.inference.mlx_diffusion_backend",
+        "_mlx_diffusion_backend",
+    ) in r._ENGINE_SINGLETONS
     assert r.cancel_generation_for_account("acct") is True
     assert calls == ["acct"]
 
