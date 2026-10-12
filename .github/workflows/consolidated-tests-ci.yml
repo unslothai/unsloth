@@ -435,6 +435,7 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_prepare_inputs_leftpad.py \
+            tests/utils/test_single_row_cached_attention.py \
             tests/utils/test_rope_scaling_drift.py
 
       - name: dataset_num_proc worker bounds (HARD GATE)
