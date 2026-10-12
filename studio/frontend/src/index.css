@@ -5999,10 +5999,9 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .chat-full-view-dock {
 	--dock-surface: #ffffff;
-	/* No header or notice above this thread. */
+	/* No header above this thread. */
 	--studio-content-top-inset: 0px;
 	--studio-chat-header-height: 0px;
-	--studio-chat-notice-height: 0px;
 	--studio-chat-scroller-top: 0px;
 	height: auto;
 	border-radius: 28px;

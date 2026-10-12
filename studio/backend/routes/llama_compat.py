@@ -320,7 +320,8 @@ def _catalog_match(catalog: list[dict], model_id: str) -> Optional[tuple[str, di
 
 async def _chat_catalog() -> list[dict]:
     # A task row (image, video, speech) loads through its own engine, not /load and /unload.
-    return [e for e in await _inference()._openai_catalog_objects() if e.get("task") is None]
+    rows = await _inference()._openai_catalog_objects(quant_pins = True)
+    return [e for e in rows if e.get("task") is None]
 
 
 async def _catalog_row(model_id: str) -> tuple[str, dict, bool]:

@@ -91,7 +91,7 @@ def _inference_double(
     inference._peek_inference_backend = lambda: orchestrator
     inference._orchestrator_public_model_id = lambda b: b.active_model_name
 
-    async def _objects():
+    async def _objects(quant_pins = False):
         return catalog
 
     inference._openai_catalog_objects = _objects
