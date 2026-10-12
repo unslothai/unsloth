@@ -355,6 +355,49 @@ def test_deleting_selected_build_preserves_sibling_partial_state(tmp_path, monke
     assert download_manifest.has_cancel_marker("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
 
 
+def test_deleting_selected_build_preserves_unmanifested_sibling_partial(tmp_path, monkeypatch):
+    from hub.services.models import gguf_variants
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils import download_manifest
+    from utils import hf_cache_settings
+
+    beta = "beta-Q4_K_M.gguf"
+    repo, snapshots = _revisioned_repo(tmp_path, (("healthy", [beta]),))
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    partial_hash = "f" * 64
+    incomplete = repo.repo_path / "blobs" / f"{partial_hash}.incomplete"
+    incomplete.write_bytes(b"partial")
+    empty_sibling_dir = snapshots / "healthy" / "Q4_K_M"
+    empty_sibling_dir.mkdir()
+    assert download_manifest.write_cancel_marker(
+        "model", repo.repo_id, "Q4_K_M", "http", hub_cache = tmp_path
+    )
+    monkeypatch.setattr(
+        gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda _repo_id, candidate, *_args, **_kwargs: (
+            frozenset({partial_hash}) if candidate == "Q4_K_M" else frozenset()
+        ),
+    )
+
+    _delete_gguf_variant_from_repos(
+        repo.repo_id,
+        "Q4_K_M",
+        [repo],
+        None,
+        root = tmp_path,
+    )
+
+    assert not (snapshots / "healthy" / beta).is_symlink()
+    assert incomplete.exists()
+    assert empty_sibling_dir.is_dir()
+    assert download_manifest.has_cancel_marker("model", repo.repo_id, "Q4_K_M", hub_cache = tmp_path)
+
+
 def test_delete_preview_counts_the_whole_audio_package(tmp_path):
     from core.inference.audio_cpp_models import FAMILIES
     from hub.services.models.companion_cleanup import (

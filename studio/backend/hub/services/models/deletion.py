@@ -456,17 +456,22 @@ def _delete_gguf_variant_from_repos(
     cleanup_variant: Optional[str] = variant
     protected_revisions: set[str] = set()
     manifest = download_manifest.read_manifest("model", repo_id, variant, hub_cache = root)
-    if manifest is not None and selected_families:
-        manifest_families = {
+    manifest_families = (
+        {
             gguf_variant_family(expected.path).lower()
             for expected in manifest.expected_files
             if _is_main_gguf_filename(expected.path)
         }
-        # a bare quant manifest can belong to a different renamed checkpoint still downloading.
-        if manifest_families and not manifest_families.issubset(selected_families):
-            cleanup_variant = next(iter(selected_families)) if len(selected_families) == 1 else None
-            if manifest.commit_hash:
-                protected_revisions.add(manifest.commit_hash)
+        if manifest is not None
+        else set()
+    )
+    # bare-quant state is safe to purge only when its readable manifest identifies this checkpoint.
+    if selected_families and not (
+        manifest_families and manifest_families.issubset(selected_families)
+    ):
+        cleanup_variant = next(iter(selected_families)) if len(selected_families) == 1 else None
+        if manifest is not None and manifest.commit_hash:
+            protected_revisions.add(manifest.commit_hash)
 
     if cleanup_variant is None:
         incomplete_result = gguf_variants.VariantIncompleteDeleteResult(deleted = 0, unresolved = False)
