@@ -1175,7 +1175,8 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
-    assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
+    # A number, not a word: the placeholder is only for a window nobody has read.
+    assert 'displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
@@ -1186,14 +1187,17 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     # Typing the shown number is a choice even where it equals the value beneath it.
-    assert "derived={isMlx && !pinned}" in page
+    assert "derived={isMlx && !pinned && !dragging}" in page
     assert "pinned={savedContextPin(config) != null}" in page
     # An out-of-range value is no commit, which is why the slider stays inside it too.
     assert "const shown = parsed === value;" in numeric
     assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
     assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
     assert "value={maxSeqLengthValue}\n              max={maxSeqLengthMax}" in page
-    assert "value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}" in page
+    assert re.search(
+        r"useSliderDraft\(\n(?:\s*//[^\n]*\n)*\s*Math\.min\(Math\.max\(value, MAX_SEQ_LENGTH_MIN\), max\),",
+        page,
+    )
     assert "const final = shown ? parsed : snapToStep(parsed, step, min, max);" in numeric
     assert re.search(
         r"MAX_SEQ_LENGTH_MAX,\s+Math\.max\(native\w+, maxSeqLengthValue\),\s+\);", page
