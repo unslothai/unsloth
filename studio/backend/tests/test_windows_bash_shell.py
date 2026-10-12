@@ -490,6 +490,8 @@ def test_dot_as_a_command_is_still_screened(monkeypatch, command, _windows_backs
         (r'start "" "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
         (r'cmd //c start "" "C:\x y\powershell.exe"', "powershell"),
         ('cmd /c "C:/x y/rm.exe" -rf z', "rm"),
+        # START's program slot holds only a program, so a relative path counts there too.
+        (r'start "" "tools dir\pwsh.exe" -c ls', "pwsh"),
     ],
 )
 def test_a_quoted_program_path_handed_to_cmd_or_start_is_screened(
@@ -513,6 +515,7 @@ def test_cmd_strips_the_outer_quotes_of_a_doubled_quote_payload(monkeypatch, _wi
         # A blocked name that is only an argument, a folder or a document.
         r'cmd /c "dir C:\src\curl"',
         r'cmd /c "git -C C:\src\ssh status"',
+        r'start "" "tools dir\notepad.exe" readme.txt',
         r'cmd /c type "C:\Users\me\My Documents\rm.txt"',
     ],
 )

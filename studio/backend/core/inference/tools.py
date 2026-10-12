@@ -1389,14 +1389,19 @@ _START_SWITCHES = frozenset(
 # A program spelled as a Windows path, spaces allowed (C:\Program Files\...). The characters Windows forbids in a file
 # name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
 _WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2})?[\\/][^:*?"<>|\r\n]*')
+_WIN_RELATIVE_PROGRAM_PATH_RE = re.compile(r'[^:*?"<>|\r\n]*[\\/][^:*?"<>|\r\n]*')
 
 
-def _blocked_program_path(word: str) -> str:
+def _blocked_program_path(word: str, relative: bool = False) -> str:
     r"""The blocked name ``word`` runs when cmd or START takes it as one program path. Re-lexing it
     as a command line splits `C:\Program Files\PowerShell\7\pwsh.exe` at the space. ntpath, not
     os.path, so the Linux test runner reads backslashes the way Windows does."""
     word = word.strip('"')
-    if not _WIN_PROGRAM_PATH_RE.fullmatch(word):
+    # ``relative``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too.
+    if not (
+        _WIN_PROGRAM_PATH_RE.fullmatch(word)
+        or (relative and _WIN_RELATIVE_PROGRAM_PATH_RE.fullmatch(word))
+    ):
         return ""
     base = ntpath.basename(word).lower()
     stem, ext = ntpath.splitext(base)
@@ -2094,7 +2099,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         # approximation under-approximated.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j], posix = posix)
-            blocked |= {_blocked_program_path(tokens[j])} - {""}
+            blocked |= {_blocked_program_path(tokens[j], relative = True)} - {""}
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
@@ -2102,7 +2107,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
                 blocked |= _find_blocked_commands(tokens[k], posix = posix)
-                blocked |= {_blocked_program_path(tokens[k])} - {""}
+                blocked |= {_blocked_program_path(tokens[k], relative = True)} - {""}
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
