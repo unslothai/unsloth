@@ -67,6 +67,13 @@ try:
     )
 except Exception:
     UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False
+# Output-head bias in GRPO scoring needs unslothai/unsloth-zoo#1685's lm_head_bias argument; mirrored via RL_PRE_ITEMS.
+try:
+    UNSLOTH_ZOO_HAS_HEAD_BIAS = (
+        "lm_head_bias" in inspect.signature(chunked_hidden_states_selective_log_softmax).parameters
+    )
+except Exception:
+    UNSLOTH_ZOO_HAS_HEAD_BIAS = False
 # One-time PrefixGrouper gate; any import failure degrades to "PrefixGrouper off".
 _pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None
 UNSLOTH_GRPO_PREFIX_GROUPER_ON = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in (
@@ -2370,21 +2377,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             output_embeddings = unwrapped_model.get_output_embeddings()
             lm_head = output_embeddings.weight
             lm_head_bias = getattr(output_embeddings, "bias", None)
-            if lm_head_bias is not None:
-                import inspect
+            if lm_head_bias is not None and not UNSLOTH_ZOO_HAS_HEAD_BIAS:
+                # An older unsloth_zoo has no bias argument: score without it rather than raise.
                 import warnings
-
-                # An unsloth_zoo older than unslothai/unsloth-zoo#1685 has no bias argument: score without it rather than raise.
-                if (
-                    "lm_head_bias"
-                    not in inspect.signature(chunked_hidden_states_selective_log_softmax).parameters
-                ):
-                    warnings.warn(
-                        "Unsloth: this model's output head has a bias, which GRPO scoring needs "
-                        "a newer unsloth_zoo to include. Please upgrade: pip install -U unsloth_zoo",
-                        stacklevel = 2,
-                    )
-                    lm_head_bias = None
+                warnings.warn(
+                    "Unsloth: this model's output head has a bias, which GRPO scoring needs "
+                    "a newer unsloth_zoo to include. Please upgrade: pip install -U unsloth_zoo",
+                    stacklevel = 2,
+                )
+                lm_head_bias = None
             if lm_head_bias is not None:
                 from functools import partial
                 chunked_hidden_states_selective_log_softmax = partial(
@@ -3314,6 +3315,14 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = 'torch.where(_keep, new' in _unsloth_inspect.getsource(_unsloth_zoo_RL['grpo_compute_loss'])\n"
     "except Exception:\n"
     "    UNSLOTH_ZOO_HAS_MASKED_COL_GUARD = False\n"
+)
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "try:\n"
+    "    import inspect as _unsloth_inspect\n"
+    "    from unsloth_zoo.rl_replacements import chunked_hidden_states_selective_log_softmax as _unsloth_chunked_lsm\n"
+    "    UNSLOTH_ZOO_HAS_HEAD_BIAS = 'lm_head_bias' in _unsloth_inspect.signature(_unsloth_chunked_lsm).parameters\n"
+    "except Exception:\n"
+    "    UNSLOTH_ZOO_HAS_HEAD_BIAS = False\n"
 )
 RL_PRE_ITEMS["grpo_trainer"].append(
     "_pg_build_layout = _pg_enabled_fn = _pg_verify_on = _pg_tol_ok = _PG_TOL_KILL = None\n"
