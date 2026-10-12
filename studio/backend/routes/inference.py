@@ -39882,7 +39882,7 @@ async def _responses_stream(
                 "type": "response.function_call_arguments.done",
                 "item_id": st["item_id"],
                 "output_index": st["output_index"],
-                "name": st["name"],
+                **_responses_function_call_name(st["name"], namespaced_tool_names),
                 "arguments": st["arguments"],
             }
             yield _sse("response.function_call_arguments.done", args_done)

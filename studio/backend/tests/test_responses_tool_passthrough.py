@@ -2821,8 +2821,10 @@ class TestResponsesStreamAdapter:
         lines = self._stream_lines(payload, messages)
 
         added = self._payloads(lines, "response.output_item.added")[0]["item"]
+        args_done = self._payloads(lines, "response.function_call_arguments.done")[0]
         done = self._payloads(lines, "response.output_item.done")[0]["item"]
         completed = self._payloads(lines, "response.completed")[0]["response"]["output"]
+        assert (args_done["namespace"], args_done["name"]) == ("mcp__weather", "get_forecast")
         for item in (added, done, completed[0]):
             assert (item["type"], item["namespace"], item["name"]) == (
                 "function_call",
