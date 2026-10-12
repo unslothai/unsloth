@@ -280,6 +280,19 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_shell_torch_floors_below_codec_table_skip_torchcodec():
+    ips = _load_install_python_stack()
+    source = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
+    floors = {int(m) for m in re.findall(r'TORCH_CONSTRAINT="torch>=2\.(\d+)', source)}
+    assert floors, "install.sh torch constraints were not found"
+    codec_floor = min(ips._TORCHCODEC_TORCH_SPECS)
+    # Moving either floor means the torch 2.4 notes in both files are stale (#10598).
+    assert (min(floors), codec_floor) == (4, 5)
+    for minor in floors:
+        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+        assert (spec is None) == (minor < codec_floor), (minor, spec)
+
+
 def test_select_torchcodec_spec_skips_older_torch():
     ips = _load_install_python_stack()
     for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):

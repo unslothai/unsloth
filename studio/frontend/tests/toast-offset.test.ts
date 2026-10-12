@@ -5,10 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BROWSER_PAGE_INSET_VAR,
+  CHAT_SETTINGS_INSET_VAR,
+  cornerInsetScope,
+  cornerInsets,
   getToastOffsets,
   insetPastChatSettings,
   watchChatSettingsInset,
 } from "../src/lib/toast-offset.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 test("web chat toasts clear the header and stay against the right edge", () => {
   assert.deepEqual(getToastOffsets("/chat", false, false), {
@@ -212,3 +217,73 @@ test("a smaller UI scale still leaves room for the fixed-width download panel", 
   watchChatSettingsInset(dom.root, dom.panel, 340, 0.8, dom.Observer);
   assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
 });
+
+function fakeScope() {
+  const vars = new Map<string, string>();
+  const element = {
+    style: {
+      setProperty: (name: string, value: string) => void vars.set(name, value),
+      removeProperty: (name: string) => {
+        vars.delete(name);
+        return "";
+      },
+    },
+  } as unknown as HTMLElement;
+  return { vars, element };
+}
+
+test("corner insets reach every scope, including one that mounts later", (t) => {
+  const toaster = fakeScope();
+  const rail = fakeScope();
+  t.after(cornerInsetScope(toaster.element) ?? (() => {}));
+  t.after(cornerInsetScope(rail.element) ?? (() => {}));
+  t.after(() => {
+    cornerInsets.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+    cornerInsets.style.removeProperty(BROWSER_PAGE_INSET_VAR);
+  });
+
+  cornerInsets.style.setProperty(CHAT_SETTINGS_INSET_VAR, "320px");
+  assert.equal(toaster.vars.get(CHAT_SETTINGS_INSET_VAR), "320px");
+  assert.equal(rail.vars.get(CHAT_SETTINGS_INSET_VAR), "320px");
+  assert.equal(cornerInsets.style.getPropertyValue(CHAT_SETTINGS_INSET_VAR), "320px");
+
+  const late = fakeScope();
+  const release = cornerInsetScope(late.element);
+  assert.equal(late.vars.get(CHAT_SETTINGS_INSET_VAR), "320px");
+  release?.();
+
+  cornerInsets.style.setProperty(BROWSER_PAGE_INSET_VAR, "600px");
+  assert.equal(late.vars.has(BROWSER_PAGE_INSET_VAR), false, "a released scope is no longer written");
+  assert.equal(toaster.vars.get(BROWSER_PAGE_INSET_VAR), "600px");
+
+  cornerInsets.style.removeProperty(CHAT_SETTINGS_INSET_VAR);
+  assert.equal(toaster.vars.has(CHAT_SETTINGS_INSET_VAR), false);
+  assert.equal(rail.vars.has(CHAT_SETTINGS_INSET_VAR), false);
+  assert.equal(cornerInsets.style.getPropertyValue(CHAT_SETTINGS_INSET_VAR), "");
+});
+
+test("the inset follows a drag through the corner scopes", (t) => {
+  const scope = fakeScope();
+  t.after(cornerInsetScope(scope.element) ?? (() => {}));
+  const dom = fakeInsetDom(1400, 320);
+  const stop = watchChatSettingsInset(cornerInsets, dom.panel, 320, 1, dom.Observer);
+  t.after(stop);
+  assert.equal(scope.vars.get(CHAT_SETTINGS_INSET_VAR), "320px");
+  dom.panel.offsetWidth = 480;
+  dom.resize(dom.panel);
+  assert.equal(scope.vars.get(CHAT_SETTINGS_INSET_VAR), "480px");
+  stop();
+  assert.equal(scope.vars.has(CHAT_SETTINGS_INSET_VAR), false);
+});
+
+test("panel insets are written to their consumers, never to <html>", () => {
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  assert.match(sheet, /return watchChatSettingsInset\(\s*cornerInsets,\s*asideRef\.current,/, "an inherited variable on <html> restyled the whole document on every drag frame");
+  assert.match(readSrc("features/browser/native-view.ts"), /const style = cornerInsets\.style;/);
+  assert.match(readSrc("components/ui/sonner.tsx"), /<div\s+ref=\{cornerInsetScope\}\s+style=\{\{ display: "contents" \}\}/);
+  assert.equal(readSrc("app/provider.tsx").match(/ref=\{cornerInsetScope\}\s*\/\/ Scrolls at the cap/g)?.length, 2, "both corner rails read the Run settings inset");
+  for (const file of ["features/chat/chat-settings-sheet.tsx", "features/browser/native-view.ts", "lib/toast-offset.ts"]) {
+    assert.equal(/documentElement\.style\.setProperty\((?:CHAT_SETTINGS_INSET_VAR|BROWSER_PAGE_INSET_VAR)/.test(readSrc(file)), false, file);
+  }
+});
+
