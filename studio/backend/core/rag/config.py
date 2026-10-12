@@ -235,14 +235,39 @@ EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
-def embed_device_preference() -> str:
-    """One reader for both backends; anything unrecognized is auto, so a typo falls back to the default."""
+def _env_embed_device() -> str:
+    """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
+
+    One reader for both backends, because they used to disagree about the same
+    string: the llama path compared a bare ``.lower()``, so ``" gpu "`` fell through
+    to auto, and an Intel user writing the accelerator's own name (``xpu``) got CPU
+    from a setting that named their device. Anything that is not recognizably a
+    request for CPU or for an accelerator is ``auto``, so a typo degrades to each
+    backend's default rather than to silence.
+    """
     value = (EMBED_DEVICE or "").strip().lower()
     if value in ("gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal"):
         return "gpu"
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
+def embed_device_locked() -> bool:
+    """Whether ``RAG_EMBED_DEVICE`` names a device, which Settings then cannot override."""
+    return _env_embed_device() != "auto"
+
+
+def embed_device_preference() -> str:
+    """``gpu``, ``cpu`` or ``auto``: ``RAG_EMBED_DEVICE`` when it names a device, else the Settings choice."""
+    env = _env_embed_device()
+    if env != "auto":
+        return env
+    try:
+        from utils.embedding_model_settings import get_stored_embedding_device
+        return get_stored_embedding_device()
+    except Exception:  # noqa: BLE001 - store unavailable: each backend's default
+        return "auto"
 
 
 def embed_device_requires_gpu() -> bool:

@@ -459,6 +459,10 @@ SKIPPED = {
         "opens the backend host's file manager, so a success spawns xdg-open on a machine with "
         "no desktop session and the only in-process outcome is the 500 that failure maps to"
     ),
+    "routes.inference:POST:/sandbox/{session_id}/upload": (
+        "needs a multipart body the JSON matrix client cannot send, so every actor stops at the "
+        "same 422; the folder resolves inside the caller's own sandbox root (test_sandbox_upload)"
+    ),
     "routes.inference:POST:/sandbox/{session_id}/open": (
         "launches the backend host's default app for the file and is owner-only "
         "(require_installation_owner), so no account other than the installation's own reaches it"

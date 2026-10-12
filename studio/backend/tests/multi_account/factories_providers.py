@@ -366,6 +366,15 @@ FACTORIES = {
         self_expected = (400,),
         reason = _ACCOUNTS_SELF_REASON,
     ),
+    "routes.accounts:PUT:/{account_id}/model-access": Factory(
+        "prov-account",
+        {"model_allowlist": ["unsloth/*"]},
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        self_expected = (400,),
+        reason = _ACCOUNTS_SELF_REASON,
+    ),
 }
 
 SKIPPED = {

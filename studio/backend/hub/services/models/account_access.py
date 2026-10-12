@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import json
 import os
+from fnmatch import fnmatchcase
 import sqlite3
 import sys
 import threading
@@ -359,9 +360,25 @@ def restore_resident_metadata(modality: str) -> bool:
     return restored
 
 
+def _resident_outside_allowlist(modality: str | None) -> bool:
+    """A resident the owner has since taken off the caller's list is no longer the caller's."""
+    if modality is None or model_allowlist() is None:
+        return False
+    recorded = _resident_accounts.get(modality)
+    for reference in recorded[1] if recorded is not None else ():
+        # Labels without a slash name a native local file, not a Hub repo.
+        if isinstance(reference, str) and "/" in reference:
+            repo_id = _reference_repo_id(reference.strip())
+            if repo_id is not None and not model_allowed(repo_id):
+                return True
+    return False
+
+
 def resident_hidden(modality: str | None = None, reference: str | None = None) -> bool:
     if not managed_account():
         return False
+    if _resident_outside_allowlist(modality):
+        return True
     if modality is not None and resident_shared_with(modality, current_account_id()):
         return False
     from core.inference import gpu_arbiter
@@ -743,6 +760,52 @@ def _write_grant(path: Path, key: str) -> None:
         )
 
 
+MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Studio owner to allow it."
+
+_allowlists: dict[str, tuple[int, tuple[str, ...] | None]] = {}
+_allowlists_lock = threading.Lock()
+
+
+def model_allowlist() -> tuple[str, ...] | None:
+    """The caller's owner-set allowlist (#11650); ``None`` = every model, as before."""
+    if not managed_account():
+        return None
+    account_id = current_account_id()
+    generation = policy.account_generation()
+    with _allowlists_lock:
+        cached = _allowlists.get(account_id)
+        if cached is not None and cached[0] == generation:
+            return cached[1]
+    from auth import storage
+
+    try:
+        allowlist = storage.account_model_allowlist(account_id)
+    except Exception:  # noqa: BLE001 - never cached, so a transient error does not stick
+        return ()
+    with _allowlists_lock:
+        if len(_allowlists) >= 256:
+            _allowlists.clear()
+        _allowlists[account_id] = (generation, allowlist)
+    return allowlist
+
+
+def model_allowed(repo_id: str) -> bool:
+    allowlist = model_allowlist()
+    if allowlist is None:
+        return True
+    repo_id = repo_id.strip().lower()
+    return any(fnmatchcase(repo_id, pattern) for pattern in allowlist)
+
+
+def _reference_repo_id(reference: str) -> str | None:
+    path = Path(reference).expanduser()
+    if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
+        cached = _cached_repo(path)
+        return cached[0] if cached is not None and cached[1] == "model" else None
+    parts = reference.split(":", 1)[0].split("/")
+    return "/".join(parts[:2]) if all(parts[:2]) else None
+
+
 def repo_visible(
     repo_id: str,
     repo_type: str = "model",
@@ -753,6 +816,8 @@ def repo_visible(
     if not managed_account():
         return True
     if not repo_id:
+        return False
+    if repo_type == "model" and not model_allowed(repo_id):
         return False
     granted = model_grants() if grants is None else grants
     return _grant_key(repo_id, repo_type) in granted or (
@@ -823,7 +888,18 @@ def require_model_access(
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
+        if repo_type == "model":
+            require_model_allowed(reference)
         raise HTTPException(status_code = 404, detail = "Model not found")
+
+
+def require_model_allowed(reference) -> None:
+    """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
+    if not isinstance(reference, str) or model_allowlist() is None:
+        return
+    repo_id = _reference_repo_id(reference.strip())
+    if repo_id is not None and not model_allowed(repo_id):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _row_reference(row):
@@ -866,6 +942,8 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
     """A cache hit is not proof the requester may read private Hub content."""
     if not managed_account():
         return
+    if repo_type == "model" and not model_allowed(repo_id or ""):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
     if not _source_speaks_for_the_cache():
         raise HTTPException(
             status_code = 403,

@@ -1522,14 +1522,188 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     retried = research_db.get_run("run-1")
     assert retried["retryCount"] == 1
     assert retried["report"] is None
-    assert retried["steps"] == []
-    assert retried["sources"] == []
+    assert [step["title"] for step in retried["steps"]] == ["Old step"]
+    assert [source["url"] for source in retried["sources"]] == ["https://old.example"]
     assert research_db.get_reasoning_text("run-1") == ""
     assert research_db.list_events("run-1")[-1]["data"]["attempt"] == 1
     research_db.claim_next("worker-2")
     research_db.finish("run-1", "worker-2", "failed", "again")
     with pytest.raises(research_db.ResearchConflictError, match = "budget"):
         research_db.retry("run-1", max_retries = 1)
+
+
+def _failed_run_with_saved_step():
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Saved", "saved", "completed")
+    research_db.upsert_source("run-1", 0, "https://saved.example", "Saved", "Saved evidence")
+    research_db.upsert_execution_step("run-1", 1, "Interrupted", "partial", "running")
+    research_db.upsert_source("run-1", 1, "https://partial.example", "Partial", "Partial")
+    research_db.finish(
+        "run-1", "worker-1", "failed", "Local model request exhausted its total time budget"
+    )
+
+
+def test_retry_takes_the_new_time_budget_and_keeps_finished_steps(research_home):
+    _failed_run_with_saved_step()
+    policy = research_db.get_run("run-1")["config"].get("websitePolicy")
+
+    assert research_db.retry("run-1", model_timeout_seconds = 0) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["budgets"]["modelTimeoutSeconds"] == 0
+    assert retried["config"].get("websitePolicy") == policy
+    assert [step["title"] for step in retried["steps"]] == ["Saved"]
+    assert [source["url"] for source in retried["sources"]] == ["https://saved.example"]
+
+
+def test_retry_drops_failed_steps_so_failed_searches_run_again(research_home):
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Kept", "kept", "completed")
+    research_db.upsert_source("run-1", 0, "https://kept.example", "Kept", "Kept evidence")
+    research_db.upsert_execution_step("run-1", 1, "Search failed", "flaky", "failed")
+    research_db.finish("run-1", "worker-1", "failed", "No research evidence was gathered")
+
+    assert research_db.retry("run-1") == "queued"
+    assert [step["title"] for step in research_db.get_run("run-1")["steps"]] == ["Kept"]
+
+
+def test_retry_with_changed_website_access_starts_over(research_home):
+    _failed_run_with_saved_step()
+    policy = {"allowedDomains": [], "blockedDomains": ["saved.example"]}
+
+    assert research_db.retry("run-1", website_policy = policy) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["websitePolicy"] == policy
+    assert retried["steps"] == []
+    assert retried["sources"] == []
+
+
+def test_retry_of_a_stopped_run_starts_over(research_home):
+    _shared_setup_2()
+    research_db.upsert_execution_step("run-1", 0, "Saved", "saved", "completed")
+    research_db.upsert_source("run-1", 0, "https://saved.example", "Saved", "Saved evidence")
+    assert research_db.request_cancel("run-1") == "cancelling"
+    research_db.finish("run-1", "worker-1", "cancelled")
+
+    assert research_db.retry("run-1", model_timeout_seconds = 0) == "queued"
+    retried = research_db.get_run("run-1")
+    assert retried["config"]["budgets"]["modelTimeoutSeconds"] == 0
+    assert retried["steps"] == []
+    assert retried["sources"] == []
+
+
+def _retry_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import research_runs as research_route
+
+    app = FastAPI()
+    app.include_router(research_route.router, prefix = "/runs")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    return TestClient(app)
+
+
+def test_retry_route_without_a_body_keeps_the_saved_settings(research_home):
+    _failed_run_with_saved_step()
+    before = research_db.get_run("run-1")["config"]
+
+    with _retry_client() as client:
+        response = client.post("/runs/run-1/retry")
+    assert response.status_code == 200, response.text
+    after = research_db.get_run("run-1")["config"]
+    assert after["budgets"] == before["budgets"]
+    assert after.get("websitePolicy") == before.get("websitePolicy")
+
+
+def test_retry_route_validates_and_applies_the_sent_settings(research_home):
+    _failed_run_with_saved_step()
+
+    with _retry_client() as client:
+        refused = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": 3}})
+        assert refused.status_code == 400
+        assert research_db.get_run("run-1")["status"] == "failed"
+        refused = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": True}})
+        assert refused.status_code == 422
+        response = client.post(
+            "/runs/run-1/retry",
+            json = {
+                "budgets": {"modelTimeoutSeconds": 7200},
+                "websitePolicy": {"allowedDomains": [], "blockedDomains": ["Example.COM"]},
+                "futureSetting": True,
+            },
+        )
+    assert response.status_code == 200, response.text
+    config = research_db.get_run("run-1")["config"]
+    assert config["budgets"]["modelTimeoutSeconds"] == 7200
+    assert config["websitePolicy"] == {"allowedDomains": [], "blockedDomains": ["example.com"]}
+
+
+def test_retry_after_a_timed_out_report_continues_without_redoing_research(
+    research_home, monkeypatch
+):
+    """#11837: Retry with a bigger budget reuses the gathered evidence instead of searching again."""
+    from core import research_runs as worker
+
+    _patch_web_rank(monkeypatch)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    decisions = iter(
+        [
+            json.dumps({"action": "search", "title": "Find", "query": "grounding evidence"}),
+            json.dumps({"action": "finish", "title": "Enough"}),
+            json.dumps({"action": "finish", "title": "Still enough"}),
+        ]
+    )
+    synthesis_attempts = []
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "", "stop", None
+        if "iterative research process" in system:
+            return next(decisions), "", "stop", None
+        if "evidence-to-claim audit" in system:
+            return json.dumps({"supportedClaims": []}), "", "stop", None
+        synthesis_attempts.append(run["config"]["budgets"]["modelTimeoutSeconds"])
+        if len(synthesis_attempts) == 1:
+            raise worker.ModelWallClockTimeout("wall clock")
+        assert "alpha snippet" in messages[1]["content"]
+        report = "# Report\n\nFinding [Alpha](https://a.example.com)."
+        research_db.set_report_progress(run["id"], report)
+        return report, "", "stop", None
+
+    searches = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        searches.append(arguments)
+        return _two_source_search()
+
+    _create()
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    failed = research_db.get_run("run-1")
+    assert failed["status"] == "failed"
+    assert failed["error"] == "Local model request exhausted its total time budget"
+    assert len(searches) == 1
+
+    with _retry_client() as client:
+        response = client.post("/runs/run-1/retry", json = {"budgets": {"modelTimeoutSeconds": 0}})
+    assert response.status_code == 200, response.text
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed", completed["error"]
+    assert synthesis_attempts == [30, 0]
+    assert len(searches) == 1
+    assert {source["url"] for source in completed["sources"]} == {
+        "https://a.example.com",
+        "https://b.example.com",
+    }
+    assert completed["report"].startswith("# Report")
 
 
 def test_retry_of_unapproved_plan_requires_approval_again(research_home):

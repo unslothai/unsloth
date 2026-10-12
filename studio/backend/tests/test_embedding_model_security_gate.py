@@ -434,6 +434,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "is_custom": True,
         "loaded": False,
         "backend_loaded": False,
+        "embedding_device": "auto",
+        "embedding_device_locked": False,
     }
 
 

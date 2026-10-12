@@ -50,7 +50,21 @@ _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 
 def _device() -> str:
-    """CPU unless RAG_EMBED_DEVICE=gpu: a first CUDA allocation pins a context that is never returned."""
+    """Torch device for the in-process embedder. CPU unless asked otherwise.
+
+    Defaulting a GPU machine to CPU is deliberate: this embedder runs inside the backend process,
+    and the first CUDA allocation there creates a primary context never returned while the process
+    lives (712 MiB on a B200 against 74 MiB for bge-small's own weights), so ingesting one document
+    cost most of a gigabyte of VRAM for the session and no amount of unloading gets it back.
+
+    The trade is small at these sizes: one 128-token chunk takes 18.7ms on CPU against 5.2ms on
+    CUDA. Bulk indexing is where it shows (batch 64: 445 chunks/s on CPU against 3174/s), and
+    Settings (GPU) or ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+
+    This reads the same setting as the llama-server backend but resolves ``auto`` differently, which
+    is intended: that backend offloads inside its own subprocess, where the context dies with the
+    child.
+    """
     if config.embed_device_preference() != "gpu":
         return "cpu"
     return _TORCH_DEVICE.get(get_device(), "cpu")
@@ -529,7 +543,21 @@ def _get(model_name: str | None = None):
             _guard_model_security(load_target, offline, display = name)
             with _quiet_transformers_load() as report:
                 try:
-                    _model = SentenceTransformer(load_target, **st_kwargs)
+                    try:
+                        _model = SentenceTransformer(load_target, **st_kwargs)
+                    except Exception as exc:  # noqa: BLE001 - e.g. CUDA OOM beside a resident chat model
+                        # Retry on CPU before encode()'s llama-server fallback, which changes the embedding space.
+                        if device == "cpu" or config.embed_device_requires_gpu():
+                            raise
+                        logger.warning(
+                            "loading embedding model %s on %s failed (%s); retrying on CPU",
+                            name,
+                            device,
+                            exc,
+                        )
+                        st_kwargs["device"] = "cpu"
+                        st_kwargs["model_kwargs"] = dtype_kwargs(_load_dtype("cpu", name))
+                        _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
             _name = name

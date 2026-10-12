@@ -7,6 +7,7 @@ from typing import Optional
 
 from . import hardware as _hardware
 from .hardware import (
+    LIVE_GPU_TELEMETRY_KEYS,
     DeviceType,
     DEVICE,
     CHAT_ONLY,
@@ -84,6 +85,7 @@ def get_torch_device_str() -> str:
 
 
 __all__ = [
+    "LIVE_GPU_TELEMETRY_KEYS",
     "DeviceType",
     "DEVICE",
     "CHAT_ONLY",

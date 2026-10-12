@@ -122,6 +122,19 @@ class ApprovePlan(BaseModel):
     planHash: str = Field(min_length = 64, max_length = 64)
 
 
+class RetryResearchRun(BaseModel):
+    # Extra fields are ignored, not refused: a newer client must never lose Retry on an older server.
+    budgets: dict[str, int] | None = None
+    websitePolicy: dict[str, list[str]] | None = None
+
+    @field_validator("budgets", mode = "before")
+    @classmethod
+    def _reject_boolean_budgets(cls, value: Any) -> Any:
+        if isinstance(value, dict) and isinstance(value.get("modelTimeoutSeconds"), bool):
+            raise ValueError("modelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
+
 def _require_run(run_id: str) -> dict:
     run = db.get_run(run_id)
     if run is None:
@@ -531,10 +544,31 @@ def retry_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    payload: RetryResearchRun | None = None,
 ):
     _require_run(run_id)
+    model_timeout = None
+    website_policy = None
+    if payload is not None:
+        if payload.budgets and "modelTimeoutSeconds" in payload.budgets:
+            model_timeout = int(payload.budgets["modelTimeoutSeconds"])
+            if model_timeout != 0 and not (
+                _MIN_FINITE_MODEL_TIMEOUT_SECONDS
+                <= model_timeout
+                <= _MAX_FINITE_MODEL_TIMEOUT_SECONDS
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "modelTimeoutSeconds must be 0 (unlimited) or between "
+                    f"{_MIN_FINITE_MODEL_TIMEOUT_SECONDS} and {_MAX_FINITE_MODEL_TIMEOUT_SECONDS}",
+                )
+        if payload.websitePolicy is not None:
+            try:
+                website_policy = normalize_website_policy(payload.websitePolicy)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
     try:
-        db.retry(run_id)
+        db.retry(run_id, model_timeout_seconds = model_timeout, website_policy = website_policy)
     except (db.ResearchConflictError, KeyError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     supervisor = getattr(request.app.state, "research_supervisor", None)

@@ -794,6 +794,11 @@ export async function startJob(
       : opts.adopt && existing?.checkpoint !== undefined
         ? { checkpoint: existing.checkpoint }
         : {}),
+    ...(req.breakdown
+      ? { breakdown: req.breakdown }
+      : opts.adopt && existing?.breakdown
+        ? { breakdown: existing.breakdown }
+        : {}),
     ...(inventoryKind !== undefined
       ? { inventoryKind }
       : opts.adopt && existing?.inventoryKind !== undefined

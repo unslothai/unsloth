@@ -15,6 +15,7 @@ from auth.authentication import get_current_subject
 from models.auth import (
     AccountActiveRequest,
     AccountListResponse,
+    AccountModelAccessRequest,
     AccountResponse,
     AccountSetupResponse,
     CreateAccountRequest,
@@ -157,6 +158,15 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result
+
+
+@router.put("/{account_id}/model-access", response_model = AccountResponse)
+def set_account_model_access(account_id: str, payload: AccountModelAccessRequest):
+    with _account_errors():
+        result = storage.set_account_model_allowlist(account_id, payload.model_allowlist)
+    # A shared resident it may no longer use needs a fresh, gated load to join again.
+    account_access.retire_resident_shares(account_id)
+    return result
 
 
 @router.delete("/{account_id}", status_code = status.HTTP_204_NO_CONTENT)

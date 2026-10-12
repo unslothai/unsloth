@@ -103,6 +103,19 @@ def _forget_mxc_isolation_settings():
 
 
 @pytest.fixture(autouse = True)
+def _forget_embedding_device_setting():
+    # Same one-store-per-test reason as above.
+    def _forget():
+        settings = sys.modules.get("utils.embedding_model_settings")
+        if settings is not None:
+            settings.forget_cached_embedding_device()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _no_background_sandbox_probes(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
 

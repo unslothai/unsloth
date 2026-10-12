@@ -4596,6 +4596,7 @@ class VideoBackend:
                 "repo_id": repo,
                 "files": names,
                 "bytes": sum(size for _name, size in staged),
+                "file_bytes": {name: int(size) for name, size in staged},
                 "gguf_filename": gguf,
                 "checkpoint": labels[repo]["checkpoint"]
                 and (gguf is None or gguf in missing_names),

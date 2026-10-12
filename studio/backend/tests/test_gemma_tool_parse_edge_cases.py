@@ -199,6 +199,39 @@ def test_wrapperless_deeply_nested_object_and_array_are_preserved():
     }
 
 
+def test_wrapperless_bare_value_is_a_number_only_when_json_reads_one():
+    # skip_special_tokens strips the <|"|> string markers, so "+1555..." and "02134" arrive bare.
+    calls = parse_tool_calls_from_text(
+        "call:send_sms{to:+15551234567,zip:02134,n:1_000,x:nan,big:1e999,"
+        "ids:[007,8],count:3,ratio:-0.5,scale:2E3}"
+    )
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {
+        "to": "+15551234567",
+        "zip": "02134",
+        "n": "1_000",
+        "x": "nan",
+        "big": "1e999",
+        "ids": ["007", 8],
+        "count": 3,
+        "ratio": -0.5,
+        "scale": 2000.0,
+    }
+
+    wrapped = parse_tool_calls_from_text(
+        "<|tool_call>call:send_sms{to:+15551234567,zip:02134,count:3}<tool_call|>"
+    )
+    assert len(wrapped) == 1, wrapped
+    assert _args(wrapped[0]) == {"to": "+15551234567", "zip": "02134", "count": 3}
+
+
+def test_wrapperless_integer_past_int_digit_limit_stays_a_string():
+    digits = "9" * 5000
+    calls = parse_tool_calls_from_text("call:f{n:" + digits + ",m:[" + digits + "]}")
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"n": digits, "m": [digits]}
+
+
 def test_gemma_parse_array_advances_on_stray_brace():
     # A stray '}' ']' ',' must still advance the index, or _gemma_parse_value loops forever.
     from core.inference.tool_call_parser import _gemma_parse_array
