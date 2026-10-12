@@ -32,11 +32,7 @@ import {
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
 import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import {
-  MAX_DOCUMENT_PREVIEW_BYTES,
-  documentKind,
-  isMarkdown,
-} from "@/components/file-viewer";
+import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -62,7 +58,6 @@ import {
   annotationsOfFile,
   attachmentFileKind,
   isPastedTextFile,
-  isTextAttachment,
   isThreadIncognito,
   subscribeChatHistoryUpdated,
 } from "@/features/chat";
@@ -81,7 +76,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   announceProjectSourcesUpdated,
-  getDocumentFileUrl,
   invalidateProjectSources,
   listKnowledgeBases,
   listLinkedFolders,
@@ -112,6 +106,7 @@ import {
   SUPPORTED_SOURCES_HINT,
   isSupportedSourceName,
 } from "./source-drop-policy";
+import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
   type RagUploadItem,
@@ -374,37 +369,8 @@ function forgetThumbnail(id: string): void {
   thumbnailSizes.delete(id);
 }
 
-/** The stored source as a File, or null past `maxBytes` (0 = no cap). */
-async function fetchSourceFile(
-  doc: TrackedDocument,
-  maxBytes: number,
-): Promise<File | null> {
-  const response = await fetch(await getDocumentFileUrl(doc.id));
-  if (!response.ok) return null;
-  if (maxBytes && Number(response.headers.get("content-length")) > maxBytes) {
-    void response.body?.cancel();
-    return null;
-  }
-  const blob = await response.blob();
-  if (blob.size === 0 || (maxBytes && blob.size > maxBytes)) return null;
-  // Linked-folder documents are named by their relative path.
-  const name = doc.filename.split("/").pop() ?? doc.filename;
-  // Most types are served as octet-stream; an empty type lets the extension decide the kind.
-  const type = blob.type === "application/octet-stream" ? "" : blob.type;
-  return new File([blob], name, { type });
-}
-
 const fetchThumbnailFile = (doc: TrackedDocument) =>
   fetchSourceFile(doc, MAX_THUMBNAIL_BYTES);
-
-/** Whether the attachment viewer can show this source: pages, markdown or text. */
-function isViewableSource(name: string): boolean {
-  return (
-    documentKind(name) !== null ||
-    isMarkdown(name) ||
-    isTextAttachment(name, undefined)
-  );
-}
 
 function loadThumbnailFile(doc: TrackedDocument): Promise<File | null> {
   const cached = thumbnailFiles.get(doc.id);
@@ -534,10 +500,7 @@ function DocumentCard({
     const file =
       thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
     if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
-    const textual =
-      documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
-    // Served as octet-stream: the viewer reads text only when the type says so.
-    return textual ? new File([file], file.name, { type: "text/plain" }) : file;
+    return asViewerFile(file);
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, thumbnailFile]);

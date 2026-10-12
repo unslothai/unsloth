@@ -228,6 +228,11 @@ function harness(
       "./use-source-drop": {},
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
+      "./source-file": {
+        asViewerFile: (file: File) => file,
+        fetchSourceFile: async () => null,
+        isViewableSource: () => false,
+      },
       "./staged-source": { EXPIRY_GRACE_MS: 30_000 },
       "./use-rag-documents": {
         uploadItemFromIntent: (intent: {

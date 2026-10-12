@@ -15,8 +15,8 @@ import {
   subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
 import { isLinkedFolderManaged } from "../types/rag";
-import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { ProjectSourceChip } from "./project-source-chip";
 import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import {
   type RagUploadItem,
@@ -191,13 +191,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           </div>
           <div className="flex flex-row flex-wrap items-center gap-1.5">
             {documents.map((doc) => (
-              <DocumentStatusChip
+              <ProjectSourceChip
                 key={doc.id}
-                filename={doc.filename}
-                status={doc.status}
-                progress={doc.progress}
-                stage={doc.stage}
-                error={doc.error}
+                doc={doc}
                 onRemove={
                   doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                     ? undefined
