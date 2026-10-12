@@ -21012,21 +21012,18 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
-    def _image_arch_is_pickable(
-        arch: Optional[str], gguf_path: Optional[str], model_identifier: Optional[str]
-    ) -> bool:
+    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
         """Whether the Images page would actually OFFER this GGUF.
 
         Asks ``_gguf_family_buildable``, the same predicate ``routes.models._arch_to_task``
-        gates ``_DIFFUSION_GGUF_ARCHS`` on, over the same evidence (repo id, filename, arch): a
-        family this host cannot build (Qwen-Image-2.1 on a diffusers too old for its pipeline)
-        is tagged unsupported and hidden there, so the refusal must not send the user to it.
+        gates ``_DIFFUSION_GGUF_ARCHS`` on, over the same evidence (repo id, then filename): a
+        family this host cannot build (Qwen-Image-2.1 on Python 3.9, which diffusers-pin.txt
+        holds at diffusers 0.36) is tagged unsupported and hidden there, so the refusal must not
+        send the user to it.
         Fails OPEN like that predicate, so an unresolved family still names the page."""
         try:
             from routes.models import _gguf_family_buildable
-            return _gguf_family_buildable(
-                (model_identifier, os.path.basename(gguf_path or "")), arch
-            )
+            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for image arch: %s", e)
             return True
@@ -21139,7 +21136,7 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
-                if self._image_arch_is_pickable(arch, gguf_path, self._model_identifier):
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
                     return (
                         f"This is an image-generation GGUF (architecture '{arch}'), which "
                         "cannot run as a chat model. Open it from the Images page instead."
@@ -21959,7 +21956,7 @@ class LlamaCppBackend:
                 )
             if (
                 arch in LlamaCppBackend._IMAGE_ARCHES
-                and LlamaCppBackend._image_arch_is_pickable(arch, gguf_path, model_identifier)
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
             ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)

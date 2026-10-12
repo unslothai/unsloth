@@ -102,23 +102,16 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return read_gguf_architecture(path)
 
 
-def _gguf_family_buildable(
-    name_hints: tuple[Optional[str], ...], arch: Optional[str] = None
-) -> bool:
+def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     try:
         from core.inference.diffusion_engine_router import family_buildable_here
-        from core.inference.diffusion_families import detect_family_for_pick, family_for_gguf_arch
-
+        from core.inference.diffusion_families import detect_family_for_pick
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
                 return family_buildable_here(family, model_kind = "gguf")
-        # A renamed file whose arch names one family is judged by that family, the same one the loader resolves.
-        family = family_for_gguf_arch(arch)
-        if family is not None:
-            return family_buildable_here(family, model_kind = "gguf")
     except Exception:
         return True
     return True
@@ -309,9 +302,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         return _SPEECH_TASK
     if normalized in _DIFFUSION_GGUF_ARCHS:
         return (
-            "text-to-image"
-            if _gguf_family_buildable(name_hints, normalized)
-            else _UNSUPPORTED_DIFFUSION_TASK
+            "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
