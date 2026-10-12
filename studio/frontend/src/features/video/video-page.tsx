@@ -254,6 +254,8 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "minimax-h3", steps: 30, guidance: 1 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
+  // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+  { match: "fusionx", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },

@@ -182,6 +182,7 @@ def test_comfyui_template_defaults():
         (("wan21-t2v-1.3b-Q8_0.gguf",), (30, 6.0)),
         (("Wan21_T2V_14B_fp8.safetensors",), (20, 6.0)),
         (("someone/wan21-14b-gguf",), (20, 6.0)),
+        (("Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf", "QuantStack/Wan2.1_T2V_14B_FusionX-GGUF"), (8, 1.0)),
         (("wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
         (("/home/wan2.1/models/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
         (("/models/wan2.1-t2v-14b/",), (20, 6.0)),

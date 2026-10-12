@@ -950,6 +950,8 @@ def validate_video_reference_conditioning(
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
+    # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+    ("fusionx", 8, 1.0),
     ("ltx", 40, 4.0),
     # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
