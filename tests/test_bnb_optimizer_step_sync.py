@@ -70,7 +70,11 @@ _RUNNER = textwrap.dedent(
 )
 
 
-def _run(mode, optim_name, stream = "default"):
+def _run(
+    mode,
+    optim_name,
+    stream = "default",
+):
     proc = subprocess.run(
         [sys.executable, "-c", _RUNNER, mode, optim_name, _FIXES, stream],
         capture_output = True,

@@ -5260,7 +5260,8 @@ def patch_bitsandbytes_optimizer_step_sync():
         # PyTorch's side streams are non-blocking, so off the default stream the sync is the only ordering.
         devices = {p.device for group in optimizer.param_groups for p in group["params"]}
         return bool(devices) and all(
-            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d) for d in devices
+            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
+            for d in devices
         )
 
     @functools.wraps(step)
