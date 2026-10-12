@@ -5707,7 +5707,12 @@ def _app_api_key(target: _AppTarget, base: str, explicit: Optional[str], state: 
     return answer["key"], answer["api_key"]["id"]
 
 
-def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str]) -> tuple:
+def _open_app_config(
+    target: _AppTarget,
+    base: str,
+    explicit_key: Optional[str],
+    parse = _parse_app_config,
+) -> tuple:
     if not is_loopback_url(base) and not explicit_key:
         _fail(
             f"{base} isn't on this machine. --app saves the key in your {target.label} "
@@ -5718,7 +5723,7 @@ def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str])
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
-    _parse_app_config(target.path, text)
+    parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
 
@@ -6098,6 +6103,124 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
         return [(("providers", _HERMES_PROVIDER), provider)]
 
     return _AppTarget("hermes", "Hermes app", path, updates)
+
+
+_VSCODE_GROUP = "Unsloth"
+_VSCODE_DEFAULT_CONTEXT = 32768
+
+
+def _vscode_models_path() -> Path:
+    # Copilot Chat's BYOK groups live in the VS Code user dir (Chat: Manage Language Models).
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    app = "Code"
+    if not (root / "Code").exists() and (root / "Code - Insiders").exists():
+        app = "Code - Insiders"
+    return root / app / "User" / "chatLanguageModels.json"
+
+
+def _vscode_groups(path: Path, text: Optional[str]) -> list:
+    if text is None or not text.strip():
+        return []
+    try:
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
+    return data
+
+
+def _is_unsloth_vscode_group(group: object) -> bool:
+    return (
+        isinstance(group, dict)
+        and group.get("vendor") == "customendpoint"
+        and group.get("name") == _VSCODE_GROUP
+    )
+
+
+def _vscode_models_text(
+    text: Optional[str],
+    path: Path,
+    base: str,
+    key: str,
+    entry: dict,
+    max_tokens: Optional[int] = None,
+) -> Optional[str]:
+    groups = _vscode_groups(path, text)
+    window = int(
+        entry.get("context_length") or entry.get("max_context_length") or _VSCODE_DEFAULT_CONTEXT
+    )
+    output = _agent_output_limit(window, max_tokens)
+    # The key rides in a header: a raw apiKey is read as a secret-storage reference and dropped.
+    group = {
+        "name": _VSCODE_GROUP,
+        "vendor": "customendpoint",
+        "apiType": "chat-completions",
+        "models": [
+            {
+                "id": entry["id"],
+                "name": entry["id"],
+                "url": f"{base}/v1/chat/completions",
+                # Agent mode lists only tool-calling models.
+                "toolCalling": True,
+                "vision": False,
+                "contextWindow": window,
+                "maxInputTokens": window - output,
+                "maxOutputTokens": output,
+                "requestHeaders": {"Authorization": f"Bearer {key}"},
+            }
+        ],
+    }
+    index = next((i for i, g in enumerate(groups) if _is_unsloth_vscode_group(g)), None)
+    updated = list(groups)
+    if index is None:
+        updated.append(group)
+    else:
+        updated[index] = group
+    if updated == groups:
+        return text
+    return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
+
+
+def _add_vscode_provider(
+    base: str,
+    explicit_key: Optional[str],
+    entry: dict,
+    max_tokens: Optional[int] = None,
+) -> None:
+    target = _AppTarget("vscode", "VS Code", _vscode_models_path())
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(
+            target, base, explicit_key, _vscode_groups
+        )
+        new_text = _vscode_models_text(text, target.path, base, key, entry, max_tokens)
+        new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
+        _save_app_config(target, state_path, state, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    typer.echo(
+        f"Added {entry['id']} from Unsloth at {base} to VS Code. In the Copilot Chat model "
+        f"picker, pick it under {_VSCODE_GROUP} (Manage Models if it is hidden; run "
+        "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
+        "extension; no Copilot plan is required."
+    )
+    if key_id is not None:
+        typer.echo(
+            f"It uses its own API key, '{target.label}', which you can revoke in "
+            "Unsloth → Settings → API."
+        )
+    typer.echo("After loading another model, re-run: unsloth start vscode")
+    _app_server_notice(base)
 
 
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -7013,3 +7136,61 @@ def vibe(
             request_body = {**request_body, "temperature": recommended}
     env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
     _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+_VSCODE_LAUNCH_OPTION = typer.Option(True, "--launch/--no-launch", hidden = True)
+
+
+@start_app.command("vscode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vscode(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _VSCODE_LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
+    serve: bool = _SERVE_OPTION,
+):
+    """Add the model Unsloth is serving to VS Code's Copilot Chat model picker."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    if ctx.args:
+        _fail("unsloth start vscode only edits VS Code's settings, so it takes no extra arguments.")
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+    base, _key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    _add_vscode_provider(base, api_key, entry, max_tokens)

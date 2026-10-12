@@ -584,3 +584,117 @@ def test_hermes_app_uses_the_windows_hermes_home(studio, monkeypatch, tmp_path):
     target = start._hermes_app_target()
 
     assert target.path == local / "hermes" / "config.yaml"
+
+
+def _vscode_config(studio, monkeypatch) -> Path:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    config = studio["home"] / ".config" / "Code" / "User" / "chatLanguageModels.json"
+    config.parent.mkdir(parents = True)
+    return config
+
+
+def test_vscode_adds_unsloth_and_keeps_the_users_groups(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    original = (
+        "[\n  // mine\n  {\n"
+        '    "name": "Azure", "vendor": "azure",\n'
+        '    "models": [{"id": "gpt-5.5", "url": "https://x.openai.azure.com"}],\n'
+        "  },\n]\n"
+    )
+    config.write_text(original)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text())
+    assert data[0] == {
+        "name": "Azure",
+        "vendor": "azure",
+        "models": [{"id": "gpt-5.5", "url": "https://x.openai.azure.com"}],
+    }
+    group = data[1]
+    assert (group["name"], group["vendor"]) == ("Unsloth", "customendpoint")
+    assert "apiKey" not in group
+    (model,) = group["models"]
+    assert model["id"] == MODEL["id"]
+    assert model["url"] == f"{BASE}/v1/chat/completions"
+    assert model["requestHeaders"] == {"Authorization": f"Bearer {APP_KEY}"}
+    assert model["toolCalling"] is True
+    assert model["contextWindow"] == MODEL["context_length"]
+    assert model["maxInputTokens"] + model["maxOutputTokens"] == MODEL["context_length"]
+    assert _private(config)
+    assert config.with_name("chatLanguageModels.json.unsloth-backup").read_text() == original
+    assert ("POST", f"{BASE}/api/auth/api-keys", {"name": "VS Code"}) in studio["calls"]
+    assert APP_KEY not in result.output
+
+    first = config.read_text()
+    again = CliRunner().invoke(start.start_app, ["vscode"])
+    assert again.exit_code == 0, again.output
+    assert config.read_text() == first
+    assert studio["minted"] == 1
+
+
+def test_vscode_replaces_its_own_group_for_another_model(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    other = {"id": "unsloth/Qwen3.5-4B-GGUF", "context_length": 65536}
+    monkeypatch.setitem(MODEL, "id", other["id"])
+    monkeypatch.setitem(MODEL, "context_length", other["context_length"])
+
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+
+    data = json.loads(config.read_text())
+    assert [g["name"] for g in data] == ["Unsloth"]
+    assert [m["id"] for m in data[0]["models"]] == [other["id"]]
+    assert studio["minted"] == 1
+
+
+def test_vscode_creates_a_missing_file(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert [g["name"] for g in json.loads(config.read_text())] == ["Unsloth"]
+    assert not config.with_name("chatLanguageModels.json.unsloth-backup").exists()
+
+
+def test_vscode_refuses_a_file_it_cannot_parse(studio, monkeypatch):
+    config = _vscode_config(studio, monkeypatch)
+    config.write_text('{"name": "not a list"}\n')
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 1
+    assert "Couldn't parse" in result.output
+    assert config.read_text() == '{"name": "not a list"}\n'
+    assert studio["minted"] == 0
+
+
+@pytest.mark.parametrize(
+    "platform, parts",
+    [
+        ("linux", (".config", "Code", "User")),
+        ("darwin", ("Library", "Application Support", "Code", "User")),
+        ("win32", ("Roaming", "Code", "User")),
+    ],
+)
+def test_vscode_settings_path_per_platform(monkeypatch, tmp_path, platform, parts):
+    monkeypatch.setattr(start.sys, "platform", platform)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+
+    assert start._vscode_models_path() == tmp_path.joinpath(*parts, "chatLanguageModels.json")
+
+
+def test_vscode_uses_insiders_only_without_stable(monkeypatch, tmp_path):
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "Code - Insiders").mkdir()
+    insiders = tmp_path / "Code - Insiders" / "User" / "chatLanguageModels.json"
+    assert start._vscode_models_path() == insiders
+
+    (tmp_path / "Code").mkdir()
+    assert start._vscode_models_path() == tmp_path / "Code" / "User" / "chatLanguageModels.json"
