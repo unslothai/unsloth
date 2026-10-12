@@ -503,9 +503,12 @@ def _apply_fp8_training(
             )
         import torch
 
-        if torch.cuda.is_available():
-            # Hand the freed bf16 weights back to the driver, not just the allocator's cache.
+        # Hand the freed bf16 weights back to the driver, not just the allocator's cache.
+        device = next(transformer.parameters()).device.type
+        if device == "cuda":
             torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
         return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
