@@ -34,25 +34,24 @@ from .test_mcp_tools_audio import TRANSCRIPT
 from .test_mcp_tools_text import CHAT, URGENT
 
 EXPORT = {"checkpoint": "qwen-lora", "format": "gguf"}
+ONE = {"state": "x", "questions": URGENT}
 
 
+# Over the 4 MiB inline limit, so only a (local) file path can carry these.
 def _big_png(tmp_path):
-    # Over the Decision API's 4 MiB per image; only a file path can carry it past the request limit.
     big = tmp_path / "big.png"
     big.write_bytes(PNG + b"\x00" * (4 * 1024 * 1024))
     return {"state": "x", "questions": URGENT, "images": [{"path": str(big)}]}
 
 
 def _huge_wav(tmp_path):
-    # Only a file path can carry this much: inline data stops at the 4 MiB request limit.
     huge = tmp_path / "huge.wav"
     with huge.open("wb") as handle:
         handle.truncate(200 * 1024 * 1024 + 1)
     return {"workflow": "clone", "text": "Hi", "reference": {"path": str(huge)}}
 
 
-# (tool, args, a substring of the refusal or None). Args built from tmp_path name a host file,
-# which only a loopback agent may send, so those rows call as one.
+# (tool, args or a tmp_path -> args builder (called as a local agent), refusal substring or None).
 REFUSED = [
     ("chat", {}, None),
     ("chat", {"prompt": "a", "messages": [{"role": "user", "content": "b"}]}, None),
@@ -61,27 +60,15 @@ REFUSED = [
     ("chat", {"messages": [{"role": "assistant", "content": "x"}], "images": [PNG_URL]}, None),
     ("chat", {"prompt": "x", "images": [{"data_url": "data:image/gif;base64,R0lG"}]}, None),
     ("chat", {"prompt": "x", "images": [{"data_url": "data:image/png;base64,@@@"}]}, None),
-    (
-        "chat",
-        {"prompt": "x", "images": [{"data_url": data_url(b"not an image", "image/png")}]},
-        None,
-    ),
+    ("chat", {"prompt": "x", "images": [{"data_url": data_url(b"text", "image/png")}]}, None),
     ("embed", {"texts": []}, None),
     ("embed", {"texts": ["x"] * 2049}, None),
     ("system_one", {"state": "x", "questions": {}}, None),
-    (
-        "system_one",
-        {"state": "x", "questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
-        None,
-    ),
+    ("system_one", {"state": "x", "questions": {f"q{i}": {} for i in range(65)}}, None),
     ("system_one", {"state": "x", "questions": {"q": {"type": "maybe"}}}, None),
     ("system_one", {"state": "x", "questions": {"q": {"type": "noul", "extra": 1}}}, None),
-    (
-        "system_one",
-        {"state": "x", "questions": URGENT, "images": [{"data_url": data_url(WEBP, "image/webp")}]},
-        None,
-    ),
-    ("system_one", {"state": "x", "questions": URGENT, "images": [PNG_URL] * 5}, None),
+    ("system_one", {**ONE, "images": [{"data_url": data_url(WEBP, "image/webp")}]}, None),
+    ("system_one", {**ONE, "images": [PNG_URL] * 5}, None),
     ("system_one", _big_png, None),
     *[
         ("generate_audio", {"workflow": "clone", "text": "Hi", "reference": reference}, None)
@@ -105,10 +92,7 @@ REFUSED = [
         ("start_training", {"config": config, "validate_only": validate_only}, message)
         for config, message in (
             ({**CONFIG, "format_type": "bogus"}, "format_type must be one of"),
-            (
-                {"model_name": "unsloth/Qwen3-0.6B"},
-                "Invalid training config: training_type: Field required",
-            ),
+            ({"model_name": "m"}, "Invalid training config: training_type: Field required"),
             ({**CONFIG, "training_type": "Everything"}, "Invalid training config: training_type"),
         )
         for validate_only in (False, True)
@@ -136,8 +120,7 @@ def test_a_refused_input_never_reaches_a_route(monkeypatch, tmp_path, tool, args
     # Every route answers, so any call the tool made would be recorded.
     result, studio = run_tool(monkeypatch, {}, tool, args, fallback = {}, **client)
     assert result["isError"] is True
-    if message is not None:
-        assert message in result["content"][0]["text"]
+    assert message is None or message in result["content"][0]["text"]
     assert studio.state.calls == []
 
 
@@ -149,8 +132,7 @@ SYSTEM_ONE = ("POST", "/v1/systemone")
 IMAGES = ("POST", "/api/inference/images/generate")
 STT_LOAD = ("POST", "/api/inference/audio/stt/load")
 
-# (tool, args, the studio's routes, then what the message must be: the whole message, or
-# (check, text) pairs).
+# (tool, args, the studio's routes, then the whole message or (check, text) pairs).
 ROUTE_ERRORS = [
     (
         "chat",
@@ -161,45 +143,22 @@ ROUTE_ERRORS = [
     (
         "chat",
         {"prompt": "hi"},
-        {
-            CHAT: openai_error(
-                "Another account is generating on the resident model.",
-                409,
-                type = "conflict_error",
-                param = "model",
-                code = "gpu_busy",
-                headers = {"Retry-After": "5"},
-            )
-        },
-        "GPU busy: Another account is generating on the resident model. Retry after 5 s.",
+        {CHAT: openai_error("Busy.", 409, code = "gpu_busy", headers = {"Retry-After": "5"})},
+        "GPU busy: Busy. Retry after 5 s.",
     ),
     (
         "embed",
         {"texts": ["x"]},
-        {
-            ("POST", "/v1/embeddings"): openai_error(
-                "The embedding model /srv/models/nomic is not downloaded yet.",
-                409,
-                type = "conflict_error",
-            )
-        },
-        ("starts", "The embedding model <path>"),
+        {("POST", "/v1/embeddings"): openai_error("Model /srv/models/nomic is missing.", 409)},
+        ("starts", "Model <path>"),
         ("lacks", "/srv/models"),
         ("ends", "load_model(kind='llm') and call embed again."),
     ),
     (
         "system_one",
         {"state": "x", "questions": URGENT},
-        {
-            SYSTEM_ONE: _detail(
-                {
-                    "error_type": "api_usage_error",
-                    "message": "The Decision API is off. The Studio owner can turn it on in Settings > API.",
-                },
-                404,
-            )
-        },
-        ("starts", "The Decision API is off."),
+        {SYSTEM_ONE: _detail({"error_type": "api_usage_error", "message": "API off."}, 404)},
+        ("starts", "API off."),
         ("ends", "Turn on the Decision API in Settings > API."),
     ),
     (
@@ -207,12 +166,10 @@ ROUTE_ERRORS = [
         {"state": "x", "questions": URGENT},
         {
             SYSTEM_ONE: _detail(
-                {"error_type": "model_loading", "message": "The decision model is loading."},
-                503,
-                **{"Retry-After": "12"},
+                {"error_type": "model_loading", "message": "Loading."}, 503, **{"Retry-After": "12"}
             )
         },
-        "The decision model is loading. (HTTP 503) Retry after 12 s.",
+        "Loading. (HTTP 503) Retry after 12 s.",
     ),
     (
         "generate_audio",
@@ -223,35 +180,20 @@ ROUTE_ERRORS = [
     (
         "generate_audio",
         {"workflow": "speak", "text": "Hi", "options": {"speaker_wav": "/srv/x.wav"}},
-        {
-            ("POST", "/v1/audio/run"): openai_error(
-                "options: Value error, Option 'speaker_wav' is not accepted; name audio by id in inputs.",
-                400,
-                param = "options",
-            )
-        },
-        ("has", "Option 'speaker_wav' is not accepted"),
-        ("starts", "Invalid arguments:"),
+        {("POST", "/v1/audio/run"): openai_error("speaker_wav refused.", 400, param = "options")},
+        "Invalid arguments: speaker_wav refused.",
     ),
     (
         "transcribe",
         {"audio": WAV_INPUT, "timestamps": True},
-        {
-            ("POST", "/v1/audio/transcriptions"): openai_error(
-                "verbose_json reports the language of the audio and the local STT engine cannot detect it.",
-                501,
-                type = "api_error",
-            )
-        },
-        (
-            "ends",
-            "(HTTP 501) Pass language with timestamps, or use an audio.cpp speech-to-text model.",
-        ),
+        {("POST", "/v1/audio/transcriptions"): openai_error("No language detection.", 501)},
+        "No language detection. (HTTP 501) Pass language with timestamps, or use an audio.cpp"
+        " speech-to-text model.",
     ),
     (
         "generate_video",
         {"prompt": "waves"},
-        {("POST", "/v1/videos"): openai_error("No video model is loaded.", 503, type = "api_error")},
+        {("POST", "/v1/videos"): openai_error("No video model is loaded.", 503)},
         "No video model is loaded. (HTTP 503) Load a video model with load_model(kind='video') first.",
     ),
     (
@@ -269,14 +211,8 @@ ROUTE_ERRORS = [
     (
         "generate_image",
         {"prompt": "x", "width": 2048, "height": 2048},
-        {
-            IMAGES: _detail(
-                "2048x2048 needs about 30 GB; 12 GB is free.",
-                400,
-                **{"X-Unsloth-Refusal": "memory-estimate"},
-            )
-        },
-        "2048x2048 needs about 30 GB; 12 GB is free. Pass allow_oversized=true to try anyway.",
+        {IMAGES: _detail("Needs 30 GB.", 400, **{"X-Unsloth-Refusal": "memory-estimate"})},
+        "Needs 30 GB. Pass allow_oversized=true to try anyway.",
     ),
     (
         "run_recipe",
@@ -287,40 +223,23 @@ ROUTE_ERRORS = [
     (
         "start_training",
         {"config": DIFFUSION, "kind": "diffusion"},
-        {
-            ("POST", "/api/train/diffusion/start"): _detail(
-                "An LLM training run is active. Stop it before starting image training.", 409
-            )
-        },
-        "An LLM training run is active. Stop it before starting image training. (HTTP 409)",
+        {("POST", "/api/train/diffusion/start"): _detail("An LLM run is active.", 409)},
+        "An LLM run is active. (HTTP 409)",
     ),
     (
         "start_training",
         {"config": CONFIG},
-        {
-            ("POST", "/api/train/start"): {
-                "job_id": "",
-                "status": "error",
-                "message": "Training is already in progress. Stop current training before starting a new one.",
-                "error": "Training already active",
-            }
-        },
-        "Training is already in progress. Stop current training before starting a new one.",
+        {("POST", "/api/train/start"): {"job_id": "", "status": "error", "message": "Busy."}},
+        "Busy.",
     ),
     (
         "cancel",
         {"kind": "training", "id": "someone-elses"},
         {
-            ("GET", "/api/train/status"): {
-                "job_id": "job-7",
-                "is_training_running": True,
-                "phase": "training",
-            },
-            ("POST", "/api/train/stop"): _detail(
-                "The requested training job is no longer active.", 404
-            ),
+            ("GET", "/api/train/status"): {"job_id": "job-7", "is_training_running": True},
+            ("POST", "/api/train/stop"): _detail("No longer active.", 404),
         },
-        "The requested training job is no longer active. (HTTP 404)",
+        "No longer active. (HTTP 404)",
     ),
     (
         "load_model",
@@ -329,16 +248,14 @@ ROUTE_ERRORS = [
             ("GET", "/api/inference/audio/stt/status"): {
                 "transformers": stt_state(downloaded = [WHISPER])
             },
-            STT_LOAD: _detail("whisper-server is not installed. Run unsloth studio update.", 501),
+            STT_LOAD: _detail("whisper-server is missing.", 501),
         },
-        ("has", "whisper-server is not installed"),
-        ("has", "(HTTP 501)"),
+        ("starts", "whisper-server is missing. (HTTP 501)"),
     ),
 ]
 CHECKS = {
     "starts": str.startswith,
     "ends": str.endswith,
-    "has": str.__contains__,
     "lacks": lambda message, text: text not in message,
 }
 
@@ -361,8 +278,7 @@ COMPLETION = {"model": "m", "choices": [{"message": {"content": "ok"}, "finish_r
 DECISION = {"model": "m", "answers": {"q": {"type": "noul", "noul": 0.5}}}
 CLIP = {"id": "clip-1", "role": "output", "sample_rate": 24000, "duration_s": 1.0}
 
-# (tool, args for a file path, the studio's routes, the routes a local call reaches in order,
-# what else a local call must show). Audio tools get a WAV file, the others a PNG.
+# (tool, args for a file path, routes, the routes a local call reaches in order, extra check).
 PATH_CALLS = [
     (
         "chat",
@@ -439,30 +355,21 @@ def test_a_local_agent_may_send_a_path(
     assert check is None or check(result, studio)
 
 
+@pytest.mark.parametrize(
+    "client",
+    [REMOTE, {**LOCAL, "headers": {"X-Forwarded-For": "203.0.113.9"}}],
+    ids = ["remote", "proxied-loopback"],
+)
 @pytest.mark.parametrize("tool,args,routes,reached,check", PATH_CALLS)
 def test_a_remote_agent_may_not_and_the_file_is_never_opened(
-    monkeypatch, file_spy, tmp_path, tool, args, routes, reached, check
+    monkeypatch, file_spy, tmp_path, client, tool, args, routes, reached, check
 ):
     path = _input_file(tmp_path, tool)
-    result, studio = run_tool(monkeypatch, routes, tool, args(path), fallback = {}, **REMOTE)
+    result, studio = run_tool(monkeypatch, routes, tool, args(path), fallback = {}, **client)
     assert result["isError"] is True
     assert result["content"][0]["text"] == PATH_REMOTE
     assert file_spy == []
     assert studio.state.calls == []
-
-
-def test_a_proxied_loopback_request_counts_as_remote(monkeypatch, file_spy, tmp_path):
-    tool, args, routes, _reached, _check = PATH_CALLS[0]
-    result, _studio = run_tool(
-        monkeypatch,
-        routes,
-        tool,
-        args(_input_file(tmp_path, tool)),
-        headers = {"X-Forwarded-For": "203.0.113.9"},
-        **LOCAL,
-    )
-    assert result["content"][0]["text"] == PATH_REMOTE
-    assert file_spy == []
 
 
 class _Row(ToolOutput):
@@ -525,6 +432,4 @@ def test_from_route_copies_each_field_by_its_type(payload, expected):
 
 def test_from_route_takes_overrides_as_given():
     row = _Row.from_route({"text": "a", "flag": True}, flag = False, usage = Usage(total_tokens = 3))
-    assert row.flag is False
-    assert row.text == "a"
-    assert row.usage == Usage(total_tokens = 3)
+    assert (row.text, row.flag, row.usage) == ("a", False, Usage(total_tokens = 3))

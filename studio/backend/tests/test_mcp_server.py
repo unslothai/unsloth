@@ -9,18 +9,10 @@ from mcp_server import INSTRUCTIONS, create_studio_mcp
 
 READ_ONLY = {"studio_status", "list_models", "embed", "system_one", "get_job", "list_training_runs"}
 DESTRUCTIVE = {"unload_model", "cancel"}
-OTHERS = {
-    "load_model",
-    "chat",
-    "generate_image",
-    "generate_audio",
-    "transcribe",
-    "generate_video",
-    "run_recipe",
-    "datasets",
-    "start_training",
-    "export_model",
-}
+OTHERS = set(
+    "load_model chat generate_image generate_audio transcribe generate_video run_recipe datasets"
+    " start_training export_model".split()
+)
 
 
 def _tools():
@@ -36,17 +28,14 @@ def test_studio_mcp_registers_control_plane_tools():
         assert hints is not None, name
         assert hints.openWorldHint is False, name
         assert hints.readOnlyHint is (name in READ_ONLY), name
-        if name in DESTRUCTIVE:
-            assert hints.destructiveHint is True, name
-        if name in OTHERS:
-            # MCP reads an unset hint as destructive, so tools that only add work say so.
-            assert hints.destructiveHint is False, name
-        assert tool.output_schema is not None, name
-        assert tool.output_schema.get("type") == "object", name
+        # MCP reads an unset hint as destructive, so tools that only add work say so.
+        if name not in READ_ONLY:
+            assert hints.destructiveHint is (name in DESTRUCTIVE), name
+        assert tool.output_schema["type"] == "object", name
         assert tool.description, name
 
 
-# Schema facts beyond the annotations: (tool, path into the listed tool, the value or a check on it).
+# (tool, path into the listed tool, the value or a check on it).
 SCHEMA_FACTS = [
     ("embed", "parameters/properties/texts/minItems", 1),
     ("embed", "parameters/properties/texts/maxItems", 2048),
@@ -92,15 +81,7 @@ def test_tool_schemas_keep_their_limits_and_defaults(name, path, expected):
 
 
 def test_instructions_point_agents_at_the_workflow():
-    server = create_studio_mcp()
-    assert server.instructions == INSTRUCTIONS
-    for phrase in (
-        "studio_status",
-        "list_models",
-        "load_model",
-        "get_job",
-        "cancel",
-        "Studio computer",
-        "galleries",
-    ):
+    assert create_studio_mcp().instructions == INSTRUCTIONS
+    for phrase in ("studio_status", "list_models", "load_model", "get_job", "cancel"):
         assert phrase in INSTRUCTIONS
+    assert "Studio computer" in INSTRUCTIONS and "galleries" in INSTRUCTIONS

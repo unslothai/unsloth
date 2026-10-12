@@ -8,6 +8,7 @@ import json
 from typing import Any, Optional
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from fastmcp import FastMCP
 from pydantic import ValidationError
@@ -19,12 +20,20 @@ from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
 from studio_mcp.outputs import RouteText, ToolOutput
 
-from .mcp_harness import SENTINEL_ROOTS, WAV_INPUT, call_tool, fake_studio, poison, served
+from .mcp_harness import (
+    OUT,
+    RUN_CHECKPOINTS,
+    SENTINEL_ROOTS,
+    WAV_INPUT,
+    call_tool,
+    fake_studio,
+    poison,
+    served,
+)
 from .test_mcp_tools_audio import PAYLOADS as AUDIO_PAYLOADS
-from .test_mcp_tools_audio import TRANSCRIBE_PAYLOADS
+from .test_mcp_tools_audio import TRANSCRIPT, VERBOSE
 from .test_mcp_tools_cancel import PAYLOADS as CANCEL_PAYLOADS
 from .test_mcp_tools_datasets import PAYLOADS as DATASETS_PAYLOADS
-from .test_mcp_tools_export import PAYLOADS as EXPORT_PAYLOADS
 from .test_mcp_tools_images import PAYLOADS as IMAGES_PAYLOADS
 from .test_mcp_tools_loading import PAYLOADS as LOADING_PAYLOADS
 from .test_mcp_tools_models import PAYLOADS as MODELS_PAYLOADS
@@ -35,10 +44,28 @@ from .test_mcp_tools_training import PAYLOADS as TRAINING_PAYLOADS
 from .test_mcp_tools_training import RUN_PAYLOADS
 from .test_mcp_tools_video import PAYLOADS as VIDEO_PAYLOADS
 
-# The direct-call tools from before forwarding are all gone; nothing is exempt.
-LEGACY_UNCHECKED: set[str] = set()
+TRANSCRIBE_PAYLOADS = {
+    ("POST", "/v1/audio/transcriptions"): VERBOSE,
+    ("POST", "/v1/audio/translations"): TRANSCRIPT,
+}
+EXPORT_PAYLOADS = {
+    ("GET", "/api/models/checkpoints"): {
+        **RUN_CHECKPOINTS,
+        "models": RUN_CHECKPOINTS["models"][:1],
+    },
+    ("GET", "/api/export/status"): {
+        "last_op_seq": 1,
+        "current_checkpoint": f"{OUT}/qwen-lora",
+        "last_op_output_path": f"{OUT}/x",
+    },
+    ("POST", "/api/export/load-checkpoint"): {
+        "success": True,
+        "message": f"Loaded {OUT}/qwen-lora",
+    },
+    ("POST", "/api/export/export/gguf"): {"success": True, "message": f"Saved to {OUT}/x"},
+}
 
-# tool name -> (fake Studio routes as {(method, path): payload}, tool arguments), or a list of them
+# tool name -> (fake Studio routes, tool arguments), or a list of them
 CASES: dict[str, Any] = {
     "studio_status": (STATUS_PAYLOADS, {}),
     "list_models": (MODELS_PAYLOADS, {"model": "unsloth/Qwen3-0.6B"}),
@@ -82,20 +109,17 @@ MODEL_TEXT = {"chat": {"text"}, "transcribe": {"text"}, "get_job": {"data_rows"}
 
 
 def leaks(result: dict, ignore: frozenset = frozenset()) -> Optional[str]:
-    found = response_leaks_host_path(
-        result.get("structuredContent"), roots = SENTINEL_ROOTS, ignore = ignore
-    )
-    if found is not None:
-        return found
+    payloads = [result.get("structuredContent")]
     for item in result.get("content") or []:
         if item.get("type") == "text":
             try:
-                payload = json.loads(item.get("text"))
-            except (TypeError, ValueError):
-                payload = item.get("text")
-            found = response_leaks_host_path(payload, roots = SENTINEL_ROOTS, ignore = ignore)
-            if found is not None:
-                return found
+                payloads.append(json.loads(item["text"]))
+            except ValueError:
+                payloads.append(item["text"])
+    for payload in payloads:
+        found = response_leaks_host_path(payload, roots = SENTINEL_ROOTS, ignore = ignore)
+        if found is not None:
+            return found
     return None
 
 
@@ -104,15 +128,9 @@ def run_case(monkeypatch, mcp, name: str, routes: dict, args: dict) -> dict:
         return call_tool(http, name, args)
 
 
-def _registered_names() -> set[str]:
-    return {tool.name for tool in asyncio.run(create_studio_mcp().list_tools())}
-
-
 def test_every_registered_tool_has_a_host_path_case():
-    names = _registered_names()
-    assert LEGACY_UNCHECKED == set()
-    assert set(MODEL_TEXT) <= set(CASES)
-    assert names == set(CASES)
+    names = {tool.name for tool in asyncio.run(create_studio_mcp().list_tools())}
+    assert set(MODEL_TEXT) <= set(CASES) == names
     assert len(names) == 18
 
 
@@ -133,6 +151,7 @@ class _Status(ToolOutput):
 
 
 def test_tool_outputs_refuse_undeclared_fields():
+    assert _Status.model_json_schema()["additionalProperties"] is False
     with pytest.raises(ValidationError):
         _Status(message = "ok", url = "http://127.0.0.1:8888/x", text = "hi", output_dir = "/srv/x")
 
@@ -145,20 +164,13 @@ def test_route_text_is_scrubbed_but_urls_and_model_text_are_not():
         url = "http://127.0.0.1:8888/v1/audio/gallery/abc/file",
         text = "The file lives at /etc/hosts on most systems.",
     )
-    dumped = status.model_dump()
-    assert (
-        response_leaks_host_path(
-            {k: dumped[k] for k in ("message", "error", "notes")}, roots = SENTINEL_ROOTS
-        )
-        is None
-    )
-    assert dumped["message"].startswith("Saved to")
-    assert dumped["url"] == "http://127.0.0.1:8888/v1/audio/gallery/abc/file"
-    assert dumped["text"] == "The file lives at /etc/hosts on most systems."
-
-
-def test_the_output_schema_forbids_extra_properties():
-    assert _Status.model_json_schema()["additionalProperties"] is False
+    assert status.model_dump() == {
+        "message": "Saved to <path>",
+        "error": "Failed at <path>",
+        "notes": ["cache <path>"],
+        "url": "http://127.0.0.1:8888/v1/audio/gallery/abc/file",
+        "text": "The file lives at /etc/hosts on most systems.",
+    }
 
 
 def _probe_mcp():
@@ -186,20 +198,14 @@ def _probe_mcp():
 ROUTES = {("GET", "/api/train/status"): {"message": "Training", "output_dir": "/srv/out"}}
 
 
-def test_the_checker_sees_a_passed_through_route_payload(monkeypatch):
-    result = run_case(monkeypatch, _probe_mcp(), "passthrough", ROUTES, {})
-    assert leaks(result) is not None
-
-
-def test_a_typed_output_and_a_route_error_do_not_leak(monkeypatch):
+def test_the_checker_sees_a_leak_but_typed_outputs_and_route_errors_do_not_leak(monkeypatch):
+    # Positive control: a passed-through route payload is caught.
+    assert leaks(run_case(monkeypatch, _probe_mcp(), "passthrough", ROUTES, {})) is not None
     typed = run_case(monkeypatch, _probe_mcp(), "typed", ROUTES, {})
     assert typed["structuredContent"]["message"].startswith("Training")
     assert leaks(typed) is None
 
-    def missing(request, body):
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": poison("Run not found")}, status_code = 404)
-
+    missing = JSONResponse({"detail": poison("Run not found")}, status_code = 404)
     failed = run_case(
         monkeypatch, _probe_mcp(), "failing", {("GET", "/api/train/missing"): missing}, {}
     )

@@ -26,36 +26,26 @@ def fresh_cache(monkeypatch):
     mcp_access._reset_cache()
 
 
-def test_off_by_default():
-    assert get_mcp_enabled() is False
-    assert forced_by_env() is False
-    assert is_mcp_enabled() is False
-
-
-def test_env_one_forces_it_on(monkeypatch):
-    monkeypatch.setenv(ENV_FORCE, "1")
-    assert forced_by_env() is True
-    assert is_mcp_enabled() is True
+@pytest.mark.parametrize("value", [None, "1", "0", "true", "yes", "", " 1", "2"])
+def test_only_env_one_forces_it_on_and_never_writes_the_setting(monkeypatch, value):
+    if value is not None:
+        monkeypatch.setenv(ENV_FORCE, value)
+    assert forced_by_env() is (value == "1")
+    assert is_mcp_enabled() is (value == "1")
     assert get_mcp_enabled() is False
 
 
-@pytest.mark.parametrize("value", ["0", "true", "yes", "", " 1", "2"])
-def test_other_env_values_do_not_force_it(monkeypatch, value):
-    monkeypatch.setenv(ENV_FORCE, value)
-    assert forced_by_env() is False
-    assert is_mcp_enabled() is False
-
-
-def test_setter_refuses_a_managed_account():
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: run_as(ALICE, set_mcp_enabled, True),
+        *(lambda v = v: set_mcp_enabled(v) for v in ["true", 1, None]),
+    ],
+)
+def test_setter_refuses_a_managed_account_or_a_non_bool(call):
     with pytest.raises(ValueError):
-        run_as(ALICE, set_mcp_enabled, True)
+        call()
     assert get_mcp_enabled() is False
-
-
-@pytest.mark.parametrize("value", ["true", 1, None])
-def test_setter_needs_a_bool(value):
-    with pytest.raises(ValueError):
-        set_mcp_enabled(value)
 
 
 def test_set_invalidates_the_cache():

@@ -13,13 +13,6 @@ CHAT = {
     "loading": ["unsloth/gemma-3-1b-it"],
     "serving_checkpoints": ["/srv/models/llama"],
 }
-IMAGE = {
-    "loaded": True,
-    "repo_id": "/srv/hf/flux",
-    "display_repo_id": "black-forest-labs/FLUX.1-schnell",
-    "family": "flux",
-}
-VIDEO = {"loaded": True, "repo_id": "Lightricks/LTX-Video", "display_repo_id": None}
 STT = {
     "available": True,
     "transformers": {
@@ -39,7 +32,6 @@ STT = {
     },
     "mtmd": {"loaded_model": None, "loading": True},
 }
-EMBEDDER = {"embedding_model": "/srv/custom-embedder", "is_custom": True, "loaded": True}
 TRAINING = {
     "job_id": "job-1",
     "phase": "training",
@@ -59,12 +51,6 @@ DIFFUSION_TRAINING = {
     "output_dir": "/srv/outputs/diff",
     "lora_path": "/srv/outputs/diff/lora.safetensors",
 }
-EXPORT = {
-    "is_export_active": False,
-    "active_op_kind": None,
-    "last_op_status": "succeeded",
-    "last_op_output_path": "/srv/exports/my-model-gguf",
-}
 HARDWARE = {
     "available": True,
     "backend": "cuda",
@@ -82,13 +68,31 @@ HARDWARE = {
 
 PAYLOADS = {
     ("GET", "/api/inference/status"): CHAT,
-    ("GET", "/api/inference/images/status"): IMAGE,
-    ("GET", "/api/inference/video/status"): VIDEO,
+    ("GET", "/api/inference/images/status"): {
+        "loaded": True,
+        "repo_id": "/srv/hf/flux",
+        "display_repo_id": "black-forest-labs/FLUX.1-schnell",
+        "family": "flux",
+    },
+    ("GET", "/api/inference/video/status"): {
+        "loaded": True,
+        "repo_id": "Lightricks/LTX-Video",
+        "display_repo_id": None,
+    },
     ("GET", "/api/inference/audio/stt/status"): STT,
-    ("GET", "/api/settings/embedding-model"): EMBEDDER,
+    ("GET", "/api/settings/embedding-model"): {
+        "embedding_model": "/srv/custom-embedder",
+        "is_custom": True,
+        "loaded": True,
+    },
     ("GET", "/api/train/status"): TRAINING,
     ("GET", "/api/train/diffusion/status"): DIFFUSION_TRAINING,
-    ("GET", "/api/export/status"): EXPORT,
+    ("GET", "/api/export/status"): {
+        "is_export_active": False,
+        "active_op_kind": None,
+        "last_op_status": "succeeded",
+        "last_op_output_path": "/srv/exports/my-model-gguf",
+    },
     ("GET", "/api/train/hardware"): HARDWARE,
 }
 
@@ -175,26 +179,28 @@ def test_every_slot_is_reported(monkeypatch):
     assert called == set(PAYLOADS)
 
 
-def test_a_failing_slot_does_not_fail_the_tool(monkeypatch):
+def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
     broken = JSONResponse({"detail": "Video backend crashed at /srv/hf/ltx"}, status_code = 500)
-    result, _studio = _status(monkeypatch, {("GET", "/api/inference/video/status"): broken})
+    owner_only = JSONResponse(
+        {"detail": "Only the installation owner can do this"}, status_code = 403
+    )
+    overrides = {
+        ("GET", "/api/inference/video/status"): broken,
+        # A managed key sees the embedder as unavailable, not as a failure.
+        ("GET", "/api/settings/embedding-model"): owner_only,
+        ("GET", "/api/inference/images/generate-progress"): {"active": True, "step": 3},
+        ("GET", "/api/inference/video/generate-progress"): {"active": False},
+    }
+    result, _studio = _status(monkeypatch, overrides)
     assert result["isError"] is False
     status = result["structuredContent"]
     assert set(status["unavailable"]) == {"video"}
     assert "Video backend crashed" in status["unavailable"]["video"]
     assert "/srv/hf" not in status["unavailable"]["video"]
     assert status["video"] == {"loaded": False, "model": None, "generating": False}
-    assert status["chat"]["loaded"]
-
-
-def test_a_managed_key_sees_the_embedder_as_unavailable(monkeypatch):
-    owner_only = JSONResponse(
-        {"detail": "Only the installation owner can do this"}, status_code = 403
-    )
-    result, _studio = _status(monkeypatch, {("GET", "/api/settings/embedding-model"): owner_only})
-    status = result["structuredContent"]
     assert status["embedder"] == {"available": False, "loaded": False, "model": None}
-    assert "embedder" not in status["unavailable"]
+    assert status["image"]["generating"] is True
+    assert status["chat"]["loaded"]
 
 
 def test_unloaded_slots_name_no_model(monkeypatch):
@@ -202,20 +208,6 @@ def test_unloaded_slots_name_no_model(monkeypatch):
         ("GET", "/api/inference/images/status"): {"loaded": False, "repo_id": "stale/repo"},
         ("GET", "/api/inference/video/status"): {"loaded": False},
     }
-    result, _studio = _status(monkeypatch, overrides)
-    status = result["structuredContent"]
+    status = _status(monkeypatch, overrides)[0]["structuredContent"]
     assert status["image"] == {"loaded": False, "model": None, "family": None, "generating": False}
     assert status["video"] == {"loaded": False, "model": None, "generating": False}
-
-
-def test_a_running_generation_is_reported(monkeypatch):
-    result, _studio = _status(
-        monkeypatch,
-        {
-            ("GET", "/api/inference/images/generate-progress"): {"active": True, "step": 3},
-            ("GET", "/api/inference/video/generate-progress"): {"active": False},
-        },
-    )
-    status = result["structuredContent"]
-    assert status["image"]["generating"] is True
-    assert status["video"]["generating"] is False

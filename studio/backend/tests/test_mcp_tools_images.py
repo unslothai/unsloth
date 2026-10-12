@@ -4,6 +4,8 @@
 import base64
 import json
 
+import pytest
+
 from fastapi.responses import Response
 
 from studio_mcp.media import INLINE_CAP
@@ -90,22 +92,11 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     result, studio = _generate(
         monkeypatch, {"prompt": "a red fox", "width": 512, "steps": 4}, **REMOTE
     )
+    remote = "http://192.168.1.20:8888" + GALLERY
     assert result["structuredContent"] == {
         "images": [
-            {
-                "id": "img-small",
-                "url": "http://192.168.1.20:8888/api/inference/images/gallery/img-small/file",
-                "width": 512,
-                "height": 512,
-                "seed": 1,
-            },
-            {
-                "id": "img-large",
-                "url": "http://192.168.1.20:8888/api/inference/images/gallery/img-large/file",
-                "width": 1024,
-                "height": 1024,
-                "seed": 2,
-            },
+            {"id": i, "url": f"{remote}/{i}/file", "width": side, "height": side, "seed": seed}
+            for i, side, seed in (("img-small", 512, 1), ("img-large", 1024, 2))
         ]
     }
     content = result["content"]
@@ -115,17 +106,17 @@ def test_txt2img_returns_ids_urls_and_inline_images(monkeypatch):
     assert content[1]["mimeType"] == "image/png"
     assert base64.b64decode(content[2]["data"]) == WEBP
     assert content[2]["mimeType"] == "image/webp"
-    assert (
-        content[3]["uri"] == "http://192.168.1.20:8888/api/inference/images/gallery/img-large/file"
-    )
+    assert content[3]["uri"] == f"{remote}/img-large/file"
     assert bodies(studio, "/api/inference/images/generate") == [
         {"prompt": "a red fox", "width": 512, "steps": 4}
     ]
-
-
-def test_a_large_image_is_never_fetched_in_full(monkeypatch):
-    _result, studio = _generate(monkeypatch, {"prompt": "x"})
+    # A large image is never fetched in full; gallery files are fetched as the caller.
     assert queries(studio, f"{GALLERY}/img-large/file") == [{"thumb": "1024"}]
+    fetches = [c[2] for c in studio.state.calls if "/gallery/" in c[1]]
+    assert len(fetches) == 2
+    for headers in fetches:
+        assert headers["authorization"] == "Bearer sk-unsloth-test"
+        assert headers["host"] == "unsloth-mcp.invalid"
 
 
 def test_a_thumbnail_studio_could_not_make_keeps_its_png_type(monkeypatch):
@@ -152,15 +143,6 @@ def test_a_full_image_over_the_cap_falls_back_to_the_thumbnail(monkeypatch):
     assert result["content"][1]["mimeType"] == "image/webp"
 
 
-def test_gallery_files_are_fetched_as_the_caller(monkeypatch):
-    _result, studio = _generate(monkeypatch, {"prompt": "x"})
-    fetches = [c for c in studio.state.calls if "/gallery/" in c[1]]
-    assert len(fetches) == 2
-    for _m, _p, headers, _b in fetches:
-        assert headers["authorization"] == "Bearer sk-unsloth-test"
-        assert headers["host"] == "unsloth-mcp.invalid"
-
-
 def test_progress_is_reported_while_generating(monkeypatch, fast_polls):
     studio = _studio({GENERATE: slow(GENERATED, 0.2)})
     progress, _result = call_with_progress(
@@ -170,34 +152,32 @@ def test_progress_is_reported_while_generating(monkeypatch, fast_polls):
     assert progress[0]["message"] == "Step 2 of 4"
 
 
-def test_edit_inputs_land_in_their_body_fields(monkeypatch):
-    args = {
-        "prompt": "make it night",
-        "init_image": {"gallery_id": "src-1"},
-        "mask_image": PNG_URL,
-        "reference_images": [{"data_url": data_url(JPEG, "image/jpeg")}],
-        "workflow": "edit",
-        "strength": 0.6,
-        "allow_oversized": True,
-    }
+PNG_DATA = data_url(PNG, "image/png")
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (
+            {
+                "prompt": "make it night",
+                "init_image": {"gallery_id": "src-1"},
+                "mask_image": PNG_URL,
+                "reference_images": [{"data_url": data_url(JPEG, "image/jpeg")}],
+                "workflow": "edit",
+                "strength": 0.6,
+                "allow_oversized": True,
+            },
+            {
+                "init_image": PNG_DATA,
+                "mask_image": PNG_DATA,
+                "reference_images": [data_url(JPEG, "image/jpeg")],
+            },
+        ),
+        ({"prompt": "sharper", "init_image": PNG_URL, "upscale": 2}, {"init_image": PNG_DATA}),
+    ],
+)
+def test_edit_and_upscale_inputs_land_in_their_body_fields(monkeypatch, args, expected):
     result, studio = _generate(monkeypatch, args, {("GET", f"{GALLERY}/src-1/file"): _png})
     assert result["isError"] is False
-    (body,) = bodies(studio, "/api/inference/images/generate")
-    assert body == {
-        "prompt": "make it night",
-        "init_image": data_url(PNG, "image/png"),
-        "mask_image": data_url(PNG, "image/png"),
-        "reference_images": [data_url(JPEG, "image/jpeg")],
-        "workflow": "edit",
-        "strength": 0.6,
-        "allow_oversized": True,
-    }
-
-
-def test_upscale_sends_the_factor_with_its_source(monkeypatch):
-    args = {"prompt": "sharper", "init_image": PNG_URL, "upscale": 2}
-    _result, studio = _generate(monkeypatch, args)
-    (body,) = bodies(studio, "/api/inference/images/generate")
-    assert body["upscale"] == 2
-    assert body["init_image"] == data_url(PNG, "image/png")
-    assert "allow_oversized" not in body
+    assert bodies(studio, "/api/inference/images/generate") == [{**args, **expected}]

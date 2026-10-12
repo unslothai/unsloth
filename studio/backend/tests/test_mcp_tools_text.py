@@ -57,8 +57,6 @@ QUESTIONS = {
     "topic": {"type": "choice", "criteria": {"billing": "Money", "bug": "Defect"}},
     "tone": {"type": "score", "criteria": ["calm", "angry"]},
 }
-
-
 CHAT = ("POST", "/v1/chat/completions")
 URGENT = {"urgent": QUESTIONS["urgent"]}
 
@@ -76,16 +74,18 @@ def test_a_prompt_becomes_one_user_turn(monkeypatch):
     result, studio = _chat(
         monkeypatch, {"prompt": "Capital of France?", "system": "Be brief.", "max_tokens": 16}
     )
-    assert result["structuredContent"] == {
+    out = result["structuredContent"]
+    assert out == {
         "text": "Paris.",
         "model": LLM,
         "finish_reason": "stop",
         "usage": {"prompt_tokens": 12, "completion_tokens": 2, "total_tokens": 14},
         "note": None,
-        "cancel_id": result["structuredContent"]["cancel_id"],
+        "cancel_id": out["cancel_id"],
     }
-    (body,) = bodies(studio, "/v1/chat/completions")
-    assert result["structuredContent"]["cancel_id"] == body["cancel_id"]
+    run_tool(monkeypatch, studio, "chat", {"prompt": "b"})
+    body, second = bodies(studio, "/v1/chat/completions")
+    assert out["cancel_id"] == body["cancel_id"] != second["cancel_id"]
     assert body["messages"] == [
         {"role": "system", "content": "Be brief."},
         {"role": "user", "content": "Capital of France?"},
@@ -95,13 +95,6 @@ def test_a_prompt_becomes_one_user_turn(monkeypatch):
     assert body["max_tokens"] == 16
     assert "temperature" not in body
     assert body["cancel_id"].startswith("mcp-") and len(body["cancel_id"]) > 20
-
-
-def test_each_call_gets_its_own_cancel_id(monkeypatch):
-    _result, studio = _chat(monkeypatch, {"prompt": "a"})
-    run_tool(monkeypatch, studio, "chat", {"prompt": "b"})
-    ids = [body["cancel_id"] for body in bodies(studio, "/v1/chat/completions")]
-    assert len(set(ids)) == 2
 
 
 def test_messages_are_sent_as_given(monkeypatch):
@@ -153,59 +146,47 @@ def test_a_different_answering_model_is_noted(monkeypatch):
     assert result["structuredContent"]["note"] is None
 
 
-@pytest.mark.parametrize("finish_reason,noted", [("length", True), ("stop", False)])
-def test_an_empty_reply_cut_off_by_the_budget_says_so(monkeypatch, finish_reason, noted):
+@pytest.mark.parametrize(
+    "content,finish_reason,noted",
+    [("", "length", True), ("", "stop", False), ("Edit /etc/hosts as root.", "stop", False)],
+)
+def test_an_empty_reply_cut_off_by_the_budget_says_so(monkeypatch, content, finish_reason, noted):
     reply = {
         **COMPLETION,
-        "choices": [{"message": {"content": ""}, "finish_reason": finish_reason}],
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
     }
     result, _studio = _chat(monkeypatch, {"prompt": "hi", "max_tokens": 300}, reply)
-    note = result["structuredContent"]["note"]
-    assert ("raise max_tokens" in note) if noted else note is None
+    out = result["structuredContent"]
+    assert out["text"] == content
+    assert ("raise max_tokens" in out["note"]) if noted else out["note"] is None
 
 
-def test_model_text_is_returned_untouched(monkeypatch):
-    reply = {
-        **COMPLETION,
-        "choices": [{"message": {"content": "Edit /etc/hosts as root."}, "finish_reason": "stop"}],
-    }
-    result, _studio = _chat(monkeypatch, {"prompt": "hi"}, reply)
-    assert result["structuredContent"]["text"] == "Edit /etc/hosts as root."
-
-
-def test_embed_returns_vectors_in_input_order(monkeypatch):
-    result, studio = run_tool(monkeypatch, PAYLOADS, "embed", {"texts": ["first", "second"]})
+@pytest.mark.parametrize("model", [None, "bge-m3"])
+def test_embed_returns_vectors_in_input_order(monkeypatch, model):
+    args = {"texts": ["first", "second"], **({"model": model} if model else {})}
+    result, studio = run_tool(monkeypatch, PAYLOADS, "embed", args)
     assert result["structuredContent"] == {
         "model": "nomic-embed-text-v1.5",
         "dimensions": 3,
         "embeddings": [[1.0, 0.0, 0.25], [0.0, 1.0, 0.5]],
     }
-    assert bodies(studio, "/v1/embeddings") == [{"input": ["first", "second"]}]
+    assert bodies(studio, "/v1/embeddings") == [
+        {"input": args["texts"], **({"model": model} if model else {})}
+    ]
 
 
-def test_embed_names_a_model_only_when_asked(monkeypatch):
-    args = {"texts": ["first", "second"], "model": "bge-m3"}
-    _result, studio = run_tool(monkeypatch, PAYLOADS, "embed", args)
-    assert bodies(studio, "/v1/embeddings") == [{"input": ["first", "second"], "model": "bge-m3"}]
-
-
-def _embed(monkeypatch, rows, texts):
+# The 2048-text limit is accepted; fewer vectors than texts is an error.
+@pytest.mark.parametrize("rows,texts", [(2048, 2048), (1, 2)])
+def test_embed_accepts_the_limit_and_refuses_a_short_answer(monkeypatch, rows, texts):
+    answer = {"model": "m", "data": [{"index": i, "embedding": [0.5]} for i in range(rows)]}
     result, _studio = run_tool(
-        monkeypatch, {("POST", "/v1/embeddings"): rows}, "embed", {"texts": texts}
+        monkeypatch, {("POST", "/v1/embeddings"): answer}, "embed", {"texts": ["x"] * texts}
     )
-    return result
-
-
-def test_embed_accepts_the_limit(monkeypatch):
-    rows = {"model": "m", "data": [{"index": i, "embedding": [0.5]} for i in range(2048)]}
-    result = _embed(monkeypatch, rows, ["x"] * 2048)
-    assert result["structuredContent"]["dimensions"] == 1
-    assert len(result["structuredContent"]["embeddings"]) == 2048
-
-
-def test_a_short_answer_is_an_error(monkeypatch):
-    rows = {"model": "m", "data": [{"index": 0, "embedding": [0.5]}]}
-    assert _embed(monkeypatch, rows, ["a", "b"])["isError"] is True
+    if rows < texts:
+        assert result["isError"] is True
+    else:
+        assert result["structuredContent"]["dimensions"] == 1
+        assert len(result["structuredContent"]["embeddings"]) == texts
 
 
 def _decide(
@@ -221,35 +202,16 @@ def test_system_one_sends_the_default_model_and_maps_every_answer_type(monkeypat
     answer = JSONResponse(DECISION, headers = {"x-typesafe-request-id": "req-1"})
     args = {"state": "Customer: I was charged twice!", "questions": QUESTIONS}
     result, studio = _decide(monkeypatch, args, answer)
+    blank = dict.fromkeys(["noul", "choice", "score", "confidence", "probabilities", "legend"])
     assert result["structuredContent"] == {
         "model": "laya-multilingual",
         "request_id": "req-1",
         "answers": {
-            "urgent": {
-                "type": "noul",
-                "noul": 0.9,
-                "choice": None,
-                "score": None,
-                "confidence": None,
-                "probabilities": None,
-                "legend": None,
-            },
-            "topic": {
-                "type": "choice",
-                "noul": None,
-                "choice": "billing",
-                "score": None,
-                "confidence": 0.8,
-                "probabilities": {"billing": 0.8, "bug": 0.2},
-                "legend": None,
-            },
+            "urgent": {**blank, "type": "noul", "noul": 0.9},
+            "topic": {**blank, **DECISION["answers"]["topic"]},
             "tone": {
-                "type": "score",
-                "noul": None,
-                "choice": None,
-                "score": 2.0,
-                "confidence": 0.7,
-                "probabilities": {"1": 0.3, "2": 0.7},
+                **blank,
+                **DECISION["answers"]["tone"],
                 "legend": {"0": "calm", "1": '{"text": "angry"}'},
             },
         },
@@ -260,11 +222,6 @@ def test_system_one_sends_the_default_model_and_maps_every_answer_type(monkeypat
         "model": "default",
         "questions": QUESTIONS,
     }
-
-
-def test_system_one_takes_json_state(monkeypatch):
-    _result, studio = _decide(monkeypatch, {"state": {"ticket": 7}, "questions": URGENT})
-    assert bodies(studio, "/v1/systemone")[0]["state"] == {"ticket": 7}
 
 
 def test_a_detail_error_type_message_is_used(monkeypatch):
@@ -278,11 +235,11 @@ def test_a_detail_error_type_message_is_used(monkeypatch):
     assert bodies(studio, "/v1/systemone")[0]["model"] == "nope"
 
 
-def test_system_one_sends_up_to_four_png_or_jpeg_images(monkeypatch):
+def test_system_one_sends_json_state_and_png_or_jpeg_images(monkeypatch):
     images = [PNG_URL, {"data_url": data_url(JPEG, "image/jpeg")}]
-    result, studio = _decide(monkeypatch, {"state": "x", "questions": URGENT, "images": images})
+    args = {"state": {"ticket": 7}, "questions": URGENT, "images": images}
+    result, studio = _decide(monkeypatch, args)
     assert result["isError"] is False
-    assert bodies(studio, "/v1/systemone")[0]["images"] == [
-        data_url(PNG, "image/png"),
-        data_url(JPEG, "image/jpeg"),
-    ]
+    (body,) = bodies(studio, "/v1/systemone")
+    assert body["state"] == {"ticket": 7}
+    assert body["images"] == [data_url(PNG, "image/png"), data_url(JPEG, "image/jpeg")]

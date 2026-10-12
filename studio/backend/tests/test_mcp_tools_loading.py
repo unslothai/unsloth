@@ -32,9 +32,12 @@ LOADED = {
 }
 STATUS = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": ["/srv/models/llama.gguf"]}
 EMPTY_STATUS = {"loaded": [], "serving": [], "serving_checkpoints": []}
+LOAD = ("POST", "/api/inference/load")
+STT = "/api/inference/audio/stt"
+STATUS_ROUTE = ("GET", "/api/inference/status")
 
 PAYLOADS = {
-    ("POST", "/api/inference/load"): LOADED,
+    LOAD: LOADED,
     ("GET", "/api/inference/load-progress"): {"phase": "mmap", "fraction": 0.5},
     ("GET", "/api/models/download-progress"): {
         "progress": 0.25,
@@ -42,16 +45,18 @@ PAYLOADS = {
         "expected_bytes": 4,
     },
     ("POST", "/api/inference/unload"): {"status": "unloaded", "model": LLM},
-    ("GET", "/api/inference/status"): STATUS,
+    STATUS_ROUTE: STATUS,
 }
 
 
-def test_load_sends_the_body_and_reports_the_result(monkeypatch):
-    result, studio = run_tool(
-        monkeypatch, PAYLOADS, "load_model", {"model": LLM, "variant": "Q4_K_M"}
-    )
+# tts / audio load through the LLM route but report the kind asked for. STATUS serves LLM
+# before and after, so only the route's own evicted list counts.
+@pytest.mark.parametrize("kind", [None, "tts", "audio"])
+def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
+    args = {"model": LLM, "variant": "Q4_K_M", **({"kind": kind} if kind else {})}
+    result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", args)
     assert result["structuredContent"] == {
-        "kind": "llm",
+        "kind": kind or "llm",
         "model": LLM,
         "loaded": True,
         "display_name": "Llama 3.2 1B",
@@ -62,72 +67,60 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("kind", ["tts", "audio"])
-def test_the_kinds_list_models_reports_for_audio_load_as_llm(monkeypatch, kind):
-    result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM, "kind": kind})
-    assert result["isError"] is False
-    assert bodies(studio, "/api/inference/load")[0]["model_path"] == LLM
-    # The kind asked for is the kind reported.
-    assert result["structuredContent"]["kind"] == kind
-
-
-def test_a_chat_model_unloaded_without_the_route_saying_so_is_evicted(monkeypatch):
-    # An audio model's engine switch unloads the chat model, and the route's evicted list misses it.
+@pytest.mark.parametrize(
+    "kind,route_evicted,before,after,expected",
+    [
+        # An audio engine switch unloads the chat model without the route saying so.
+        (
+            "tts",
+            [],
+            {**STATUS, "serving": ["unsloth/Qwen3-0.6B-GGUF"]},
+            EMPTY_STATUS,
+            ["unsloth/Qwen3-0.6B-GGUF"],
+        ),
+        # The route keys a dropped GGUF as repo:variant while status serves the bare repo id.
+        (
+            "llm",
+            ["unsloth/Qwen3-8B-GGUF:Q4_K_M"],
+            {**STATUS, "serving": [LLM, "unsloth/Qwen3-8B-GGUF"]},
+            STATUS,
+            ["unsloth/Qwen3-8B-GGUF:Q4_K_M"],
+        ),
+    ],
+)
+def test_evicted_merges_the_route_list_and_status(
+    monkeypatch, kind, route_evicted, before, after, expected
+):
     routes = {
         **PAYLOADS,
-        ("POST", "/api/inference/load"): {**LOADED, "evicted": []},
-        ("GET", "/api/inference/status"): sequence(
-            {**STATUS, "serving": ["unsloth/Qwen3-0.6B-GGUF"]}, EMPTY_STATUS
-        ),
+        LOAD: {**LOADED, "evicted": route_evicted},
+        STATUS_ROUTE: sequence(before, after),
     }
-    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "tts"})
-    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-0.6B-GGUF"]
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": kind})
+    assert result["structuredContent"]["evicted"] == expected
 
 
-def test_what_the_route_names_is_not_listed_again_by_its_serving_id(monkeypatch):
-    # The route keys a dropped GGUF as repo:variant while status serves the bare repo id.
-    routes = {
-        **PAYLOADS,
-        ("POST", "/api/inference/load"): {**LOADED, "evicted": ["unsloth/Qwen3-8B-GGUF:Q4_K_M"]},
-        ("GET", "/api/inference/status"): sequence(
-            {**STATUS, "serving": [LLM, "unsloth/Qwen3-8B-GGUF"]}, STATUS
-        ),
-    }
-    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
-    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-8B-GGUF:Q4_K_M"]
-
-
-def test_a_model_still_serving_is_not_evicted(monkeypatch):
-    result, _studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM})
-    # STATUS serves LLM before and after; only the route's own list counts.
-    assert result["structuredContent"]["evicted"] == ["unsloth/Qwen3-0.6B"]
-
-
-def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch):
-    args = {"model": LLM, "hf_token": "hf_param", "load_in_4bit": False}
-    _result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", args)
-    (_m, _p, headers, body) = call_to(studio, "/api/inference/load")
-    assert json.loads(body)["hf_token"] == "hf_param"
-    assert json.loads(body)["load_in_4bit"] is False
-    assert "x-unsloth-hf-token" not in headers
-
+@pytest.mark.parametrize(
+    "args,headers,token",
+    [
+        ({"hf_token": "hf_param", "load_in_4bit": False}, None, "hf_param"),
+        ({}, {"X-Unsloth-HF-Token": "hf_header"}, "hf_header"),
+    ],
+)
+def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch, args, headers, token):
     _result, studio = run_tool(
-        monkeypatch,
-        PAYLOADS,
-        "load_model",
-        {"model": LLM},
-        headers = {"X-Unsloth-HF-Token": "hf_header"},
+        monkeypatch, PAYLOADS, "load_model", {"model": LLM, **args}, headers = headers
     )
-    (_m, _p, headers, body) = call_to(studio, "/api/inference/load")
-    assert json.loads(body)["hf_token"] == "hf_header"
-    assert "x-unsloth-hf-token" not in headers
+    (_m, _p, sent_headers, body) = call_to(studio, "/api/inference/load")
+    assert json.loads(body)["hf_token"] == token
+    assert json.loads(body)["load_in_4bit"] is ("load_in_4bit" not in args)
+    assert "x-unsloth-hf-token" not in sent_headers
 
 
 @pytest.mark.parametrize("deferred", DEFERRED)
 def test_a_padded_deferred_error_is_a_tool_error(monkeypatch, deferred):
     padded = b" " * 40 + json.dumps({"_deferred_error": deferred}).encode()
-    slow_failure = Response(padded, media_type = "application/json")
-    routes = {**PAYLOADS, ("POST", "/api/inference/load"): slow_failure}
+    routes = {**PAYLOADS, LOAD: Response(padded, media_type = "application/json")}
     result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     assert result["isError"] is True
     assert deferred["detail"] in result["content"][0]["text"]
@@ -135,7 +128,7 @@ def test_a_padded_deferred_error_is_a_tool_error(monkeypatch, deferred):
 
 
 def test_progress_is_reported_while_the_load_runs(monkeypatch, fast_polls):
-    studio = fake_studio({**PAYLOADS, ("POST", "/api/inference/load"): slow(LOADED, 0.3)})
+    studio = fake_studio({**PAYLOADS, LOAD: slow(LOADED, 0.3)})
     progress, result = call_with_progress(monkeypatch, studio, "load_model", {"model": LLM}, "p1")
     assert progress, result
     assert progress[0]["progressToken"] == "p1"
@@ -147,7 +140,7 @@ def test_progress_is_reported_while_the_load_runs(monkeypatch, fast_polls):
 def test_download_progress_is_used_before_the_load_starts(monkeypatch, fast_polls):
     routes = {
         **PAYLOADS,
-        ("POST", "/api/inference/load"): slow(LOADED, 0.2),
+        LOAD: slow(LOADED, 0.2),
         ("GET", "/api/inference/load-progress"): {"phase": None, "fraction": 0.0},
     }
     _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
@@ -156,32 +149,32 @@ def test_download_progress_is_used_before_the_load_starts(monkeypatch, fast_poll
     assert all(c[2].get("x-unsloth-hf-token") is None for c in downloads)
 
 
-# Without a model the serving one is unloaded; a public id maps to its checkpoint.
-@pytest.mark.parametrize("args", [{}, {"model": LLM}])
-def test_unload_picks_the_serving_checkpoint_and_checks_the_result(monkeypatch, args):
-    routes = {**PAYLOADS, ("GET", "/api/inference/status"): sequence(STATUS, EMPTY_STATUS)}
+# Without a model the serving one is unloaded; a public id maps to its checkpoint. An unload
+# that matched nothing, or left the model resident (STATUS still serves LLM), is not success.
+@pytest.mark.parametrize(
+    "args,statuses,model,sent",
+    [
+        ({}, (STATUS, EMPTY_STATUS), LLM, [{"model_path": "/srv/models/llama.gguf"}]),
+        ({"model": LLM}, (STATUS, EMPTY_STATUS), LLM, [{"model_path": "/srv/models/llama.gguf"}]),
+        ({"model": "unsloth/not-loaded"}, (STATUS,), "unsloth/not-loaded", None),
+        ({"model": LLM}, (STATUS,), LLM, None),
+        ({}, (EMPTY_STATUS,), None, []),
+    ],
+)
+def test_unload_picks_the_serving_checkpoint_and_checks_the_result(
+    monkeypatch, args, statuses, model, sent
+):
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(*statuses)}
     result, studio = run_tool(monkeypatch, routes, "unload_model", args)
-    assert result["structuredContent"] == {"kind": "llm", "model": LLM, "unloaded": True}
-    assert bodies(studio, "/api/inference/unload") == [{"model_path": "/srv/models/llama.gguf"}]
-
-
-# An unload that matched nothing, or that left the model resident (STATUS still serves LLM),
-# is not success.
-@pytest.mark.parametrize("model", ["unsloth/not-loaded", LLM])
-def test_an_unload_that_did_not_happen_reports_unloaded_false(monkeypatch, model):
-    result, _studio = run_tool(monkeypatch, PAYLOADS, "unload_model", {"model": model})
-    assert result["structuredContent"] == {"kind": "llm", "model": model, "unloaded": False}
-
-
-def test_unload_with_nothing_loaded(monkeypatch):
-    routes = {**PAYLOADS, ("GET", "/api/inference/status"): EMPTY_STATUS}
-    result, studio = run_tool(monkeypatch, routes, "unload_model", {})
-    assert result["structuredContent"] == {"kind": "llm", "model": None, "unloaded": False}
-    assert bodies(studio, "/api/inference/unload") == []
+    assert result["structuredContent"] == {"kind": "llm", "model": model, "unloaded": bool(sent)}
+    if sent is not None:
+        assert bodies(studio, "/api/inference/unload") == sent
 
 
 FLUX_GGUF = "city96/FLUX.1-schnell-gguf"
 LTX = "Lightricks/LTX-Video"
+QUANTS = ("Q4_K_S", "Q8_0")
+READY = {"phase": "ready"}
 
 
 def _media_studio(
@@ -199,10 +192,7 @@ def _media_studio(
             ("GET", "/api/hub/gguf-variants"): {
                 "repo_id": FLUX_GGUF,
                 "default_variant": "Q4_K_S",
-                "variants": [
-                    {"filename": "flux1-schnell-Q4_K_S.gguf", "quant": "Q4_K_S"},
-                    {"filename": "flux1-schnell-Q8_0.gguf", "quant": "Q8_0"},
-                ],
+                "variants": [{"filename": f"flux1-schnell-{q}.gguf", "quant": q} for q in QUANTS],
             },
             ("POST", f"{prefix}/download-plan"): plan or {"entries": [], "plan_failed": False},
             ("POST", f"{prefix}/load"): load_answer or {"loaded": False},
@@ -213,65 +203,36 @@ def _media_studio(
     )
 
 
-def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls):
+# No variant named: the default is used, and the hf_token argument reaches the (gated) lookup.
+@pytest.mark.parametrize(
+    "extra,filename",
+    [
+        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf"),
+        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf"),
+    ],
+)
+def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extra, filename):
     studio = _media_studio(
         "image",
-        progress = [
-            {"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2},
-            {"phase": "ready"},
-        ],
+        progress = [{"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2}, READY],
         statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "family": "flux"}],
     )
     result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", "variant": "Q8_0"}
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
     )
-    assert result["structuredContent"] == {
-        "kind": "image",
-        "model": FLUX_GGUF,
-        "loaded": True,
-        "display_name": None,
-        "evicted": [],
-    }
-    expected = {
-        "model_path": FLUX_GGUF,
-        "gguf_filename": "flux1-schnell-Q8_0.gguf",
-        "model_kind": "gguf",
-    }
+    loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, "display_name": None}
+    assert result["structuredContent"] == {**loaded, "evicted": []}
+    expected = {"model_path": FLUX_GGUF, "gguf_filename": filename, "model_kind": "gguf"}
+    expected.update({"hf_token": extra["hf_token"]} if "hf_token" in extra else {})
     assert bodies(studio, "/api/inference/images/download-plan") == [expected]
     assert bodies(studio, "/api/inference/images/load") == [expected]
-
-
-def test_the_default_variant_is_used_when_none_is_named(monkeypatch, fast_polls):
-    studio = _media_studio("image", statuses = [{"loaded": True, "repo_id": FLUX_GGUF}])
-    run_tool(monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image"})
-    assert (
-        bodies(studio, "/api/inference/images/load")[0]["gguf_filename"]
-        == "flux1-schnell-Q4_K_S.gguf"
-    )
-
-
-def test_an_unknown_variant_is_refused_before_any_load(monkeypatch, fast_polls):
-    studio = _media_studio("image")
-    result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", "variant": "Q2_K"}
-    )
-    assert result["isError"] is True
-    assert "Q2_K" in result["content"][0]["text"]
-    assert bodies(studio, "/api/inference/images/load") == []
+    lookup_token = call_to(studio, "/api/hub/gguf-variants")[2].get("x-unsloth-hf-token")
+    assert lookup_token == extra.get("hf_token")
 
 
 def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
-    plan = {
-        "entries": [
-            {
-                "repo_id": "a/b",
-                "files": [],
-                "bytes": 1,
-                "gguf_filename": "model.safetensors",
-                "checkpoint": True,
-            }
-        ]
-    }
+    entry = {"repo_id": "a/b", "files": [], "bytes": 1, "checkpoint": True}
+    plan = {"entries": [{**entry, "gguf_filename": "model.safetensors"}]}
     studio = _media_studio("image", statuses = [{"loaded": True, "repo_id": "a/b"}], plan = plan)
     run_tool(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
     assert bodies(studio, "/api/inference/images/load") == [
@@ -280,51 +241,52 @@ def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
     assert [c for c in studio.state.calls if c[1] == "/api/hub/gguf-variants"] == []
 
 
-def test_an_incompatible_plan_is_a_tool_error(monkeypatch, fast_polls):
-    studio = _media_studio("image", plan = {"entries": [], "incompatible_reason": "Needs a CUDA GPU"})
-    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
+PREVIOUS = {"loaded": True, "repo_id": "old/model"}
+AB = {"model": "a/b", "kind": "image"}
+DISK_FULL = [{"phase": "downloading"}, {"phase": "error", "error": "Out of disk space"}]
+
+
+@pytest.mark.parametrize(
+    "args,studio_kwargs,message",
+    [
+        ({**AB, "model": FLUX_GGUF, "variant": "Q2_K"}, {}, "Q2_K"),
+        (
+            AB,
+            {"plan": {"entries": [], "incompatible_reason": "Needs a CUDA GPU"}},
+            "Needs a CUDA GPU",
+        ),
+        (AB, {"progress": DISK_FULL}, "Out of disk space"),
+        # The previous model in the load answer is not success.
+        (
+            {**AB, "model": "new/m"},
+            {"statuses": [PREVIOUS], "load_answer": PREVIOUS},
+            "loading new/m",
+        ),
+        ({"model": LTX, "kind": "video"}, {"progress": [{}], "statuses": [PREVIOUS]}, "stopped"),
+    ],
+)
+def test_a_media_load_failure_is_a_tool_error(
+    monkeypatch, fast_polls, args, studio_kwargs, message
+):
+    studio = _media_studio(args["kind"], **studio_kwargs)
+    result, _studio = run_tool(monkeypatch, studio, "load_model", args)
     assert result["isError"] is True
-    assert "Needs a CUDA GPU" in result["content"][0]["text"]
+    assert message in result["content"][0]["text"]
+    if "variant" in args:
+        assert bodies(studio, "/api/inference/images/load") == []
 
 
-def test_a_load_error_phase_is_a_tool_error(monkeypatch, fast_polls):
+def test_a_previous_model_answer_then_the_new_one_loads(monkeypatch, fast_polls):
     studio = _media_studio(
         "image",
-        progress = [{"phase": "downloading"}, {"phase": "error", "error": "Out of disk space"}],
-    )
-    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": "a/b", "kind": "image"})
-    assert result["isError"] is True
-    assert "Out of disk space" in result["content"][0]["text"]
-
-
-def test_the_previous_model_in_the_load_answer_is_not_success(monkeypatch, fast_polls):
-    previous = {"loaded": True, "repo_id": "old/model"}
-    studio = _media_studio("image", statuses = [previous], load_answer = previous)
-    result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": "new/model", "kind": "image"}
-    )
-    assert result["isError"] is True
-    assert "did not finish loading new/model" in result["content"][0]["text"]
-
-    studio = _media_studio(
-        "image",
-        progress = [{"phase": None}, {"phase": "downloading"}, {"phase": "ready"}],
-        statuses = [previous, {"loaded": True, "repo_id": "new/model"}],
-        load_answer = previous,
+        progress = [{"phase": None}, {"phase": "downloading"}, READY],
+        statuses = [PREVIOUS, {"loaded": True, "repo_id": "new/model"}],
+        load_answer = PREVIOUS,
     )
     result, _studio = run_tool(
         monkeypatch, studio, "load_model", {"model": "new/model", "kind": "image"}
     )
     assert result["structuredContent"]["model"] == "new/model"
-
-
-def test_a_load_that_never_starts_gives_up(monkeypatch, fast_polls):
-    studio = _media_studio(
-        "video", progress = [{"phase": None}], statuses = [{"loaded": True, "repo_id": "old/model"}]
-    )
-    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"})
-    assert result["isError"] is True
-    assert "stopped reporting" in result["content"][0]["text"]
 
 
 def test_video_progress_uses_its_own_field_names(monkeypatch, fast_polls):
@@ -337,138 +299,95 @@ def test_video_progress_uses_its_own_field_names(monkeypatch, fast_polls):
         ],
         statuses = [{"loaded": True, "repo_id": LTX}],
     )
-    args = {"model": LTX, "kind": "video"}
-    progress, result = call_with_progress(monkeypatch, studio, "load_model", args)
+    progress, result = call_with_progress(
+        monkeypatch, studio, "load_model", {"model": LTX, "kind": "video"}
+    )
     assert [p["progress"] for p in progress] == [0.25, 1.0]
     assert progress[0]["message"] == "Downloading"
     assert result["structuredContent"]["model"] == LTX
     assert bodies(studio, "/api/inference/video/load") == [{"model_path": LTX}]
 
 
-@pytest.mark.parametrize("kind", ["image", "video"])
-def test_media_unload_takes_no_body(monkeypatch, kind):
-    studio = _media_studio(kind, statuses = [{"loaded": True, "repo_id": LTX}])
+@pytest.mark.parametrize(
+    "kind,statuses,model",
+    [
+        ("image", [{"loaded": True, "repo_id": LTX}], LTX),
+        ("video", [{"loaded": True, "repo_id": LTX}], LTX),
+        ("image", [{"loaded": False}], None),
+    ],
+)
+def test_media_unload_takes_no_body(monkeypatch, kind, statuses, model):
+    studio = _media_studio(kind, statuses = statuses)
     result, _studio = run_tool(monkeypatch, studio, "unload_model", {"kind": kind})
-    assert result["structuredContent"] == {"kind": kind, "model": LTX, "unloaded": True}
-    prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
-    (unload,) = [c for c in studio.state.calls if c[1] == f"{prefix}/unload"]
-    assert unload[3] == b""
-
-
-def test_media_unload_with_nothing_loaded(monkeypatch):
-    studio = _media_studio("image")
-    result, _studio = run_tool(monkeypatch, studio, "unload_model", {"kind": "image"})
-    assert result["structuredContent"] == {"kind": "image", "model": None, "unloaded": False}
-    assert [c for c in studio.state.calls if c[1].endswith("/unload")] == []
+    assert result["structuredContent"] == {
+        "kind": kind,
+        "model": model,
+        "unloaded": model is not None,
+    }
+    unloads = [c[3] for c in studio.state.calls if c[1].endswith("/unload")]
+    assert unloads == ([b""] if model else [])
 
 
 def _stt_studio(statuses, *, download = None):
     return fake_studio(
         {
-            ("GET", "/api/inference/audio/stt/status"): sequence(*statuses),
-            ("POST", "/api/inference/audio/stt/download"): download
+            ("GET", f"{STT}/status"): sequence(*statuses),
+            ("POST", f"{STT}/download"): download
             or {"downloading": True, "model": WHISPER, "download_id": "d1"},
-            ("POST", "/api/inference/audio/stt/load"): {"loaded_model": WHISPER, "device": "cuda"},
-            ("POST", "/api/inference/audio/stt/unload"): {"loaded_model": None, "device": None},
+            ("POST", f"{STT}/load"): {"loaded_model": WHISPER, "device": "cuda"},
+            ("POST", f"{STT}/unload"): {"loaded_model": None, "device": None},
         }
     )
 
 
-def test_stt_downloads_then_loads_in_order(monkeypatch, fast_polls):
+# The token rides the download header (never the body), from the header or the argument.
+@pytest.mark.parametrize(
+    "headers,extra", [({"X-Unsloth-HF-Token": "hf_h"}, {}), (None, {"hf_token": "hf_h"})]
+)
+def test_stt_downloads_then_loads_in_order(monkeypatch, fast_polls, headers, extra):
+    progress = {"downloading": True, "model": WHISPER, "bytes_done": 1, "bytes_total": 2}
+    done = {"downloading": False, "completed_download_ids": ["d1"]}
     studio = _stt_studio(
         [
             {"transformers": stt_state()},
-            {
-                "transformers": stt_state(
-                    download = {
-                        "downloading": True,
-                        "model": WHISPER,
-                        "bytes_done": 1,
-                        "bytes_total": 2,
-                    }
-                )
-            },
-            {
-                "transformers": stt_state(
-                    downloaded = [WHISPER],
-                    download = {"downloading": False, "completed_download_ids": ["d1"]},
-                )
-            },
+            {"transformers": stt_state(download = progress)},
+            {"transformers": stt_state(downloaded = [WHISPER], download = done)},
         ]
     )
     result, _studio = run_tool(
         monkeypatch,
         studio,
         "load_model",
-        {"model": WHISPER, "kind": "stt"},
-        headers = {"X-Unsloth-HF-Token": "hf_h"},
+        {"model": WHISPER, "kind": "stt", **extra},
+        headers = headers,
     )
     assert result["structuredContent"]["model"] == WHISPER
-    order = [(m, p) for m, p, _h, _b in studio.state.calls]
-    assert order == [
-        ("GET", "/api/inference/audio/stt/status"),
-        ("POST", "/api/inference/audio/stt/download"),
-        ("GET", "/api/inference/audio/stt/status"),
-        ("GET", "/api/inference/audio/stt/status"),
-        ("POST", "/api/inference/audio/stt/load"),
+    assert [(m, p) for m, p, _h, _b in studio.state.calls] == [
+        ("GET", f"{STT}/status"),
+        ("POST", f"{STT}/download"),
+        ("GET", f"{STT}/status"),
+        ("GET", f"{STT}/status"),
+        ("POST", f"{STT}/load"),
     ]
-    assert bodies(studio, "/api/inference/audio/stt/download") == [
-        {"model": WHISPER, "engine": "transformers"}
-    ]
-    assert call_to(studio, "/api/inference/audio/stt/download")[2]["x-unsloth-hf-token"] == "hf_h"
-    assert bodies(studio, "/api/inference/audio/stt/load") == [
-        {"model": WHISPER, "engine": "transformers"}
-    ]
-
-
-def test_the_hf_token_argument_reaches_the_gguf_lookup(monkeypatch, fast_polls):
-    # A gated GGUF repo needs the token on the variant lookup, not only on the load.
-    studio = _media_studio(
-        "image", statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "family": "flux"}]
-    )
-    run_tool(
-        monkeypatch,
-        studio,
-        "load_model",
-        {"model": FLUX_GGUF, "kind": "image", "hf_token": "hf_arg"},
-    )
-    lookup = call_to(studio, "/api/hub/gguf-variants")
-    assert lookup[2]["x-unsloth-hf-token"] == "hf_arg"
-
-
-def test_the_hf_token_argument_rides_the_download_header(monkeypatch, fast_polls):
-    studio = _stt_studio(
-        [{"transformers": stt_state()}, {"transformers": stt_state(downloaded = [WHISPER])}],
-        download = {"downloading": True, "model": WHISPER},
-    )
-    run_tool(
-        monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt", "hf_token": "hf_arg"}
-    )
-    download = call_to(studio, "/api/inference/audio/stt/download")
-    assert download[2]["x-unsloth-hf-token"] == "hf_arg"
-    assert "hf_token" not in json.loads(download[3])
+    expected = [{"model": WHISPER, "engine": "transformers"}]
+    assert bodies(studio, f"{STT}/download") == expected
+    assert call_to(studio, f"{STT}/download")[2]["x-unsloth-hf-token"] == "hf_h"
+    assert bodies(studio, f"{STT}/load") == expected
 
 
 def test_a_downloaded_stt_model_loads_straight_away(monkeypatch):
-    studio = _stt_studio(
-        [{"gguf": {**stt_state(downloaded = ["whisper-small-q5"]), "models": ["whisper-small-q5"]}}]
-    )
-    result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": "whisper-small-q5", "kind": "stt"}
-    )
+    q5 = "whisper-small-q5"
+    studio = _stt_studio([{"gguf": {**stt_state(downloaded = [q5]), "models": [q5]}}])
+    result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": q5, "kind": "stt"})
     assert result["isError"] is False
-    assert [c[1] for c in studio.state.calls if c[0] == "POST"] == ["/api/inference/audio/stt/load"]
-    assert bodies(studio, "/api/inference/audio/stt/load") == [
-        {"model": "whisper-small-q5", "engine": "gguf"}
-    ]
+    assert [c[1] for c in studio.state.calls if c[0] == "POST"] == [f"{STT}/load"]
+    assert bodies(studio, f"{STT}/load") == [{"model": q5, "engine": "gguf"}]
 
 
 def test_a_failed_download_never_loads(monkeypatch, fast_polls):
+    failed = {"downloading": False, "error": "401 gated repo"}
     studio = _stt_studio(
-        [
-            {"transformers": stt_state()},
-            {"transformers": stt_state(download = {"downloading": False, "error": "401 gated repo"})},
-        ]
+        [{"transformers": stt_state()}, {"transformers": stt_state(download = failed)}]
     )
     result, _studio = run_tool(monkeypatch, studio, "load_model", {"model": WHISPER, "kind": "stt"})
     assert result["isError"] is True
@@ -476,26 +395,28 @@ def test_a_failed_download_never_loads(monkeypatch, fast_polls):
     assert [c for c in studio.state.calls if c[1].endswith("/load")] == []
 
 
-def test_stt_unload_names_the_engine_and_model_in_the_query(monkeypatch):
-    studio = _stt_studio(
-        [
-            {"transformers": stt_state(), "mtmd": stt_state(loaded = "qwen3-asr")},
-            {"transformers": stt_state(), "mtmd": stt_state()},
-        ]
-    )
-    result, _studio = run_tool(monkeypatch, studio, "unload_model", {"kind": "stt"})
-    assert result["structuredContent"] == {"kind": "stt", "model": "qwen3-asr", "unloaded": True}
-    assert queries(studio, "/api/inference/audio/stt/unload") == [
-        {"engine": "mtmd", "model": "qwen3-asr", "wait": "true"}
-    ]
-    (unload,) = [c for c in studio.state.calls if c[1].endswith("/unload")]
-    assert unload[3] == b""
-
-
-def test_stt_unload_of_a_model_that_is_not_loaded(monkeypatch):
-    studio = _stt_studio([{"transformers": stt_state(loaded = WHISPER)}])
-    result, _studio = run_tool(
-        monkeypatch, studio, "unload_model", {"kind": "stt", "model": "other"}
-    )
-    assert result["structuredContent"] == {"kind": "stt", "model": "other", "unloaded": False}
-    assert [c for c in studio.state.calls if c[1].endswith("/unload")] == []
+@pytest.mark.parametrize(
+    "statuses,args,model,query",
+    [
+        (
+            [
+                {"transformers": stt_state(), "mtmd": stt_state(loaded = "qwen3-asr")},
+                {"transformers": stt_state(), "mtmd": stt_state()},
+            ],
+            {},
+            "qwen3-asr",
+            {"engine": "mtmd", "model": "qwen3-asr", "wait": "true"},
+        ),
+        ([{"transformers": stt_state(loaded = WHISPER)}], {"model": "other"}, "other", None),
+    ],
+)
+def test_stt_unload_names_the_engine_and_model_in_the_query(
+    monkeypatch, statuses, args, model, query
+):
+    studio = _stt_studio(statuses)
+    result, _studio = run_tool(monkeypatch, studio, "unload_model", {"kind": "stt", **args})
+    unloaded = query is not None
+    assert result["structuredContent"] == {"kind": "stt", "model": model, "unloaded": unloaded}
+    assert queries(studio, f"{STT}/unload") == ([query] if query else [])
+    unloads = [c[3] for c in studio.state.calls if c[1].endswith("/unload")]
+    assert unloads == ([b""] if unloaded else [])

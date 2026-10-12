@@ -78,32 +78,37 @@ def test_the_payload_must_be_a_strict_bool(client, value):
     assert get_mcp_enabled() is False
 
 
-@pytest.mark.parametrize("method", ["GET", "PUT"])
-def test_an_owner_api_key_is_refused(client, method):
+def _owner_api_key():
     raw_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent")
-    response = client.request(
-        method, URL, json = {"enabled": True}, headers = {"Authorization": f"Bearer {raw_key}"}
-    )
-    assert response.status_code == 403
-    assert response.json()["detail"] == UI_ONLY
-    assert get_mcp_enabled() is False
+    return {"Authorization": f"Bearer {raw_key}"}
+
+
+def _keyless(headers):
+    def make():
+        set_keyless_api_access("full", tools = True)
+        return headers
+
+    return make
+
+
+OWNER_ONLY = "Only the installation owner can do this"
 
 
 @pytest.mark.parametrize("method", ["GET", "PUT"])
-@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer not-needed"}])
-def test_a_keyless_caller_is_refused(client, method, headers):
-    set_keyless_api_access("full", tools = True)
-    response = client.request(method, URL, json = {"enabled": True}, headers = headers)
+@pytest.mark.parametrize(
+    "make_headers,detail",
+    [
+        (_owner_api_key, UI_ONLY),
+        (_keyless({}), UI_ONLY),
+        (_keyless({"Authorization": "Bearer not-needed"}), UI_ONLY),
+        (_alice_session, OWNER_ONLY),
+    ],
+    ids = ["owner-api-key", "keyless", "keyless-dummy-bearer", "managed-account-session"],
+)
+def test_anything_but_the_owners_ui_session_is_refused(client, method, make_headers, detail):
+    response = client.request(method, URL, json = {"enabled": True}, headers = make_headers())
     assert response.status_code == 403
-    assert response.json()["detail"] == UI_ONLY
-    assert get_mcp_enabled() is False
-
-
-@pytest.mark.parametrize("method", ["GET", "PUT"])
-def test_a_managed_account_session_is_refused(client, method):
-    response = client.request(method, URL, json = {"enabled": True}, headers = _alice_session())
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Only the installation owner can do this"
+    assert response.json()["detail"] == detail
     assert get_mcp_enabled() is False
 
 

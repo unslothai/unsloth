@@ -31,7 +31,6 @@ PROBE_PATH = "/api/inference/__mcp_forward_probe"
 
 @pytest.fixture
 def studio_with_probe(monkeypatch, owner_auth):
-    """The real main.app with a throwaway route, keyless access at its widest and Studio on loopback."""
     import main
 
     app = main.app
@@ -68,7 +67,6 @@ def studio_with_probe(monkeypatch, owner_auth):
 
 
 def test_keyless_full_on_loopback_still_works_for_a_direct_caller(studio_with_probe):
-    # Control: the same route admits a keyless caller that really is local.
     local = TestClient(
         studio_with_probe, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
     )
@@ -85,18 +83,28 @@ def test_a_forwarded_call_cannot_use_keyless(studio_with_probe, token):
     assert response.status_code == 401
 
 
-def test_a_forwarded_call_is_remote_and_authenticated_by_the_key(studio_with_probe):
+def test_a_forwarded_call_is_remote_keyed_and_leaves_the_tools_account_alone(studio_with_probe):
     raw_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent")
-    response = asyncio.run(
-        forward(make_caller(studio_app = studio_with_probe, token = raw_key), "GET", PROBE_PATH)
-    )
+    sentinel = AccountContext("sentinel-account", "sentinel")
+
+    async def run():
+        token = bind_account(sentinel)
+        try:
+            caller = make_caller(studio_app = studio_with_probe, token = raw_key)
+            return await forward(caller, "GET", PROBE_PATH), current_account()
+        finally:
+            reset_account(token)
+
+    response, after = asyncio.run(run())
     assert response.status_code == 200, response.text
     seen = response.json()
     assert seen["subject"] == storage.DEFAULT_ADMIN_USERNAME
+    assert seen["account"] == "owner"
     assert seen["client_ip"] == "192.0.2.1"
     assert seen["is_direct_local_request"] is False
     assert seen["keyless_request_allowed"] is False
     assert seen["headers"]["host"] == "unsloth-mcp.invalid"
+    assert after == sentinel
 
 
 def _echo_server(monkeypatch, routes = None):
@@ -128,7 +136,7 @@ def _echo_server(monkeypatch, routes = None):
     return studio, served(mcp, studio, monkeypatch = monkeypatch)
 
 
-def test_only_the_key_is_forwarded_from_the_inbound_request(monkeypatch):
+def test_only_the_key_and_an_opted_in_hub_token_are_forwarded(monkeypatch):
     studio, app = _echo_server(monkeypatch)
     inbound = {
         "CF-Connecting-IP": "127.0.0.1",
@@ -138,23 +146,17 @@ def test_only_the_key_is_forwarded_from_the_inbound_request(monkeypatch):
         "X-Custom": "1",
     }
     with TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)) as http:
-        result = call_tool(http, "echo", headers = inbound)
-    assert result["structuredContent"] == {"status": 200}
-    (_method, path, headers, _body) = studio.state.calls[-1]
+        assert call_tool(http, "echo", headers = inbound)["structuredContent"] == {"status": 200}
+        call_tool(http, "echo", {"hub": True}, headers = {"X-Unsloth-HF-Token": "hf_secret"})
+        call_tool(http, "echo", {"hub": True})
+    (_method, path, headers, _body), with_hub, without_hub = studio.state.calls
     assert path == "/api/inference/echo"
     assert headers["authorization"] == "Bearer sk-unsloth-test"
     assert headers["host"] == "unsloth-mcp.invalid"
     for name in ("cf-connecting-ip", "cookie", "x-forwarded-for", "x-custom", "x-unsloth-hf-token"):
         assert name not in headers
-
-
-def test_the_hub_token_is_sent_only_when_the_call_opts_in(monkeypatch):
-    studio, app = _echo_server(monkeypatch)
-    with TestClient(app) as http:
-        call_tool(http, "echo", {"hub": True}, headers = {"X-Unsloth-HF-Token": "hf_secret"})
-        call_tool(http, "echo", {"hub": True})
-    assert studio.state.calls[0][2]["x-unsloth-hf-token"] == "hf_secret"
-    assert "x-unsloth-hf-token" not in studio.state.calls[1][2]
+    assert with_hub[2]["x-unsloth-hf-token"] == "hf_secret"
+    assert "x-unsloth-hf-token" not in without_hub[2]
 
 
 def test_a_bytes_upload_carries_content_length(monkeypatch):
@@ -221,25 +223,6 @@ def test_padded_bodies_parse():
     }
     with pytest.raises(ValueError):
         ndjson_last(b"\n \n")
-
-
-def test_the_routes_account_binding_never_reaches_the_tool(studio_with_probe):
-    raw_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, name = "agent")
-    sentinel = AccountContext("sentinel-account", "sentinel")
-
-    async def run():
-        token = bind_account(sentinel)
-        try:
-            response = await forward(
-                make_caller(studio_app = studio_with_probe, token = raw_key), "GET", PROBE_PATH
-            )
-            return response.json()["account"], current_account()
-        finally:
-            reset_account(token)
-
-    route_account, after = asyncio.run(run())
-    assert route_account == "owner"
-    assert after == sentinel
 
 
 def test_cancelling_the_tool_cancels_the_forwarded_call():

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An export can name the checkpoint it means. Load and export are two calls, so another load can
-land between them; the orchestrator checks the name under the lock the export holds."""
+# Load and export are two calls, so another load can land between them; the orchestrator checks
+# expected_checkpoint under the lock the export holds.
 
 from __future__ import annotations
 
@@ -32,27 +32,22 @@ def orchestrator(monkeypatch, tmp_path):
 
 def test_an_export_of_a_replaced_checkpoint_sends_nothing(orchestrator, tmp_path):
     orch, sent, _loaded, module = orchestrator
-    result = orch.export_gguf(
-        save_directory = "out", expected_checkpoint = str(tmp_path / "someone-else")
-    )
+    result = orch.export_gguf(save_directory = "out", expected_checkpoint = str(tmp_path / "other"))
     assert result == (False, module.CHECKPOINT_CHANGED, None)
     assert sent == []
     assert orch.is_export_active() is False
 
 
-def test_an_export_of_the_loaded_checkpoint_runs(orchestrator):
+@pytest.mark.parametrize("unloaded", [False, True])
+def test_the_loaded_checkpoint_or_none_expected_exports(orchestrator, unloaded):
     orch, sent, loaded, _module = orchestrator
-    result = orch.export_merged_model(save_directory = "out", expected_checkpoint = f"{loaded}/")
-    assert result[0] is True
-    assert [cmd["export_type"] for cmd in sent] == ["merged"]
+    if unloaded:
+        orch.current_checkpoint = None
+        assert orch.export_lora_adapter(save_directory = "out")[0] is True
+    else:
+        assert orch.export_merged_model(save_directory = "out", expected_checkpoint = f"{loaded}/")[0]
+    assert [cmd["export_type"] for cmd in sent] == ["lora" if unloaded else "merged"]
     assert "expected_checkpoint" not in sent[0]
-
-
-def test_without_expected_checkpoint_nothing_changes(orchestrator):
-    orch, sent, _loaded, _module = orchestrator
-    orch.current_checkpoint = None
-    assert orch.export_lora_adapter(save_directory = "out")[0] is True
-    assert len(sent) == 1
 
 
 @pytest.mark.parametrize("name", ["BaseModel", "GGUF", "LoRAAdapter", "MergedModel"])

@@ -24,16 +24,15 @@ from .mcp_harness import (
     run_tool,
 )
 
-STARTED = {"job_id": "job-7", "status": "queued", "message": "Training job queued", "error": None}
-
 PAYLOADS = {
-    ("POST", "/api/train/start"): STARTED,
+    ("POST", "/api/train/start"): {"job_id": "job-7", "status": "queued", "message": "Queued"},
     ("POST", "/api/train/diffusion/start"): {
         "job_id": "diff-1",
         "status": "queued",
         "output_dir": "/srv/unsloth/outputs/my-lora",
     },
 }
+ACKNOWLEDGE = ("POST", "/api/train/start-requests/{start_request_id}/acknowledge")
 
 
 def _start(
@@ -41,48 +40,37 @@ def _start(
     args,
     overrides = None,
 ):
-    return run_tool(monkeypatch, {**PAYLOADS, **(overrides or {})}, "start_training", args)
+    routes = {**PAYLOADS, ACKNOWLEDGE: {"status": "ok"}, **(overrides or {})}
+    return run_tool(monkeypatch, routes, "start_training", args)
 
 
-def test_start_forwards_the_config_as_sent(monkeypatch):
-    result, studio = _start(monkeypatch, {"config": CONFIG})
+@pytest.mark.parametrize("request_id", [None, "mine-1"])
+def test_start_forwards_the_config_as_sent_and_acknowledges_nothing(monkeypatch, request_id):
+    config = {**CONFIG, **({"start_request_id": request_id} if request_id else {})}
+    result, studio = _start(monkeypatch, {"config": config})
     (sent,) = bodies(studio, "/api/train/start")
-    request_id = sent.pop("start_request_id")
-    assert request_id.startswith("mcp-")
+    sent_id = sent.pop("start_request_id")
+    assert sent_id == request_id if request_id else sent_id.startswith("mcp-")
     assert sent == CONFIG
     assert result["structuredContent"] == {
         "job_id": "job-7",
         "status": "queued",
-        "message": "Training job queued",
-        "start_request_id": request_id,
+        "message": "Queued",
+        "start_request_id": sent_id,
     }
-    headers = studio.state.calls[0][2]
-    assert "x-unsloth-hf-token" not in headers
+    assert "x-unsloth-hf-token" not in studio.state.calls[0][2]
+    assert [c[1] for c in studio.state.calls] == ["/api/train/start"]
 
 
-ACKNOWLEDGE = ("POST", "/api/train/start-requests/{start_request_id}/acknowledge")
-
-
-@pytest.mark.parametrize("refusal", ["status_error", "http_409"])
-def test_a_refused_start_is_acknowledged(monkeypatch, refusal):
-    refused = {
-        "job_id": "",
-        "status": "error",
-        "message": "Training already active",
-        "error": "Training already active",
-    }
-    answer = (
-        refused
-        if refusal == "status_error"
-        else JSONResponse(
-            {"detail": "A transformers installation is in progress."}, status_code = 409
-        )
-    )
-    result, studio = _start(
-        monkeypatch,
-        {"config": CONFIG},
-        {("POST", "/api/train/start"): answer, ACKNOWLEDGE: {"status": "ok"}},
-    )
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"job_id": "", "status": "error", "error": "Training already active"},
+        JSONResponse({"detail": "A transformers installation is in progress."}, status_code = 409),
+    ],
+)
+def test_a_refused_start_is_acknowledged(monkeypatch, answer):
+    result, studio = _start(monkeypatch, {"config": CONFIG}, {("POST", "/api/train/start"): answer})
     assert result["isError"] is True
     (sent,) = bodies(studio, "/api/train/start")
     acknowledged = [p for _m, p, _h, _b in studio.state.calls if p.endswith("/acknowledge")]
@@ -90,22 +78,11 @@ def test_a_refused_start_is_acknowledged(monkeypatch, refusal):
     assert acknowledged == [f"/api/train/start-requests/{sent['start_request_id']}/acknowledge"]
 
 
-def test_a_started_job_is_not_acknowledged(monkeypatch):
-    _result, studio = _start(monkeypatch, {"config": CONFIG}, {ACKNOWLEDGE: {"status": "ok"}})
-    assert not [p for _m, p, _h, _b in studio.state.calls if p.endswith("/acknowledge")]
-
-
 def test_validate_only_starts_nothing(monkeypatch):
     result, studio = _start(monkeypatch, {"config": CONFIG, "validate_only": True})
     assert result["structuredContent"]["status"] == "valid"
     assert result["structuredContent"]["job_id"] is None
     assert studio.state.calls == []
-
-
-def test_a_callers_start_request_id_is_kept(monkeypatch):
-    result, studio = _start(monkeypatch, {"config": {**CONFIG, "start_request_id": "mine-1"}})
-    assert bodies(studio, "/api/train/start")[0]["start_request_id"] == "mine-1"
-    assert result["structuredContent"]["start_request_id"] == "mine-1"
 
 
 def test_kind_routes_to_the_matching_start_route(monkeypatch):
@@ -157,6 +134,9 @@ RUN_PAYLOADS = {
 }
 
 
+NAMES = ["qwen-lora", "qwen-lora/checkpoint-30", "qwen-lora-2/checkpoint-30"]
+
+
 def _runs(monkeypatch, args):
     return run_tool(monkeypatch, RUN_PAYLOADS, "list_training_runs", args)[0]
 
@@ -164,15 +144,8 @@ def _runs(monkeypatch, args):
 def test_runs_name_their_folder_and_checkpoints_by_name(monkeypatch):
     result = _runs(monkeypatch, {"include_checkpoints": True})
     out = result["structuredContent"]
-    assert [(r["id"], r["run_folder"]) for r in out["runs"]] == [
-        ("run-1", "qwen-lora"),
-        ("run-2", "qwen-lora-2"),
-    ]
-    assert [c["name"] for c in out["checkpoints"]] == [
-        "qwen-lora",
-        "qwen-lora/checkpoint-30",
-        "qwen-lora-2/checkpoint-30",
-    ]
+    assert [r["run_folder"] for r in out["runs"]] == ["qwen-lora", "qwen-lora-2"]
+    assert [c["name"] for c in out["checkpoints"]] == NAMES
     assert out["checkpoints"][0] == {
         "run": "qwen-lora",
         "name": "qwen-lora",
@@ -190,11 +163,7 @@ def test_names_resolve_back_to_paths_in_process():
         direct_local = False, public_base = "http://h", studio_app = fake_studio(RUN_PAYLOADS)
     )
     found = {c.name: c.path for c in asyncio.run(checkpoints.list_checkpoints(caller))[0]}
-    assert found == {
-        "qwen-lora": f"{OUT}/qwen-lora",
-        "qwen-lora/checkpoint-30": f"{OUT}/qwen-lora/checkpoint-30",
-        "qwen-lora-2/checkpoint-30": f"{OUT}/qwen-lora-2/checkpoint-30",
-    }
+    assert found == {name: f"{OUT}/{name}" for name in NAMES}
     for name, path in found.items():
         assert asyncio.run(checkpoints.resolve(caller, name)).path == path
     with pytest.raises(

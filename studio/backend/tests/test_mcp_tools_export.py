@@ -36,23 +36,18 @@ def _get(
     return run_tool(monkeypatch, {("GET", "/api/export/status"): status or {}}, "get_job", args)
 
 
-def test_another_accounts_job_is_unknown(monkeypatch):
+@pytest.mark.parametrize("job_id", ["job-a", "nope"])
+def test_another_accounts_or_an_unknown_job_is_unknown(monkeypatch, job_id):
     register_export_job(account_id = "alice-id", job_id = "job-a")
-    result, _studio = _get(monkeypatch, {"kind": "export", "id": "job-a"})
+    result, _studio = _get(monkeypatch, {"kind": "export", "id": job_id})
     assert result["isError"] is True
     assert result["content"][0]["text"] == "No such export job"
     with pytest.raises(ToolError):
         export_jobs.lookup("owner", "job-a")
 
 
-def test_an_unknown_id_is_refused(monkeypatch):
-    result, _studio = _get(monkeypatch, {"kind": "export", "id": "nope"})
-    assert result["content"][0]["text"] == "No such export job"
-
-
 def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
-    # The status names whatever op ran last, here an export from the Export page; only the
-    # job's own export call settles it.
+    # The status names whatever op ran last (here the Export page's); only the job's own call settles it.
     register_export_job(phase = "exporting")
     status = {
         "last_op_seq": 4,
@@ -68,45 +63,54 @@ def test_a_running_job_is_not_settled_from_the_export_status(monkeypatch):
 
 
 def test_a_failed_job_reports_its_error_scrubbed(monkeypatch):
-    job = register_export_job()
-    export_jobs.finish(job, "failed", error = "Disk full writing /srv/exports/x.gguf")
+    export_jobs.finish(
+        register_export_job(), "failed", error = "Disk full writing /srv/exports/x.gguf"
+    )
     result, _studio = _get(monkeypatch, {"kind": "export", "id": "job-a"})
-    out = result["structuredContent"]
-    assert out["status"] == "failed"
-    assert out["error"].startswith("Disk full writing")
+    assert result["structuredContent"]["status"] == "failed"
+    assert result["structuredContent"]["error"].startswith("Disk full writing")
     assert "/srv" not in json.dumps(result)
 
 
 def test_an_absolute_output_outside_exports_is_reduced_to_its_name():
     from utils.paths import exports_root
 
-    assert (
-        export_jobs.output_name(str(Path(exports_root()) / "my-model" / "gguf")) == "my-model/gguf"
-    )
-    assert export_jobs.output_name("/srv/elsewhere/my-gguf") == "my-gguf (outside exports folder)"
-    assert export_jobs.output_name("C:\\Users\\me\\out\\model") == "model (outside exports folder)"
-    assert export_jobs.output_name("my-model/gguf") == "my-model/gguf"
+    name = export_jobs.output_name
+    assert name(str(Path(exports_root()) / "my-model" / "gguf")) == "my-model/gguf"
+    assert name("/srv/elsewhere/my-gguf") == "my-gguf (outside exports folder)"
+    assert name("C:\\Users\\me\\out\\model") == "model (outside exports folder)"
+    assert name("my-model/gguf") == "my-model/gguf"
 
 
-def test_settle_waits_for_the_job_to_finish_on_its_own():
+def test_the_registry_runs_settles_fails_and_cancels_tasks():
     async def run():
         async def quick(job):
+            job.phase = "exporting"
             await asyncio.sleep(0.01)
+
+        async def fails(job):
+            raise ToolError("Checkpoint not found")
 
         async def hangs(job):
             await asyncio.Event().wait()
 
         done = export_jobs.start("owner", "gguf", quick)
+        assert done.task is not None and done.status == "running"
+        failed = export_jobs.start("owner", "gguf", fails)
         await export_jobs.settle(done, 1.0)
         stuck = export_jobs.start("owner", "lora", hangs)
         await export_jobs.settle(stuck, 0.01)
-        status = stuck.status
+        # settle never cancels: a job still busy after the wait is left running.
+        assert stuck.status == "running"
         export_jobs.mark_cancelled(stuck)
-        await asyncio.gather(stuck.task, return_exceptions = True)
-        return done.status, status
+        await asyncio.gather(failed.task, stuck.task, return_exceptions = True)
+        return done, failed, stuck
 
-    # settle never cancels: a job still busy after the wait is left running.
-    assert asyncio.run(run()) == ("completed", "running")
+    done, failed, stuck = asyncio.run(run())
+    assert (done.status, done.phase) == ("completed", "done")
+    assert len(done.job_id) >= 16
+    assert (failed.status, failed.error) == ("failed", "Checkpoint not found")
+    assert stuck.status == "cancelled"
 
 
 def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
@@ -116,43 +120,6 @@ def test_without_an_id_only_this_accounts_jobs_are_listed(monkeypatch):
     assert result["structuredContent"]["jobs"] == [
         {"id": "mine", "status": "completed", "progress_percent": None}
     ]
-
-
-def test_the_registry_holds_the_task_and_settles_it():
-    async def run():
-        async def work(job):
-            job.phase = "exporting"
-            await asyncio.sleep(0)
-
-        job = export_jobs.start("owner", "gguf", work)
-        assert job.task is not None and job.status == "running"
-        await job.task
-        return job
-
-    job = asyncio.run(run())
-    assert job.status == "completed"
-    assert job.phase == "done"
-    assert len(job.job_id) >= 16
-
-
-def test_a_failing_task_is_failed_and_a_cancelled_one_cancelled():
-    async def run():
-        async def fails(job):
-            raise ToolError("Checkpoint not found")
-
-        async def hangs(job):
-            await asyncio.sleep(3600)
-
-        failed = export_jobs.start("owner", "gguf", fails)
-        stuck = export_jobs.start("owner", "lora", hangs)
-        await asyncio.sleep(0)
-        export_jobs.mark_cancelled(stuck)
-        await asyncio.gather(failed.task, stuck.task, return_exceptions = True)
-        return failed, stuck
-
-    failed, stuck = asyncio.run(run())
-    assert (failed.status, failed.error) == ("failed", "Checkpoint not found")
-    assert stuck.status == "cancelled"
 
 
 def test_capacity_drops_the_oldest_finished_jobs_first():
@@ -169,92 +136,71 @@ def test_capacity_drops_the_oldest_finished_jobs_first():
 
 CHECKPOINTS = {**RUN_CHECKPOINTS, "models": RUN_CHECKPOINTS["models"][:1]}
 ARGS = {"checkpoint": "qwen-lora", "format": "gguf", "save_directory": "out"}
+DONE = {
+    "last_op_seq": 6,
+    "last_op_status": "success",
+    "last_op_output_path": "my-gguf",
+    "current_checkpoint": f"{OUT}/qwen-lora",
+}
+EXPORTED = {"success": True, "message": "Exported", "details": {"output_path": "my-gguf"}}
 
 
 def _export_studio(
     *,
-    export_answer = None,
-    statuses = None,
-    recorder = None,
+    export_answer = EXPORTED,
+    statuses = ({"last_op_seq": 5}, DONE),
+    calls = None,
 ):
     # export_model first checks that no export is running.
-    next_status = sequence(
-        {"is_export_active": False, "last_op_seq": 5},
-        *(
-            statuses
-            or [
-                {"last_op_seq": 5},
-                {
-                    "last_op_seq": 6,
-                    "last_op_status": "success",
-                    "last_op_output_path": "my-gguf",
-                    "current_checkpoint": f"{OUT}/qwen-lora",
-                },
-            ]
-        ),
-    )
-    loaded = []
+    next_status = sequence({"is_export_active": False, "last_op_seq": 5}, *statuses)
+    calls = [] if calls is None else calls
 
     def record(name, answer):
         def handler(request, body):
-            if recorder is not None:
-                recorder.append((name, json.loads(body) if body else None))
-            if name == "load":
-                loaded.append(json.loads(body)["checkpoint_path"])
+            calls.append((name, json.loads(body) if body else None))
             return answer
 
         return handler
 
     def status(request, body):
         answer = next_status(request, body)
-        # The status names whatever the last load put in the worker, unless a test says otherwise.
-        if loaded and "current_checkpoint" not in answer:
-            answer = {**answer, "current_checkpoint": loaded[-1]}
+        # The worker holds whatever the last load put there, unless a test says otherwise.
+        loads = [body["checkpoint_path"] for name, body in calls if name == "load"]
+        if loads and "current_checkpoint" not in answer:
+            answer = {**answer, "current_checkpoint": loads[-1]}
         return answer
 
     routes = {
         ("GET", "/api/models/checkpoints"): CHECKPOINTS,
         ("GET", "/api/export/status"): status,
-        ("POST", "/api/export/load-checkpoint"): record(
-            "load", {"success": True, "message": "Loaded"}
-        ),
+        ("POST", "/api/export/load-checkpoint"): record("load", {"success": True, "message": "Ok"}),
     }
     for fmt in ("gguf", "merged", "lora", "base"):
-        routes[("POST", f"/api/export/export/{fmt}")] = record(
-            fmt,
-            export_answer
-            or {"success": True, "message": "Exported", "details": {"output_path": "my-gguf"}},
-        )
+        routes[("POST", f"/api/export/export/{fmt}")] = record(fmt, export_answer)
     return fake_studio(routes)
 
 
 def test_an_export_finishing_after_this_one_does_not_become_its_result(monkeypatch):
-    # The Export page's own export finished before the status was read again; this job keeps
-    # the answer its own export call returned.
-    studio = _export_studio(
-        statuses = [
-            {"last_op_seq": 5},
-            {
-                "last_op_seq": 7,
-                "last_op_kind": "export_gguf",
-                "last_op_status": "error",
-                "last_op_error": "theirs failed",
-                "current_checkpoint": f"{OUT}/qwen-lora",
-            },
-        ]
-    )
+    # The Export page's own export ended before the status was read again; the job keeps its answer.
+    theirs = {
+        "last_op_seq": 7,
+        "last_op_kind": "export_gguf",
+        "last_op_status": "error",
+        "last_op_error": "theirs failed",
+        "current_checkpoint": f"{OUT}/qwen-lora",
+    }
+    studio = _export_studio(statuses = [{"last_op_seq": 5}, theirs])
     _started, job = run_export_job(monkeypatch, studio, {**ARGS, "save_directory": "my-gguf"})
-    assert job["structuredContent"]["status"] == "completed"
-    assert job["structuredContent"]["error"] is None
-    assert job["structuredContent"]["export"]["output"] == "my-gguf"
+    out = job["structuredContent"]
+    assert (out["status"], out["error"], out["export"]["output"]) == ("completed", None, "my-gguf")
 
 
 def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
     calls = []
-    studio = _export_studio(recorder = calls)
+    path = f"{OUT}/qwen-lora/checkpoint-30"
     args = {**ARGS, "checkpoint": "qwen-lora/checkpoint-30", "save_directory": "my-gguf"}
     args["quantization_method"] = ["Q4_K_M", "Q8_0"]
-    started, job = run_export_job(monkeypatch, studio, args)
+    started, job = run_export_job(monkeypatch, _export_studio(calls = calls), args)
     assert started["structuredContent"]["status"] == "running"
     assert job["structuredContent"]["status"] == "completed"
     assert job["structuredContent"]["export"] == {
@@ -263,7 +209,7 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
         "phase": "done",
     }
     assert calls == [
-        ("load", {"checkpoint_path": f"{OUT}/qwen-lora/checkpoint-30", "max_seq_length": 2048}),
+        ("load", {"checkpoint_path": path, "max_seq_length": 2048}),
         (
             "gguf",
             {
@@ -271,7 +217,7 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
                 "push_to_hub": False,
                 "private": False,
                 "quantization_method": ["Q4_K_M", "Q8_0"],
-                "expected_checkpoint": f"{OUT}/qwen-lora/checkpoint-30",
+                "expected_checkpoint": path,
             },
         ),
     ]
@@ -279,91 +225,94 @@ def test_export_returns_a_job_at_once_and_the_job_completes(monkeypatch):
 
 
 def test_an_export_is_refused_while_another_one_runs(monkeypatch):
-    result, studio = run_tool(
-        monkeypatch,
-        {
-            ("GET", "/api/export/status"): {
-                "is_export_active": True,
-                "active_op_kind": "export_gguf",
-            },
-            ("GET", "/api/models/checkpoints"): CHECKPOINTS,
-        },
-        "export_model",
-        ARGS,
-    )
+    routes = {
+        ("GET", "/api/export/status"): {"is_export_active": True, "active_op_kind": "export_gguf"},
+        ("GET", "/api/models/checkpoints"): CHECKPOINTS,
+    }
+    result, studio = run_tool(monkeypatch, routes, "export_model", ARGS)
     assert result["isError"] is True
     assert result["content"][0]["text"].startswith("Another export is running.")
     assert [c[0] for c in studio.state.calls] == ["GET"]
 
 
-def test_an_export_is_refused_while_an_mcp_export_job_runs(monkeypatch):
-    register_export_job(account_id = "alice-id", job_id = "job-a")
-    calls = []
-    result, _job = run_export_job(monkeypatch, _export_studio(recorder = calls), ARGS)
-    assert result["isError"] is True
-    assert calls == []
-
-
-def test_two_exports_at_once_cannot_both_start(monkeypatch):
-    # Another call registers its job while this one awaits the checkpoint lookup.
+@pytest.mark.parametrize("race", [False, True])
+def test_an_export_is_refused_while_an_mcp_export_job_runs(monkeypatch, race):
     from studio_mcp.tools import export as export_tool
 
     real = export_tool.checkpoints.resolve
 
     async def racing(caller, name):
+        # Another call registers its job while this one awaits the checkpoint lookup.
         found = await real(caller, name)
         register_export_job(account_id = "owner", job_id = "first")
         return found
 
-    monkeypatch.setattr(export_tool.checkpoints, "resolve", racing)
+    if race:
+        monkeypatch.setattr(export_tool.checkpoints, "resolve", racing)
+    else:
+        register_export_job(account_id = "alice-id", job_id = "first")
     calls = []
-    result, _job = run_export_job(monkeypatch, _export_studio(recorder = calls), ARGS)
-    assert result["isError"] is True
+    result, _job = run_export_job(monkeypatch, _export_studio(calls = calls), ARGS)
     assert result["content"][0]["text"].startswith("Another export is running.")
     assert calls == []
     assert [job.job_id for job in export_jobs._jobs.values()] == ["first"]
 
 
-def test_a_checkpoint_loaded_by_someone_else_in_between_is_never_exported(monkeypatch):
+@pytest.mark.parametrize(
+    "studio_kw,error,names",
+    [
+        # A checkpoint loaded by someone else in between is never exported.
+        (
+            {"statuses": [{"last_op_seq": 5, "current_checkpoint": f"{OUT}/someone-else"}]},
+            "nothing was exported",
+            ["load"],
+        ),
+        (
+            {
+                "export_answer": {
+                    "success": False,
+                    "message": "llama.cpp converter missing at /srv/x",
+                }
+            },
+            "llama.cpp converter missing at",
+            ["load", "gguf"],
+        ),
+    ],
+)
+def test_a_failed_step_fails_the_job_without_leaking_paths(monkeypatch, studio_kw, error, names):
     calls = []
-    swapped = [{"last_op_seq": 5, "current_checkpoint": f"{OUT}/someone-else"}]
-    started, job = run_export_job(
-        monkeypatch, _export_studio(recorder = calls, statuses = swapped), ARGS
-    )
+    started, job = run_export_job(monkeypatch, _export_studio(calls = calls, **studio_kw), ARGS)
     assert started["isError"] is False
     assert job["structuredContent"]["status"] == "failed"
-    assert "nothing was exported" in job["structuredContent"]["error"]
-    assert [name for name, _ in calls] == ["load"]
-    assert OUT not in json.dumps([started, job])
+    assert error in job["structuredContent"]["error"]
+    assert [name for name, _ in calls] == names
+    assert "/srv" not in json.dumps([started, job])
 
 
-def test_each_format_reaches_its_route(monkeypatch):
-    for fmt in ("merged", "lora", "base"):
-        calls = []
-        run_export_job(monkeypatch, _export_studio(recorder = calls), {**ARGS, "format": fmt})
-        assert [name for name, _ in calls] == ["load", fmt]
-        assert "quantization_method" not in calls[1][1]
-
-
-def test_imatrix_reaches_the_gguf_route(monkeypatch):
+@pytest.mark.parametrize(
+    "extra,expected",
+    [
+        ({"format": "merged"}, {}),
+        ({"format": "lora"}, {}),
+        ({"format": "base"}, {}),
+        ({"imatrix": True}, {"imatrix": True}),
+        (
+            {"format": "merged", "push_to_hub": True, "repo_id": "me/m", "hf_token": "hf_x"},
+            {"hf_token": "hf_x", "repo_id": "me/m"},
+        ),
+    ],
+)
+def test_each_format_reaches_its_route_with_its_body(monkeypatch, extra, expected):
     calls = []
-    run_export_job(monkeypatch, _export_studio(recorder = calls), {**ARGS, "imatrix": True})
-    assert [name for name, _ in calls] == ["load", "gguf"]
-    assert calls[1][1]["imatrix"] is True
-
-
-def test_hf_token_and_load_in_4bit_go_in_the_bodies(monkeypatch):
-    calls = []
-    args = {**ARGS, "format": "merged", "push_to_hub": True, "repo_id": "me/m", "hf_token": "hf_x"}
-    run_export_job(monkeypatch, _export_studio(recorder = calls), {**args, "load_in_4bit": False})
-    assert calls[0][1] == {
-        "checkpoint_path": f"{OUT}/qwen-lora",
-        "max_seq_length": 2048,
-        "load_in_4bit": False,
-        "hf_token": "hf_x",
-    }
-    assert calls[1][1]["hf_token"] == "hf_x"
-    assert calls[1][1]["repo_id"] == "me/m"
+    run_export_job(
+        monkeypatch, _export_studio(calls = calls), {**ARGS, **extra, "load_in_4bit": False}
+    )
+    fmt = extra.get("format", "gguf")
+    assert [name for name, _ in calls] == ["load", fmt]
+    load = {"checkpoint_path": f"{OUT}/qwen-lora", "max_seq_length": 2048, "load_in_4bit": False}
+    assert calls[0][1] == {**load, **({"hf_token": "hf_x"} if "hf_token" in extra else {})}
+    assert calls[1][1].items() >= expected.items()
+    assert ("quantization_method" in calls[1][1]) == (fmt == "gguf")
 
 
 def test_an_unknown_checkpoint_lists_the_names(monkeypatch):
@@ -373,28 +322,3 @@ def test_an_unknown_checkpoint_lists_the_names(monkeypatch):
         started["content"][0]["text"]
         == "No checkpoint named nope. Available: qwen-lora, qwen-lora/checkpoint-30"
     )
-
-
-def test_a_failed_export_step_fails_the_job(monkeypatch):
-    studio = _export_studio(
-        export_answer = {"success": False, "message": "llama.cpp converter missing at /srv/llama"}
-    )
-    _started, job = run_export_job(monkeypatch, studio, ARGS)
-    assert job["structuredContent"]["status"] == "failed"
-    assert job["structuredContent"]["error"].startswith("llama.cpp converter missing at")
-    assert "/srv" not in json.dumps(job)
-
-
-PAYLOADS = {
-    ("GET", "/api/models/checkpoints"): CHECKPOINTS,
-    ("GET", "/api/export/status"): {
-        "last_op_seq": 1,
-        "current_checkpoint": f"{OUT}/qwen-lora",
-        "last_op_output_path": f"{OUT}/x",
-    },
-    ("POST", "/api/export/load-checkpoint"): {
-        "success": True,
-        "message": f"Loaded {OUT}/qwen-lora",
-    },
-    ("POST", "/api/export/export/gguf"): {"success": True, "message": f"Saved to {OUT}/x"},
-}

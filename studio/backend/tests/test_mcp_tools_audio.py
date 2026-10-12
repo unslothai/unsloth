@@ -79,26 +79,22 @@ def _generate(
 
 
 MUSIC = {"clips": [_clip("var-1"), _clip("var-2")], "group_id": "grp-9", "model": "ace-step"}
-# (workflow, args, what else the sent body and the result must show). Music answers with MUSIC.
+STEMS = ("vocals", "drums", "bass", "other")
+SEPARATED = {"clips": [_clip(s, role = s) for s in STEMS], "group_id": "grp-1", "model": "htdemucs"}
+# (workflow, args, answer, what else the sent body and the result must show).
 WORKFLOWS = [
-    (
-        "clone",
-        {"text": "Hello there", "reference": {"clip_id": "ref-1"}, "reference_text": "Hi"},
-        None,
-    ),
+    ("clone", {"text": "Hi", "reference": {"clip_id": "ref-1"}, "reference_text": "Hi"}, RUN, None),
     (
         "speak",
-        {"text": "Hello there", "reference": {"voice_id": "voice-1"}, "language": "en"},
+        {"text": "Hi", "reference": {"voice_id": "voice-1"}, "language": "en"},
+        RUN,
         # A saved voice is the reference.
-        lambda body, out: body["inputs"] == {"reference": {"voice_id": "voice-1"}},
+        lambda body, result: body["inputs"] == {"reference": {"voice_id": "voice-1"}},
     ),
     (
         "edit",
-        {
-            "text": "Hello world",
-            "source": {"clip_id": "clip-0"},
-            "edit": {"mode": "words", "markup": "Hello world"},
-        },
+        {"text": "Hi", "source": {"clip_id": "clip-0"}, "edit": {"mode": "words", "markup": "Hi"}},
+        RUN,
         None,
     ),
     (
@@ -108,50 +104,44 @@ WORKFLOWS = [
             "target": {"voice_id": "voice-1"},
             "convert": {"mode": "singing"},
         },
+        RUN,
         None,
     ),
     (
         "music",
-        {
-            "text": "lo-fi piano",
-            "mode": "song",
-            "lyrics": "la la",
-            "duration_s": 30,
-            "variations": 2,
-        },
+        {"text": "lo-fi", "mode": "song", "lyrics": "la", "duration_s": 30, "variations": 2},
+        MUSIC,
         # Variations share a group.
-        lambda body, out: (
-            body["variations"] == 2 and out["group_id"] == "grp-9" and len(out["clips"]) == 2
+        lambda body, result: (
+            body["variations"] == 2
+            and result["structuredContent"]["group_id"] == "grp-9"
+            and len(result["structuredContent"]["clips"]) == 2
         ),
     ),
-    ("separate", {"source": {"input_id": "in-9"}}, None),
+    ("separate", {"source": {"input_id": "in-9"}}, RUN, None),
+    (
+        "separate",
+        {"source": {"clip_id": "song-1"}},
+        SEPARATED,
+        # Every stem comes back.
+        lambda body, result: (
+            [c["role"] for c in result["structuredContent"]["clips"]] == list(STEMS)
+            and result["structuredContent"]["group_id"] == "grp-1"
+            and [c["type"] for c in result["content"][1:]] == ["audio"] * 4
+        ),
+    ),
 ]
 
 
-@pytest.mark.parametrize("workflow,args,expect", WORKFLOWS)
-def test_each_workflow_sends_a_body_the_route_accepts(monkeypatch, workflow, args, expect):
-    run = MUSIC if workflow == "music" else RUN
+@pytest.mark.parametrize("workflow,args,run,expect", WORKFLOWS)
+def test_each_workflow_sends_a_body_the_route_accepts(monkeypatch, workflow, args, run, expect):
     result, studio = _generate(monkeypatch, {"workflow": workflow, **args}, run)
     assert result["isError"] is False, result
     (body,) = bodies(studio, "/v1/audio/run")
     AudioRunRequest.model_validate(body)
     assert body["workflow"] == workflow
     assert "voice_id" not in body
-    assert expect is None or expect(body, result["structuredContent"])
-
-
-def test_separate_returns_every_stem(monkeypatch):
-    stems = {
-        "clips": [_clip(stem, role = stem) for stem in ("vocals", "drums", "bass", "other")],
-        "group_id": "grp-1",
-        "model": "htdemucs",
-    }
-    args = {"workflow": "separate", "source": {"clip_id": "song-1"}}
-    result, _studio = _generate(monkeypatch, args, stems)
-    out = result["structuredContent"]
-    assert [c["role"] for c in out["clips"]] == ["vocals", "drums", "bass", "other"]
-    assert out["group_id"] == "grp-1"
-    assert [c["type"] for c in result["content"][1:]] == ["audio"] * 4
+    assert expect is None or expect(body, result)
 
 
 def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatch):
@@ -228,10 +218,6 @@ VERBOSE = {
         {"id": 1, "start": 1.2, "end": 2.0, "text": "from Studio."},
     ],
 }
-TRANSCRIBE_PAYLOADS = {
-    ("POST", "/v1/audio/transcriptions"): VERBOSE,
-    ("POST", "/v1/audio/translations"): TRANSCRIPT,
-}
 TRANSCRIPTIONS = ("POST", "/v1/audio/transcriptions")
 TRANSLATIONS = ("POST", "/v1/audio/translations")
 STT_STATUS_ROUTE = ("GET", "/api/inference/audio/stt/status")
@@ -245,6 +231,9 @@ DONE_STATE = {
         default_model = WHISPER,
     )
 }
+
+
+MISSING = "STT model 'openai/whisper-small' is not downloaded. Download it in Settings, then Voice, before loading it."
 
 
 def _memo(filename = "a.wav", **args):
@@ -261,58 +250,48 @@ def test_without_a_model_the_resident_one_is_named(monkeypatch):
     assert result["structuredContent"]["language"] is None
 
 
-def test_small_audio_goes_as_multipart_with_openai_field_names(monkeypatch):
-    args = _memo("memo.wav", language = "en", model = "openai/whisper-small")
-    result, studio = run_tool(monkeypatch, {TRANSCRIPTIONS: TRANSCRIPT}, "transcribe", args)
-    assert result["structuredContent"] == {
-        "text": "Hello from Studio.",
-        # The route answers with text alone; the language asked for is reported.
-        "language": "en",
-        "model": "openai/whisper-small",
-        "segments": None,
-        "saved_to_history": False,
-    }
+SEGMENTS = [
+    {"start": 0.0, "end": 1.2, "text": "Hello"},
+    {"start": 1.2, "end": 2.0, "text": "from Studio."},
+]
+
+
+# A text-only answer reports the language asked for; timestamps ask for verbose_json.
+@pytest.mark.parametrize(
+    "answer,model,timestamps",
+    [(TRANSCRIPT, "openai/whisper-small", False), (VERBOSE, None, True)],
+)
+def test_small_audio_goes_as_multipart_with_openai_field_names(
+    monkeypatch, answer, model, timestamps
+):
+    args = _memo("memo.wav", language = "en", model = model, timestamps = timestamps)
+    result, studio = run_tool(monkeypatch, {TRANSCRIPTIONS: answer}, "transcribe", args)
+    out = result["structuredContent"]
+    assert (out["text"], out["language"]) == ("Hello from Studio.", "en")
+    assert out["segments"] == (SEGMENTS if timestamps else None)
+    assert out["saved_to_history"] is False
     fields = form(studio, "/v1/audio/transcriptions")
     assert fields["file"] == ("memo.wav", WAV)
     assert {k: v[1] for k, v in fields.items() if k != "file"} == {
-        "response_format": b"json",
-        "model": b"openai/whisper-small",
+        "response_format": b"verbose_json" if timestamps else b"json",
+        **({"model": model.encode()} if model else {}),
         "language": b"en",
     }
+    if model:
+        assert out["model"] == model
 
 
-def test_timestamps_ask_for_verbose_json_and_return_segments(monkeypatch):
-    args = _memo(timestamps = True, language = "en")
-    result, studio = run_tool(monkeypatch, {TRANSCRIPTIONS: VERBOSE}, "transcribe", args)
-    out = result["structuredContent"]
-    assert out["language"] == "en"
-    assert out["segments"] == [
-        {"start": 0.0, "end": 1.2, "text": "Hello"},
-        {"start": 1.2, "end": 2.0, "text": "from Studio."},
-    ]
-    assert form(studio, "/v1/audio/transcriptions")["response_format"][1] == b"verbose_json"
-
-
-def test_translate_uses_the_translations_route_without_language(monkeypatch):
-    args = _memo(translate = True, language = "de")
-    _result, studio = run_tool(monkeypatch, {TRANSLATIONS: TRANSCRIPT}, "transcribe", args)
+def test_translate_drops_language_and_reports_english_however_spelled(monkeypatch):
+    verbose = {**VERBOSE, "task": "translate", "language": "english"}
+    args = _memo(translate = True, timestamps = True, language = "de")
+    result, studio = run_tool(monkeypatch, {TRANSLATIONS: verbose}, "transcribe", args)
+    assert result["structuredContent"]["language"] == "en"
     assert "language" not in form(studio, "/v1/audio/translations")
     assert [c[1] for c in studio.state.calls] == ["/v1/audio/translations"]
 
 
-def test_a_translation_reports_english_however_the_route_spells_it(monkeypatch):
-    verbose = {**VERBOSE, "task": "translate", "language": "english"}
-    args = _memo(translate = True, timestamps = True)
-    result, _studio = run_tool(monkeypatch, {TRANSLATIONS: verbose}, "transcribe", args)
-    assert result["structuredContent"]["language"] == "en"
-
-
 def test_a_missing_model_is_downloaded_then_the_transcription_retried_once(monkeypatch, fast_polls):
-    refusal = openai_error(
-        "STT model 'openai/whisper-small' is not downloaded. Download it in Settings, then Voice, before loading it.",
-        409,
-        type = "conflict_error",
-    )
+    refusal = openai_error(MISSING, 409, type = "conflict_error")
     routes = {
         TRANSCRIPTIONS: sequence(refusal, JSONResponse(TRANSCRIPT)),
         STT_STATUS_ROUTE: sequence(MISSING_STATE, DONE_STATE),
@@ -385,34 +364,39 @@ def _from_source(
     return run_tool(monkeypatch, routes, "transcribe", args)
 
 
-def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(monkeypatch):
-    args = {"audio": {"clip_id": "clip-7"}, "timestamps": True}
-    result, studio = _from_source(monkeypatch, args)
+IDLE = {**STT_STATUS, "gguf": {**STT_STATUS["gguf"], "loaded_model": None}}
+
+
+# Without a loaded model the curated default is used.
+@pytest.mark.parametrize(
+    "status,args,model,engine",
+    [
+        (STT_STATUS, {"audio": {"clip_id": "clip-7"}, "timestamps": True}, TURBO, "gguf"),
+        (IDLE, {"audio": {"input_id": "in-3"}, "language": "en"}, WHISPER, "transformers"),
+    ],
+)
+def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(
+    monkeypatch, status, args, model, engine
+):
+    result, studio = _from_source(monkeypatch, args, status = status)
+    timestamps = args.get("timestamps", False)
     assert result["structuredContent"] == {
         "text": "A long meeting.",
         "language": "en",
-        "model": "whisper-large-v3-turbo-q5",
-        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}],
+        "model": model,
+        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}] if timestamps else None,
         "saved_to_history": True,
     }
+    extra = {"language": "en"} if "language" in args else {}
     assert bodies(studio, "/api/inference/audio/transcribe/source") == [
         {
-            "source": {"clip_id": "clip-7"},
-            "model": "whisper-large-v3-turbo-q5",
-            "engine": "gguf",
-            "timestamps": True,
+            "source": args["audio"],
+            "model": model,
+            "engine": engine,
+            "timestamps": timestamps,
+            **extra,
         }
     ]
-
-
-def test_without_a_loaded_model_the_curated_default_is_used(monkeypatch):
-    idle = {**STT_STATUS, "gguf": {**STT_STATUS["gguf"], "loaded_model": None}}
-    args = {"audio": {"input_id": "in-3"}, "language": "en"}
-    _result, studio = _from_source(monkeypatch, args, status = idle)
-    (body,) = bodies(studio, "/api/inference/audio/transcribe/source")
-    assert body["model"] == "openai/whisper-small"
-    assert body["engine"] == "transformers"
-    assert body["language"] == "en"
 
 
 def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):
@@ -431,9 +415,6 @@ def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):
     assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["source"] == {
         "input_id": "in-1"
     }
-
-
-MISSING = "STT model 'openai/whisper-small' is not downloaded. Download it in Settings, then Voice, before loading it."
 
 
 @pytest.mark.parametrize("as_stream", [True, False])
@@ -466,17 +447,20 @@ def test_a_transcript_that_mentions_the_phrase_is_not_retried(monkeypatch):
     assert "/api/inference/audio/stt/download" not in paths
 
 
-def test_an_ndjson_error_line_is_a_tool_error(monkeypatch):
-    events = [
-        {"type": "progress"},
-        {"type": "error", "message": "Audio is longer than 30 minutes."},
-    ]
+@pytest.mark.parametrize(
+    "events,message",
+    [
+        (
+            [
+                {"type": "progress"},
+                {"type": "error", "message": "Audio is longer than 30 minutes."},
+            ],
+            "Audio is longer than 30 minutes.",
+        ),
+        ([{"type": "progress"}, {"type": "heartbeat"}], None),
+    ],
+)
+def test_an_ndjson_error_line_or_early_stop_is_a_tool_error(monkeypatch, events, message):
     result, _studio = _from_source(monkeypatch, {"audio": {"clip_id": "clip-7"}}, events)
     assert result["isError"] is True
-    assert result["content"][0]["text"] == "Audio is longer than 30 minutes."
-
-
-def test_a_stream_that_stops_early_is_an_error(monkeypatch):
-    events = [{"type": "progress"}, {"type": "heartbeat"}]
-    result, _studio = _from_source(monkeypatch, {"audio": {"clip_id": "clip-7"}}, events)
-    assert result["isError"] is True
+    assert message is None or result["content"][0]["text"] == message

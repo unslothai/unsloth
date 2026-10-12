@@ -3,10 +3,12 @@
 
 import json
 
+import pytest
 from fastapi.responses import JSONResponse
 
 from .mcp_harness import bodies, queries, run_tool
 
+ERRORS = [{"message": "column q needs params", "path": "columns.0"}]
 RECIPE = {"columns": [{"name": "q", "column_type": "sampler"}]}
 STATUS = {
     "job_id": "job-1",
@@ -19,10 +21,7 @@ STATUS = {
     "execution_type": "full",
 }
 PAYLOADS = {
-    ("POST", "/api/data-recipe/validate"): {
-        "valid": False,
-        "errors": [{"message": "column q needs params", "path": "columns.0"}],
-    },
+    ("POST", "/api/data-recipe/validate"): {"valid": False, "errors": ERRORS},
     ("POST", "/api/data-recipe/jobs"): {"job_id": "job-1"},
     ("GET", "/api/data-recipe/jobs/job-1/status"): STATUS,
     ("GET", "/api/data-recipe/jobs/current"): STATUS,
@@ -35,33 +34,19 @@ PAYLOADS = {
 }
 
 
-def test_validate_returns_the_errors(monkeypatch):
-    result, studio = run_tool(monkeypatch, PAYLOADS, "run_recipe", {"recipe": RECIPE})
+@pytest.mark.parametrize("mode", [None, "preview", "full"])
+def test_validate_checks_and_preview_or_full_starts_a_job(monkeypatch, mode):
+    args = {"recipe": RECIPE, **({"mode": mode} if mode else {})}
+    result, studio = run_tool(monkeypatch, PAYLOADS, "run_recipe", args)
+    started = [{"recipe": RECIPE, "run": {"execution_type": mode}}] if mode else []
     assert result["structuredContent"] == {
-        "mode": "validate",
-        "valid": False,
-        "errors": [{"message": "column q needs params", "path": "columns.0"}],
-        "job_id": None,
+        "mode": mode or "validate",
+        "valid": None if mode else False,
+        "errors": None if mode else ERRORS,
+        "job_id": "job-1" if mode else None,
     }
-    assert bodies(studio, "/api/data-recipe/validate") == [{"recipe": RECIPE}]
-    assert bodies(studio, "/api/data-recipe/jobs") == []
-
-
-def test_preview_and_full_start_a_job_with_their_execution_type(monkeypatch):
-    for mode in ("preview", "full"):
-        result, studio = run_tool(
-            monkeypatch, PAYLOADS, "run_recipe", {"recipe": RECIPE, "mode": mode}
-        )
-        assert result["structuredContent"] == {
-            "mode": mode,
-            "valid": None,
-            "errors": None,
-            "job_id": "job-1",
-        }
-        assert bodies(studio, "/api/data-recipe/jobs") == [
-            {"recipe": RECIPE, "run": {"execution_type": mode}}
-        ]
-        assert bodies(studio, "/api/data-recipe/validate") == []
+    assert bodies(studio, "/api/data-recipe/jobs") == started
+    assert bodies(studio, "/api/data-recipe/validate") == ([] if mode else [{"recipe": RECIPE}])
 
 
 def test_a_job_reports_its_dataset_by_name_never_its_path(monkeypatch):
@@ -94,43 +79,40 @@ def test_rows_page_through_the_dataset(monkeypatch):
     assert queries(studio, "/api/data-recipe/jobs/job-1/dataset") == [{"limit": "2", "offset": "4"}]
 
 
+def _missing(detail):
+    return JSONResponse({"detail": detail}, status_code = 404)
+
+
 def test_no_current_job_is_an_empty_result(monkeypatch):
-    routes = {
-        **PAYLOADS,
-        ("GET", "/api/data-recipe/jobs/current"): JSONResponse(
-            {"detail": "no job"}, status_code = 404
-        ),
-    }
+    routes = {**PAYLOADS, ("GET", "/api/data-recipe/jobs/current"): _missing("no job")}
     result, _studio = run_tool(monkeypatch, routes, "get_job", {"kind": "recipe"})
     assert result["isError"] is False
     assert result["structuredContent"]["jobs"] == []
 
 
 def test_an_unknown_recipe_id_is_still_an_error(monkeypatch):
-    routes = {
-        **PAYLOADS,
-        ("GET", "/api/data-recipe/jobs/nope/status"): JSONResponse(
-            {"detail": "job not found"}, status_code = 404
-        ),
-    }
+    routes = {**PAYLOADS, ("GET", "/api/data-recipe/jobs/nope/status"): _missing("job not found")}
     result, _studio = run_tool(monkeypatch, routes, "get_job", {"kind": "recipe", "id": "nope"})
     assert result["isError"] is True
     assert "job not found" in result["content"][0]["text"]
 
 
-def test_rows_not_written_yet_still_report_the_status(monkeypatch):
-    # The dataset route answers 404 while a job runs and 422 (naming host paths) when it ended without rows.
-    for status_code, detail in ((404, "dataset not ready"), (422, "dataset path missing: /srv/x")):
-        routes = {
-            **PAYLOADS,
-            ("GET", "/api/data-recipe/jobs/job-1/status"): {**STATUS, "status": "running"},
-            ("GET", "/api/data-recipe/jobs/job-1/dataset"): JSONResponse(
-                {"detail": detail}, status_code = status_code
-            ),
-        }
-        args = {"kind": "recipe", "id": "job-1", "rows": 5}
-        result, _studio = run_tool(monkeypatch, routes, "get_job", args)
-        assert result["isError"] is False, result
-        assert result["structuredContent"]["status"] == "running"
-        assert result["structuredContent"]["recipe"]["data_rows"] is None
-        assert "/srv/x" not in json.dumps(result)
+# The dataset route answers 404 while a job runs and 422 (naming host paths) when it ended without rows.
+@pytest.mark.parametrize(
+    "code,detail", [(404, "dataset not ready"), (422, "dataset path missing: /srv/x")]
+)
+def test_rows_not_written_yet_still_report_the_status(monkeypatch, code, detail):
+    routes = {
+        **PAYLOADS,
+        ("GET", "/api/data-recipe/jobs/job-1/status"): {**STATUS, "status": "running"},
+        ("GET", "/api/data-recipe/jobs/job-1/dataset"): JSONResponse(
+            {"detail": detail}, status_code = code
+        ),
+    }
+    result, _studio = run_tool(
+        monkeypatch, routes, "get_job", {"kind": "recipe", "id": "job-1", "rows": 5}
+    )
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["status"] == "running"
+    assert result["structuredContent"]["recipe"]["data_rows"] is None
+    assert "/srv/x" not in json.dumps(result)

@@ -10,19 +10,14 @@ from studio_mcp import export_jobs
 
 from .mcp_harness import bodies, register_export_job, run_tool, sequence
 
+START = "/api/train/start-requests/req-1/cancel"
+RECIPE = "/api/data-recipe/jobs/rec-1/cancel"
+DOWNLOAD = "/api/hub/datasets/download/cancel"
+STOPPING = "Stop requested. Training will stop at the next safe step."
 PAYLOADS = {
-    ("GET", "/api/train/status"): {
-        "job_id": "job-7",
-        "is_training_running": True,
-        "phase": "training",
-    },
-    ("POST", "/api/train/stop"): {
-        "status": "stopped",
-        "message": "Stop requested. Training will stop at the next safe step.",
-    },
-    ("POST", "/api/train/start-requests/req-1/cancel"): {
-        "start_request_id": "req-1",
-        "job_id": "",
+    ("GET", "/api/train/status"): {"job_id": "job-7", "is_training_running": True},
+    ("POST", "/api/train/stop"): {"status": "stopped", "message": STOPPING},
+    ("POST", START): {
         "state": "rejected",
         "message": "Training start was cancelled",
         "error_code": "training_start_cancelled",
@@ -30,11 +25,11 @@ PAYLOADS = {
     ("POST", "/api/train/diffusion/stop"): {"status": "stopping"},
     ("GET", "/api/export/status"): {"is_export_active": True, "active_op_kind": "export_gguf"},
     ("POST", "/api/export/cancel"): {"success": True, "message": "Export cancelled"},
-    ("POST", "/api/data-recipe/jobs/rec-1/cancel"): {"job_id": "rec-1", "status": "cancelling"},
+    ("POST", RECIPE): {"job_id": "rec-1", "status": "cancelling"},
     ("POST", "/api/inference/images/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
-    ("POST", "/api/hub/datasets/download/cancel"): {"repo_id": "a/b", "state": "cancelling"},
+    ("POST", DOWNLOAD): {"repo_id": "a/b", "state": "cancelling"},
 }
 
 
@@ -61,22 +56,18 @@ def _call(
             "/api/train/stop",
             {"save": False, "expected_job_id": "job-7"},
         ),
-        ({"kind": "training_start", "id": "req-1"}, "/api/train/start-requests/req-1/cancel", None),
+        ({"kind": "training_start", "id": "req-1"}, START, None),
         ({"kind": "diffusion_training"}, "/api/train/diffusion/stop", {"save": True}),
         (
             {"kind": "diffusion_training", "save": False},
             "/api/train/diffusion/stop",
             {"save": False},
         ),
-        ({"kind": "recipe", "id": "rec-1"}, "/api/data-recipe/jobs/rec-1/cancel", None),
+        ({"kind": "recipe", "id": "rec-1"}, RECIPE, None),
         ({"kind": "image"}, "/api/inference/images/generate/cancel", None),
         ({"kind": "video"}, "/api/inference/video/generate/cancel", None),
         ({"kind": "chat", "id": "mcp-abc"}, "/api/inference/cancel", {"cancel_id": "mcp-abc"}),
-        (
-            {"kind": "dataset_download", "id": "a/b"},
-            "/api/hub/datasets/download/cancel",
-            {"repo_id": "a/b"},
-        ),
+        ({"kind": "dataset_download", "id": "a/b"}, DOWNLOAD, {"repo_id": "a/b"}),
     ],
 )
 def test_each_kind_reaches_its_route(monkeypatch, args, route, body):
@@ -94,7 +85,7 @@ def test_training_without_an_id_stops_the_running_job(monkeypatch):
         "kind": "training",
         "id": "job-7",
         "cancelled": True,
-        "message": "Stop requested. Training will stop at the next safe step.",
+        "message": STOPPING,
     }
     assert [c[1] for c in studio.state.calls] == ["/api/train/status", "/api/train/stop"]
     assert bodies(studio, "/api/train/stop") == [{"save": True, "expected_job_id": "job-7"}]
@@ -145,28 +136,25 @@ def test_an_export_cancel_leaves_another_jobs_op_alone(monkeypatch, phase, op):
 IDLE_WORKER = {"is_export_active": False, "current_checkpoint": "ref:abc", "last_op_seq": 5}
 
 
-def test_an_idle_export_worker_keeps_its_checkpoint(monkeypatch):
-    # Between ops the worker is alive and holds a checkpoint; the cancel route would kill it.
-    result, studio = _call(
-        monkeypatch, {"kind": "export"}, {("GET", "/api/export/status"): IDLE_WORKER}
+# Between ops the worker is alive and holds a checkpoint; the cancel route would kill it. A job
+# "exporting" waits for its own answer first (see the direct tests below).
+@pytest.mark.parametrize(
+    "phase,cancelled,message",
+    [
+        (None, False, "No export is running."),
+        ("starting", True, "The export job was stopped before its next step."),
+        ("loading", True, "The export job was stopped before its next step."),
+    ],
+)
+def test_an_idle_export_worker_is_never_touched(monkeypatch, phase, cancelled, message):
+    job = register_export_job(job_id = "exp-1", phase = phase) if phase else None
+    args = {"kind": "export", **({"id": "exp-1"} if phase else {})}
+    result, studio = _call(monkeypatch, args, {("GET", "/api/export/status"): IDLE_WORKER})
+    assert (result["structuredContent"]["cancelled"], result["structuredContent"]["message"]) == (
+        cancelled,
+        message,
     )
-    assert result["structuredContent"]["cancelled"] is False
-    assert result["structuredContent"]["message"] == "No export is running."
-    assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
-
-
-# "exporting" waits for the job's own answer first; see the direct tests below.
-@pytest.mark.parametrize("phase", ["starting", "loading"])
-def test_a_job_between_steps_is_stopped_without_touching_the_worker(monkeypatch, phase):
-    job = register_export_job(job_id = "exp-1", phase = phase)
-    result, studio = _call(
-        monkeypatch, {"kind": "export", "id": "exp-1"}, {("GET", "/api/export/status"): IDLE_WORKER}
-    )
-    assert result["structuredContent"]["cancelled"] is True
-    assert (
-        result["structuredContent"]["message"] == "The export job was stopped before its next step."
-    )
-    assert job.status == "cancelled"
+    assert job is None or job.status == "cancelled"
     assert [c[1] for c in studio.state.calls] == ["/api/export/status"]
 
 
@@ -224,21 +212,22 @@ async def _exports(job):
     await asyncio.Event().wait()
 
 
-def test_an_export_that_starts_while_waiting_is_stopped_on_the_worker(monkeypatch):
-    running = {"is_export_active": True, "active_op_kind": "export_gguf"}
-    job, result, calls = _cancel_directly(monkeypatch, _exports, statuses = (IDLE_WORKER, running))
-    assert result.cancelled is True
-    assert ("POST", "/api/export/cancel") in calls
-    assert job.status == "cancelled"
-
-
-def test_an_export_queued_behind_someone_elses_op_is_left_alone(monkeypatch):
-    theirs = {"is_export_active": True, "active_op_kind": "cleanup"}
-    job, result, calls = _cancel_directly(monkeypatch, _exports, statuses = (IDLE_WORKER, theirs))
-    assert result.cancelled is False
-    assert result.message == "The export running now is not this job; it was left alone."
-    assert ("POST", "/api/export/cancel") not in calls
-    assert job.status == "running"
+@pytest.mark.parametrize(
+    "op,cancelled,message",
+    [
+        ("export_gguf", True, None),
+        ("cleanup", False, "The export running now is not this job; it was left alone."),
+    ],
+)
+def test_an_export_starting_while_waiting_is_stopped_only_if_it_is_this_job(
+    monkeypatch, op, cancelled, message
+):
+    then = {"is_export_active": True, "active_op_kind": op}
+    job, result, calls = _cancel_directly(monkeypatch, _exports, statuses = (IDLE_WORKER, then))
+    assert result.cancelled is cancelled
+    assert message is None or result.message == message
+    assert (("POST", "/api/export/cancel") in calls) is cancelled
+    assert job.status == ("cancelled" if cancelled else "running")
 
 
 def test_a_job_between_steps_is_stopped_at_once(monkeypatch):
@@ -264,46 +253,19 @@ IDLE_EXPORT = (
 )
 # What each route answers when there was nothing of the caller's to stop.
 IDLE_ANSWERS = [
-    (
-        "training",
-        "/api/train/stop",
-        {"status": "idle", "message": "No training job is currently running"},
-    ),
-    (
-        "training_start",
-        "/api/train/start-requests/req-1/cancel",
-        {"start_request_id": "req-1", "job_id": "job-7", "state": "accepted", "message": "Started"},
-    ),
+    ("training", "/api/train/stop", {"status": "idle", "message": "No training job is running"}),
+    ("training_start", START, {"state": "accepted", "message": "Started"}),
+    # A start request rejected for another reason was not cancelled.
+    ("training_start", START, {"state": "rejected", "error_code": "model_not_found"}),
     ("diffusion_training", "/api/train/diffusion/stop", {"status": "idle"}),
     IDLE_EXPORT,
-    ("recipe", "/api/data-recipe/jobs/rec-1/cancel", {"job_id": "rec-1", "status": "completed"}),
+    ("recipe", RECIPE, {"job_id": "rec-1", "status": "completed"}),
+    ("recipe", RECIPE, {"job_id": "rec-1", "status": "cancelled"}),
     ("image", "/api/inference/images/generate/cancel", {"cancelled": False}),
     ("video", "/api/inference/video/generate/cancel", {"cancelled": False}),
     ("chat", "/api/inference/cancel", {"cancelled": 0}),
-    (
-        "dataset_download",
-        "/api/hub/datasets/download/cancel",
-        {"repo_id": "a/b", "state": "completed"},
-    ),
-    # A start request rejected for another reason was not cancelled.
-    (
-        "training_start",
-        "/api/train/start-requests/req-1/cancel",
-        {
-            "start_request_id": "req-1",
-            "job_id": "",
-            "state": "rejected",
-            "message": "Model not found",
-            "error_code": "model_not_found",
-        },
-    ),
-    # Cancelling an already cancelled job stops nothing.
-    ("recipe", "/api/data-recipe/jobs/rec-1/cancel", {"job_id": "rec-1", "status": "cancelled"}),
-    (
-        "dataset_download",
-        "/api/hub/datasets/download/cancel",
-        {"repo_id": "a/b", "state": "cancelled"},
-    ),
+    ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "completed"}),
+    ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "cancelled"}),
 ]
 IDS = {
     "training": "job-7",

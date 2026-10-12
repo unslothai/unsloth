@@ -59,18 +59,21 @@ DIFFUSION = {
     "train_steps": 500,
 }
 OUT = "/srv/unsloth/outputs"
+
+
+def _checkpoint(run: str, name: str, loss: float) -> dict:
+    path = f"{OUT}/{run}" if name == run else f"{OUT}/{run}/{name}"
+    return {"display_name": name, "path": path, "loss": loss}
+
+
 RUN_CHECKPOINTS = {
     "outputs_dir": OUT,
     "models": [
         {
             "name": "qwen-lora",
             "checkpoints": [
-                {"display_name": "qwen-lora", "path": f"{OUT}/qwen-lora", "loss": 0.9},
-                {
-                    "display_name": "checkpoint-30",
-                    "path": f"{OUT}/qwen-lora/checkpoint-30",
-                    "loss": 1.1,
-                },
+                _checkpoint("qwen-lora", "qwen-lora", 0.9),
+                _checkpoint("qwen-lora", "checkpoint-30", 1.1),
             ],
             "base_model": "unsloth/Qwen3-0.6B",
             "peft_type": "LORA",
@@ -79,13 +82,7 @@ RUN_CHECKPOINTS = {
         },
         {
             "name": "qwen-lora-2",
-            "checkpoints": [
-                {
-                    "display_name": "checkpoint-30",
-                    "path": f"{OUT}/qwen-lora-2/checkpoint-30",
-                    "loss": 1.0,
-                }
-            ],
+            "checkpoints": [_checkpoint("qwen-lora-2", "checkpoint-30", 1.0)],
             "base_model": "unsloth/Qwen3-0.6B",
         },
     ],
@@ -164,6 +161,29 @@ def served(
     return app
 
 
+def _post_call(
+    client: Any,
+    name: str,
+    args: Optional[dict],
+    token: Optional[str],
+    headers: Optional[dict],
+    meta: Optional[dict] = None,
+) -> list[dict]:
+    """POST one ``tools/call``; returns every SSE ``data:`` message."""
+    params = {"name": name, "arguments": args or {}, **({"_meta": meta} if meta else {})}
+    sent = {**MCP_HEADERS, **(headers or {})}
+    if token is not None:
+        sent["Authorization"] = f"Bearer {token}"
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}
+    response = client.post("/mcp/", json = body, headers = sent)
+    assert response.status_code == 200, response.text
+    return [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith("data:")]
+
+
+def _outcome(message: dict) -> dict:
+    return message.get("result", message.get("error"))
+
+
 def call_tool(
     client: Any,
     name: str,
@@ -172,20 +192,7 @@ def call_tool(
     headers: Optional[dict] = None,
 ) -> dict:
     """``tools/call`` over the streamable HTTP transport; returns the JSON-RPC ``result`` (or ``error``)."""
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": name, "arguments": args or {}},
-    }
-    sent = {**MCP_HEADERS, **(headers or {})}
-    if token is not None:
-        sent["Authorization"] = f"Bearer {token}"
-    response = client.post("/mcp/", json = body, headers = sent)
-    assert response.status_code == 200, response.text
-    data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
-    message = json.loads(data[-1])
-    return message.get("result", message.get("error"))
+    return _outcome(_post_call(client, name, args, token, headers)[-1])
 
 
 def poison(payload: Any) -> Any:
@@ -227,21 +234,10 @@ def call_with_progress(
     """Call a tool with a progress token; returns the progress notifications' params and the final result."""
     from mcp_server import create_studio_mcp
 
-    request = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": name, "arguments": args, "_meta": {"progressToken": token}},
-    }
     with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
-        response = http.post(
-            "/mcp/", json = request, headers = {**MCP_HEADERS, "Authorization": f"Bearer {TEST_TOKEN}"}
-        )
-    messages = [
-        json.loads(line[5:]) for line in response.text.splitlines() if line.startswith("data:")
-    ]
+        messages = _post_call(http, name, args, TEST_TOKEN, None, {"progressToken": token})
     progress = [m["params"] for m in messages if m.get("method") == "notifications/progress"]
-    return progress, messages[-1].get("result", messages[-1].get("error"))
+    return progress, _outcome(messages[-1])
 
 
 def call_to(studio: FastAPI, path: str) -> tuple:
@@ -431,24 +427,16 @@ def owner_auth(isolated_auth):
 def file_spy(monkeypatch):
     """Records every way the tool could open or inspect a file."""
     touched = []
-    real_open, real_stat, real_read = builtins.open, Path.stat, Path.read_bytes
 
-    def spy_open(file, *args, **kwargs):
-        if "mcp-input" in str(file):
-            touched.append(("open", str(file)))
-        return real_open(file, *args, **kwargs)
+    def spy(kind: str, real: Callable) -> Callable:
+        def wrapper(target, *args, **kwargs):
+            if "mcp-input" in str(target):
+                touched.append((kind, str(target)))
+            return real(target, *args, **kwargs)
 
-    def spy_stat(self, *args, **kwargs):
-        if "mcp-input" in str(self):
-            touched.append(("stat", str(self)))
-        return real_stat(self, *args, **kwargs)
+        return wrapper
 
-    def spy_read(self):
-        if "mcp-input" in str(self):
-            touched.append(("read", str(self)))
-        return real_read(self)
-
-    monkeypatch.setattr(builtins, "open", spy_open)
-    monkeypatch.setattr(Path, "stat", spy_stat)
-    monkeypatch.setattr(Path, "read_bytes", spy_read)
+    monkeypatch.setattr(builtins, "open", spy("open", builtins.open))
+    monkeypatch.setattr(Path, "stat", spy("stat", Path.stat))
+    monkeypatch.setattr(Path, "read_bytes", spy("read", Path.read_bytes))
     return touched

@@ -3,14 +3,13 @@
 
 import pytest
 
-from .mcp_harness import fake_studio, run_tool
+from .mcp_harness import run_tool
 
 CATALOG = {
     "object": "list",
     "data": [
         {
             "id": "unsloth/Llama-3.2-1B-Instruct-GGUF",
-            "object": "model",
             "loaded": True,
             "quant": "Q4_K_M",
             "context_length": 8192,
@@ -86,10 +85,12 @@ def _list(
     ],
 )
 def test_kind_comes_from_the_task(monkeypatch, kind, expected):
-    result, _studio = _list(monkeypatch, {"kind": kind})
+    result, studio = _list(monkeypatch, {"kind": kind})
     models = result["structuredContent"]["models"]
     assert {model["id"] for model in models} == expected
     assert {model["kind"] for model in models} == {kind}
+    # output_modalities is never sent.
+    assert [query for _m, _p, query in studio.state.queries] == [""]
 
 
 def test_entries_carry_only_the_allowlisted_fields(monkeypatch):
@@ -110,31 +111,23 @@ def test_entries_carry_only_the_allowlisted_fields(monkeypatch):
     assert path == "/v1/models"
 
 
-def test_output_modalities_is_never_sent(monkeypatch):
-    studio = fake_studio({("GET", "/v1/models"): CATALOG})
-    for args in ({}, {"kind": "image"}, {"kind": "stt", "loaded_only": True}):
-        run_tool(monkeypatch, studio, "list_models", args)
-    assert [query for _m, _p, query in studio.state.queries] == ["", "", ""]
+LLAMA = "unsloth/Llama-3.2-1B-Instruct-GGUF"
 
 
-def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch):
-    result, studio = _list(monkeypatch, {"loaded_only": True, "kind": "llm"})
-    assert [model["id"] for model in result["structuredContent"]["models"]] == [
-        "unsloth/Llama-3.2-1B-Instruct-GGUF"
-    ]
-    assert [call[1] for call in studio.state.calls] == ["/api/inference/loaded-models"]
-
-    # Without a kind, resident media models are listed too; the fast path only knows chat models.
-    result, studio = _list(monkeypatch, {"loaded_only": True})
-    ids = [model["id"] for model in result["structuredContent"]["models"]]
-    assert "unsloth/Llama-3.2-1B-Instruct-GGUF" in ids and "Lightricks/LTX-Video" in ids
-    assert [call[1] for call in studio.state.calls] == ["/v1/models"]
-
-    result, studio = _list(monkeypatch, {"loaded_only": True, "kind": "video"})
-    assert [model["id"] for model in result["structuredContent"]["models"]] == [
-        "Lightricks/LTX-Video"
-    ]
-    assert [call[1] for call in studio.state.calls] == ["/v1/models"]
+# The fast path knows only chat models; without a kind, resident media models are listed too.
+@pytest.mark.parametrize(
+    "kind,expected,route",
+    [
+        ("llm", [LLAMA], "/api/inference/loaded-models"),
+        (None, [LLAMA, "Lightricks/LTX-Video"], "/v1/models"),
+        ("video", ["Lightricks/LTX-Video"], "/v1/models"),
+    ],
+)
+def test_loaded_only_takes_the_fast_path_for_chat(monkeypatch, kind, expected, route):
+    args = {"loaded_only": True, **({"kind": kind} if kind else {})}
+    result, studio = _list(monkeypatch, args)
+    assert [model["id"] for model in result["structuredContent"]["models"]] == expected
+    assert [(path, query) for _m, path, query in studio.state.queries] == [(route, "")]
 
 
 # ``model`` narrows the list to that model and adds its scalar training defaults.
@@ -153,16 +146,10 @@ def test_model_matches_whatever_case_or_variant_is_asked_for(monkeypatch, asked)
     }
 
 
-def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch):
-    _result, studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"})
-    config_headers = [
-        h for _m, path, h, _b in studio.state.calls if path.startswith("/api/models/config/")
-    ]
-    assert "x-unsloth-hf-token" not in config_headers[0]
-
-    _result, studio = _list(
-        monkeypatch, {"model": "unsloth/Qwen3-0.6B"}, headers = {"X-Unsloth-HF-Token": "hf_secret"}
-    )
+@pytest.mark.parametrize("token", [None, "hf_secret"])
+def test_the_config_request_carries_the_hub_token_only_when_given(monkeypatch, token):
+    headers = {"X-Unsloth-HF-Token": token} if token else None
+    _result, studio = _list(monkeypatch, {"model": "unsloth/Qwen3-0.6B"}, headers = headers)
     calls = {path: h for _m, path, h, _b in studio.state.calls}
-    assert calls["/api/models/config/unsloth/Qwen3-0.6B"]["x-unsloth-hf-token"] == "hf_secret"
+    assert calls["/api/models/config/unsloth/Qwen3-0.6B"].get("x-unsloth-hf-token") == token
     assert "x-unsloth-hf-token" not in calls["/v1/models"]

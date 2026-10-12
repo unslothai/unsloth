@@ -121,28 +121,24 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("method", ["GET", "POST"])
-def test_decisions_without_the_slash_still_redirects(studio, enabled, method):
+def test_decisions_keeps_its_redirect_and_its_own_auth(studio, enabled):
     if enabled:
         set_mcp_enabled(True)
-    response = studio.request(method, "/mcp/decisions?x=1", follow_redirects = False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "http://testserver/mcp/decisions/?x=1"
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-def test_decisions_with_the_slash_keeps_its_own_auth(studio, enabled):
-    if enabled:
-        set_mcp_enabled(True)
+    for method in ("GET", "POST"):
+        response = studio.request(method, "/mcp/decisions?x=1", follow_redirects = False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "http://testserver/mcp/decisions/?x=1"
     response = studio.post("/mcp/decisions/", json = LISTING, headers = MCP_HEADERS)
     assert response.status_code == 401
 
 
-def test_on_without_a_static_token_refuses_everyone(studio):
-    set_mcp_enabled(True)
-    response = studio.post(
-        "/mcp/", json = LISTING, headers = {**MCP_HEADERS, "Authorization": "Bearer anything"}
-    )
+@pytest.mark.parametrize("by_env", [False, True])
+def test_on_without_a_key_refuses_everyone(studio, monkeypatch, by_env):
+    if by_env:
+        monkeypatch.setenv(ENV_FORCE, "1")
+    else:
+        set_mcp_enabled(True)
+    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer("anything")})
     assert response.status_code == 401
 
 
@@ -154,32 +150,39 @@ def test_the_switch_flips_live_without_a_restart(studio):
     assert studio.post("/mcp/", json = LISTING, headers = MCP_HEADERS).status_code == 404
 
 
-def test_the_env_var_forces_it_on(studio, monkeypatch):
-    monkeypatch.setenv(ENV_FORCE, "1")
-    assert studio.post("/mcp/", json = LISTING, headers = MCP_HEADERS).status_code == 401
-
-
-def _run_gate(scope):
+def _run_gate(
+    scope,
+    inner = None,
+    receive = None,
+):
     events = []
 
-    async def inner(scope, receive, send):
+    async def record(scope, receive, send):
         events.append("app")
 
     async def send(message):
         events.append(message)
 
-    asyncio.run(StudioMcpGate(inner)(scope, None, send))
-    return events
+    async def run():
+        await StudioMcpGate(inner or record)(scope, receive, send)
+        return current_account()
+
+    return events, asyncio.run(run())
 
 
-def test_lifespan_passes_through():
-    assert _run_gate({"type": "lifespan"}) == ["app"]
-
-
-def test_a_websocket_is_closed():
+@pytest.mark.parametrize(
+    "scope,events",
+    [
+        ({"type": "lifespan"}, ["app"]),
+        (
+            {"type": "websocket", "path": "/mcp/", "root_path": "/mcp", "headers": []},
+            [{"type": "websocket.close", "code": 4404}],
+        ),
+    ],
+)
+def test_lifespan_passes_through_and_a_websocket_is_closed(scope, events):
     set_mcp_enabled(True)
-    scope = {"type": "websocket", "path": "/mcp/", "root_path": "/mcp", "headers": []}
-    assert _run_gate(scope) == [{"type": "websocket.close", "code": 4404}]
+    assert _run_gate(scope)[0] == events
 
 
 def test_the_mcp_app_is_stateless_and_streams(live_key):
@@ -214,6 +217,7 @@ def test_keyless_is_never_admitted(scope, authorization):
     assert response.status_code == 401
     assert response.json() == {"detail": NEED_KEY}
     assert response.headers["www-authenticate"] == "Bearer"
+    assert "resource_metadata" not in response.text
     assert result is None
 
 
@@ -223,9 +227,9 @@ def test_keyless_is_never_admitted(scope, authorization):
         lambda: "Basic dXNlcjpwYXNz",
         lambda: "Token sk-unsloth-x",
         lambda: "Bearer not-a-key",
-        # A UI session's JWT.
         lambda: f"Bearer {create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)}",
     ],
+    ids = ["basic", "token-scheme", "non-key", "ui-session-jwt"],
 )
 def test_other_schemes_and_non_keys_need_a_key(authorization):
     seed_owner()
@@ -266,20 +270,7 @@ def test_an_unknown_or_workflow_key_is_refused(workflow, detail):
     assert response.json() == {"detail": detail}
 
 
-def test_a_managed_account_key_carries_its_account():
-    seed_owner()
-    alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
-    raw_key, _row = storage.create_api_key("alice", name = "agent", account_id = alice)
-    set_mcp_enabled(True)
-    with TestClient(served(probe_mcp())) as http:
-        response, result = call_tool(http, bearer(raw_key))
-    assert response.status_code == 200, response.text
-    assert result["account_id"] == alice
-    # The gate validates; the forwarded route call is what binds the account.
-    assert result["bound_account"] == "owner"
-
-
-def test_a_managed_account_key_never_reads_host_files_even_from_loopback():
+def test_a_managed_account_key_carries_its_account_but_never_reads_host_files():
     seed_owner()
     alice = storage.issue_account_setup_code(username = "alice")["account"]["account_id"]
     raw_key, _row = storage.create_api_key("alice", name = "agent", account_id = alice)
@@ -288,22 +279,29 @@ def test_a_managed_account_key_never_reads_host_files_even_from_loopback():
         response, result = call_tool(http, bearer(raw_key))
     assert response.status_code == 200, response.text
     assert result["account_id"] == alice
+    # Even from loopback; and the gate only validates, the forwarded route call binds the account.
     assert result["direct_local"] is False
+    assert result["bound_account"] == "owner"
 
 
-def test_two_authorization_headers_are_refused(live_key):
+@pytest.mark.parametrize(
+    "authorization,detail",
+    [
+        (lambda key: [f"Bearer {key}".encode()] * 2, "Send one Authorization header"),
+        (lambda key: [b"Bearer \xff\xff"], NEED_KEY),
+    ],
+    ids = ["two-headers", "non-ascii"],
+)
+def test_a_malformed_authorization_header_is_a_clean_401(
+    live_key, monkeypatch, authorization, detail
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "static-token")
+    headers = [("accept", MCP_HEADERS["Accept"])]
+    headers += [("authorization", value) for value in authorization(live_key)]
     with TestClient(served(probe_mcp())) as http:
-        response = http.post(
-            "/mcp/",
-            json = LISTING,
-            headers = [
-                ("accept", MCP_HEADERS["Accept"]),
-                ("authorization", f"Bearer {live_key}"),
-                ("authorization", f"Bearer {live_key}"),
-            ],
-        )
+        response = http.post("/mcp/", json = LISTING, headers = headers)
     assert response.status_code == 401
-    assert response.json() == {"detail": "Send one Authorization header"}
+    assert response.json() == {"detail": detail}
 
 
 def test_the_gate_validates_without_touching_last_used(key_spy):
@@ -333,37 +331,28 @@ def test_the_gate_never_binds_an_account(live_key):
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def run():
-        sent = []
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
 
-        async def send(message):
-            sent.append(message)
-
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        token = bind_account(sentinel)
-        try:
-            scope = {
-                "type": "http",
-                "method": "POST",
-                "path": "/mcp/",
-                "root_path": "/mcp",
-                "scheme": "http",
-                "query_string": b"",
-                "server": ("127.0.0.1", 8888),
-                "client": ("127.0.0.1", 50000),
-                "headers": [
-                    (b"host", b"127.0.0.1:8888"),
-                    (b"authorization", f"Bearer {live_key}".encode()),
-                ],
-            }
-            await StudioMcpGate(inner)(scope, receive, send)
-            return sent, current_account()
-        finally:
-            reset_account(token)
-
-    sent, after = asyncio.run(run())
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp/",
+        "root_path": "/mcp",
+        "scheme": "http",
+        "query_string": b"",
+        "server": ("127.0.0.1", 8888),
+        "client": ("127.0.0.1", 50000),
+        "headers": [
+            (b"host", b"127.0.0.1:8888"),
+            (b"authorization", f"Bearer {live_key}".encode()),
+        ],
+    }
+    token = bind_account(sentinel)
+    try:
+        sent, after = _run_gate(scope, inner, receive)
+    finally:
+        reset_account(token)
     assert sent[0]["status"] == 204
     assert seen == [sentinel]
     assert after == sentinel
@@ -444,19 +433,6 @@ def test_the_static_token_is_retired(monkeypatch):
     assert response.headers["www-authenticate"] == "Bearer"
 
 
-def test_a_non_ascii_authorization_header_is_a_clean_401(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "static-token")
-    set_mcp_enabled(True)
-    with TestClient(served(probe_mcp())) as http:
-        response = http.post(
-            "/mcp/",
-            json = LISTING,
-            headers = [("accept", MCP_HEADERS["Accept"]), ("authorization", b"Bearer \xff\xff")],
-        )
-    assert response.status_code == 401
-    assert response.json() == {"detail": NEED_KEY}
-
-
 def _import_main(extra_env):
     env = {
         name: value
@@ -474,22 +450,17 @@ def _import_main(extra_env):
     )
 
 
-def test_enabling_by_env_without_a_token_starts():
-    result = _import_main({"UNSLOTH_STUDIO_ENABLE_MCP": "1"})
+@pytest.mark.parametrize("token,warnings", [(None, 0), ("legacy", 1)])
+def test_enabling_by_env_starts_and_a_leftover_static_token_logs_one_warning(token, warnings):
+    env = {"UNSLOTH_STUDIO_ENABLE_MCP": "1"}
+    if token:
+        env["UNSLOTH_STUDIO_MCP_TOKEN"] = token
+    result = _import_main(env)
     assert result.returncode == 0, result.stderr[-2000:]
-    assert "UNSLOTH_STUDIO_MCP_TOKEN" not in result.stdout + result.stderr
-
-
-def test_a_leftover_static_token_logs_one_warning():
-    result = _import_main({"UNSLOTH_STUDIO_ENABLE_MCP": "1", "UNSLOTH_STUDIO_MCP_TOKEN": "legacy"})
-    assert result.returncode == 0, result.stderr[-2000:]
-    lines = [
-        line
-        for line in (result.stdout + result.stderr).splitlines()
-        if "UNSLOTH_STUDIO_MCP_TOKEN" in line
-    ]
-    assert len(lines) == 1, lines
-    assert json.loads(lines[0])["level"] == "warning"
+    output = (result.stdout + result.stderr).splitlines()
+    lines = [line for line in output if "UNSLOTH_STUDIO_MCP_TOKEN" in line]
+    assert len(lines) == warnings, lines
+    assert all(json.loads(line)["level"] == "warning" for line in lines)
 
 
 TUNNEL = "https://abc-def.trycloudflare.com"
@@ -524,25 +495,24 @@ def test_origin_allowlist(key_spy, base_url, origin, allowed, live_key):
         assert key_spy == []
 
 
-def test_a_foreign_origin_is_refused_before_auth():
-    set_mcp_enabled(True)
-    with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, {"Origin": "https://evil.example"})
-    assert response.status_code == 403
-
-
-def test_two_origin_headers_are_refused(live_key):
+@pytest.mark.parametrize(
+    "headers",
+    [
+        # No key at all: the origin refusal comes before the missing-key 401.
+        [("origin", "https://evil.example")],
+        [
+            ("authorization", "Bearer {key}"),
+            ("origin", "http://127.0.0.1:8888"),
+            ("origin", "https://evil.example"),
+        ],
+    ],
+    ids = ["foreign-before-auth", "two-origins"],
+)
+def test_a_foreign_or_doubled_origin_is_a_403(live_key, headers):
+    sent = [("accept", MCP_HEADERS["Accept"])]
+    sent += [(name, value.format(key = live_key)) for name, value in headers]
     with TestClient(served(probe_mcp()), base_url = "http://127.0.0.1:8888") as http:
-        response = http.post(
-            "/mcp/",
-            json = LISTING,
-            headers = [
-                ("accept", MCP_HEADERS["Accept"]),
-                ("authorization", f"Bearer {live_key}"),
-                ("origin", "http://127.0.0.1:8888"),
-                ("origin", "https://evil.example"),
-            ],
-        )
+        response = http.post("/mcp/", json = LISTING, headers = sent)
     assert response.status_code == 403
 
 
@@ -568,12 +538,3 @@ def test_oauth_discovery_is_a_404_not_the_app_shell(tmp_path, path):
     root = client.get("/")
     assert root.status_code == 200
     assert "<title>studio</title>" in root.text
-
-
-def test_the_gate_401_advertises_no_oauth_metadata():
-    set_mcp_enabled(True)
-    with TestClient(served(probe_mcp())) as http:
-        response, _result = call_tool(http, {})
-    assert response.status_code == 401
-    assert response.headers["www-authenticate"] == "Bearer"
-    assert "resource_metadata" not in response.text
