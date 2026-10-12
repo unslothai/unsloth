@@ -183,6 +183,18 @@ test("a hosted prequant transformer at the repo root is the model, its encoder t
   );
 });
 
+test("two repos staging the same file name both count toward the other rows", () => {
+  const [first] = withPlanBreakdown(
+    [
+      { checkpoint: true, fileBytes: { "flux1-dev-Q4_K_M.gguf": 7 * GB } },
+      { checkpoint: false, fileBytes: { "model.safetensors": 9 * GB } },
+      { checkpoint: false, fileBytes: { "model.safetensors": GB } },
+    ],
+    7 * GB,
+  );
+  assert.deepEqual(first.laterBytes, { "model.safetensors": 10 * GB });
+});
+
 test("a ComfyUI-layout single-file checkpoint under diffusion_models/ is the model", () => {
   const parts = downloadParts(
     {

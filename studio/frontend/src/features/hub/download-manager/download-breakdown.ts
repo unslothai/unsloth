@@ -112,7 +112,12 @@ export function withPlanBreakdown<T extends { checkpoint?: boolean; fileBytes?: 
     checkpointBytes && checkpointBytes > 0 && !checkpointDownloads
       ? entries.findIndex((e) => !e.checkpoint)
       : -1;
-  const merged = (list: T[]) => Object.assign({}, ...list.map((e) => e.fileBytes ?? {})) as Record<string, number>;
+  // Summed, not overwritten: two repos can both stage `model.safetensors`.
+  const merged = (list: T[]) => {
+    const out: Record<string, number> = {};
+    for (const e of list) for (const [file, b] of Object.entries(e.fileBytes ?? {})) out[file] = (out[file] ?? 0) + b;
+    return out;
+  };
   return entries.map((e, i) => {
     const earlierBytes = merged(entries.slice(0, i));
     const laterBytes = merged(entries.slice(i + 1));
