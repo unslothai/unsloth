@@ -47,19 +47,25 @@ def _ps1_private_uv(
     *,
     legacy = False,
     profile_default = False,
+    private_ok = True,
     env = None,
 ):
     block = _between(
         INSTALL_PS1,
         "    $script:StudioKeepsTools = ",
-        "    if (-not (Test-UvVersionOk)) {",
+        "    if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {",
     )
     script = f"""
 $ErrorActionPreference = "Stop"
 $StudioHome = '{home}'
 $studioUsesLegacyLayout = ${str(legacy).lower()}
 function Test-StudioHomeIsCustom {{ return ${str(not profile_default).lower()} }}
+function Write-StudioRootOwnerMarker {{ param($Root) $script:claimedBeforePython = -not (Test-Path (Join-Path $Root "python")) }}
+function Test-UvCandidateVersion {{ param($exe) return ${str(private_ok).lower()} }}
+$script:claimedBeforePython = $null
 {block}
+"claimed=$($script:claimedBeforePython)"
+"stale=$($script:StudioPrivateUvStale)"
 "keeps=$($script:StudioKeepsTools)"
 "dir=$($script:StudioPrivateUvDir)"
 "path=$env:PATH"
@@ -92,9 +98,17 @@ def test_ps1_custom_home_installs_uv_into_its_own_dir(shell, tmp_path):
     # Nothing there yet, so PATH is untouched until a uv lands in it.
     assert bin_dir not in found["path"]
 
+    # The root is claimed before python\ is created in it.
+    assert found["claimed"] == "True"
+    assert (tmp_path / "python").is_dir()
+
     (tmp_path / "uv").mkdir()
     (tmp_path / "uv" / "uv.exe").write_bytes(b"")
-    assert _ps1_private_uv(shell, tmp_path)["path"].startswith(bin_dir)
+    found = _ps1_private_uv(shell, tmp_path)
+    assert (found["stale"], found["path"].startswith(bin_dir)) == ("False", True)
+    # A stale private uv is not put first; the installer replaces it instead.
+    found = _ps1_private_uv(shell, tmp_path, private_ok = False)
+    assert (found["stale"], found["path"].startswith(bin_dir)) == ("True", False)
 
 
 @needs_pwsh
@@ -151,15 +165,21 @@ def _sh(
     env = None,
 ):
     keeps = _between(INSTALL_SH, "_STUDIO_KEEPS_TOOLS=false\n", "# The PATH we inherited")
-    private = _between(INSTALL_SH, '_STUDIO_UV_DIR=""\n', "if ! command -v uv >/dev/null 2>&1")
+    private = _between(
+        INSTALL_SH,
+        '_STUDIO_UV_DIR=""\n',
+        'if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv || [ "$_STUDIO_UV_STALE"',
+    )
     script = f"""
 set -e
+_uv_version_ok() {{ "$1" --version >/dev/null 2>&1; }}
 _STUDIO_HOME_REDIRECT={redirect}
 STUDIO_HOME='{studio_home}'
 {keeps}
 {private}
 echo "keeps=$_STUDIO_KEEPS_TOOLS"
 echo "uvdir=$_STUDIO_UV_DIR"
+echo "stale=$_STUDIO_UV_STALE"
 echo "pydir=${{UV_PYTHON_INSTALL_DIR:-}}"
 echo "path=$PATH"
 """
@@ -178,11 +198,22 @@ def test_sh_custom_home_keeps_uv_and_python(tmp_path):
     found = _sh(tmp_path / "home", studio)
     assert (found["keeps"], found["uvdir"]) == ("true", f"{studio}/uv")
     assert found["pydir"] == f"{studio}/python"
-    assert (studio / "python").is_dir()
     assert not found["path"].startswith(f"{studio}/uv")
 
     _uv_stub(studio / "uv")
-    assert _sh(tmp_path / "home", studio)["path"].startswith(f"{studio}/uv:")
+    found = _sh(tmp_path / "home", studio)
+    assert (found["stale"], found["path"].startswith(f"{studio}/uv:")) == ("false", True)
+    # A stale private uv is not put first; the installer replaces it instead.
+    (studio / "uv" / "uv").write_text("#!/bin/sh\nexit 1\n")
+    found = _sh(tmp_path / "home", studio)
+    assert (found["stale"], found["path"].startswith(f"{studio}/uv:")) == ("true", False)
+
+
+def test_sh_python_marker_is_created_only_after_the_root_claim():
+    claim = INSTALL_SH.index("\n_claim_studio_root\n")
+    marker = INSTALL_SH.index('then mkdir -p "$STUDIO_HOME/python"')
+    assert claim < marker
+    assert INSTALL_SH.count('mkdir -p "$STUDIO_HOME/python"') == 1
 
 
 @needs_sh
@@ -192,7 +223,6 @@ def test_sh_explicit_settings_and_the_default_root_win(tmp_path):
     legacy.mkdir(parents = True)
     for found in (_sh(home, legacy), _sh(home, legacy, redirect = "default")):
         assert (found["keeps"], found["uvdir"], found["pydir"]) == ("false", "", "")
-    assert not (legacy / "python").exists()
 
     studio = tmp_path / "studio"
     studio.mkdir()

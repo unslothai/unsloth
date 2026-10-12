@@ -7551,19 +7551,28 @@ exit 0
     # A custom home gets its own uv in <home>\uv: winget and the default edit the profile and user PATH.
     $script:StudioKeepsTools = (-not $studioUsesLegacyLayout) -and (Test-StudioHomeIsCustom)
     if ($script:StudioKeepsTools) {
+        # Claimed before uv or python\ lands in it: the claim needs an empty root. A no-op once claimed.
+        Write-StudioRootOwnerMarker -Root $StudioHome
         # Created even when unused: Studio reads it as this choice at runtime.
         try { [System.IO.Directory]::CreateDirectory((Join-Path $StudioHome "python")) | Out-Null } catch {}
     }
     $script:StudioPrivateUvDir = $null
+    $script:StudioPrivateUvStale = $false
     if ($script:StudioKeepsTools -and
         -not ($env:UV_INSTALL_DIR -or $env:UV_UNMANAGED_INSTALL -or $env:XDG_BIN_HOME)) {
         $script:StudioPrivateUvDir = Join-Path $StudioHome "uv"
-        if (Test-Path -LiteralPath (Join-Path $script:StudioPrivateUvDir "uv.exe") -PathType Leaf) {
-            $env:PATH = "$($script:StudioPrivateUvDir);$env:PATH"
+        $privateUv = Join-Path $script:StudioPrivateUvDir "uv.exe"
+        if (Test-Path -LiteralPath $privateUv -PathType Leaf) {
+            # Studio puts this one first at runtime, so a stale copy is replaced even when PATH has a good uv.
+            if (Test-UvCandidateVersion $privateUv) {
+                $env:PATH = "$($script:StudioPrivateUvDir);$env:PATH"
+            } else {
+                $script:StudioPrivateUvStale = $true
+            }
         }
     }
 
-    if (-not (Test-UvVersionOk)) {
+    if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {
         # Resolve-UvExecutable, not a bare Get-Command: a profile alias named uv would
         # otherwise report "updating" on what is in fact a first install.
         if (Resolve-UvExecutable) {

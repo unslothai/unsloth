@@ -1066,8 +1066,6 @@ _resolve_studio_destinations
 _STUDIO_KEEPS_TOOLS=false
 if [ "$_STUDIO_HOME_REDIRECT" = "env" ] && [ "$STUDIO_HOME" != "$(CDPATH= cd -P -- "$HOME/.unsloth/studio" 2>/dev/null && pwd -P)" ]; then
     _STUDIO_KEEPS_TOOLS=true
-    # Created even when unused: Studio reads it as this choice at runtime.
-    mkdir -p "$STUDIO_HOME/python" 2>/dev/null || true
     [ -n "${UV_PYTHON_INSTALL_DIR:-}" ] || export UV_PYTHON_INSTALL_DIR="$STUDIO_HOME/python"
 fi
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it several times (uv bootstrap, venv), so testing $PATH there answers yes for a shell that would answer no and the profile entry never gets written. astral's installer used to write that line for us; the pinned path does not.
@@ -1126,6 +1124,8 @@ _claim_studio_root() {
     printf '' > "$_claim_marker" 2>/dev/null || true
 }
 _claim_studio_root
+# After the claim, which needs an empty root. Created even when unused: Studio reads it as this choice at runtime.
+if [ "$_STUDIO_KEEPS_TOOLS" = true ]; then mkdir -p "$STUDIO_HOME/python" 2>/dev/null || true; fi
 
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins. The fallback is required, since uv aborts on a cache it cannot create; mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather than the filesystem, so probe with a real create.
@@ -4134,11 +4134,15 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
 
 # Only installed when no usable uv is on PATH; never written to a shell profile.
 _STUDIO_UV_DIR=""
+_STUDIO_UV_STALE=false
 if [ "$_STUDIO_KEEPS_TOOLS" = true ] && [ -z "${UV_INSTALL_DIR:-}${UV_UNMANAGED_INSTALL:-}${XDG_BIN_HOME:-}" ]; then
     _STUDIO_UV_DIR="$STUDIO_HOME/uv"
-    [ -x "$_STUDIO_UV_DIR/uv" ] && export PATH="$_STUDIO_UV_DIR:$PATH"
+    if [ -x "$_STUDIO_UV_DIR/uv" ]; then
+        # Studio puts this one first at runtime, so a stale copy is replaced even when PATH has a good uv.
+        if _uv_version_ok "$_STUDIO_UV_DIR/uv"; then export PATH="$_STUDIO_UV_DIR:$PATH"; else _STUDIO_UV_STALE=true; fi
+    fi
 fi
-if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
+if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv || [ "$_STUDIO_UV_STALE" = true ]; then
     # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those installs used to succeed without touching the network, so a download failure must not be fatal for them. An unreadable version counts as present: that is a minimal image without awk, not an old uv.
     _uv_present_before=false
     if command -v uv >/dev/null 2>&1; then
