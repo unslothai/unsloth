@@ -99,9 +99,13 @@ const state: any = {
   reasoningEffortLevels: ["low", "medium", "high"],
   supportsPreserveThinking: false,
   preserveThinking: false,
+  // The browser panel's agent store (#13372): off by default, as in agent-store.ts. The count
+  // and the request both call browserAgentToolsForTurn(), so parity holds either way.
+  browserAgent: { enabled: false, historyAccess: "ask" },
 };
 
 const useChatRuntimeStore: any = { getState: () => state };
+const useBrowserAgentStore: any = { getState: () => state.browserAgent };
 
 export function seed(patch: any): void {
   Object.assign(state, patch);

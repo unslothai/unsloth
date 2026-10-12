@@ -35,7 +35,8 @@ ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 ZOO_TRL_CEILING_OF_LIFTED_FLOOR = Version("1.13.0")
 
 # First published unsloth_zoo admitting TESTED_CEILING; None defers the gate until it ships.
-ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = None
+# 2026.10.4 admits trl <=1.15.0, and pyproject.toml's unsloth_zoo floor is already there.
+ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = Version("2026.10.4")
 
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")

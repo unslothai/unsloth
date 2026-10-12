@@ -127,7 +127,10 @@ def error(page):
         timeout = 30000,
     )
     assert not page.evaluate("window.sim.hasIndexing || window.sim.uploading")
-    assert page.evaluate("window.sim.documents") == []
+    # The failed row stays, with its reason, so it can be retried or removed.
+    documents = page.evaluate("window.sim.documents")
+    assert [(d["filename"], d["status"]) for d in documents] == [("report.pdf", "failed")]
+    assert documents[0]["error"].startswith("simulated ")
 
 
 def failed_scope(page):

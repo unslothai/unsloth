@@ -23,6 +23,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    fix_triton_module_cache_python_key,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
@@ -85,6 +86,8 @@ fix_torch_check_is_size()
 propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 check_triton_py_ssize_t_clean()
+# Before triton's driver first compiles and caches cuda_utils (#2760).
+fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Before `import unsloth_zoo`: its patches import torchaudio via transformers, and a broken
@@ -104,6 +107,7 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
+del fix_triton_module_cache_python_key
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub

@@ -4120,7 +4120,6 @@ export const ptBR = {
       chatAboutThis: "Conversar sobre isto",
       chatWithModel: "Conversar com este modelo",
       addToFavorites: "Adicionar aos Favoritos",
-      regenerateTitle: "Regenerar título",
       removeFromFavorites: "Remover dos Favoritos",
       download: "Baixar",
       addToFolder: "Adicionar à pasta",

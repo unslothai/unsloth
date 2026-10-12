@@ -473,19 +473,22 @@ const SETTING_CHECKS: SettingCheck[] = [
         c.selectedGpuIds ?? null,
         c.selectedGpuIndexKind,
       );
-      // The diffusion runner drives one device, so matches_gpu_ids reduces the request to its lowest id
-      // and the status reports only that.
-      const pick =
+      // The diffusion runner reports the lowest id of a pick that fits it, else the whole sorted pick
+      // it split over; matches_gpu_ids accepts either.
+      const picks: (number[] | null)[] =
         s.is_diffusion === true && reconciled?.length
-          ? [Math.min(...reconciled)]
-          : reconciled;
-      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
+          ? [[Math.min(...reconciled)], [...reconciled].sort((a, b) => a - b)]
+          : [reconciled];
+      if (picks.some((pick) => sameGpuPlacement(pick, s.requested_gpu_ids))) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
+      return (
+        Boolean(s.gpu_ids?.length) &&
+        picks.some((pick) => sameGpuPlacement(pick, s.gpu_ids))
+      );
     },
   },
   {

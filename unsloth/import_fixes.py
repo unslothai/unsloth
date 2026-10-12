@@ -6242,9 +6242,10 @@ def check_triton_py_ssize_t_clean():
     in pyproject.toml would not have prevented this and cannot: torch pins triton
     exactly (torch 2.6.0 requires `triton==3.2.0`), so any floor above what the
     oldest supported torch carries makes that torch unresolvable rather than
-    safe. What is actually broken in these reports is a rebuilt or repackaged
-    triton whose shim lost the macro, which no dependency specifier can describe,
-    so name it here instead. Warns rather than raises: nothing has failed yet,
+    safe. The reported failures come from a stale cached shim built by Python
+    3.13 (fixed by `fix_triton_module_cache_python_key`); this names the rarer
+    rebuilt or repackaged triton whose shim lost the macro, which no dependency
+    specifier can describe. Warns rather than raises: nothing has failed yet,
     and a process that launches no Triton kernel never will.
     """
     if os.environ.get("UNSLOTH_SKIP_TRITON_SHIM_CHECK", "0").lower() in ("1", "true"):
@@ -6274,6 +6275,44 @@ def check_triton_py_ssize_t_clean():
         f"{', '.join(path for _, path in offenders)}. Set "
         f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
     )
+
+
+def fix_triton_module_cache_python_key():
+    """#2760: triton 3.2 / 3.3 cache `cuda_utils.so` and launchers by C source hash alone, so
+    Python 3.12 reuses a 3.13 build and the first launch raises `SystemError: PY_SSIZE_T_CLEAN
+    macro must be defined for '#' formats`. Tag the source with EXT_SUFFIX, as triton 3.4 keys it.
+    """
+    try:
+        if importlib.util.find_spec("triton") is None:
+            return
+        from triton.backends import backends
+    except Exception:
+        return
+    tag = f"\n/* unsloth: {sysconfig.get_config_var('EXT_SUFFIX') or sys.implementation.cache_tag} */\n"
+    for backend in backends.values():
+        # Backend drivers load outside sys.modules: patch the defining module via its globals.
+        namespace = getattr(getattr(backend.driver, "__init__", None), "__globals__", None)
+        if not isinstance(namespace, dict):
+            continue
+        original = namespace.get("compile_module_from_src")
+        # 3.4+ imports the EXT_SUFFIX-keyed one from triton.runtime.build.
+        if not callable(original) or getattr(original, "__unsloth_patched__", False):
+            continue
+        if getattr(original, "__module__", None) != namespace.get("__name__"):
+            continue
+
+        def compile_module_from_src(
+            src,
+            name,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            return _original(src + tag, name, *args, **kwargs)
+
+        functools.update_wrapper(compile_module_from_src, original)
+        compile_module_from_src.__unsloth_patched__ = True
+        namespace["compile_module_from_src"] = compile_module_from_src
 
 
 def _transformers_rescopes_submodule_prefix_renamings():
