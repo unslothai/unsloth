@@ -99,6 +99,8 @@ class TestAReplayedPromptIsNotMeasuredUntilItIsIn:
             controller.snapshot().committed == 5000 + 6200
         ), "the replay was folded into cells the cache holds for someone else"
         controller.observe("chat", 1)
+        # In once a reading taken after its first token lands, not on the token itself.
+        controller.note_resident(11200, started_at_seq = controller.residency_epoch())
         assert controller.participant("chat").measured is True
 
 
