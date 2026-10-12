@@ -86,30 +86,56 @@ const UPDATE_COMPONENT_KEYS: Record<
   "audio.cpp": "audio",
 };
 
+/** The notification channel and status field that answer for a component. */
+export function updateComponentKey(
+  component: UpdateComponent,
+): keyof UpdateComponentFlags {
+  return UPDATE_COMPONENT_KEYS[component];
+}
+
 /**
- * Which component's offer the single update card shows.
+ * Which components the single update card lists, in install order.
  *
- * Several can be pending at once and the backend names only one: llama.cpp when its
- * release is behind, then whisper.cpp, then audio.cpp, so a llama.cpp backend
- * migration is named whisper.cpp when whisper is stale too. If the named one's
- * switch is off and another has an offer the user does allow, the card shows that
- * one rather than nothing. Update installs everything pending either way.
+ * Update installs everything pending in one job, so one appearance names every
+ * pending component. A component whose notifications are off is still installed,
+ * only not listed.
  */
-export function updateBannerComponent(
-  named: UpdateComponent,
+export function updateBannerComponents(
   pending: UpdateComponentFlags,
-  allow: UpdateComponentFlags,
-): UpdateComponent {
-  if (allow[UPDATE_COMPONENT_KEYS[named]]) {
-    return named;
-  }
-  const other = (Object.keys(UPDATE_COMPONENT_KEYS) as UpdateComponent[]).find(
+  muted: UpdateComponentFlags,
+): UpdateComponent[] {
+  return (Object.keys(UPDATE_COMPONENT_KEYS) as UpdateComponent[]).filter(
     (component) =>
-      component !== named &&
-      allow[UPDATE_COMPONENT_KEYS[component]] &&
-      pending[UPDATE_COMPONENT_KEYS[component]],
+      pending[UPDATE_COMPONENT_KEYS[component]] &&
+      !muted[UPDATE_COMPONENT_KEYS[component]],
   );
-  return other ?? named;
+}
+
+/**
+ * Whether the update card may appear.
+ *
+ * One appearance covers every listed component, so it opens when any of them is due
+ * and stays allowed once open, after it has recorded them all as shown.
+ */
+export function updateBannerAllowed(
+  listed: readonly UpdateComponent[],
+  due: UpdateComponentFlags,
+  open: boolean,
+): boolean {
+  return (
+    listed.length > 0 &&
+    (open || listed.some((component) => due[UPDATE_COMPONENT_KEYS[component]]))
+  );
+}
+
+/** "llama.cpp", "llama.cpp and whisper.cpp", "llama.cpp, whisper.cpp and audio.cpp". */
+export function updateComponentsLabel(
+  components: readonly UpdateComponent[],
+): string {
+  if (components.length <= 1) {
+    return components[0] ?? "llama.cpp";
+  }
+  return `${components.slice(0, -1).join(", ")} and ${components[components.length - 1]}`;
 }
 
 /**
@@ -130,11 +156,11 @@ export function updateToastTag(
 /**
  * Which notification switch answers for the update card, held across a job.
  *
- * The card is muted by the component it names, and a chained apply renames it
- * when the llama.cpp phase lands and the whisper.cpp phase starts. Reading the
- * live switch there would take a running update off screen halfway through, so
- * the switch the card started under is held until the job is over. `null` means
- * nothing is held and the live switch applies.
+ * The card is allowed by the components it lists, and a chained apply drops each
+ * one from the status as its phase lands, leaving only components that may be
+ * muted. Reading the live switch there would take a running update off screen
+ * halfway through, so the switch the card started under is held until the job is
+ * over. `null` means nothing is held and the live switch applies.
  */
 export function heldUpdateBannerPref(
   held: boolean | null,

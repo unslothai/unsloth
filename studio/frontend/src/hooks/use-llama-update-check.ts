@@ -52,7 +52,7 @@ export interface LlamaUpdateStatus {
   source_build: boolean;
   component: "llama.cpp" | "whisper.cpp" | "audio.cpp";
   // Carried per component whatever the card names: several can be behind at once,
-  // and the card shows whichever one the notification switches allow.
+  // and the card lists every one the notification settings allow.
   llama: ComponentOffer;
   whisper: ComponentOffer | null;
   // The release this Studio pins, when the managed audio.cpp runtime is another one.
