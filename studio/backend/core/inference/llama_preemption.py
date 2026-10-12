@@ -951,17 +951,19 @@ class PreemptionController:
         # prefill, and a chat that already announced must not be charged twice.
         pending = self._pending_prefill_locked(exclude = gen_id) + max(0, int(want or 0))
         ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
-        ledger_others = sum(
-            p.tokens for gid, p in self._participants.items() if p.holds_kv and gid != gen_id
-        )
-        # Resident cells count too, minus what this generation holds, or an idle slot's
-        # leftovers are invisible here exactly as they were to the watermark.
-        others = ledger_others
+        holders = [p for gid, p in self._participants.items() if p.holds_kv and gid != gen_id]
+        measured = sum(p.tokens for p in holders if p.measured)
+        # Not yet in any reading (a resume granted ahead of this one, a prefill under way): on
+        # top of it, as the watermark counts them, or two resumes are each granted the same room.
+        unmeasured = sum(p.tokens for p in holders if not p.measured)
+        others = measured + unmeasured
         if self._resident is not None:
-            # Minus the idle residue, erased for the waiter rather than waited out:
-            # counting it refused every resume against a ceiling the slots already passed.
+            # Resident cells count too, minus what this generation holds, or an idle slot's
+            # leftovers are invisible here exactly as they were to the watermark. Minus the
+            # idle residue, erased for the waiter rather than waited out: counting it refused
+            # every resume against a ceiling the slots already passed.
             occupied = self._resident - self._reclaimable
-            others = max(others, occupied - self._my_resident_locked(gen_id))
+            others = max(measured, occupied - self._my_resident_locked(gen_id)) + unmeasured
         need = max(0, int(want or 0))
         others = max(0, others)
         reserved = max(0, int(reserved or 0))
