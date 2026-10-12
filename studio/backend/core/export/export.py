@@ -875,7 +875,7 @@ class ExportBackend:
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
-                from core.inference.audio_codecs import spark_tts_adapter_load_target
+                from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
 
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
                 with spark_tts_adapter_load_target(

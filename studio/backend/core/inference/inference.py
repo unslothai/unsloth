@@ -747,7 +747,7 @@ class InferenceBackend:
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
-                        from core.inference.audio_codecs import spark_tts_adapter_load_target
+                        from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
 
                         base_path = config.base_model
                         abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(

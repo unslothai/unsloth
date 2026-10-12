@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import huggingface_hub  # noqa: E402
 
-from core.inference.audio_codecs import spark_tts_adapter_load_target  # noqa: E402
+from utils.models.spark_tts_adapter import spark_tts_adapter_load_target  # noqa: E402
 from utils.models.model_identity import restore_hf_cache_repo_identity  # noqa: E402
 
 
