@@ -400,8 +400,16 @@ def test_tiny_family_routes_and_generates(name):
     else:
         pytest.skip("set UNSLOTH_DIFFUSION_TINY_DIR to tiny remote-code copies")
     # One process per family: LLaDA's remote config registers "llada" globally, shadowing LLaDA-MoE's.
+    from real_accelerator import has_real_accelerator
+
+    # The parent's CUDA spoof does not reach the child; the sampler only needs inference on CPU.
+    env = os.environ if has_real_accelerator() else {**os.environ, "UNSLOTH_ALLOW_CPU": "1"}
     out = subprocess.run(
-        [sys.executable, "-c", _TINY_SCRIPT, path], capture_output = True, text = True, timeout = 900
+        [sys.executable, "-c", _TINY_SCRIPT, path],
+        capture_output = True,
+        text = True,
+        timeout = 900,
+        env = env,
     )
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-4000:]
     assert "SAMPLER_OK" in out.stdout

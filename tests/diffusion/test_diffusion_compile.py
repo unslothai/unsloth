@@ -249,7 +249,13 @@ def test_embedding_learning_rate_gets_its_own_optimizer_group(tmp_path):
     trainer = DiffusionTrainer.__new__(DiffusionTrainer)
     trainer.model, trainer.optimizer = _Model(), None
     trainer.args = DiffusionConfig(
-        output_dir = str(tmp_path), learning_rate = 1e-3, embedding_learning_rate = 1e-5, report_to = []
+        output_dir = str(tmp_path),
+        learning_rate = 1e-3,
+        embedding_learning_rate = 1e-5,
+        report_to = [],
+        use_cpu = True,
+        bf16 = False,
+        fp16 = False,
     )
     groups = trainer.create_optimizer().param_groups
     embedding = trainer.model.embed.modules_to_save["default"].weight
