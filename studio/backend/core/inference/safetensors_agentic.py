@@ -1871,6 +1871,9 @@ def run_safetensors_tool_loop(
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
             post_tool_reprompts = 0
+            if browser_turns:
+                # A new step may stall in the same words as the last one (external loop parity).
+                last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
             if over_cap:

@@ -5953,3 +5953,16 @@ def test_a_browser_tool_turn_allows_one_nudge():
     assert [name for name, _ in exec_fn.calls] == ["browser_snapshot"]
     # The call, the stall, one nudged retry: the second stall in the same tool turn is the answer.
     assert len(captured) == 3, captured
+
+
+def test_the_same_stall_words_in_a_later_browser_turn_are_nudged_again():
+    stall = "I'll click it now."
+    click = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", [stall, click, stall, click, "Done."], also = ("browser_click",)
+    )
+    assert [name for name, _ in exec_fn.calls] == [
+        "browser_snapshot",
+        "browser_click",
+        "browser_click",
+    ]
