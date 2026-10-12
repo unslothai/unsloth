@@ -4206,7 +4206,13 @@ def test_vision_off_drops_the_projector_from_the_residency_check(
     "extra_args, env",
     [
         (("--no-mmproj-offload",), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}),
-        ((), {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf", "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}),
+        (
+            (),
+            {
+                "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf",
+                "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1",
+            },
+        ),
         (("--mmproj-auto", "--no-mmproj-offload"), {}),
     ],
     ids = ["argv_no_offload", "env_no_offload", "auto_no_offload"],
