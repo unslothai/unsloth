@@ -569,8 +569,7 @@ _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2
 
 
 def _cu130_first_torch_minor() -> int:
-    """The oldest minor cu130 serves the whole trio for: aarch64 has torch 2.9 but no
-    torchvision 0.24 / torchaudio 2.9, so it starts at 2.10."""
+    """cu130 has no aarch64 torchvision 0.24 / torchaudio 2.9, so aarch64 starts at 2.10."""
     if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64"):
         return 10
     return _CU130_FIRST_TORCH_MINOR

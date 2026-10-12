@@ -6142,9 +6142,7 @@ _cu130_torch213_route() {
     _pypi_unsloth_admits_torch "2.13.0"
 }
 
-# "yes" when a NEW install here can use the 2.13/2.14 kernel wheels: a GIL-enabled interpreter (torch
-# 2.13 has no cp313t wheel) and glibc 2.35+ (the floor the wheels are built and checked against).
-# Only gates the new-install choice; an existing 2.13/2.14 is kept regardless.
+# New installs only: torch 2.13 has no cp313t wheel, and the kernel wheels need glibc 2.35.
 _cu130_torch213_host_ok() {
     _cth_gil=$("$VENV_DIR/bin/python" -c "import sysconfig; print('gil-disabled' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil-enabled')" 2>/dev/null || echo "")
     [ "$_cth_gil" = "gil-enabled" ] || { echo "no"; return; }
@@ -6157,7 +6155,6 @@ _cu130_torch213_host_ok() {
 _cu130_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
-    # aarch64 too: prebuilt-wheels-cu13 carries linux_aarch64 builds (Grace, GB10), and upstream's stop at torch 2.10.
     case "$_ARCH" in x86_64|amd64|aarch64|arm64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
     [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
