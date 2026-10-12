@@ -21,7 +21,7 @@ FNS="setup_fail _remove_agent_instruction_files _frontend_can_build_in_backgroun
     _frontend_build_cleanup _frontend_proc_id _frontend_build_begin _frontend_bg_stop _frontend_bg_start _frontend_bg_cancel
     _frontend_bg_join _frontend_bg_reap"
 {
-    printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_WATCH=""\n_FRONTEND_BG_LOG=""\n_FRONTEND_BG_STAMP=""\n'
+    printf '_FRONTEND_BG_PID=""\n_FRONTEND_BG_LOG=""\n'
     for fn in $FNS; do
         sed -n "/^$fn() {/,/^}/p" "$SETUP_SH"
     done
@@ -167,16 +167,31 @@ p.wait()
 PY
 check_aftermath "Ctrl-C"
 
-echo "== a finished build's id reused by another group is never signalled =="
+echo "== a build that exits first leaves nothing running after the join =="
+out=$(run_case "
+_build_frontend() {
+    python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)' &
+    echo \$! > '$WORK/grandchild'
+}
+_frontend_bg_start
+sleep 1
+_frontend_bg_join
+sleep 0.5
+if kill -0 \$(cat '$WORK/grandchild') 2>/dev/null; then echo child-alive; else echo child-gone; fi")
+assert_contains "the join itself killed the build's leftover child" "$out" "child-gone"
+kill -KILL "$(cat "$WORK/grandchild" 2>/dev/null || echo 0)" 2>/dev/null
+
+echo "== nothing is signalled once the build is joined =="
 python3 -c 'import subprocess as s; print(s.Popen(["sleep", "60"], start_new_session=True, stdout=s.DEVNULL, stderr=s.DEVNULL).pid)' > "$WORK/other"
 other=$(cat "$WORK/other")
-sleep 1.2
 out=$(run_case "
-_build_frontend() { sleep 1; }
+_build_frontend() { :; }
 _frontend_bg_start
 _frontend_bg_join
-# The stamp belongs to the finished build; pretend its id came back as another group.
-_frontend_bg_stop $other")
+# Pretend the old id now names another group; a later failure must leave it alone.
+_FRONTEND_BG_LOG=/nonexistent
+setup_fail 4 later")
+assert_contains "setup_fail exit" "$out" "rc=4"
 if kill -0 "$other" 2>/dev/null; then ok "unrelated process group left alone"; kill "$other"; else bad "unrelated process group $other was killed"; fi
 
 echo "== a new build waits for one still being stopped, then takes over =="

@@ -137,9 +137,7 @@ _remove_agent_instruction_files() {
 
 # ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
 _FRONTEND_BG_PID=""
-_FRONTEND_BG_WATCH=""
 _FRONTEND_BG_LOG=""
-_FRONTEND_BG_STAMP=""
 
 # Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
 # 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
@@ -189,26 +187,22 @@ _frontend_build_begin() {
     _frontend_proc_id "$_self" > "$_mark" 2>/dev/null || :
 }
 
-# TERM the build's group, KILL it after 5 s (npm ci ignores TERM; KILL skips the build's EXIT
-# trap, hence the cleanup). A no-op once the group is gone, or once its leader's start time no
-# longer matches: a finished build's id can be reused by an unrelated group.
+# TERM the build's group, KILL it once the leader is gone or after 5 s (npm ci ignores TERM;
+# KILL skips the build's EXIT trap, hence the cleanup). The group's own watcher keeps its id
+# from being reused until this KILL, the last signal any path sends it.
 _frontend_bg_stop() {
     local _n=0
-    if [ -n "$_FRONTEND_BG_STAMP" ] &&
-        [ "$(ps -o lstart= -p "$1" 2>/dev/null)" != "$_FRONTEND_BG_STAMP" ]; then
-        return 0
-    fi
     kill -TERM -- "-$1" 2>/dev/null || return 0
-    while [ "$_n" -lt 5 ] && kill -0 -- "-$1" 2>/dev/null; do
+    while [ "$_n" -lt 5 ] && kill -0 "$1" 2>/dev/null; do
         sleep 1
         _n=$((_n + 1))
     done
-    kill -KILL -- "-$1" 2>/dev/null || :
     _frontend_build_cleanup
+    kill -KILL -- "-$1" 2>/dev/null || :
 }
 
-# Own process group, output to a file. setup_fail stops it synchronously; a watcher ignoring
-# HUP/INT/TERM stops it if setup dies any other way (errexit, Ctrl-C).
+# Own process group, output to a file. setup_fail stops it synchronously; a watcher inside
+# the group, ignoring HUP/INT/TERM, stops it if setup dies any other way (errexit, Ctrl-C).
 _frontend_bg_start() {
     local _monitor=off
     case "$-" in *m*) _monitor=on ;; esac
@@ -216,30 +210,26 @@ _frontend_bg_start() {
     [ "$_monitor" = on ] || set -m
     (
         set +m
+        _fbs_leader=$(exec sh -c 'echo "$PPID"')
+        (
+            trap '' HUP INT TERM
+            while kill -0 "$$" 2>/dev/null; do sleep 1; done
+            rm -f "$_FRONTEND_BG_LOG"
+            _frontend_bg_stop "$_fbs_leader"
+        ) </dev/null >/dev/null 2>&1 &
         trap 'exit 143' TERM
         _build_frontend
         _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
     ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
     _FRONTEND_BG_PID=$!
     [ "$_monitor" = on ] || set +m
-    _FRONTEND_BG_STAMP=$(ps -o lstart= -p "$_FRONTEND_BG_PID" 2>/dev/null) || :
-    [ -n "$_FRONTEND_BG_STAMP" ] || kill -0 "$_FRONTEND_BG_PID" 2>/dev/null || _FRONTEND_BG_STAMP=exited
-    (
-        trap '' HUP INT TERM
-        while kill -0 "$$" 2>/dev/null; do sleep 1; done
-        _frontend_bg_stop "$_FRONTEND_BG_PID"
-        rm -f "$_FRONTEND_BG_LOG"
-    ) </dev/null >/dev/null 2>&1 &
-    _FRONTEND_BG_WATCH=$!
 }
 
 _frontend_bg_cancel() {
     [ -n "${_FRONTEND_BG_PID:-}" ] || return 0
     local _pid=$_FRONTEND_BG_PID
     _FRONTEND_BG_PID=""
-    # The watcher stays until the build is gone, in case setup is killed meanwhile.
     _frontend_bg_stop "$_pid"
-    kill -KILL "$_FRONTEND_BG_WATCH" 2>/dev/null || :
     wait "$_pid" 2>/dev/null || :
     rm -f "$_FRONTEND_BG_LOG"
 }
@@ -247,14 +237,14 @@ _frontend_bg_cancel() {
 _frontend_bg_join() {
     [ -n "$_FRONTEND_BG_PID" ] || return 0
     local _pid=$_FRONTEND_BG_PID _rc=0
-    _FRONTEND_BG_PID=""
     if kill -0 "$_pid" 2>/dev/null; then
         substep "waiting for the frontend build..."
     fi
     wait "$_pid" || _rc=$?
-    kill -KILL "$_FRONTEND_BG_WATCH" 2>/dev/null || :
-    wait "$_FRONTEND_BG_WATCH" 2>/dev/null || :
-    _FRONTEND_BG_WATCH=""
+    _FRONTEND_BG_PID=""
+    # The watcher still holds the group: this takes it and anything the build left running.
+    kill -KILL -- "-$_pid" 2>/dev/null || :
+    [ "$_rc" -eq 0 ] || _frontend_build_cleanup
     cat "$_FRONTEND_BG_LOG" 2>/dev/null || :
     rm -f "$_FRONTEND_BG_LOG"
     [ "$_rc" -eq 0 ] || setup_fail "$_rc" "Frontend build failed (exit code $_rc)"
