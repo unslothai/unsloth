@@ -4,7 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import type { PipelineType } from "@huggingface/hub";
-import { listModels } from "@huggingface/hub";
+import { listModels, modelInfo } from "@huggingface/hub";
 import {
   startTransition,
   useCallback,
@@ -27,6 +27,12 @@ import {
   type UnslothSupportStatus,
   classifyUnslothSupport,
 } from "../lib/unsloth-support";
+import {
+  filterModelListing,
+  hasModelSearchFilters,
+  parameterRange,
+  type ModelSearchFilters,
+} from "../lib/model-search-filters";
 import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
 
 // "gguf" is not in the @huggingface/hub expandable-key type, but the listing supports
@@ -133,6 +139,7 @@ function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
   signal?: AbortSignal,
+  parameterFilter = "",
 ): typeof fetch {
   return (input, init) => {
     const rawUrl =
@@ -142,6 +149,8 @@ function makeSortFetch(
           ? input.toString()
           : input.url;
     const url = new URL(rawUrl);
+    if (parameterFilter)
+      url.searchParams.set("num_parameters", parameterFilter);
 
     if (sortBy && !url.searchParams.has("sort")) {
       url.searchParams.set("sort", sortBy);
@@ -169,6 +178,7 @@ function makeMapModel(
 ) {
   const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
+    if (raw === null) return null;
     const m = raw as {
       name: string;
       downloads?: number;
@@ -276,6 +286,10 @@ function primeFromListing(
   }
 }
 
+type ModelListingTransform = (
+  iterator: AsyncGenerator<unknown>,
+) => AsyncGenerator<unknown>;
+
 /** Merged generator yielding unsloth-owned models first, then deduped general results. */
 async function* mergedModelIterator(
   query: string,
@@ -285,6 +299,8 @@ async function* mergedModelIterator(
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
+  parameterFilter = "",
+  filterPriority?: ModelListingTransform,
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -298,7 +314,7 @@ async function* mergedModelIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -309,7 +325,7 @@ async function* mergedModelIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { query, ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -335,7 +351,13 @@ async function* mergedModelIterator(
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
-  for await (const model of unslothIter) {
+  for await (const model of filterPriority
+    ? filterPriority(unslothIter)
+    : unslothIter) {
+    if (model === null) {
+      yield null;
+      continue;
+    }
     const m = model as { name?: string };
     if (m.name) {
       seen.add(m.name);
@@ -379,6 +401,7 @@ async function* priorityThenListingIterator(
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
+  parameterFilter = "",
 ): AsyncGenerator<unknown> {
   const tasks = normalizeTaskFilter(task);
   const common = {
@@ -414,7 +437,7 @@ async function* priorityThenListingIterator(
       listModels({
         hubUrl: getHfEndpoint(),
         search: { owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal),
+        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
@@ -446,6 +469,7 @@ function createChannelIterator(
     sortDirection: HfSortDirection;
     accessToken?: string;
     signal: AbortSignal;
+    parameterFilter?: string;
   },
 ): AsyncGenerator<unknown> {
   const channelTags =
@@ -459,7 +483,12 @@ function createChannelIterator(
       ...(channelTags ? { tags: channelTags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
@@ -480,6 +509,8 @@ async function* channelUnslothFirstIterator(
     sortDirection: HfSortDirection;
     accessToken?: string;
     signal: AbortSignal;
+    parameterFilter?: string;
+    filterPriority?: ModelListingTransform;
   },
 ): AsyncGenerator<unknown> {
   const queryString = opts.query || channel.query || undefined;
@@ -496,12 +527,23 @@ async function* channelUnslothFirstIterator(
       ...(channel.tags ? { tags: channel.tags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...creds,
   }) as AsyncGenerator<unknown>;
   let count = 0;
-  for await (const model of unslothIter) {
+  for await (const model of opts.filterPriority
+    ? opts.filterPriority(unslothIter)
+    : unslothIter) {
+    if (model === null) {
+      yield null;
+      continue;
+    }
     const name = (model as { name?: string }).name;
     if (name) seen.add(name);
     yield model;
@@ -515,7 +557,12 @@ async function* channelUnslothFirstIterator(
       ...(channel.tags ? { tags: channel.tags } : {}),
     },
     additionalFields: ALL_FIELDS,
-    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    fetch: makeSortFetch(
+      opts.sortBy,
+      opts.sortDirection,
+      opts.signal,
+      opts.parameterFilter,
+    ),
     sort: opts.sortBy,
     ...creds,
   }) as AsyncGenerator<unknown>;
@@ -602,6 +649,7 @@ export function useHubModelSearch(
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
     channel?: HfModelSearchChannel | null;
+    filters?: ModelSearchFilters;
   },
 ) {
   const {
@@ -616,6 +664,7 @@ export function useHubModelSearch(
     enabled = true,
     keepUnsupportedTags = false,
     channel = null,
+    filters,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
 
@@ -643,8 +692,10 @@ export function useHubModelSearch(
   }, [query]);
 
   const hfEndpoint = useHfEndpoint();
-  const createIter = useCallback(
-    (signal: AbortSignal) => {
+  const hasFilters = !!filters && hasModelSearchFilters(filters);
+  const filterRange = filters ? parameterRange(filters) : "";
+  const createListing = useCallback(
+    (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -664,6 +715,7 @@ export function useHubModelSearch(
               sortDirection,
               accessToken,
               signal,
+              parameterFilter: filterRange,
             },
           );
         }
@@ -677,6 +729,8 @@ export function useHubModelSearch(
               sortDirection,
               accessToken,
               signal,
+              parameterFilter: filterRange,
+              filterPriority,
             },
           );
         }
@@ -693,6 +747,7 @@ export function useHubModelSearch(
             sortDirection,
             accessToken,
             signal,
+            parameterFilter: filterRange,
           },
         );
       }
@@ -706,7 +761,21 @@ export function useHubModelSearch(
             sortBy,
             sortDirection,
             signal,
+            filterRange,
           ) as AsyncGenerator<unknown>;
+        }
+        if (hasFilters && pinUnslothFirst && !unslothOnly) {
+          return mergedModelIterator(
+            "",
+            task,
+            accessToken,
+            undefined,
+            sortBy,
+            sortDirection,
+            signal,
+            filterRange,
+            filterPriority,
+          );
         }
         return mergeTaskIterators(
           normalizeTaskFilter(task),
@@ -719,7 +788,12 @@ export function useHubModelSearch(
                 ...(task ? { task } : {}),
               },
               additionalFields: ALL_FIELDS,
-              fetch: makeSortFetch(sortBy, sortDirection, taskSignal),
+              fetch: makeSortFetch(
+                sortBy,
+                sortDirection,
+                taskSignal,
+                filterRange,
+              ),
               sort: sortBy,
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }) as AsyncGenerator<unknown>,
@@ -732,7 +806,7 @@ export function useHubModelSearch(
           hubUrl: getHfEndpoint(),
           search: { query: searchQuery, owner: "unsloth" },
           additionalFields: ALL_FIELDS,
-          fetch: makeSortFetch(sortBy, sortDirection, signal),
+          fetch: makeSortFetch(sortBy, sortDirection, signal, filterRange),
           sort: sortBy,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
@@ -744,10 +818,12 @@ export function useHubModelSearch(
         searchQuery,
         undefined,
         accessToken,
-        pinnedId,
+        hasFilters ? undefined : pinnedId,
         sortBy,
         sortDirection,
         signal,
+        filterRange,
+        filterPriority,
       ) as AsyncGenerator<unknown>;
     },
     [
@@ -764,7 +840,75 @@ export function useHubModelSearch(
       channelQuery,
       pinUnslothFirst,
       unslothOnly,
+      hasFilters,
+      filterRange,
+    ],
+  );
+
+  const createIter = useCallback(
+    (signal: AbortSignal) => {
+      if (!filters || !hasFilters) return createListing(signal);
+      const metadata = new Map<
+        string,
+        Promise<Record<string, unknown> | null>
+      >();
+      const requestJson = async (path: string) => {
+        const response = await fetchWithTimeout(
+          `${hfEndpoint}${path}`,
+          {
+            signal,
+            ...(accessToken
+              ? { headers: { Authorization: `Bearer ${accessToken}` } }
+              : {}),
+          },
+          HF_SEARCH_TIMEOUT_MS,
+        );
+        if ([401, 403, 404].includes(response.status)) return null;
+        if (!response.ok) {
+          throw new Error(
+            `Model filter metadata request failed (HTTP ${response.status})`,
+          );
+        }
+        return response.json();
+      };
+      const fetchJson = (path: string) => {
+        let request = metadata.get(path);
+        if (!request) {
+          request = requestJson(path);
+          metadata.set(path, request);
+        }
+        return request;
+      };
+      const filterPriority: ModelListingTransform = (iterator) =>
+        filterModelListing(iterator, filters, fetchJson);
+      const iterator = createListing(signal, filterPriority);
+      const pinnedPromise =
+        pinnedId &&
+        !unslothOnly &&
+        !channelOwner &&
+        !channelTagsKey &&
+        !channelQuery
+          ? modelInfo({
+              hubUrl: hfEndpoint,
+              name: pinnedId,
+              additionalFields: ALL_FIELDS,
+              fetch: makeHfFetch(signal),
+              ...(accessToken ? { credentials: { accessToken } } : {}),
+            }).catch(() => null)
+          : undefined;
+      return filterModelListing(iterator, filters, fetchJson, pinnedPromise);
+    },
+    [
+      createListing,
+      filters,
+      hasFilters,
+      pinnedId,
+      unslothOnly,
+      channelOwner,
+      channelTagsKey,
+      channelQuery,
       hfEndpoint,
+      accessToken,
     ],
   );
 
