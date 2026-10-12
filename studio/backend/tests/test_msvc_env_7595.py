@@ -569,6 +569,8 @@ def _no_headers(monkeypatch, tcc, builds):
     monkeypatch.setattr(_msvc_env, "_crt_headers_reachable", lambda: False)
     monkeypatch.setattr(_msvc_env, "_bundled_tcc", lambda: tcc)
     monkeypatch.setattr(_msvc_env, "_triton_driver_builds", lambda: builds)
+    # The real one reaches the host's triton, which on Apple Silicon is a stub that raises on cache_clear.
+    monkeypatch.setattr(_msvc_env, "_clear_compiler_cache", lambda: None)
     # setenv first so teardown removes a CC the code under test writes straight into os.environ.
     monkeypatch.setenv("CC", "")
     monkeypatch.delenv("CC")
