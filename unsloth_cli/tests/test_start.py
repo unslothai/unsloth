@@ -1970,9 +1970,7 @@ def test_opencode_auto_route_restricts_every_agent_the_user_can_be_in(monkeypatc
 def test_opencode_auto_route_blocks_read_and_bash_with_a_session_plugin(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
     _opencode_effective_config(monkeypatch, {})
-    inline = start._opencode_subagent_inline_config(
-        tmp_path / "opencode.json", {}, auto_route = True
-    )
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {}, auto_route = True)
     plugin = tmp_path / start._OPENCODE_ROUTE_PLUGIN
     assert inline["plugin"] == [str(plugin)]
     script = plugin.read_text()
@@ -2009,9 +2007,7 @@ def test_opencode_auto_route_keeps_the_users_plugins(monkeypatch, tmp_path):
     inherited = {"plugin": ["opencode-wakatime", ["./mine.js", {"level": 2}]]}
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     _opencode_effective_config(monkeypatch, {"plugin": ["from-global"]})
-    inline = start._opencode_subagent_inline_config(
-        tmp_path / "opencode.json", {}, auto_route = True
-    )
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {}, auto_route = True)
     assert inline["plugin"] == [
         *inherited["plugin"],
         str(tmp_path / start._OPENCODE_ROUTE_PLUGIN),

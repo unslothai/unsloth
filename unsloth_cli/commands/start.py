@@ -3548,8 +3548,7 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
-_OPENCODE_ROUTE_PLUGIN_SCRIPT = (
-    """\
+_OPENCODE_ROUTE_PLUGIN_SCRIPT = """\
 const LOCAL = new Set(%(local)s);
 const ROUTED = new Set(%(routed)s);
 const HIDDEN = new Set(["title", "summary", "compaction"]);
@@ -3578,14 +3577,12 @@ export const UnslothAutoRoute = async () => ({
     );
   },
 });
-"""
-    % {
-        "local": json.dumps([_SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME]),
-        "routed": json.dumps(list(_OPENCODE_ROUTED_TOOLS)),
-        "plan": json.dumps(_OPENCODE_PLAN_SUBAGENT_NAME),
-        "build": json.dumps(_SUBAGENT_NAME),
-    }
-)
+""" % {
+    "local": json.dumps([_SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME]),
+    "routed": json.dumps(list(_OPENCODE_ROUTED_TOOLS)),
+    "plan": json.dumps(_OPENCODE_PLAN_SUBAGENT_NAME),
+    "build": json.dumps(_SUBAGENT_NAME),
+}
 
 
 def _opencode_subagent_inline_config(
