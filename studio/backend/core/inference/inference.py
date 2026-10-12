@@ -1671,14 +1671,16 @@ class InferenceBackend:
             self._apply_adapter_state(_adapter_state)
             owner.generate = bounded_generate
             try:
-                # Gundam preset, the one the model card and Unsloth's notebooks use.
+                # Gundam preset from each model card: 640 px tiles for v1, 768 for OCR-2.
                 text = infer(
                     getattr(tokenizer, "tokenizer", tokenizer),
                     prompt = prompt,
                     image_file = path,
                     output_path = tmp,
                     base_size = 1024,
-                    image_size = 768,
+                    image_size = 640
+                    if "DeepseekOCRForCausalLM" in model_info["model"].config.architectures
+                    else 768,
                     crop_mode = True,
                     save_results = False,
                     eval_mode = True,

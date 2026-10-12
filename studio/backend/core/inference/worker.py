@@ -777,6 +777,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "has_audio_input": getattr(mc, "has_audio_input", False),
                 "can_batch": _load_can_batch(backend),
             }
+            if _active_model_is_deepseek_ocr(backend):
+                from core.inference.model_ids import DEEPSEEK_OCR_MAX_IMAGE_SIDE
+
+                # The route resizes before the IPC hop, so it needs the raised cap too.
+                model_info["max_image_side"] = DEEPSEEK_OCR_MAX_IMAGE_SIDE
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}

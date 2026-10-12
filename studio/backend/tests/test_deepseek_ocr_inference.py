@@ -220,22 +220,27 @@ def test_the_worker_raises_the_image_cap_only_for_deepseek_ocr():
     assert longest_side(other) == 800
 
 
-def test_the_route_side_resize_raises_the_cap_only_for_deepseek_ocr(tmp_path, monkeypatch):
+def test_the_route_side_resize_uses_the_cap_the_worker_reported():
     Image = pytest.importorskip("PIL.Image")
-    from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.orchestrator import InferenceOrchestrator, _mirrored_model_entry
 
-    monkeypatch.setattr(tv.sys, "platform", "linux")
-    (tmp_path / "ocr").mkdir()
-    (tmp_path / "qwen").mkdir()
-    ocr = _local_model(tmp_path / "ocr", _OCR2)
-    qwen = _local_model(
-        tmp_path / "qwen",
-        {"architectures": ["Qwen2VLForConditionalGeneration"], "model_type": "qwen2_vl"},
-    )
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
     page = Image.new("RGB", (1700, 2200), "white")
 
-    orchestrator.active_model_name = ocr
+    orchestrator.models = {"m": _mirrored_model_entry({"max_image_side": 2048}, "m")}
     assert max(orchestrator.resize_image(page).size) == 2048
-    orchestrator.active_model_name = qwen
+    orchestrator.models = {"m": _mirrored_model_entry({}, "m")}
     assert max(orchestrator.resize_image(page).size) == 800
+
+
+@pytest.mark.parametrize(
+    ("architecture", "image_size"),
+    [("DeepseekOCRForCausalLM", 640), ("DeepseekOCR2ForCausalLM", 768)],
+)
+def test_each_model_gets_its_own_gundam_tile_size(architecture, image_size):
+    model = _OcrModel()
+    model.config = types.SimpleNamespace(architectures = [architecture])
+    _generate(_backend(model), _image())
+
+    assert model.calls[0][1]["image_size"] == image_size
