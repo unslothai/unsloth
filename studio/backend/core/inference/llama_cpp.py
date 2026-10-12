@@ -32129,19 +32129,27 @@ class LlamaCppBackend:
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
-                if _exact_budget is not None and not _exact_wanted:
-                    # Sized before the placement was known: now that it is, the weights this
-                    # launch leaves in host RAM come off the room its parking may pin.
-                    _host_weights_mib = self._planned_host_weights_mib(
-                        cmd,
-                        _reachable_gpus,
-                        env,
-                        child_has_no_gpu = _child_has_no_gpu,
-                        shared_gpu_ids = _shared_gpu_ids,
+                # The weights this launch leaves in host RAM, now that the placement is known.
+                _host_weights_mib = self._planned_host_weights_mib(
+                    cmd,
+                    _reachable_gpus,
+                    env,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    shared_gpu_ids = _shared_gpu_ids,
+                )
+                if _host_weights_mib and _exact_budget is not None and not _exact_wanted:
+                    # Sized before the placement was known: they come off the room its parking
+                    # may pin.
+                    _exact_budget = _rebound_named_parking_budget(
+                        cmd, _exact_budget, self, _host_weights_mib
                     )
-                    if _host_weights_mib:
-                        _exact_budget = _rebound_named_parking_budget(
-                            cmd, _exact_budget, self, _host_weights_mib
+                if _host_weights_mib:
+                    # And held against a peer certifying exact parks until this launch is up:
+                    # the free reading it takes cannot show weights that are still loading.
+                    with _parking_budget_lock:
+                        _held = getattr(self, "_parking_reserving_mib", None) or 0
+                        _reserve_inflight_parking(
+                            self, _held if _held < 0 else _held + _host_weights_mib
                         )
                 # Snapshotted BEFORE the override note is appended below, so a re-price
                 # that promotes this notice appends that note once rather than twice.

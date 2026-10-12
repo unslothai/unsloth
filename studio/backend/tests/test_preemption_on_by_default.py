@@ -580,12 +580,15 @@ class TestExactParksAreCountedAcrossModels:
 
         source = " ".join(inspect.getsource(LlamaCppBackend.load_model).split())
         site = source.index("_offload_msg = self._launch_host_shortfall_message(")
-        window = source[site : site + 1200]
-        assert "if _exact_budget is not None and not _exact_wanted:" in window
+        window = source[site : site + 2200]
         assert "_host_weights_mib = self._planned_host_weights_mib(" in window
+        assert "if _host_weights_mib and _exact_budget is not None and not _exact_wanted:" in window
         assert (
             "_exact_budget = _rebound_named_parking_budget( cmd, _exact_budget, self, _host_weights_mib )"
         ) in window
+        # Every launch holds its loading weights against a peer certifying exact parks, not
+        # only one that parks itself.
+        assert "_held if _held < 0 else _held + _host_weights_mib" in window
 
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
         # Each ordinary budget is allocated only when it parks, so four sized off the same free
