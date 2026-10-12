@@ -704,7 +704,16 @@ export function ResourcesTab() {
                   .filter(Boolean)
                   .join(" · ") || "--"
               }
-              detail={t("settings.resources.liveMonitor.gpuLoad")}
+              detail={[
+                row.temperatureC !== null &&
+                  t("settings.resources.liveMonitor.temperature"),
+                row.powerDrawW !== null &&
+                  t("settings.resources.liveMonitor.power"),
+                row.loadPct !== null &&
+                  t("settings.resources.liveMonitor.gpuLoad"),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
               showUsage={detailMetrics.has("gpuLoad")}
               percent={hostUnread ? null : row.loadPct}
             />

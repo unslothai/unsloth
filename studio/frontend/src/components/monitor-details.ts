@@ -12,7 +12,7 @@ export const MONITOR_DETAIL_METRICS = [
 
 export type MonitorDetailMetric = (typeof MONITOR_DETAIL_METRICS)[number];
 
-/** Persisted state is user-editable localStorage: anything unrecognised falls back to all metrics. */
+/** A stored value that is not a list (older state, hand edits) falls back to all metrics. */
 export function selectedDetailMetrics(
   stored: unknown,
 ): ReadonlySet<MonitorDetailMetric> {
