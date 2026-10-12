@@ -232,6 +232,14 @@ def test_wrapperless_bare_value_is_a_number_only_when_json_reads_one():
     assert _args(wrapped[0]) == {"to": "+15551234567", "zip": "02134", "count": 3}
 
 
+def test_wrapperless_integer_past_int_digit_limit_stays_a_string():
+    # int() raises past sys.get_int_max_str_digits(); the argument must not be dropped.
+    digits = "9" * 5000
+    calls = parse_tool_calls_from_text("call:f{n:" + digits + ",m:[" + digits + "]}")
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"n": digits, "m": [digits]}
+
+
 def test_gemma_parse_array_advances_on_stray_brace():
     # Regression: a stray '}' / ']' / ',' where an array element is expected must
     # not stall _gemma_parse_value at the same index (it looped forever before).

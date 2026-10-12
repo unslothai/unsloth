@@ -3878,7 +3878,11 @@ def _gemma_coerce_scalar(raw: str) -> Any:
     if number is None:
         return raw
     if number.group(1) is None and number.group(2) is None:
-        return int(raw)
+        try:
+            return int(raw)
+        except ValueError:
+            # Past sys.get_int_max_str_digits(); json.loads refuses it too, so the wrapped form keeps a string.
+            return raw
     value = float(raw)
     # "1e999" overflows to inf, which json.dumps writes as a bare Infinity.
     return raw if abs(value) == float("inf") else value
