@@ -8714,21 +8714,27 @@ def _is_unarmed(module):
     )
 
 
-def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+def resolve_training_gradient_checkpointing(
+    model,
+    use_gradient_checkpointing,
+    modules = None,
+):
     """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
     if use_gradient_checkpointing is not None:
         return use_gradient_checkpointing
     if hasattr(model, "_unsloth_gradient_checkpointing"):
         return model._unsloth_gradient_checkpointing
-    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
+    modules = model.modules() if modules is None else modules
+    checkpointing = [m for m in modules if _calls_checkpoint_function(m)]
     if checkpointing:
         return any(not _is_unarmed(m) for m in checkpointing)
     return True
 
 
-def arm_gradient_checkpointing(model):
+def arm_gradient_checkpointing(model, modules = None):
     """Install the checkpoint function a load with checkpointing off never gave the layers."""
-    if not any(_is_unarmed(m) for m in model.modules()):
+    if not any(_is_unarmed(m) for m in (model.modules() if modules is None else modules)):
         return False
     # Outer model: Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
     try:
@@ -8754,3 +8760,151 @@ def set_module_gradient_checkpointing(module, value):
         return False
     module.gradient_checkpointing = value
     return True
+
+
+@functools.lru_cache(maxsize = None)
+def _mode_switch_class_info(cls):
+    """(train, eval, gc, setattr, walk) for switch_training_mode, per class.
+
+    train: True when train() and the child traversal are nn.Module's, "kernels" for PreTrainedModel.train
+    (adds a kernel re-cast only under `use_kernels`), False otherwise. eval: eval() is nn.Module's or
+    PreTrainedModel's. gc: the class has gradient_checkpointing, None for classes with their own
+    __getattr__ / __getattribute__ (PEFT wrappers delegate it). setattr: `training` is a plain instance
+    attribute. walk: modules() / parameters() enumerate the registered tree, as the raw _modules walk does.
+    """
+    try:
+        from transformers import PreTrainedModel
+        pretrained = (PreTrainedModel.train, PreTrainedModel.eval)
+    except Exception:
+        pretrained = (None, None)
+    module = torch.nn.Module
+    children = cls.children is module.children and cls.named_children is module.named_children
+    if not children:
+        train = False
+    elif cls.train is module.train:
+        train = True
+    else:
+        train = "kernels" if cls.train is pretrained[0] else False
+    plain_eval = cls.eval is module.eval or cls.eval is pretrained[1]
+    plain_lookup = (
+        cls.__getattr__ is module.__getattr__ and cls.__getattribute__ is module.__getattribute__
+    )
+    gc = hasattr(cls, "gradient_checkpointing") if plain_lookup else None
+    descriptor = inspect.getattr_static(cls, "training", None)
+    plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
+        type(descriptor), "__set__"
+    )
+    plain_walk = all(
+        getattr(cls, name) is getattr(module, name)
+        for name in ("modules", "named_modules", "parameters", "named_parameters", "_named_members")
+    )
+    return train, plain_eval, gc, plain_setattr, plain_walk
+
+
+def _has_gradient_checkpointing(module, on_class):
+    # hasattr() for a plain nn.Module, without its slow AttributeError path.
+    if on_class is None:
+        return hasattr(module, "gradient_checkpointing")
+    return (
+        on_class
+        or "gradient_checkpointing" in module.__dict__
+        or "gradient_checkpointing" in module._parameters
+        or "gradient_checkpointing" in module._buffers
+        or "gradient_checkpointing" in module._modules
+    )
+
+
+def switch_training_mode(
+    model,
+    training,
+    defer = False,
+):
+    """for_inference / for_training's model.train() / eval() plus their gradient_checkpointing and
+    `_fast_lora` scans (every GRPO step) in one walk; returns the modules with a gradient_checkpointing flag.
+
+    `training` is written directly only where nn.Module.train would do nothing else; any other train()
+    (class or instance override such as the frozen-norm partial, kernels on, own child traversal) runs for
+    its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
+    (modules, apply) so for_training can still set the mode last.
+    """
+    if not isinstance(model, torch.nn.Module):
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        apply = model.train if training else model.eval
+        if defer:
+            return checkpointing, apply
+        apply()
+        return checkpointing
+    # Mode writes in nn.Module.train's preorder, shared modules once per path, so custom train() calls run
+    # where the recursion would run them. The gc / _fast_lora scan sees each module once, as modules() does.
+    ops, checkpointing = [], []
+    seen = set()
+    plain_walk = True
+    stack = [(model, False)]
+    while stack:
+        module, covered = stack.pop()
+        if module is None:
+            continue
+        train, plain_eval, gc, plain_setattr, walk = _mode_switch_class_info(type(module))
+        plain_walk = plain_walk and walk
+        if not covered:
+            if (
+                train is False
+                or "train" in module.__dict__
+                or (train == "kernels" and getattr(module, "use_kernels", False))
+                or (
+                    module is model
+                    and not training
+                    and (not plain_eval or "eval" in module.__dict__)
+                )
+            ):
+                ops.append((module, None))
+                covered = True
+            else:
+                ops.append((module, plain_setattr))
+        if id(module) in seen:
+            if covered or len(ops) > 64 * len(seen):  # nothing left to record, or a cycle
+                continue
+        else:
+            seen.add(id(module))
+            if _has_gradient_checkpointing(module, gc):
+                checkpointing.append(module)
+            if training:
+                for param in module._parameters.values():
+                    if param is not None and "_fast_lora" in param.__dict__:
+                        del param._fast_lora
+        if module._modules:
+            children = [child for child in module._modules.values() if child is not None]
+            if len(children) > 1:
+                # named_children() yields a module registered under two names once per parent.
+                children = list({id(child): child for child in children}.values())
+                children.reverse()
+            stack.extend([(child, covered) for child in children])
+    if not plain_walk:
+        # Some class enumerates modules / parameters its own way: scan as the old code did.
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+
+    def apply():
+        if (ops and ops[0][0] is model and ops[0][1] is None) or len(ops) > 64 * len(seen):
+            model.train() if training else model.eval()
+            return
+        for module, plain_setattr in ops:
+            if plain_setattr is None:
+                module.train(training)
+            # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
+            elif plain_setattr:
+                module.__dict__["training"] = training
+            else:
+                module.training = training
+
+    if defer:
+        return checkpointing, apply
+    apply()
+    return checkpointing

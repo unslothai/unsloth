@@ -5532,14 +5532,13 @@ const Composer: FC<{
               {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"
-                  tooltip={isWritingExpanded ? "Collapse" : "Expand"}
-                  aria-label={
+                  tooltip={
                     isWritingExpanded ? "Collapse composer" : "Expand composer"
                   }
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -5620,11 +5619,6 @@ const Composer: FC<{
       className="aui-composer-root relative flex w-full flex-col"
       data-writing-expanded={
         isWritingExpanded && !isDictating ? "true" : undefined
-      }
-      data-writing-toggle={
-        (showWritingToggle || isWritingExpanded) && !isDictating
-          ? "true"
-          : undefined
       }
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -7461,7 +7455,11 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span className="generating-glint text-sm text-muted-foreground">
+      Working...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
