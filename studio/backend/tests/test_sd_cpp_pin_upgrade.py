@@ -190,7 +190,11 @@ def test_an_old_record_holding_the_upstream_form_of_the_pin_is_current(tmp_path,
 @pytest.mark.parametrize("with_requested_tag", [True, False])
 def test_the_previous_pins_upstream_fallback_is_upgraded(tmp_path, monkeypatch, with_requested_tag):
     # #12470: leejet master-813, the previous pin's upstream fallback, cannot run Qwen-Image-2.1.
-    record = {"accelerator": "cuda", "repo": sdmod.UPSTREAM_FALLBACK_REPO, "tag": "master-813-bfbef5b"}
+    record = {
+        "accelerator": "cuda",
+        "repo": sdmod.UPSTREAM_FALLBACK_REPO,
+        "tag": "master-813-bfbef5b",
+    }
     if with_requested_tag:
         record["requested_tag"] = "master-813-bfbef5b-u1d02858"
     bk, root, cli, server = _tree(tmp_path, monkeypatch, record)
