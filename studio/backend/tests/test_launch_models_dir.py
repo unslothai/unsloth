@@ -33,7 +33,6 @@ def test_folders_from_env_are_registered_once(tmp_path, monkeypatch):
     assert set(added) == {str(a.resolve()), str(b.resolve())}
     assert {str(a.resolve()), str(b.resolve())} <= _registered()
 
-    # A re-launch with the same flag changes nothing.
     before = studio_db.list_scan_folders()
     assert local_inventory.register_launch_scan_folders() == []
     assert studio_db.list_scan_folders() == before
