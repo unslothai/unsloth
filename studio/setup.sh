@@ -136,16 +136,12 @@ _remove_agent_instruction_files() {
 }
 
 # ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
-# A source install spends about as long in `npm ci && npm run build` (CPU) as in the
-# dependency and prebuilt downloads that follow it, and the two share no files.
 _FRONTEND_BG_PID=""
 _FRONTEND_BG_WATCH=""
 _FRONTEND_BG_LOG=""
 
-# Serial unless the box can take both at once: Desktop, staged updates and verbose
-# runs keep their live, ordered output. `tsc -b && vite build` alone peaks near 7 GB
-# RSS where Node's heap is unbounded, so ask for 4 CPUs and 12 GiB usable (cgroup
-# limits included). An unreadable probe keeps the serial path.
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
 _frontend_can_build_in_background() {
     case "${UNSLOTH_STUDIO_SERIAL_SETUP:-0}" in 1|true) return 1 ;; esac
     _is_verbose && return 1
@@ -159,9 +155,8 @@ _frontend_can_build_in_background() {
     [ "${_mb:-0}" -ge 12288 ] 2>/dev/null
 }
 
-# What a build stopped part way leaves behind: an ancestor .gitignore it hid, and a dist
-# newer than its sources, which the next run would call up to date (an epoch mtime makes
-# it rebuild). Idempotent, and safe to run from the build's EXIT trap and from outside.
+# Undo what a killed build leaves: a hidden ancestor .gitignore, and a dist the freshness
+# check would call up to date (an epoch mtime forces a rebuild).
 _frontend_build_cleanup() {
     local _dir="$SCRIPT_DIR/frontend"
     while [ "$_dir" != "/" ]; do
@@ -175,9 +170,8 @@ _frontend_build_cleanup() {
     fi
 }
 
-# Stop the build's process group: TERM, up to 5 s, then KILL (npm does not always exit on
-# TERM, and KILL skips the build's EXIT trap, hence the cleanup here). No group of that id
-# exists once the build has exited, or when monitor mode could not make one: a no-op.
+# TERM the build's group, KILL it after 5 s (npm ci ignores TERM; KILL skips the build's EXIT
+# trap, hence the cleanup). A no-op once the group is gone.
 _frontend_bg_stop() {
     local _n=0
     kill -TERM -- "-$1" 2>/dev/null || return 0
@@ -189,10 +183,8 @@ _frontend_bg_stop() {
     _frontend_build_cleanup
 }
 
-# Run _build_frontend in its own process group with its output in a file. setup_fail
-# stops it synchronously; for every other way setup can die (errexit, Ctrl-C, a signal)
-# a watcher that ignores HUP/INT/TERM stops it, so a failed run never leaves a build
-# writing into the next run's tree.
+# Own process group, output to a file. setup_fail stops it synchronously; a watcher ignoring
+# HUP/INT/TERM stops it if setup dies any other way (errexit, Ctrl-C).
 _frontend_bg_start() {
     local _monitor=off
     case "$-" in *m*) _monitor=on ;; esac
