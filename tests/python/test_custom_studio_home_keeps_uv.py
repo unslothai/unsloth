@@ -307,9 +307,9 @@ def test_backend_points_on_demand_installs_at_the_home(tmp_path, monkeypatch):
     assert os.environ["UV_PYTHON_INSTALL_DIR"] == "/mine/python"
 
 
-def test_cli_update_hands_setup_the_private_uv(tmp_path, monkeypatch):
-    # `unsloth studio update` runs setup directly, which installs uv into the profile when none
-    # is on PATH.
+def test_cli_update_points_setup_at_the_home(tmp_path, monkeypatch):
+    # `unsloth studio update` runs setup directly. setup uses a uv on PATH as is, and otherwise
+    # version-checks UV_UNMANAGED_INSTALL and installs the pinned uv there, with no profile edit.
     sys.path.insert(0, str(REPO_ROOT))
     try:
         from unsloth_cli.commands import studio as studio_cli
@@ -317,21 +317,24 @@ def test_cli_update_hands_setup_the_private_uv(tmp_path, monkeypatch):
         sys.path.pop(0)
 
     home = tmp_path / "studio"
+    home.mkdir()
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", home)
     monkeypatch.setattr(studio_cli, "_STUDIO_HOME_IS_CUSTOM", True)
-    mine = str(tmp_path / "mine")
-    env = {"PATH": mine}
+    env = {"PATH": str(tmp_path / "mine")}
 
-    assert studio_cli._with_studio_uv(env) == env
-    (home / "python").mkdir(parents = True)
+    # Not opted in: a custom root the opt-in installer never touched.
+    assert studio_cli._with_studio_uv(env) is env
+
+    (home / "python").mkdir()
     assert studio_cli._with_studio_uv(env) == {
-        "PATH": mine,
+        "PATH": str(tmp_path / "mine"),
         "UV_PYTHON_INSTALL_DIR": str(home / "python"),
+        "UV_UNMANAGED_INSTALL": str(home / "uv"),
     }
-    _uv_stub(home / "uv")
-    out = studio_cli._with_studio_uv({"PATH": os.pathsep.join([mine, str(home / "uv")])})
-    assert out["PATH"] == str(home / "uv") + os.pathsep + mine
-    assert studio_cli._with_studio_uv(out)["PATH"] == out["PATH"]
+    assert env == {"PATH": str(tmp_path / "mine")}
+    # The caller's own choices win.
+    mine = {"PATH": "p", "UV_INSTALL_DIR": "/mine/bin", "UV_PYTHON_INSTALL_DIR": "/mine/py"}
+    assert studio_cli._with_studio_uv(mine) == mine
 
     monkeypatch.setattr(studio_cli, "_STUDIO_HOME_IS_CUSTOM", False)
     assert studio_cli._with_studio_uv(env) is env

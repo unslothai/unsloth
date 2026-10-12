@@ -3800,9 +3800,10 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
 
 
 def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
-    """An install with a custom UNSLOTH_STUDIO_HOME keeps its own uv in <home>/uv, off the user
-    PATH, and its uv-managed Python in <home>/python; only that installer creates them. Without
-    them setup would put both in the profile."""
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its uv-managed Python in <home>/python
+    and its own uv in <home>/uv; only that installer creates <home>/python. Without this, setup
+    would put a missing or stale uv, and any managed Python, in the profile. setup version-checks
+    the uv it finds there and replaces it in place; a uv already on PATH is used as before."""
     try:
         if (
             not _STUDIO_HOME_IS_CUSTOM
@@ -3811,13 +3812,17 @@ def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
             return env
     except (OSError, RuntimeError, ValueError):
         return env
+    if not (STUDIO_HOME / "python").is_dir():
+        return env
     out = {**(env if env is not None else os.environ)}
-    if (STUDIO_HOME / "python").is_dir() and not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+    if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
         out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
-    uv_dir = str(STUDIO_HOME / "uv")
-    if (Path(uv_dir) / ("uv.exe" if os.name == "nt" else "uv")).is_file():
-        rest = [e for e in out.get("PATH", "").split(os.pathsep) if e and e != uv_dir]
-        out["PATH"] = os.pathsep.join([uv_dir, *rest])
+    # astral's unmanaged mode: that directory, no profile or user PATH edit (setup.sh, setup.ps1).
+    if not any(
+        (out.get(k) or "").strip()
+        for k in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
+    ):
+        out["UV_UNMANAGED_INSTALL"] = str(STUDIO_HOME / "uv")
     return out
 
 
