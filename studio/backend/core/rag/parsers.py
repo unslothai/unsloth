@@ -798,15 +798,24 @@ def _docx_math_text(element) -> str:
     return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
 
 
-def _docx_run_text(run) -> str:
-    box = run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox")
+def _docx_checkbox(field) -> str:
+    box = field.find(f"{_W}ffData/{_W}checkBox")
     if box is None:
-        return run.text
+        return ""
     flag = box.find(_W + "checked")
     if flag is None:
         flag = box.find(_W + "default")
     ticked = flag is not None and flag.get(_W + "val", "true") not in ("0", "false", "off")
-    return ("☒" if ticked else "☐") + run.text
+    return "☒" if ticked else "☐"
+
+
+def _docx_run_text(run) -> str:
+    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None:
+        return run.text
+    return "".join(
+        _docx_checkbox(e) if e.tag == _W + "fldChar" else str(e)
+        for e in run.xpath("w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar")
+    )
 
 
 def _docx_paragraph_text(paragraph) -> str:
