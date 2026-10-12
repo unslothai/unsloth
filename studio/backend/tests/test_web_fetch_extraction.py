@@ -338,6 +338,18 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
+@pytest.mark.parametrize("skipped", ["nav", "footer", "svg", "button"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, main_content):
+    html = (
+        f"<body><div><{skipped}><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page that must reach the model.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" not in out
+    assert "Real text of the page" in out
+
+
 @pytest.mark.parametrize(
     "html, heading",
     [

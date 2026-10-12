@@ -643,7 +643,7 @@ class _MarkdownRenderer(HTMLParser):
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
-        self._skip_depth: int = 0
+        self._skip_tags: list[str] = []
 
         # Main-content scoping: emit only while inside a scope tag.
         self._scope_tags = scope_tags
@@ -1295,9 +1295,9 @@ class _MarkdownRenderer(HTMLParser):
             tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
 
-        if self._skip_depth:
-            if tag in _SKIP_TAGS:
-                self._skip_depth += 1
+        if self._skip_tags:
+            if tag not in _VOID_TAGS:
+                self._skip_tags.append(tag)
             return
 
         # Recover optional end tags before the skip decision: a skipped <nav>/<footer> still implicitly closes an open
@@ -1305,7 +1305,7 @@ class _MarkdownRenderer(HTMLParser):
         self._close_implicit(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
-            self._skip_depth += 1
+            self._skip_tags.append(tag)
             return
 
         attr_dict = dict(attrs)
@@ -1438,11 +1438,17 @@ class _MarkdownRenderer(HTMLParser):
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
 
-        # a kept title button closes through _exit_tag; skipped ones always raised _skip_depth
-        if tag in _SKIP_TAGS and (self._skip_depth or tag != "button"):
-            self._skip_depth = max(0, self._skip_depth - 1)
-            return
-        if self._skip_depth:
+        if self._skip_tags:
+            for i in range(len(self._skip_tags) - 1, -1, -1):
+                if self._skip_tags[i] == tag:
+                    del self._skip_tags[i:]
+                    return
+            # an ancestor's end tag also closes the skipped element, as browsers do
+            if tag not in self._open_tags:
+                return
+            self._skip_tags.clear()
+        # a kept title button closes through _exit_tag
+        elif tag in _SKIP_TAGS and tag != "button":
             return
 
         closing_sup = None
@@ -1519,7 +1525,7 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_table()
 
     def _text_suppressed(self) -> bool:
-        if self._skip_depth or self._hidden_marks:
+        if self._skip_tags or self._hidden_marks:
             return True
         return self._scope_tags is not None and self._scope_depth == 0
 
