@@ -4310,7 +4310,7 @@ html[data-chat-font] .aui-root {
 		);
 		mix-blend-mode: lighten;
 		transform: translateX(-100%);
-		animation: generating-glint 5s cubic-bezier(0.37, 0, 0.63, 1) infinite;
+		animation: generating-glint 3s cubic-bezier(0.37, 0, 0.63, 1) infinite;
 	}
 
 	.dark .generating-glint::after {
@@ -4321,7 +4321,7 @@ html[data-chat-font] .aui-root {
 		0% {
 			transform: translateX(-100%);
 		}
-		48%,
+		60%,
 		100% {
 			transform: translateX(100%);
 		}

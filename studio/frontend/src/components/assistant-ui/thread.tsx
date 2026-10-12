@@ -7461,7 +7461,7 @@ const GeneratingIndicator: FC = () => {
   }
   return (
     <span className="generating-glint text-sm text-muted-foreground">
-      Generating...
+      Working...
     </span>
   );
 };
