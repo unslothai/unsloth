@@ -671,3 +671,114 @@ def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkey
     )
     engine.begin_load.assert_called_once()
     assert calls == ["acquire"]
+
+
+def test_the_anonymous_token_sentinel_reaches_every_fetch(env, monkeypatch):
+    backend, _rt, _calls = env
+    seen = []
+    real_fetch_gguf, real_fetch_base = mb.fetch_gguf, mb.fetch_base_snapshot
+    monkeypatch.setattr(
+        mb, "fetch_gguf", lambda r, f, tok, **k: (seen.append(tok), real_fetch_gguf(r, f, tok, **k))[1]
+    )
+    monkeypatch.setattr(
+        mb, "fetch_base_snapshot", lambda b, tok, **k: (seen.append(tok), real_fetch_base(b, tok, **k))[1]
+    )
+    monkeypatch.setattr(
+        mb, "resolve_variant_base", lambda r, f, tok, *a, fallback, **k: (seen.append(tok), fallback)[1]
+    )
+    assert _load(backend, hf_token = False)["phase"] == "ready"
+    assert seen == [False, False, False]
+    seen.clear()
+    backend.unload()
+    assert _load(backend, hf_token = "  hf_x  ")["phase"] == "ready"
+    assert seen == ["hf_x", "hf_x", "hf_x"]
+    seen.clear()
+    backend.unload()
+    assert _load(backend, hf_token = "  ")["phase"] == "ready"
+    assert seen == [None, None, None]
+
+
+def test_unload_racing_begin_load_never_joins_an_unstarted_worker(env, monkeypatch):
+    backend, _rt, _calls = env
+    started = []
+    real_thread = mb.account_thread
+
+    def _thread(**kw):
+        worker = real_thread(**kw)
+        real_start = worker.start
+
+        def _start():
+            # Publication and start share one critical section, so unload() never sees an unstarted worker.
+            held = not backend._lock.acquire(blocking = False)
+            if not held:
+                backend._lock.release()
+            assert held
+            started.append(worker)
+            real_start()
+
+        worker.start = _start
+        return worker
+
+    monkeypatch.setattr(mb, "account_thread", _thread)
+    _load(backend)
+    assert len(started) == 1
+
+
+def test_a_load_cancelled_while_waiting_on_generation_skips_the_build(env):
+    backend, runtime, _calls = env
+    _load(backend)
+    runtime.step_gate = threading.Event()
+    errors = []
+    gen = threading.Thread(
+        target = lambda: _swallow(errors, lambda: backend.generate(prompt = "x", steps = 1))
+    )
+    gen.start()
+    assert runtime.in_step.wait(5)
+    builds_before = len(runtime.builds)
+    backend.begin_load(REPO, gguf_filename = GGUF, model_kind = "gguf")
+    deadline = time.time() + 5
+    while backend._state is not None and time.time() < deadline:
+        time.sleep(0.01)
+    backend._cancel_event.set()
+    runtime.step_gate.set()
+    gen.join(5)
+    backend._load_thread.join(5)
+    assert len(runtime.builds) == builds_before
+    assert backend.status()["loaded"] is False
+
+
+def _swallow(errors, fn):
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+
+
+@pytest.mark.parametrize("stage", ["build", "cache_text_encodings"])
+def test_a_failed_build_frees_the_runtime(env, stage):
+    backend, runtime, _calls = env
+
+    def _boom(*_a, **_k):
+        raise MemoryError("[metal::malloc] out of memory")
+
+    setattr(runtime, stage, _boom)
+    progress = _load(backend)
+    assert progress["phase"] == "error" and "out of memory" in progress["error"]
+    assert runtime.freed == 1
+    assert backend.status()["loaded"] is False
+
+
+def test_status_reports_the_engaged_mlx_quantization(env):
+    backend, _rt, _calls = env
+    _load(backend)
+    status = backend.status()
+    assert status["text_encoder_quant"] == "mlx_int4"
+    assert status["transformer_quant"] == "mlx_int4_dense"
+
+
+def test_derived_batch_seeds_stay_json_safe(env):
+    backend, runtime, _calls = env
+    _load(backend)
+    result = backend.generate(prompt = "x", steps = 1, width = 256, height = 256, seed = 2**53 - 1, batch_size = 2)
+    assert result["seeds"] == [2**53 - 1, 0]
+    assert [g["seed"] for g in runtime.generates] == [2**53 - 1, 0]

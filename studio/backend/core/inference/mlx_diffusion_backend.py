@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
@@ -34,6 +34,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
 )
 from core.inference import mlx_diffusion_convert as convert
+from core.inference.diffusion_batched import SEED_MASK
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
@@ -486,7 +487,7 @@ class MlxDiffusionBackend:
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: Optional[Union[str, bool]] = None,
         # Accepted and ignored: uniform route call.
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
@@ -504,7 +505,8 @@ class MlxDiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         **_ignored: Any,
     ) -> dict[str, Any]:
-        hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        if isinstance(hf_token, str):
+            hf_token = hf_token.strip() or None
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the MLX engine loads GGUF checkpoints only."
@@ -536,26 +538,25 @@ class MlxDiffusionBackend:
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             self._loading = _MlxLoading(repo_id = repo_id, base_repo = base)
-        worker = account_thread(
-            target = self._run_load,
-            kwargs = dict(
-                repo_id = repo_id,
-                display_repo_id = display_repo_id,
-                gguf_filename = gguf_filename,
-                base = base,
-                fam = fam,
-                model_config = model_config,
-                hf_token = hf_token,
-                local_files_only = local_files_only,
-                _load_token = token,
-                _cancel_event = cancel_event,
-                explicit_base = bool((base_repo or "").strip()),
-            ),
-            daemon = True,
-        )
-        with self._lock:
+            worker = account_thread(
+                target = self._run_load,
+                kwargs = dict(
+                    repo_id = repo_id,
+                    display_repo_id = display_repo_id,
+                    gguf_filename = gguf_filename,
+                    base = base,
+                    fam = fam,
+                    model_config = model_config,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    _load_token = token,
+                    _cancel_event = cancel_event,
+                    explicit_base = bool((base_repo or "").strip()),
+                ),
+                daemon = True,
+            )
             self._load_thread = worker
-        worker.start()
+            worker.start()
         return self.status()
 
     def _set_phase(
@@ -587,6 +588,7 @@ class MlxDiffusionBackend:
     ) -> None:
         timings: dict[str, Any] = {}
         model = state = displaced = None
+        building = published = False
         try:
             if not explicit_base:
                 # The repo's base_model card tag can name the undistilled base: resolve it the way the
@@ -660,6 +662,9 @@ class MlxDiffusionBackend:
                 with self._generate_lock:
                     pass
                 runtime.free()
+            if _cancel_event.is_set():
+                return
+            building = True
             model = runtime.build(
                 str(out_dir),
                 model_config = model_config,
@@ -689,6 +694,7 @@ class MlxDiffusionBackend:
                     superseded = False
                     self._state = state
                     self._loading = None
+            published = True
             if superseded:
                 del state, model
                 runtime.free()
@@ -705,6 +711,7 @@ class MlxDiffusionBackend:
                 timings,
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
+            clear_exception_locals(exc)
             if self._load_token != _load_token or _cancel_event.is_set():
                 return
             logger.error("mlx_diffusion.load_failed: %s", exc, exc_info = True)
@@ -717,6 +724,8 @@ class MlxDiffusionBackend:
             # A cached exception below (Hub helpers memoize import failures) can retain this frame;
             # a model left in its locals would then survive unload().
             model = state = displaced = None
+            if building and not published and self._runtime is not None:
+                self._runtime.free()
 
     def download_plan(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
         """The diffusers GGUF plan stages exactly the files this engine opens; its memory verdict does not apply."""
@@ -840,7 +849,7 @@ class MlxDiffusionBackend:
                 seeds_out = []
                 per_image: list[dict[str, float]] = []
                 for index in range(batch):
-                    image_seed = base_seed + index
+                    image_seed = (base_seed + index) & SEED_MASK
                     offset = index * steps
                     started = time.perf_counter()
                     marks: list[float] = []
@@ -910,10 +919,8 @@ class MlxDiffusionBackend:
                     "model_kind": "gguf",
                     "gguf_filename": state.gguf_filename,
                     # The MLX build on top of the GGUF: on-load quantization varies with RAM and env.
-                    "transformer_quant": (
-                        f"mlx_int{state.dense_bits}_dense" if state.dense_bits else None
-                    ),
-                    "text_encoder_quant": f"mlx_int{state.te_bits}" if state.te_bits else None,
+                    "transformer_quant": _dense_quant_name(state.dense_bits),
+                    "text_encoder_quant": _te_quant_name(state.te_bits),
                     "memory_mode": None,
                     "offload_policy": "none",
                     "speed_mode": None,
@@ -1061,8 +1068,8 @@ class MlxDiffusionBackend:
             "memory_mode": None,
             "speed_mode": None,
             "speed_optims": [],
-            "text_encoder_quant": None,
-            "transformer_quant": None,
+            "text_encoder_quant": _te_quant_name(state.te_bits),
+            "transformer_quant": _dense_quant_name(state.dense_bits),
             "attention_backend": None,
             "transformer_cache": None,
             "resolved": None,
@@ -1081,6 +1088,14 @@ class MlxDiffusionBackend:
             "workflows": ["txt2img"],
             "conditioning": conditioning,
         }
+
+
+def _dense_quant_name(bits: Optional[int]) -> Optional[str]:
+    return f"mlx_int{bits}_dense" if bits else None
+
+
+def _te_quant_name(bits: Optional[int]) -> Optional[str]:
+    return f"mlx_int{bits}" if bits else None
 
 
 def _progress(
