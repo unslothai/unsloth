@@ -7591,8 +7591,9 @@ exit 0
             Refresh-SessionPath
         }
         # winget unavailable or it didn't put uv on PATH: install the pinned
-        # release directly (ARM64 runners, machines without the Store).
-        if (-not (Test-UvVersionOk)) {
+        # release directly (ARM64 runners, machines without the Store). A stale private uv is
+        # replaced even when PATH has a good one: Studio puts the private one first.
+        if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {
             if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
             Refresh-SessionPath
         }

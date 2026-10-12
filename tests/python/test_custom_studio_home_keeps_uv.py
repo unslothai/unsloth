@@ -133,6 +133,13 @@ def test_ps1_private_uv_skips_winget_and_the_user_path():
         "            Add-ToUserPath" in install
     )
     assert "if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {" in INSTALL_PS1
+    # Both guards on the way to Install-UvFromRelease honour the stale flag, not only the outer one.
+    block = _between(
+        INSTALL_PS1,
+        "    if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {",
+        "    # A freshly installed uv can sit behind an older one on PATH",
+    )
+    assert block.count("$script:StudioPrivateUvStale -or -not (Test-UvVersionOk)") == 2
 
 
 def test_ps1_custom_home_isolates_a_usable_cache_and_the_python_store():
