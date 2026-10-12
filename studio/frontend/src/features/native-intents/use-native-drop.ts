@@ -13,11 +13,7 @@ import type { NativeIntent } from "./types";
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
-  | {
-      status: "attach";
-      count: number;
-      kind: "docs" | "images" | "audio" | "video" | "mixed";
-    }
+  | { status: "attach" }
   // `reason` explains a refusal the file types alone do not. Absent means the
   // files themselves are the problem.
   | { status: "invalid"; reason?: string };
@@ -64,28 +60,6 @@ function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   );
 }
 
-function attachmentCount(
-  dropped: ReturnType<typeof classifyDropPaths>,
-): number {
-  if (
-    dropped.kind === "docs" ||
-    dropped.kind === "images" ||
-    dropped.kind === "audio" ||
-    dropped.kind === "video"
-  ) {
-    return dropped.paths.length;
-  }
-  if (dropped.kind === "attach") {
-    return (
-      dropped.docs.length +
-      dropped.images.length +
-      dropped.audio.length +
-      dropped.video.length
-    );
-  }
-  return 0;
-}
-
 /** Anything this handler would otherwise act on. "none" and "unsupported"
  * already have their own answers. */
 function isActionableKind(
@@ -105,22 +79,22 @@ function dropStateForPaths(
   }
   if (dropped.kind === "docs") {
     return canAttachDocs(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "docs" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "images") {
     return canAttachImages(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "images" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "audio") {
     return canAttachAudio(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "audio" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "video") {
     return canAttachVideo(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "video" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "attach") {
@@ -132,7 +106,7 @@ function dropStateForPaths(
     const videoSupported =
       dropped.video.length === 0 || canAttachVideo(options);
     return docsSupported && imagesSupported && audioSupported && videoSupported
-      ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "unsupported") return { status: "invalid" };
@@ -239,8 +213,6 @@ function sameDropState(
   if (a.status !== b.status) return false;
   if (a.status === "valid" && b.status === "valid")
     return a.action === b.action;
-  if (a.status === "attach" && b.status === "attach")
-    return a.count === b.count && a.kind === b.kind;
   if (a.status === "invalid" && b.status === "invalid")
     return a.reason === b.reason;
   return true;
