@@ -51,6 +51,9 @@ export interface GpuInfo {
   /** Best first. Empty until system info arrives, and on older backends. */
   denseQuantSchemes: readonly string[];
   nvfp4Diffusion: boolean;
+  /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") this host runs natively. Empty until system info arrives. */
+  checkpointQuantFormats: readonly string[];
+  /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
   quantisedStreaming?: boolean;
   extraOffloadFitTiers?: Readonly<
     Record<string, readonly ReportedOffloadFitTier[]>
@@ -89,6 +92,7 @@ const DEFAULT_GPU: GpuInfo = {
   denseQuantSupported: false,
   denseQuantSchemes: [],
   nvfp4Diffusion: false,
+  checkpointQuantFormats: [],
   quantisedStreaming: false,
   name: "Unknown",
   memoryTotalGb: 0,
@@ -117,6 +121,9 @@ function toGpuInfo(
     denseQuantSupported: data?.dense_quant_supported === true,
     denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
+    checkpointQuantFormats: normalizeDenseQuantSchemes(
+      data?.checkpoint_quant_formats,
+    ),
     quantisedStreaming: data?.quantised_streaming === true,
     extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
       data?.diffusers_offload_tiers,

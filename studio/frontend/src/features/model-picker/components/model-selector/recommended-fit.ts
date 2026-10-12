@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
+import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
+import {
+  classifyMediaGgufFit,
+  type curatedArtifactFit,
+} from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 // Mirrors the backend's _looks_like_mlx_repo.
@@ -38,7 +42,23 @@ export function isRecommendableFormat(
   return isMac;
 }
 
-/** "safetensors" means anything that is neither GGUF nor MLX. */
+/** An FP8 / NVFP4 checkpoint (not a GGUF) this host's GPUs run natively. */
+export function isCapableCheckpointQuant(
+  id: string,
+  quantMethod: string | undefined,
+  checkpointQuantFormats: readonly string[],
+  hintedIsGguf?: boolean,
+): boolean {
+  return (
+    !isGgufId(id, hintedIsGguf) &&
+    matchesRecommended(
+      { id, isGguf: false, quantMethod },
+      checkpointQuantFormats,
+    )
+  );
+}
+
+/** Format filter for the listing toggle. "safetensors" means anything that is neither GGUF nor MLX. */
 export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 
 export function matchesFormatFilter(
@@ -302,7 +322,15 @@ export function orderRecommendedRows<
    *  Their rows interleave by position: every pinned family's first row, then every second one. */
   pinnedFamilies?: readonly string[];
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits, familyOf, pinnedFamilies = [] } = opts;
+  const {
+    seeds,
+    results,
+    keep,
+    deviceFiltered,
+    fits,
+    familyOf,
+    pinnedFamilies = [],
+  } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -392,8 +420,14 @@ export function curatedBudget(
     : undefined;
 }
 
-/** Rounds size up and budget down so the shown size is strictly above the shown budget. */
-export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
+/** Over-budget text for a curated row. When the whole-GB badge figure does not read above the
+ *  one-decimal budget (24 against 24.1), the size is rounded up and the budget down to a tenth, so
+ *  the shown size is always strictly above the shown budget. The epsilon keeps 16.7999... at 16.8. */
+export function curatedBudgetText(
+  est: number,
+  gpuGb: number,
+  budget: CuratedBudget,
+): string {
   const shownBudget = Number(budget.allowanceGb.toFixed(1));
   const wholeReadsOver = est > shownBudget;
   const needGb = wholeReadsOver
