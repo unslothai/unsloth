@@ -94,7 +94,9 @@ fn redact_kv(caps: &Captures) -> Option<String> {
         .as_str()
         .split_once(' ')
         .unwrap_or((value.as_str(), ""));
-    let masked = if AUTH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
+    let masked = if key.ends_with("authorization")
+        && AUTH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+    {
         let rest = rest.trim_start();
         if rest.is_empty() || rest == REDACTED {
             return None;
@@ -126,21 +128,30 @@ fn redact_weak_kv(caps: &Captures) -> Option<String> {
 // Catch-all for scheme-less, short or numeric Authorization values the rules above skip.
 fn redact_auth_value(caps: &Captures) -> Option<String> {
     let value = &caps[2];
-    if value.starts_with("<redacted") || AUTH_SCHEMES.contains(&value.to_ascii_lowercase().as_str())
-    {
+    if is_sentinel(value) || AUTH_SCHEMES.contains(&value.to_ascii_lowercase().as_str()) {
         return None;
     }
     Some(format!("{}{REDACTED}", &caps[1]))
 }
 
 fn redact_env(caps: &Captures) -> Option<String> {
-    if caps[2]
-        .trim_start_matches(['"', '\''])
-        .starts_with("<redacted")
-    {
+    if is_sentinel(&caps[2]) {
         return None;
     }
     Some(format!("{}={REDACTED}", &caps[1]))
+}
+
+// A value an earlier rule already replaced, matched with at most one trailing delimiter or
+// quote; anything else after the sentinel makes it a real value.
+fn is_sentinel(value: &str) -> bool {
+    let value = match value.chars().last() {
+        Some(c) if c != '>' => &value[..value.len() - c.len_utf8()],
+        _ => value,
+    };
+    matches!(
+        value.trim_start_matches(['"', '\'']),
+        "<redacted>" | "<redacted token>" | "<redacted private key>"
+    )
 }
 
 fn redact_bearer(caps: &Captures) -> Option<String> {
@@ -279,7 +290,7 @@ fn auth_scheme_re() -> &'static Regex {
 
 fn auth_value_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?)([^\s"'\\,}\]\[{(]+)"#).unwrap())
+    RE.get_or_init(|| Regex::new(r#"(?i)((?:\\[nrt]|\b)(?:proxy-)?authorization(?:\\*["'])?[ \t]*[:=][ \t]*(?:\\*["'])?)(<redacted(?: token| private key)?>(?:[\s"'\\,}\]]|$)|[^\s"'\\,}\]\[{(]+)"#).unwrap())
 }
 
 fn bearer_re() -> &'static Regex {
@@ -308,7 +319,7 @@ fn token_re() -> &'static Regex {
 fn env_secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(["'][^"'\r\n]*["']?|[^\s;&"'][^\s;&]*)"#).unwrap()
+        Regex::new(r#"(?i)\b((?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|KEY)(?:_[A-Z0-9]+)*)\s*=\s*(<redacted(?: token| private key)?>(?:[\s;&]|$)|"[^"\r\n]*"?|'[^'\r\n]*'?|[^\s;&"'][^\s;&]*)"#).unwrap()
     })
 }
 
@@ -620,6 +631,9 @@ mod tests {
                 r#""apiToken": "<redacted>""#,
             ),
             ("DATABASE_PASSWORD=<hunter2secret>", "hunter2secret", ""),
+            ("DATABASE_PASSWORD=<redacted-but-real>", "but-real", ""),
+            (r#"ACCESS_KEY="don't-share-this""#, "share-this", ""),
+            (r#"{"password":"bearer"}"#, "bearer", ""),
             ("Authorization: abcde", "abcde", "Authorization: <redacted>"),
             (
                 r#"{"Authorization": "123456789"}"#,
@@ -708,6 +722,11 @@ mod tests {
             &mut report,
         );
         assert_eq!(redacted, "OPENAI_API_KEY=<redacted>\n");
+        assert_eq!(report.replacements, 1);
+
+        let mut report = RedactionReport::default();
+        let redacted = redact_text("MY_KEY=ghp_AbCdEf0123456789AbCdEf0123 next\n", &mut report);
+        assert_eq!(redacted, "MY_KEY=<redacted token> next\n");
         assert_eq!(report.replacements, 1);
     }
 }
