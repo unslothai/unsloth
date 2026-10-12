@@ -9923,8 +9923,9 @@ def _sandbox_preexec():
         except (OSError, AttributeError):
             pass
 
-        # CLONE_NEWNET not applied: with userns enabled it blocks all egress, including allowlisted hosts. Network
-        # policy is enforced by the AST host check and the bash blocklist.
+        # CLONE_NEWNET not applied: with userns enabled it blocks all egress, including allowlisted hosts. So the
+        # network is unconfined at runtime (`unrestricted_network`): the AST host check and bash blocklist stop
+        # ordinary code, not code written to get around them (#11412).
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
@@ -18253,7 +18254,8 @@ def _check_signal_escape_patterns(code: str):
 
     # Static host policy: block metadata hosts and any host outside the trusted allowlist; uploads blocked regardless
     # of host. A host this screen cannot read is treated as untrusted, since nothing downstream screens python-tool
-    # code again.
+    # code again. Advisory, not a boundary: nothing confines egress at runtime, so a call this screen cannot see
+    # (`getattr(__import__("requests"), "get")(url)`, eval, importlib) still connects (#11412).
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
