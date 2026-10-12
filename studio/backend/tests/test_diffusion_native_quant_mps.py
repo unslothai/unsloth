@@ -113,7 +113,12 @@ def test_other_hosts_keep_unsnapped_scales():
     assert torch.equal(scale, expect)
 
 
-def _layer(n_in = 128, n_out = 64, bias = True, dtype = torch.bfloat16):
+def _layer(
+    n_in = 128,
+    n_out = 64,
+    bias = True,
+    dtype = torch.bfloat16,
+):
     torch.manual_seed(0)
     lin = torch.nn.Linear(n_in, n_out, bias = bias).to(dtype)
     return lin, nq.native_linear_class()(lin, "int8", scale_dtype = dtype)
@@ -129,7 +134,9 @@ def test_int8pack_math_matches_the_dequantised_layer_on_cpu(dtype):
     except (RuntimeError, NotImplementedError) as exc:
         pytest.skip(f"no CPU int8pack kernel for {dtype}: {exc}")
     assert got is not None and got.shape == (2, 7, 64) and got.dtype == dtype
-    ref = torch.nn.functional.linear(x.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
+    ref = torch.nn.functional.linear(
+        x.float(), layer.dequantized_weight(torch.float32), layer.bias.float()
+    )
     assert ((got.float() - ref).norm() / ref.norm()).item() < 1e-2
 
 
@@ -145,7 +152,9 @@ def test_inexact_scales_decline_the_kernel():
 
 def test_cpu_inputs_never_take_the_mps_kernel(monkeypatch):
     _, layer = _layer()
-    monkeypatch.setattr(layer, "_forward_int8pack", lambda x: pytest.fail("int8pack on a CPU input"))
+    monkeypatch.setattr(
+        layer, "_forward_int8pack", lambda x: pytest.fail("int8pack on a CPU input")
+    )
     x = torch.randn(4, 128, dtype = torch.bfloat16)
     assert torch.equal(
         layer(x), torch.nn.functional.linear(x, layer.dequantized_weight(x.dtype), layer.bias)
@@ -162,10 +171,14 @@ def test_mps_forward_runs_the_kernel_and_matches_dequantise(monkeypatch):
     x = torch.randn(3, 40, 256, dtype = torch.bfloat16, device = "mps")
     got = layer(x)
     assert calls, "the Metal kernel was not used"
-    ref = torch.nn.functional.linear(x.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
+    ref = torch.nn.functional.linear(
+        x.float(), layer.dequantized_weight(torch.float32), layer.bias.float()
+    )
     assert ((got.float() - ref).norm() / ref.norm()).item() < 1e-2
     xt = torch.randn(256, 40, dtype = torch.bfloat16, device = "mps").t()
-    ref_t = torch.nn.functional.linear(xt.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
+    ref_t = torch.nn.functional.linear(
+        xt.float(), layer.dequantized_weight(torch.float32), layer.bias.float()
+    )
     assert ((layer(xt).float() - ref_t).norm() / ref_t.norm()).item() < 1e-2
 
 
@@ -181,7 +194,12 @@ def test_mps_kill_switch_and_unaligned_shapes_keep_dequantise(monkeypatch):
     layer(torch.randn(4, 128, dtype = torch.bfloat16, device = "mps"))
 
 
-def _image_gate(monkeypatch, family, pinned, model_kind = "pipeline"):
+def _image_gate(
+    monkeypatch,
+    family,
+    pinned,
+    model_kind = "pipeline",
+):
     import core.inference.diffusion as d
     from core.inference.diffusion_families import _FAMILIES
 
@@ -219,7 +237,9 @@ def test_reloaded_scales_are_not_served_from_the_cache():
     _, layer = _layer()
     first = layer._int8pack_scale(torch.bfloat16, "cpu").clone()
     state = layer.state_dict()
-    state["weight_scale"] = (state["weight_scale"].view(torch.float32) * 2).view(state["weight_scale"].dtype)
+    state["weight_scale"] = (state["weight_scale"].view(torch.float32) * 2).view(
+        state["weight_scale"].dtype
+    )
     layer.load_state_dict(state)
     assert torch.equal(layer._int8pack_scale(torch.bfloat16, "cpu").float(), first.float() * 2)
 

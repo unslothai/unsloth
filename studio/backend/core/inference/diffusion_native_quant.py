@@ -37,7 +37,12 @@ def int8_act_disabled() -> bool:
 
 def mps_int8pack_disabled() -> bool:
     import os
-    return os.environ.get(NATIVE_MPS_INT8PACK_ENV, "").strip().lower() in ("0", "off", "false", "no")
+    return os.environ.get(NATIVE_MPS_INT8PACK_ENV, "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
