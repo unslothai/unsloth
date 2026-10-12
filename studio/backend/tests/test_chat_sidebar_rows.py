@@ -296,6 +296,21 @@ def test_include_exclude_project_and_unfiled(client, db):
     assert all(row["projectId"] == "proj" for row in folder["rows"])
 
 
+def test_include_ids_match_a_compare_pair_through_a_pane_thread(client):
+    _insert_threads(
+        [
+            {"id": "pane-a", "pair_id": "pair", "created_at": 1},
+            {"id": "pane-b", "pair_id": "pair", "created_at": 2},
+            {"id": "solo", "created_at": 3},
+        ]
+    )
+    rows = _page_all(client, {"includeIds": ["pane-b", "solo", "pair"]})
+    assert [(row["id"], sorted(row["threadIds"])) for row in rows] == [
+        ("solo", ["solo"]),
+        ("pair", ["pane-a", "pane-b"]),
+    ]
+
+
 def test_manual_sort_matches_apply_manual_order(client):
     _insert_threads(_singles(45))
     listed = client.get("/api/chat/threads").json()["threads"]
