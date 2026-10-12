@@ -69,7 +69,6 @@ from storage.studio_db import (
     get_chat_message,
     list_chat_attachments_page,
     list_chat_projects,
-    count_chat_projects,
     list_chat_sidebar_rows,
     lookup_chat_sidebar_row_ids,
     SidebarCursorError,
@@ -368,8 +367,6 @@ class ChatThreadListResponse(BaseModel):
 
 class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
-    # Projects matching the filter, whatever page was asked for.
-    total: Optional[int] = None
 
 
 # Bounds the request body: the id lists come from the user's own pins and sections.
@@ -1272,21 +1269,8 @@ def delete_attachment(
 
 @router.get("/projects", response_model = ChatProjectListResponse)
 def list_projects(
-    include_archived: bool = Query(False),
-    sort: Optional[Literal["updated", "name", "created"]] = Query(None),
-    limit: Optional[int] = Query(None, ge = 1, le = 200),
-    offset: int = Query(0, ge = 0),
-    current_subject: str = Depends(get_current_subject),
+    include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
-    """Every project by default; `limit`/`offset`/`sort` page them for the sidebar."""
-    projects = list_chat_projects(
-        include_archived = include_archived, sort = sort, limit = limit, offset = offset
-    )
-    total = (
-        count_chat_projects(include_archived = include_archived)
-        if limit is not None
-        else len(projects)
-    )
     return ChatProjectListResponse(
         projects = [
             ChatProject(
@@ -1295,9 +1279,8 @@ def list_projects(
                     "lastActivityAt": project["lastActivityAt"],
                 }
             )
-            for project in projects
-        ],
-        total = total,
+            for project in list_chat_projects(include_archived = include_archived)
+        ]
     )
 
 

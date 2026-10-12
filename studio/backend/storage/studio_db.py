@@ -3285,33 +3285,12 @@ def get_chat_project(id: str) -> Optional[dict]:
         conn.close()
 
 
-_PROJECT_SORT_SQL = {
-    None: "p.updated_at DESC",
-    "updated": "last_activity_at DESC, p.id DESC",
-    "name": "p.name COLLATE NOCASE ASC, p.id ASC",
-    "created": "p.created_at DESC, p.id DESC",
-}
-
-
-def list_chat_projects(
-    include_archived: bool = False,
-    *,
-    sort: str | None = None,
-    limit: int | None = None,
-    offset: int = 0,
-) -> list[dict]:
+def list_chat_projects(include_archived: bool = False) -> list[dict]:
     """Projects, each with `lastActivityAt`: its own last edit or its newest unarchived chat,
-    whichever is later. Without `sort`/`limit` the order and set are what they always were."""
-    if sort not in _PROJECT_SORT_SQL:
-        raise ValueError(f"Unknown project sort {sort!r}")
+    whichever is later, so the sidebar can order folders without reading every chat."""
     conn = get_connection()
     try:
         where = "" if include_archived else "WHERE p.archived = 0"
-        page = ""
-        values: list[object] = []
-        if limit is not None:
-            page = "LIMIT ? OFFSET ?"
-            values = [limit, offset]
         rows = conn.execute(
             f"""
             SELECT p.*,
@@ -3327,24 +3306,13 @@ def list_chat_projects(
                 GROUP BY project_id
             ) chats ON chats.project_id = p.id
             {where}
-            ORDER BY {_PROJECT_SORT_SQL[sort]}
-            {page}
-            """,
-            values,
+            ORDER BY p.updated_at DESC
+            """
         ).fetchall()
         return [
             {**_chat_project_from_row(row), "lastActivityAt": row["last_activity_at"]}
             for row in rows
         ]
-    finally:
-        conn.close()
-
-
-def count_chat_projects(include_archived: bool = False) -> int:
-    conn = get_connection()
-    try:
-        where = "" if include_archived else "WHERE archived = 0"
-        return conn.execute(f"SELECT COUNT(*) FROM chat_projects {where}").fetchone()[0]
     finally:
         conn.close()
 

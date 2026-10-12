@@ -335,7 +335,7 @@ def test_limit_is_bounded(client, limit):
     assert client.post("/api/chat/sidebar/rows", json = {"limit": limit}).status_code == 422
 
 
-def test_projects_last_activity_and_paging(client, db):
+def test_projects_last_activity(client, db):
     _insert_project("a", created_at = 10, updated_at = 10, name = "beta")
     _insert_project("b", created_at = 20, updated_at = 500, name = "Alpha")
     _insert_project("c", created_at = 30, updated_at = 30, name = "gamma")
@@ -351,17 +351,6 @@ def test_projects_last_activity_and_paging(client, db):
     assert {k: v["lastActivityAt"] for k, v in by_id.items()} == {"a": 1_000, "b": 500, "c": 40}
     # No params: the order and set stay the old ones.
     assert [p["id"] for p in data["projects"]] == ["b", "c", "a"]
-    assert data["total"] == 3
-
-    def ids(query):
-        return [p["id"] for p in client.get(f"/api/chat/projects?{query}").json()["projects"]]
-
-    assert ids("sort=updated") == ["a", "b", "c"]
-    assert ids("sort=name") == ["b", "a", "c"]
-    assert ids("sort=created") == ["c", "b", "a"]
-    page = client.get("/api/chat/projects?sort=updated&limit=2&offset=1").json()
-    assert [p["id"] for p in page["projects"]] == ["b", "c"]
-    assert page["total"] == 3
 
 
 def test_thread_rows_lookup(client):
