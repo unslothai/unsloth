@@ -30,6 +30,9 @@ const { getState, jobKeyOf, putJob, useDownloadManagerStore } = await import(
 const { runtimeRegistry } = await import(
   "../src/features/hub/download-manager/runtime-registry.ts"
 );
+const { publishStagedQueue, useStagedDownloadQueues } = await import(
+  "../src/features/hub/download-manager/staged-download-queue.ts"
+);
 
 const boundaries: [
   string,
@@ -67,6 +70,18 @@ for (const [name, eventType, event] of boundaries) {
       transport: "http",
     });
     runtimeRegistry.pendingStartRepoKeys.add("model:private-org/private-model");
+    // A media page stays mounted across a cross-tab sign-out, so its queue is not unpublished.
+    publishStagedQueue("images", {
+      scopeId: "diffusion",
+      entries: [
+        {
+          repoId: "private-org/private-vae",
+          files: ["vae.safetensors"],
+          bytes: 1,
+          checkpoint: false,
+        },
+      ],
+    });
     store.set(PERSIST_KEY, "prior-session-downloads");
 
     try {
@@ -74,6 +89,7 @@ for (const [name, eventType, event] of boundaries) {
       assert.deepEqual(getState().jobs, {});
       assert.equal(runtimeRegistry.pendingStartRepoKeys.size, 0);
       assert.equal(store.has(PERSIST_KEY), false);
+      assert.deepEqual(useStagedDownloadQueues.getState().queues, {});
     } finally {
       controller.__resetDownloadManagerForTests();
       await useDownloadManagerStore.persist.clearStorage();

@@ -183,7 +183,10 @@ def test_comfyui_template_defaults():
         (("wan21-t2v-1.3b-Q8_0.gguf",), (30, 6.0)),
         (("Wan21_T2V_14B_fp8.safetensors",), (20, 6.0)),
         (("someone/wan21-14b-gguf",), (20, 6.0)),
-        (("Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf", "QuantStack/Wan2.1_T2V_14B_FusionX-GGUF"), (8, 1.0)),
+        (
+            ("Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf", "QuantStack/Wan2.1_T2V_14B_FusionX-GGUF"),
+            (8, 1.0),
+        ),
         (("wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
         (("fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
         (("/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf",), (20, 6.0)),
@@ -278,12 +281,12 @@ def test_file_name_outranks_the_folder_for_a_14b_header(tmp_path):
     folder.mkdir()
     _write_safetensors(folder / "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors", shapes)
     _write_safetensors(folder / "model-fp8.safetensors", shapes)
-    assert _detect_load_family(str(folder), "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors", None).name == (
-        "wan2.2-t2v-a14b"
-    )
-    assert _detect_load_family(str(folder / "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors"), None, None).name == (
-        "wan2.2-t2v-a14b"
-    )
+    assert _detect_load_family(
+        str(folder), "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors", None
+    ).name == ("wan2.2-t2v-a14b")
+    assert _detect_load_family(
+        str(folder / "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors"), None, None
+    ).name == ("wan2.2-t2v-a14b")
     assert _detect_load_family(str(folder), "model-fp8.safetensors", None).name == "wan2.1-t2v-14b"
 
 
@@ -300,9 +303,10 @@ def test_file_name_outranks_the_folder_for_a_14b_header(tmp_path):
         ("org/LTX-2-GGUF", "Wan2.1-T2V-1.3B-Q8_0.gguf", "ltx-2"),
     ],
 )
-def test_remote_file_name_outranks_the_repo_for_same_layout_wan(repo, filename, expected, monkeypatch):
+def test_remote_file_name_outranks_the_repo_for_same_layout_wan(
+    repo, filename, expected, monkeypatch
+):
     import core.inference.video as video
-
     monkeypatch.setattr(video, "_picked_gguf_arch", lambda *a, **k: None)
     assert video._detect_load_family(repo, filename, None).name == expected
 
@@ -315,10 +319,11 @@ def test_remote_file_name_outranks_the_repo_for_same_layout_wan(repo, filename, 
         ("org/Wan2.1-T2V-14B-GGUF", "model-Q8_0.gguf", "wan2.1-t2v-14b"),
     ],
 )
-def test_remote_file_name_naming_the_other_wan21_size_outranks_the_repo(repo, filename, expected, monkeypatch):
+def test_remote_file_name_naming_the_other_wan21_size_outranks_the_repo(
+    repo, filename, expected, monkeypatch
+):
     # No header pass for a remote pick, so the file's own size token decides which base config builds the transformer.
     import core.inference.video as video
-
     monkeypatch.setattr(video, "_picked_gguf_arch", lambda *a, **k: None)
     assert video._detect_load_family(repo, filename, None).name == expected
 
@@ -442,12 +447,36 @@ def test_load_validation_refuses_with_the_named_reason():
             {"gguf_filename": "FastWan2.1-T2V-1.3B-Q8_0.gguf", "model_kind": "gguf"},
             _FASTWAN,
         ),
-        ("city96/Wan2.1-T2V-14B-gguf", {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
-        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "vace-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
-        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "fun-inp-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
-        ("someorg/Wan2.1-T2V-14B-GGUF", {"gguf_filename": "fun-14b-control-Q4_K_M.gguf", "model_kind": "gguf"}, _VARIANT),
-        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "fun-v1.1-1.3b-inp-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
-        ("city96/Wan2.1-T2V-14B-gguf", {"gguf_filename": "fun-style-i2v-14b-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
+        (
+            "city96/Wan2.1-T2V-14B-gguf",
+            {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
+            _I2V,
+        ),
+        (
+            "someorg/Wan2.1-T2V-1.3B-mix",
+            {"gguf_filename": "vace-1.3b-Q8_0.gguf", "model_kind": "gguf"},
+            _VARIANT,
+        ),
+        (
+            "someorg/Wan2.1-T2V-1.3B-mix",
+            {"gguf_filename": "fun-inp-1.3b-Q8_0.gguf", "model_kind": "gguf"},
+            _VARIANT,
+        ),
+        (
+            "someorg/Wan2.1-T2V-14B-GGUF",
+            {"gguf_filename": "fun-14b-control-Q4_K_M.gguf", "model_kind": "gguf"},
+            _VARIANT,
+        ),
+        (
+            "someorg/Wan2.1-T2V-1.3B-mix",
+            {"gguf_filename": "fun-v1.1-1.3b-inp-Q8_0.gguf", "model_kind": "gguf"},
+            _VARIANT,
+        ),
+        (
+            "city96/Wan2.1-T2V-14B-gguf",
+            {"gguf_filename": "fun-style-i2v-14b-Q4_K_M.gguf", "model_kind": "gguf"},
+            _I2V,
+        ),
     ],
 )
 def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):
@@ -519,6 +548,7 @@ def test_vae_untiled_tables_cover_wan21():
 )
 def test_anyflow_is_refused(identifier):
     from core.inference.video import VideoBackend
+
     assert _ANYFLOW in vf.unsupported_video_checkpoint_reason(identifier)
     assert vf.detect_video_family(identifier) is None
     with pytest.raises(ValueError, match = _ANYFLOW):
@@ -537,7 +567,11 @@ def test_anyflow_owner_or_folder_does_not_refuse():
             {"gguf_filename": "wan2.1-i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
             _I2V,
         ),
-        ("someorg/opaque-gguf", {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
+        (
+            "someorg/opaque-gguf",
+            {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
+            _I2V,
+        ),
         ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", {}, "FastVideo FastWan checkpoint"),
         ("nvidia/AnyFlow-Wan2.1-T2V-14B-Diffusers", {}, _ANYFLOW),
     ],
@@ -551,8 +585,13 @@ def test_family_override_does_not_bypass_the_refusal(repo, kwargs, reason):
 @pytest.mark.parametrize("folder", ["i2v", "vace", "fun"])
 def test_wan21_context_is_added_only_to_the_picked_file(tmp_path, folder):
     from core.inference.video import VideoBackend
+
     (tmp_path / folder).mkdir()
-    _write_gguf(tmp_path / folder / "Wan2.1-T2V-1.3B-Q8_0.gguf", _row("Wan2.1-T2V-1.3B-Q8_0.gguf")["shapes"], "wan")
+    _write_gguf(
+        tmp_path / folder / "Wan2.1-T2V-1.3B-Q8_0.gguf",
+        _row("Wan2.1-T2V-1.3B-Q8_0.gguf")["shapes"],
+        "wan",
+    )
     fam = VideoBackend().validate_load_request(
         str(tmp_path / folder), gguf_filename = "Wan2.1-T2V-1.3B-Q8_0.gguf", model_kind = "gguf"
     )
