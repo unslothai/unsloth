@@ -478,7 +478,7 @@ def test_a_cache_only_undistilled_pick_with_no_record_builds_the_base_config(env
         ("unsloth/Z-Image-GGUF", "z-image-BF16.gguf", "Tongyi-MAI/Z-Image"),
         ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", BASE),
         ("unsloth/Z-Image-GGUF", "z-image-turbo-Q4_0.gguf", BASE),
-        ("unsloth/Z-Image-Turbo-GGUF", "z-image-Q4_0.gguf", "Tongyi-MAI/Z-Image"),
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-Q4_0.gguf", BASE),
         ("leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q4_K.gguf", BASE),
         ("someone/my-gguf-models", "model-Q4_K_M.gguf", BASE),
         ("someone/Z-Image-GGUF", "model-Q4_K_M.gguf", "Tongyi-MAI/Z-Image"),

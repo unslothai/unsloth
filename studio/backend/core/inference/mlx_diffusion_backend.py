@@ -464,8 +464,9 @@ def _cached_variant_base(
 
 
 def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str]:
-    """The ``mlx_model_config_by_base`` base the last name naming one spells, or None. The longest spelling wins, so
-    a Turbo name (which also spells the undistilled ``Z-Image``) keeps the family default."""
+    """The ``mlx_model_config_by_base`` base the names spell, or None. Per name the longest spelling wins, so a Turbo
+    name (which also spells the undistilled ``Z-Image``) keeps the family default, and any name spelling the family
+    default (a Turbo repo holding a short file name) keeps it too."""
 
     def fold(text: str) -> str:
         return "".join(c for c in text.lower() if c.isalnum())
@@ -475,13 +476,16 @@ def _named_mlx_base(fam: DiffusionFamily, *names: Optional[str]) -> Optional[str
         for b in (fam.base_repo, *(b for b, _name in getattr(fam, "mlx_model_config_by_base", ()) or ()))
         if b
     ]
+    found = None
     for name in reversed([n for n in names if n]):
         identity = fold(name.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1])
         hits = [(len(key), b) for b, key in keyed if key and key in identity]
         if hits:
             best = max(hits)[1]
-            return None if best == fam.base_repo else best
-    return None
+            if best == fam.base_repo:
+                return None
+            found = found or best
+    return found
 
 
 def _link_base_components(model_dir: Path, base_dir: str) -> None:
