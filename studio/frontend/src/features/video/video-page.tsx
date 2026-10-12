@@ -275,11 +275,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
   const id = fold(repoId);
-  // The Wan rows count only in the model / file name, as on the backend.
+  // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
   return (
     MODEL_DEFAULTS.find((d) =>
-      (d.match.startsWith("wan") ? name : id).includes(d.match),
+      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
     ) ?? DEFAULT_GEN
   );
 }

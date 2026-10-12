@@ -511,14 +511,16 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def unsupported_video_checkpoint_reason(*identifiers: Optional[str]) -> Optional[str]:
-    """Why a Wan 2.1 / FastWan pick cannot load, or None."""
+def unsupported_video_checkpoint_reason(*identifiers: Optional[str], wan21: bool = False) -> Optional[str]:
+    """Why a Wan 2.1 / FastWan pick cannot load, or None. ``wan21``: the pick already resolved to a Wan2.1 family, so
+    a last segment that omits the Wan2.1 token (``i2v-14b-480p-Q4_K_M.gguf``) is judged as if it carried it."""
     for identifier in identifiers:
         if not identifier:
             continue
         needle = normalize_family_name(str(identifier))
+        needles = (needle, "wan2-1-" + re.split(r"[/\\]", needle.rstrip("/\\"))[-1]) if wan21 else (needle,)
         for pattern, message in _UNSUPPORTED_VIDEO_CHECKPOINTS:
-            if re.search(pattern, needle):
+            if any(re.search(pattern, n) for n in needles):
                 return message
     return None
 
@@ -966,9 +968,11 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("wan", 20, 5.0),
     ("hunyuanvideo", 20, 6.0),
 )
-# The Wan keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
+# The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
 # checkpoint itself names.
-_NAME_SEGMENT_DEFAULT_KEYS = frozenset(k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith("wan"))
+_NAME_SEGMENT_DEFAULT_KEYS = frozenset(
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
+)
 
 
 def default_video_generation_params(

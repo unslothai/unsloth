@@ -646,10 +646,13 @@ def resolve_family_with_content(
     path: Optional[str],
     page: str,
     name_vetoed: bool = False,
+    file_family: Optional[str] = None,
 ) -> tuple[Optional[str], bool]:
     """(family, decided_by_content). Non-DiT / other page -> None; a same-architecture name variant
     keeps the name, else the header wins; no supported header family -> the name. A name the variant
-    guard refused (``...-inpaint``) stays refused."""
+    guard refused (``...-inpaint``) stays refused. ``file_family``, the family the checkpoint's own file
+    name implies, outranks ``name_family`` (which may come from a repo or folder) among same-architecture
+    variants."""
     if not path:
         return name_family, False
     info = inspect_checkpoint(path)
@@ -662,7 +665,10 @@ def resolve_family_with_content(
         return None, True
     if info.page != page:
         return None, True
-    if name_family and name_family in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family})):
+    variants = SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family}))
+    if file_family and file_family in variants:
+        return file_family, False
+    if name_family and name_family in variants:
         return name_family, False
     if name_vetoed and name_family is None:
         return None, False

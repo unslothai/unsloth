@@ -184,6 +184,8 @@ def test_comfyui_template_defaults():
         (("someone/wan21-14b-gguf",), (20, 6.0)),
         (("Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf", "QuantStack/Wan2.1_T2V_14B_FusionX-GGUF"), (8, 1.0)),
         (("wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
+        (("fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
+        (("/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf",), (20, 6.0)),
         (("/home/wan2.1/models/HunyuanVideo-1.5-Diffusers-480p_t2v",), (20, 6.0)),
         (("/models/wan2.1-t2v-14b/",), (20, 6.0)),
         ((None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers"), (20, 5.0)),
@@ -265,6 +267,23 @@ def test_name_picks_wan21_14b_over_the_a14b_header(tmp_path):
     assert resolve("wan2.1_t2v_14B_fp8_scaled.safetensors") == "wan2.1-t2v-14b"
     assert resolve("wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors") == "wan2.2-t2v-a14b"
     assert resolve("renamed.safetensors") == "wan2.2-t2v-a14b"
+
+
+def test_file_name_outranks_the_folder_for_a_14b_header(tmp_path):
+    from core.inference.video import _detect_load_family
+
+    shapes = _row("wan2.1_t2v_14B_fp8_scaled.safetensors")["shapes"]
+    folder = tmp_path / "Wan2.1-T2V-14B"
+    folder.mkdir()
+    _write_safetensors(folder / "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors", shapes)
+    _write_safetensors(folder / "model-fp8.safetensors", shapes)
+    assert _detect_load_family(str(folder), "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors", None).name == (
+        "wan2.2-t2v-a14b"
+    )
+    assert _detect_load_family(str(folder / "Wan2.2-T2V-A14B-HighNoise-fp8.safetensors"), None, None).name == (
+        "wan2.2-t2v-a14b"
+    )
+    assert _detect_load_family(str(folder), "model-fp8.safetensors", None).name == "wan2.1-t2v-14b"
 
 
 def test_renamed_wan21_1_3b_gguf_resolves_by_header(tmp_path):
@@ -367,6 +386,9 @@ def test_load_validation_refuses_with_the_named_reason():
             {"gguf_filename": "FastWan2.1-T2V-1.3B-Q8_0.gguf", "model_kind": "gguf"},
             _FASTWAN,
         ),
+        ("city96/Wan2.1-T2V-14B-gguf", {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"}, _I2V),
+        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "vace-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
+        ("someorg/Wan2.1-T2V-1.3B-mix", {"gguf_filename": "fun-inp-1.3b-Q8_0.gguf", "model_kind": "gguf"}, _VARIANT),
     ],
 )
 def test_unsupported_file_under_a_t2v_repo_is_refused(repo, kwargs, reason):

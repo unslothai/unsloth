@@ -74,6 +74,8 @@ test("the other families keep their recipes", () => {
     ["/home/wan2.1/models/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["wan-lab/LTX-2.3", 40, 4],
     ["QuantStack/Wan2.1_T2V_14B_FusionX-GGUF/Wan2.1_T2V_14B_FusionX-Q4_K_M.gguf", 8, 1],
+    ["fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+    ["/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf", 20, 6],
     ["/home/user/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors", 20, 5],
   ];
   for (const [id, steps, guidance] of cases) {

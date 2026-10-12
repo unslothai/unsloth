@@ -1076,7 +1076,10 @@ def _detect_load_family(
 
     path = local_pick_file(repo_id, gguf_filename)
     if path:
-        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        file_fam = detect_video_family(os.path.basename(path))
+        name, _ = resolve_family_with_content(
+            fam.name if fam else None, path, "video", file_family = file_fam.name if file_fam else None
+        )
         if name is None:
             return None
         if fam is None or fam.name != name:
@@ -2687,7 +2690,9 @@ class VideoBackend:
         # Every pick name is judged, not just an unresolved one: a T2V repo id can hold an I2V / VACE file.
         if not family_override:
             from .video_families import unsupported_video_checkpoint_reason
-            reason = unsupported_video_checkpoint_reason(display_repo_id, repo_id, gguf_filename)
+            reason = unsupported_video_checkpoint_reason(
+                display_repo_id, repo_id, gguf_filename, wan21 = bool(fam and fam.name.startswith("wan2.1"))
+            )
             if reason:
                 raise ValueError(reason)
         if fam is None:
