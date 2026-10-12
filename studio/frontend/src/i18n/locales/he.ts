@@ -1700,6 +1700,19 @@ export const he = {
         apiOnlyDescription:
           "פריקה בחוסר פעילות תשאיר מודל שטענת מ-Unsloth בזיכרון, ותשחרר רק מודלים שנטענו בעקבות בקשת API.",
       },
+      modelAliases: {
+        sectionTitle: "כינויים למודלים (OpenAI API)",
+        description:
+          "שמות קבועים ללקוחות API, כמו fast-chat או code. בקשה שמציינת כינוי מוגשת על ידי המודל שאליו הוא מצביע, כך שאפליקציות מחוברות ממשיכות לעבוד כשמחליפים מודל. הפעילו את החלף מודל לפי בקשה כדי שכינוי יוכל לטעון את המודל שלו.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "שם הכינוי",
+        modelAriaLabel: "המודל שאליו הכינוי מצביע",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "הסרת כינוי",
+        add: "הוספת כינוי",
+        loadError: "טעינת הכינויים למודלים נכשלה.",
+        saveError: "שמירת הכינויים למודלים נכשלה.",
+      },
       previewSharing: {
         sectionTitle: "שיתוף תצוגה מקדימה",
         enableLabel: "קישורי תצוגה מקדימה ציבוריים",

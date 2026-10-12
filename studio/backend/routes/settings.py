@@ -2345,6 +2345,45 @@ def update_openai_auto_switch(
     )
 
 
+class ModelAliasEntry(BaseModel):
+    name: str
+    model: str
+
+
+class ModelAliasesPayload(BaseModel):
+    aliases: list[ModelAliasEntry] = Field(default_factory = list)
+
+
+class ModelAliasesResponse(BaseModel):
+    aliases: list[ModelAliasEntry]
+
+
+@_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
+def get_model_aliases_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAliasesResponse:
+    from utils.model_aliases import get_model_aliases
+    return ModelAliasesResponse(aliases = get_model_aliases())
+
+
+@_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
+def update_model_aliases_setting(
+    payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelAliasesResponse:
+    from utils.model_aliases import set_model_aliases
+    try:
+        aliases = set_model_aliases([entry.model_dump() for entry in payload.aliases])
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid model alias."),
+            event = "settings.update_model_aliases_failed",
+            log = logger,
+        ) from exc
+    return ModelAliasesResponse(aliases = aliases)
+
+
 @_account_settings_router.get(
     "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
 )

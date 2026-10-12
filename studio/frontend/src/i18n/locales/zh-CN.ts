@@ -1597,6 +1597,19 @@ export const zhCN = {
         apiOnlyDescription:
           "空闲卸载会将你在 Unsloth 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
+      modelAliases: {
+        sectionTitle: "模型别名 (OpenAI API)",
+        description:
+          "为 API 客户端提供固定名称，例如 fast-chat 或 code。指定别名的请求由该别名指向的模型处理，因此更换模型后已连接的应用仍可正常使用。请开启按请求切换模型，以便别名可以加载其模型。",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "别名名称",
+        modelAriaLabel: "别名指向的模型",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "删除别名",
+        add: "添加别名",
+        loadError: "无法加载模型别名。",
+        saveError: "无法保存模型别名。",
+      },
       previewSharing: {
         sectionTitle: "预览分享",
         enableLabel: "公开预览链接",

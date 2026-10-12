@@ -1676,6 +1676,11 @@ class MaxBodyMiddleware:
         await self.app(scope, replay_receive, send)
 
 
+# Added before MaxBodyMiddleware so it runs inside it: the body it reads is already capped.
+from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
+
+app.add_middleware(ModelAliasMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
