@@ -1091,7 +1091,7 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
-    # MPS has no float8 storage: int8 weight-only only.
+    # MPS has no float8 storage.
     if _mps_bf16(target) and scheme != TQ_INT8:
         return None
     if _family_denied(family, scheme):
@@ -1100,7 +1100,7 @@ def native_quant_scheme(
 
 
 def native_int8_act(target: Any) -> bool:
-    # MPS has no int8 x int8 GEMM (no ``_int_mm``): W8A8 would only add the activation quant.
+    # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
         return False
     if native_quant_host(target):

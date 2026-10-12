@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Apple Silicon int8 weight-only: the MPS gate, scale snapping, and the ``_weight_int8pack_mm`` path.
-
-The gate and the quantisation run anywhere (the target is a stub). The kernel math is checked on CPU, where aten has
-the same op; the dispatch tests need a real MPS device and skip elsewhere."""
+"""Apple Silicon int8 weight-only; kernel math checked on CPU, dispatch tests need real MPS."""
 
 from __future__ import annotations
 
@@ -51,7 +48,7 @@ def test_mps_bf16_takes_explicit_int8(scheme):
 
 @pytest.mark.parametrize("scheme", [None, "auto", "none", "off", "fp8", "mxfp8"])
 def test_mps_refuses_everything_but_int8(scheme):
-    # No float8 storage on MPS, and ``auto`` stays dense until measured on real Apple Silicon.
+    # ``auto`` stays dense until measured on real Apple Silicon.
     assert tq.native_quant_scheme(_mps_target(), scheme) is None
 
 
@@ -80,7 +77,6 @@ def test_snap_scale_up_is_exact_in_the_dtype_and_never_clips():
         assert snapped.dtype == torch.float32
         assert torch.equal(snapped.to(dtype).float(), snapped)
         assert bool((snapped >= scale).all())
-        # One ulp at most: bf16 has 8 significant bits.
         assert float(((snapped - scale) / scale).max()) <= 2.0**-7
 
 
@@ -93,7 +89,7 @@ def test_quantize_transformer_on_mps_snaps_scales_and_skips_w8a8(monkeypatch):
     with torch.no_grad():
         ref = model(x).float()
     pipe = types.SimpleNamespace(transformer = model)
-    # act_int8 = True from the caller is overridden on MPS: there is no int8 x int8 GEMM there.
+    # act_int8 = True is overridden on MPS.
     got = tq.quantize_transformer(pipe, _mps_target(), mode = "int8", min_features = 64, act_int8 = True)
     assert got == "int8"
     layers = [m for m in model.modules() if nq.is_native_linear(m)]
@@ -133,13 +129,12 @@ def test_int8pack_math_matches_the_dequantised_layer_on_cpu(dtype):
     except (RuntimeError, NotImplementedError) as exc:
         pytest.skip(f"no CPU int8pack kernel for {dtype}: {exc}")
     assert got is not None and got.shape == (2, 7, 64) and got.dtype == dtype
-    # Same codes and scales, fp32 accumulation: equal up to the output rounding.
     ref = torch.nn.functional.linear(x.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
     assert ((got.float() - ref).norm() / ref.norm()).item() < 1e-2
 
 
 def test_inexact_scales_decline_the_kernel():
-    # Checkpoint codes with fp32 scales bf16 cannot hold: a silent cast would bias every row, so keep dequantise.
+    # A silent cast of non-bf16-exact checkpoint scales would bias every row.
     lin = torch.nn.Linear(64, 32).to(torch.bfloat16)
     codes = torch.randint(-127, 128, (32, 64), dtype = torch.int8)
     scale = torch.full((32,), 1.0 + 2.0**-12)
@@ -169,7 +164,6 @@ def test_mps_forward_runs_the_kernel_and_matches_dequantise(monkeypatch):
     assert calls, "the Metal kernel was not used"
     ref = torch.nn.functional.linear(x.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
     assert ((got.float() - ref).norm() / ref.norm()).item() < 1e-2
-    # A transposed (non-contiguous) activation goes through too.
     xt = torch.randn(256, 40, dtype = torch.bfloat16, device = "mps").t()
     ref_t = torch.nn.functional.linear(xt.float(), layer.dequantized_weight(torch.float32), layer.bias.float())
     assert ((layer(xt).float() - ref_t).norm() / ref_t.norm()).item() < 1e-2

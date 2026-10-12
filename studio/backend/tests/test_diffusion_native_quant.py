@@ -102,7 +102,6 @@ def test_non_cuda_or_non_bf16_is_never_native_even_on_rocm(rocm, target):
     assert tq.native_quant_scheme(target, "int8") is None
 
 
-# MPS is a native host now (int8 weight-only on the Metal kernel): test_diffusion_native_quant_mps.py.
 @pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
 def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device):
     assert not tq.native_quant_host(_target(device = device))
