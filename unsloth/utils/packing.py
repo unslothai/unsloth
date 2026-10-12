@@ -1200,7 +1200,8 @@ def _probe_target(modules):
 def _hybrid_exactness_probe(module) -> Optional[str]:
     """Run one (already wrapped) gated-delta mixer on a packed row of short documents and on each
     document alone. None when the boundary kernels were dispatched and the packed output matches, else
-    the reason. Leaves the mixer as it found it and does not touch the global RNG."""
+    the reason. Runs in eval mode (LoRA dropout would draw different masks for the packed and the
+    per-document passes) under a forked RNG, and leaves the mixer as it found it."""
     weight = module.conv1d.weight
     dtype, device = weight.dtype, weight.device
     lengths = torch.tensor(_HYBRID_PROBE_LENGTHS, dtype = torch.int32)
@@ -1217,9 +1218,12 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
         return out[0] if isinstance(out, (tuple, list)) else out
 
     saved = _snapshot_mixers([module])
+    modes = [(m, m.training) for m in module.modules()]
     HYBRID_PACKING_STATS["probe_runs"] += 1
+    rng_devices = [device] if device.type == "cuda" else []
     try:
-        with torch.no_grad():
+        module.eval()
+        with torch.no_grad(), torch.random.fork_rng(devices = rng_devices):
             for flag in (
                 "_unsloth_varlen_conv_hit",
                 "_unsloth_varlen_scan_hit",
@@ -1236,6 +1240,8 @@ def _hybrid_exactness_probe(module) -> Optional[str]:
         return f"exactness probe failed to run ({type(exc).__name__}: {str(exc)[:200]})"
     finally:
         _restore_mixers(saved)
+        for m, training in modes:
+            m.training = training
     if not dispatched:
         return "exactness probe: boundary kernels were not dispatched"
     if not isinstance(packed, torch.Tensor) or packed.shape != alone.shape:
@@ -1362,9 +1368,17 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    for ns in _iter_mamba2_install_namespaces(hybrid_modules):
+    mask_namespaces = list(_iter_mamba2_install_namespaces(hybrid_modules))
+    kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
+    # What the modeling modules held before, so a failed probe can put them back.
+    namespace_rollback = {}
+    for ns in mask_namespaces + kwargs_namespaces:
+        if isinstance(ns, dict) and id(ns) not in namespace_rollback:
+            names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
+            namespace_rollback[id(ns)] = (ns, {name: ns[name] for name in names if name in ns})
+    for ns in mask_namespaces:
         _install_packed_mask_positions(ns, lambda: _PACKED[0])
-    for ns in _iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs):
+    for ns in kwargs_namespaces:
         _install_kwargs_probes(ns)
     for module in kwargs_modules:
         if not getattr(module, "_unsloth_varlen_wrapped", False):
@@ -1382,6 +1396,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         if reason is not None:
             HYBRID_PACKING_STATS["probe_failed"] += 1
             _restore_mixers(rollback)
+            for ns, before in namespace_rollback.values():
+                ns.update(before)
             return _hybrid_reject(reason)
         HYBRID_PACKING_STATS["probe_passed"] += 1
 

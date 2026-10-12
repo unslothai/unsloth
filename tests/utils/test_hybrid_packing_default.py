@@ -182,6 +182,41 @@ def test_probe_rejects_a_leaky_kernel_and_rolls_back(monkeypatch, caplog, mode, 
     assert _untouched(model, conv, scan)
 
 
+def test_a_failed_probe_restores_the_modeling_namespace(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+
+    def create_causal_mask(*args, **kwargs):
+        return None
+
+    # The stand-in mixer's modeling module is this file: the mask builder wrap lands here.
+    monkeypatch.setattr(sys.modules[__name__], "create_causal_mask", create_causal_mask, raising = False)
+    model = FakeHybrid(FakeGatedDeltaNet(conv = conv_leaky))
+    assert patch_hybrid_linear_attention_varlen(model) is False
+    assert sys.modules[__name__].create_causal_mask is create_causal_mask
+
+
+class DropoutGatedDeltaNet(FakeGatedDeltaNet):
+    """LoRA-style input dropout: in train mode the packed and per-document passes would differ."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dropout = torch.nn.Dropout(0.5)
+
+    def forward(self, hidden_states, cache_params = None, attention_mask = None):
+        return super().forward(self.dropout(hidden_states), cache_params, attention_mask)
+
+
+def test_probe_runs_in_eval_mode_and_keeps_the_rng(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    mixer = DropoutGatedDeltaNet()
+    model = FakeHybrid(mixer)
+    model.train()
+    rng = torch.get_rng_state()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert torch.equal(rng, torch.get_rng_state())
+    assert mixer.training and mixer.dropout.training
+
+
 def test_probe_failure_to_run_is_a_rejection(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
