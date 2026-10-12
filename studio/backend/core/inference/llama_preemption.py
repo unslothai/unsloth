@@ -672,6 +672,7 @@ class PreemptionController:
         "_resident",
         "_resident_seq",
         "_last_sample_seq",
+        "_last_sample_started",
         "_resident_at",
         "_clock",
         "_resume_tickets",
@@ -709,6 +710,9 @@ class PreemptionController:
         # The clock as it stood when the last reading was recorded: a probe that started
         # before that is older than what is already here.
         self._last_sample_seq = 0
+        # The epoch the last recorded reading's probe STARTED at, what ordering compares: a
+        # mark between two overlapping probes moves `_last_sample_seq` past the newer one.
+        self._last_sample_started = 0
         # When the last good reading was taken, on `_clock` (monotonic; tests swap it).
         self._resident_at = 0.0
         self._clock = time.monotonic
@@ -1107,7 +1111,11 @@ class PreemptionController:
         when nothing was recorded.
         """
         with self._lock:
-            if started_at_seq is not None and started_at_seq < self._last_sample_seq:
+            if (
+                started_at_seq is not None
+                and self._last_sample_seq
+                and started_at_seq <= self._last_sample_started
+            ):
                 return None
             if resident is None:
                 if (
@@ -1126,6 +1134,10 @@ class PreemptionController:
             ceiling = self._budget if self._budget > 0 else int(resident)
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
+            # Taken now when the start is unknown, so it outranks every probe already out.
+            self._last_sample_started = (
+                self._resident_seq if started_at_seq is None else int(started_at_seq)
+            )
             self._resident_seq += 1
             self._last_sample_seq = self._resident_seq
             self._resident_at = self._clock()
