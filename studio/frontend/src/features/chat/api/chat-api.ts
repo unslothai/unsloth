@@ -1179,6 +1179,27 @@ export async function updateChatProject(
   return project;
 }
 
+/** Point a project's tools at a folder picked in the desktop shell, or back at Studio's own with
+ *  a null lease. The folder itself is never moved or deleted. */
+export async function setChatProjectWorkingFolder(
+  projectId: string,
+  nativePathLease: string | null,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    nativePathLease
+      ? {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nativePathLease }),
+        }
+      : { method: "DELETE" },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
 /** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,

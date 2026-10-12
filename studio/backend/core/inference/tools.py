@@ -10837,6 +10837,19 @@ def _project_exists(project_id: str) -> bool:
         return True
 
 
+def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
+    """Whether a project workdir is the user's own folder rather than Studio's managed one."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        return available_project_working_folder(project) == workdir
+    except Exception:
+        # Unknown is treated as the user's: leaving a mode alone is always safe.
+        return True
+
+
 def _project_workdir_for(session_id: "str | None") -> "str | None":
     """The project workspace a session id names, if it names one. The prefixed id can be longer than
     a directory name may be, or carry a character one may not: it is the project part that has to
@@ -10879,7 +10892,11 @@ def _get_project_workdir(session_id: str) -> str | None:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
-    return sandbox_real
+    # The user's own folder when one is set and still there; the managed one otherwise, so a moved
+    # folder never sends the tools anywhere new.
+    from storage.studio_db import available_project_working_folder
+
+    return available_project_working_folder(project) or sandbox_real
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
@@ -11619,7 +11636,11 @@ def _get_workdir(session_id: str | None = None) -> str:
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
-    if cached is not None and not _get_project_workdir(session_id or ""):
+    project_now = _get_project_workdir(session_id or "") if cached is not None else None
+    if cached is not None and project_now and os.path.realpath(cached) != project_now:
+        # The project moved to or from a folder of the user's since this was cached.
+        cached = None
+    if cached is not None and not project_now:
         # The same checks a fresh resolve makes: the entry can have been renamed and replaced with a link to another
         # chat's directory since, and containment alone accepts that.
         root_now = sandbox_root()
@@ -11686,8 +11707,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it.
-        if created or _sandbox_is_ours(workdir):
+        # whoever else uses it. Never a project's own folder of the user's, whatever the root.
+        if (created or _sandbox_is_ours(workdir)) and not (
+            project_workdir and _is_user_project_folder(session_id, project_workdir)
+        ):
             try:
                 os.chmod(workdir, 0o700)
             except OSError:

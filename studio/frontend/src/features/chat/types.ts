@@ -22,6 +22,8 @@ export interface ProjectRecord {
   instructions?: string;
   rootPath?: string | null;
   sandboxPath?: string | null;
+  /** An existing folder of the user's that the project's tools run in, when one is set. */
+  workingFolder?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
