@@ -1702,9 +1702,78 @@ def _verify_packed_fingerprint(
 
 HEADER_PROBE_ENV = "UNSLOTH_PREQUANT_HEADER_PROBE"
 _HEADER_PROBE_TTL_S = 600.0
+# Both are keyed partly by request values (base, component, ...), so both are bounded: the memo drops
+# expired entries and then its least recently used ones, the said-set its oldest.
+_HEADER_PROBE_MAX = 256
 _HEADER_PROBE_MEMO: dict = {}
-_HEADER_PROBE_SAID: set = set()
+_HEADER_PROBE_SAID: dict = {}
 _HEADER_PROBE_LOCK = _threading.Lock()
+
+
+def _memo_get(key: Any, now: float) -> Any:
+    """The live memo entry for ``key`` (refreshed as most recent), or None; an expired one is dropped.
+    Offline-cache verdicts (``key[0] == "local"``) never expire: the file under them cannot change
+    without changing the key. Caller holds the lock."""
+    hit = _HEADER_PROBE_MEMO.pop(key, None)
+    if hit is None:
+        return None
+    if key[0] != "local" and now - hit[0] >= _HEADER_PROBE_TTL_S:
+        return None
+    _HEADER_PROBE_MEMO[key] = hit
+    return hit
+
+
+def _memo_put(key: Any, value: Any, now: float) -> None:
+    """Insert ``key``, then trim expired entries and the oldest beyond ``_HEADER_PROBE_MAX``. Caller holds the lock."""
+    _HEADER_PROBE_MEMO.pop(key, None)
+    _HEADER_PROBE_MEMO[key] = value
+    for old in [
+        k
+        for k, (at, _) in _HEADER_PROBE_MEMO.items()
+        if k[0] != "local" and now - at >= _HEADER_PROBE_TTL_S
+    ]:
+        del _HEADER_PROBE_MEMO[old]
+    while len(_HEADER_PROBE_MEMO) > _HEADER_PROBE_MAX:
+        del _HEADER_PROBE_MEMO[next(iter(_HEADER_PROBE_MEMO))]
+
+
+def _said_first(said: Any) -> bool:
+    """Whether ``said`` is new (warn) rather than a repeat (info); remembers at most ``_HEADER_PROBE_MAX``.
+    Caller holds the lock."""
+    first = said not in _HEADER_PROBE_SAID
+    _HEADER_PROBE_SAID.pop(said, None)
+    _HEADER_PROBE_SAID[said] = True
+    while len(_HEADER_PROBE_SAID) > _HEADER_PROBE_MAX:
+        del _HEADER_PROBE_SAID[next(iter(_HEADER_PROBE_SAID))]
+    return first
+
+
+def _cached_snapshot_current(
+    repo_id: str, local: str, token: Optional[str]
+) -> Optional[bool]:
+    """Whether the Hub still serves the cached ``local`` snapshot of its file: True / False, or None when
+    unanswerable (not a Hub-cache path, no network, no etag nor commit), which keeps the cached verdict.
+    One HEAD, no range read. The blob name is the file's etag and the snapshot directory its commit, so
+    either matching proves the cache is what ``hf_hub_download`` would open; an unrelated commit to the
+    repo leaves the etag equal and costs no re-read."""
+    import os
+
+    parts = os.path.normpath(local).split(os.sep)
+    if len(parts) < 3 or parts[-3] != "snapshots":
+        return None
+    commit, name = parts[-2], parts[-1]
+    blob = os.path.basename(os.path.realpath(local))
+    from .prequant_header_probe import hub_file_revision
+
+    current = hub_file_revision(repo_id, name, token = token)
+    if current is None:
+        return None
+    etag, hub_commit = current
+    if (etag and etag == blob) or (hub_commit and hub_commit == commit):
+        return True
+    if etag or hub_commit:
+        return False
+    return None
 
 
 class _CollectWarnings:
@@ -1766,30 +1835,45 @@ def hosted_prequant_refusal(
         local = cached_checkpoint_path(source, cache_dir = cache_dir, names = names)
         # A load scoped by ``scoped_local_files_only`` counts as offline too: its planners reach this through
         # helpers that never see the flag, and a cache miss must not turn into Hub requests (and a probe timeout).
-        if local is None and (local_files_only or _LOCAL_FILES_ONLY.get() or hub_offline()):
+        offline = bool(local_files_only or _LOCAL_FILES_ONLY.get() or hub_offline())
+        if local is None and offline:
             return None
         request = (scheme, base or "", min_features, fast_accum, component or "")
         if local is not None:
             try:
                 st = os.stat(local)
-                key = ("local", os.path.realpath(local), st.st_size, st.st_mtime_ns, request)
+                # Offline the cached file IS what loads, so its verdict is final. Online the publisher may have
+                # replaced that filename since (a fixed re-upload), which hf_hub_download would fetch, so the
+                # verdict is revalidated against the Hub on the same TTL as a Hub probe.
+                key = (
+                    "local" if offline else "cached",
+                    os.path.realpath(local),
+                    st.st_size,
+                    st.st_mtime_ns,
+                    request,
+                )
             except OSError:
                 return None
         else:
             key = ("hub", source.location, tuple(names), request)
         now = time.monotonic()
         with _HEADER_PROBE_LOCK:
-            hit = _HEADER_PROBE_MEMO.get(key)
-        if hit is not None and (key[0] == "local" or now - hit[0] < _HEADER_PROBE_TTL_S):
+            hit = _memo_get(key, now)
+        if hit is not None:
             return hit[1]
 
         from .prequant_header_probe import read_hub_checkpoint_header, read_local_checkpoint_header
 
         header, name = None, None
+        hub_names = names
+        if local is not None and not offline:
+            if _cached_snapshot_current(source.location, local, hf_token) is False:
+                # Judge the revision the download would fetch, not the superseded one on disk.
+                hub_names, local = [os.path.basename(local)], None
         if local is not None:
             header, name = read_local_checkpoint_header(local), os.path.basename(local)
         else:
-            for candidate in names:
+            for candidate in hub_names:
                 header, exists = read_hub_checkpoint_header(
                     source.location, candidate, token = hf_token
                 )
@@ -1816,8 +1900,7 @@ def hosted_prequant_refusal(
                 )
                 said = (source.location, name, reason)
                 with _HEADER_PROBE_LOCK:
-                    first = said not in _HEADER_PROBE_SAID
-                    _HEADER_PROBE_SAID.add(said)
+                    first = _said_first(said)
                 where = (
                     "cached file"
                     if local is not None
@@ -1834,7 +1917,7 @@ def hosted_prequant_refusal(
                     reason,
                 )
         with _HEADER_PROBE_LOCK:
-            _HEADER_PROBE_MEMO[key] = (now, reason)
+            _memo_put(key, (now, reason), now)
         return reason
     except Exception:  # noqa: BLE001 - a probe that cannot answer leaves today's behaviour
         return None

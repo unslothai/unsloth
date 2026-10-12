@@ -200,20 +200,49 @@ def _from_pickle_zip(handle: Any) -> Optional[dict]:
     return {"format": str(fmt), "metadata": _plain(meta), "container": "pt"}
 
 
+# A safetensors header is parsed whole, so it is bounded by bytes AND by structure before ``json.loads``
+# builds anything: 64 MiB of ``[0,0,...]`` is tens of millions of objects. Real hosted pre-quant headers
+# are 0.2 to 2.9 MB with ~0.09 structural bytes per byte (cached Qwen-Image-2.1 INT8 / FP8: 0.23 to 0.33
+# MB, 20k to 23k); 16 MiB and 1M structural bytes leave >= 4x on the largest, and over either is "unknown".
+MAX_SAFETENSORS_HEADER_BYTES = 16 * 1024 * 1024
+MAX_JSON_STRUCTURE = 1_000_000
+
+
+def _json_within(raw: Any) -> bool:
+    """Whether ``raw`` (bytes or str) is small enough in bytes and structure to hand to ``json.loads``.
+    Counted on the raw text, so a nested JSON string inside it is counted too, before either parse."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "surrogatepass")
+    if len(raw) > MAX_SAFETENSORS_HEADER_BYTES:
+        return False
+    total = 0
+    for mark in (b"{", b"[", b",", b":"):
+        total += raw.count(mark)
+        if total > MAX_JSON_STRUCTURE:
+            return False
+    return True
+
+
 def _from_safetensors(read_range: ReadRange, size: int) -> Optional[dict]:
     if size < 8:
         return None
     (length,) = struct.unpack("<Q", read_range(0, 7))
-    if length <= 0 or length > MAX_PROBE_BYTES or 8 + length > size:
+    if length <= 0 or length > MAX_SAFETENSORS_HEADER_BYTES or 8 + length > size:
         return None
-    header = json.loads(read_range(8, 8 + length - 1).decode("utf-8"))
+    raw = read_range(8, 8 + length - 1)
+    if not _json_within(raw):
+        return None
+    header = json.loads(raw.decode("utf-8"))
     extra = header.get("__metadata__") if isinstance(header, dict) else None
     if not isinstance(extra, dict):
         return None
     from .prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
     fmt = extra.get(UNSLOTH_FORMAT_KEY)
-    meta = json.loads(extra.get(UNSLOTH_METADATA_KEY) or "null")
+    inner = extra.get(UNSLOTH_METADATA_KEY) or "null"
+    if not isinstance(inner, str) or not _json_within(inner):
+        return None
+    meta = json.loads(inner)
     if not isinstance(fmt, str) or not isinstance(meta, dict):
         return None
     return {"format": fmt, "metadata": meta, "container": "safetensors"}
@@ -306,6 +335,28 @@ def _hub_range_reader(url: str, headers: dict, deadline: float) -> ReadRange:
         return bytes(buffer[:want])
 
     return _read
+
+
+def hub_file_revision(
+    repo_id: str,
+    filename: str,
+    *,
+    token: Optional[str] = None,
+    revision: Optional[str] = None,
+    timeout_seconds: float = TIMEOUT_SECONDS,
+) -> Optional[tuple]:
+    """``(etag, commit)`` the Hub serves for ``filename`` now (one HEAD, no body), or None if unanswerable."""
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+        meta = get_hf_file_metadata(
+            hf_hub_url(repo_id, filename, revision = revision),
+            token = token,
+            timeout = timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001 - offline, refused or missing: the caller keeps what it has
+        return None
+    return getattr(meta, "etag", None), getattr(meta, "commit_hash", None)
 
 
 def read_hub_checkpoint_header(

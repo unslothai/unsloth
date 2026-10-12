@@ -43,7 +43,7 @@ def _fresh_probe(monkeypatch):
         getattr(pq, "HEADER_PROBE_ENV", "UNSLOTH_PREQUANT_HEADER_PROBE"), raising = False
     )
     monkeypatch.setattr(pq, "_HEADER_PROBE_MEMO", {}, raising = False)
-    monkeypatch.setattr(pq, "_HEADER_PROBE_SAID", set(), raising = False)
+    monkeypatch.setattr(pq, "_HEADER_PROBE_SAID", {}, raising = False)
     monkeypatch.setattr(pq, "hub_offline", lambda: False)
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme, name = None: True)
 
@@ -707,3 +707,203 @@ def test_a_metadata_pickle_under_the_budget_still_reads(tmp_path):
     real = _write_pt(tmp_path / "real.pt", _qwen_int8_meta(["norm"]))
     header = probe.read_local_checkpoint_header(str(real))
     assert header["metadata"]["exclude_name_tokens"] == ["norm"]
+
+
+# -- a safetensors header is bounded by structure before it is parsed --
+
+
+def _raw_safetensors(path, header: dict, pad: bytes = b""):
+    """A safetensors file whose JSON header is ``header`` (plus raw ``pad`` spliced into it), no tensors."""
+    import struct
+
+    text = json.dumps(header).encode()
+    if pad:
+        text = text[:-1] + b', "pad": ' + pad + b"}"
+    with open(path, "wb") as handle:
+        handle.write(struct.pack("<Q", len(text)) + text + b"\0" * 64)
+    return path
+
+
+def _unsloth_extra(meta):
+    from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
+
+    return {UNSLOTH_FORMAT_KEY: PREQUANT_FORMAT, UNSLOTH_METADATA_KEY: json.dumps(meta, default = str)}
+
+
+def _traced(fn):
+    import time
+    import tracemalloc
+
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        out = fn()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return out, peak, time.monotonic() - started
+
+
+def test_a_safetensors_header_with_millions_of_entries_is_unknown_fast_and_small(tmp_path):
+    from core.inference.prequant_header_probe import read_local_checkpoint_header
+
+    meta = _qwen_int8_meta(["norm"])
+    bomb = _raw_safetensors(
+        tmp_path / "bomb-INT8.safetensors",
+        {"__metadata__": _unsloth_extra(meta)},
+        pad = b"[" + b"{}," * 2_000_000 + b"{}]",
+    )
+    header, peak, took = _traced(lambda: read_local_checkpoint_header(str(bomb)))
+    assert header is None
+    # The header is ~6 MB of text; parsing it would build 2M dicts (hundreds of MB).
+    assert peak < 32 * 1024 * 1024, peak
+    assert took < 30
+
+
+def test_a_nested_metadata_string_with_millions_of_entries_is_unknown(tmp_path):
+    from core.inference.prequant_header_probe import read_local_checkpoint_header
+
+    meta = _qwen_int8_meta(["norm"])
+    meta["pad"] = [0] * 1_200_000
+    bomb = _raw_safetensors(tmp_path / "nested-INT8.safetensors", {"__metadata__": _unsloth_extra(meta)})
+    assert read_local_checkpoint_header(str(bomb)) is None
+
+
+def test_a_real_sized_safetensors_header_still_reads(tmp_path):
+    """~3 MB of header (the largest hosted pre-quant headers) with real per-tensor entries."""
+    from safetensors.torch import save_file
+
+    from core.inference.prequant_header_probe import read_local_checkpoint_header
+
+    meta = _qwen_int8_meta(["norm"])
+    tensors = {
+        f"transformer_blocks.{i // 64}.attn.to_q.{i % 64}.weight_scale_inverse_long": torch.zeros(1)
+        for i in range(24_000)
+    }
+    path = tmp_path / "big-INT8.safetensors"
+    save_file(tensors, str(path), metadata = {k: v for k, v in _unsloth_extra(meta).items()})
+    import struct
+
+    with open(path, "rb") as handle:
+        (length,) = struct.unpack("<Q", handle.read(8))
+    assert length > 2_500_000, length
+    header = read_local_checkpoint_header(str(path))
+    assert header is not None and header["metadata"]["exclude_name_tokens"] == ["norm"]
+
+
+# -- a cached verdict is revalidated online when the publisher replaced the file in place --
+
+
+def _hf_cache_file(tmp_path, name, commit, etag, writer, meta):
+    """``<root>/snapshots/<commit>/<name>`` symlinked to ``blobs/<etag>``, as huggingface_hub lays it out."""
+    root = tmp_path / "models--unsloth--Qwen-Image-2512-FP8"
+    blob = root / "blobs" / etag
+    blob.parent.mkdir(parents = True, exist_ok = True)
+    writer(blob, meta)
+    snap = root / "snapshots" / commit / name
+    snap.parent.mkdir(parents = True, exist_ok = True)
+    snap.symlink_to(os.path.relpath(blob, snap.parent))
+    return snap
+
+
+@pytest.fixture
+def replaced(hub, tmp_path, monkeypatch):
+    """A stale checkpoint in the cache; the Hub file under the same name is set per test."""
+    import huggingface_hub
+
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    repo, name = "unsloth/Qwen-Image-2512-FP8", "Qwen-Image-2512-INT8.pt"
+    cached = _hf_cache_file(
+        tmp_path, name, "c0ffee01", "etag-stale", _write_pt, _qwen_int8_meta(_STALE_INT8_EXCLUDES)
+    )
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
+    served = {"etag": "etag-stale", "commit": "c0ffee01"}
+    heads: list = []
+    real = huggingface_hub.get_hf_file_metadata
+
+    def get_hf_file_metadata(url, *args, **kwargs):
+        heads.append(url)
+        meta = real(url, *args, **kwargs)
+        return types.SimpleNamespace(
+            size = meta.size, commit_hash = served["commit"], etag = served["etag"]
+        )
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", get_hf_file_metadata)
+
+    def publish(fixed: bool, etag: str, commit: str):
+        meta = _qwen_int8_meta(
+            exclude_tokens_for_scheme("int8", "qwen-image") if fixed else _STALE_INT8_EXCLUDES
+        )
+        _write_pt(_repo_file(hub, repo, name), meta)
+        served.update(etag = etag, commit = commit)
+
+    return types.SimpleNamespace(source = _source(repo, name), publish = publish, heads = heads)
+
+
+def test_a_fixed_reupload_replaces_a_stale_cached_verdict_online(hub, replaced):
+    replaced.publish(True, "etag-fixed", "c0ffee02")
+    assert pq.hosted_prequant_refusal(replaced.source, "int8") is None
+    assert hub.server.sent > 0 and hub.downloads == []
+
+
+def test_an_unchanged_cached_file_costs_one_head_and_no_range_read(hub, replaced):
+    # A later commit touched other files only: the etag still matches the cached blob.
+    replaced.publish(False, "etag-stale", "c0ffee03")
+    reason = pq.hosted_prequant_refusal(replaced.source, "int8")
+    assert reason is not None and "txt_in" in reason
+    assert len(replaced.heads) == 1 and hub.server.sent == 0
+
+
+def test_offline_keeps_the_cached_verdict_without_any_request(hub, replaced, monkeypatch):
+    replaced.publish(True, "etag-fixed", "c0ffee02")
+    assert pq.hosted_prequant_refusal(replaced.source, "int8", local_files_only = True) is not None
+    monkeypatch.setattr(pq, "hub_offline", lambda: True)
+    assert pq.hosted_prequant_refusal(replaced.source, "int8") is not None
+    assert replaced.heads == [] and hub.server.sent == 0
+
+
+def test_an_online_cached_verdict_expires(hub, replaced, monkeypatch):
+    replaced.publish(False, "etag-stale", "c0ffee01")
+    assert pq.hosted_prequant_refusal(replaced.source, "int8") is not None
+    replaced.publish(True, "etag-fixed", "c0ffee02")
+    assert pq.hosted_prequant_refusal(replaced.source, "int8") is not None  # memoised
+    monkeypatch.setattr(pq, "_HEADER_PROBE_TTL_S", 0.0)
+    assert pq.hosted_prequant_refusal(replaced.source, "int8") is None
+
+
+# -- the probe's memo and said-set stay bounded --
+
+
+def test_the_probe_memo_and_said_set_are_bounded():
+    cap = pq._HEADER_PROBE_MAX
+    with pq._HEADER_PROBE_LOCK:
+        for i in range(cap * 4):
+            pq._memo_put(("hub", "r", ("n",), ("int8", f"base{i}", None, None, "")), (0.0, None), 0.0)
+            pq._said_first(("r", "n", f"reason {i}"))
+    assert len(pq._HEADER_PROBE_MEMO) <= cap
+    assert len(pq._HEADER_PROBE_SAID) <= cap
+    # Most recent kept, oldest dropped.
+    assert ("hub", "r", ("n",), ("int8", f"base{cap * 4 - 1}", None, None, "")) in pq._HEADER_PROBE_MEMO
+
+
+def test_an_expired_memo_entry_is_dropped():
+    ttl = pq._HEADER_PROBE_TTL_S
+    with pq._HEADER_PROBE_LOCK:
+        pq._memo_put(("hub", "a"), (0.0, "old"), 0.0)
+        pq._memo_put(("local", "b"), (0.0, "kept"), 0.0)
+        assert pq._memo_get(("hub", "a"), ttl + 1) is None
+        assert ("hub", "a") not in pq._HEADER_PROBE_MEMO
+        pq._memo_put(("hub", "c"), (0.0, "old"), 0.0)
+        pq._memo_put(("hub", "d"), (ttl + 1, None), ttl + 1)  # an insert sweeps the expired
+        assert ("hub", "c") not in pq._HEADER_PROBE_MEMO
+        assert pq._memo_get(("local", "b"), ttl * 10) == (0.0, "kept")
+
+
+def test_many_requested_bases_keep_the_memo_bounded(hub, monkeypatch, tmp_path):
+    cached = _write_pt(tmp_path / "c-INT8.pt", _qwen_int8_meta(_STALE_INT8_EXCLUDES))
+    monkeypatch.setattr(pq, "cached_checkpoint_path", lambda *a, **k: str(cached))
+    monkeypatch.setattr(pq, "hub_offline", lambda: True)
+    for i in range(pq._HEADER_PROBE_MAX + 50):
+        pq.hosted_prequant_refusal(_source("unsloth/x", "c-INT8.pt"), "int8", base = f"org/b{i}")
+    assert len(pq._HEADER_PROBE_MEMO) <= pq._HEADER_PROBE_MAX
