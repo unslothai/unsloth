@@ -197,6 +197,22 @@ def test_a_skipped_patch_is_stepped_past(shell, tmp_path):
 
 @needs_pwsh
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_skipped_patch_falls_back_to_an_older_cached_one_offline(shell, tmp_path):
+    older = "cpython-3.13.7-windows-x86_64-none"
+    result, calls, _ = _resolve(
+        shell,
+        tmp_path,
+        facts = {X64: "3.13.8 win-amd64 0", older: "3.13.7 win-amd64 0"},
+        skip = ["3.13.8"],
+        install_exit = 1,
+    )
+    assert result["Full"] == "3.13.7"
+    assert f"python find --system --managed-python cpython-3.13.9-windows-x86_64-none" in calls
+    assert calls[-1] == f"python find --system --managed-python {older}"
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_explicit_patch_is_exact(shell, tmp_path):
     key = "cpython-3.13.9-windows-x86_64-none"
     ok, calls, _ = _resolve(shell, tmp_path, facts = {key: "3.13.9 win-amd64 0"}, patch = "3.13.9")
@@ -279,11 +295,17 @@ def _choose(
     venv_cfg: str | None = None,
     explicit: str = "",
     upgrade: bool = False,
+    legacy_cfg: str | None = None,
+    legacy_layout: bool = True,
 ) -> str:
     venv = tmp_path / "venv"
     venv.mkdir(exist_ok = True)
     if venv_cfg is not None:
         (venv / "pyvenv.cfg").write_text(venv_cfg, encoding = "utf-8")
+    home = tmp_path / "home"
+    (home / ".venv").mkdir(parents = True, exist_ok = True)
+    if legacy_cfg is not None:
+        (home / ".venv" / "pyvenv.cfg").write_text(legacy_cfg, encoding = "utf-8")
     script = f"""
 $ErrorActionPreference = "Stop"
 function Write-TauriLog {{ param($a, $b) }}
@@ -303,6 +325,8 @@ function Probe {{
     $PythonExplicitRequest = "{explicit}"
     $PythonPatchRequest = ""
     $VenvDir = $env:FAKE_VENV
+    $StudioHome = $env:FAKE_HOME
+    $studioUsesLegacyLayout = ${str(legacy_layout).lower()}
 {CHOOSE}
     return "$PythonVersion|$PythonArch"
 }}
@@ -310,6 +334,8 @@ Probe
 """
     env = {
         "FAKE_VENV": str(venv),
+        "FAKE_HOME": str(home),
+        "USERPROFILE": str(tmp_path / "profile"),
         "UNSLOTH_ALLOW_ARM64_PYTHON": "1" if opt_out else "",
         "UNSLOTH_TORCH_UPGRADE": "1" if upgrade else "",
     }
@@ -328,6 +354,14 @@ Probe
         ({"venv_cfg": "version_info = 3.14.0\n"}, "3.13|x86_64"),
         ({"venv_cfg": "version_info = 3.12.6\n", "upgrade": True}, "3.13|x86_64"),
         ({"venv_cfg": "version_info = 3.12.6\n", "explicit": "3.13"}, "3.13|x86_64"),
+        # A legacy layout keeps its minor too; the current layout wins when both exist.
+        ({"legacy_cfg": "version_info = 3.12.6\n"}, "3.12|x86_64"),
+        ({"legacy_cfg": "version_info = 3.12.6\n", "legacy_layout": False}, "3.13|x86_64"),
+        (
+            {"legacy_cfg": "version_info = 3.12.6\n", "venv_cfg": "version_info = 3.11.9\n"},
+            "3.11|x86_64",
+        ),
+        ({"legacy_cfg": "version_info = 3.12.6\n", "upgrade": True}, "3.13|x86_64"),
         # Windows on ARM: x64 under emulation unless the native CUDA stack or the opt-out applies.
         ({"host": "arm64"}, "3.13|x86_64"),
         ({"host": "arm64", "native": True}, "3.13|arm64"),
@@ -411,6 +445,7 @@ STORE_HOME = "store/cpython-3.13.12-windows-x86_64-none"
         (STORE_HOME, "3.13.9", True, "False"),  # --python 3.13.12 asked for exactly
         ("store/cpython-3.12.13-windows-x86_64-none", "3.12.13", False, "False"),
         ("Python312", "3.13.12", False, "False"),  # the user's own Python
+        ("store/cpython-3.13.12-windows-aarch64-none", "3.13.12", False, "False"),  # another arch
         (STORE_HOME, None, False, "False"),
         (None, None, False, "False"),
     ],
@@ -444,6 +479,12 @@ Test-LegacyVenvReusable -VenvDir $env:FAKE_VENV -Python $py -Exact ${str(exact).
         },
     )
     assert out.splitlines()[-1] == expected
+
+
+def test_pyvenv_cfg_is_read_as_utf8():
+    # uv writes it without a BOM; Windows PowerShell 5.1 would otherwise decode a non-ASCII home as ANSI.
+    for name in ("Get-StudioVenvPythonMinor", "Test-LegacyVenvReusable"):
+        assert "Get-Content -LiteralPath $cfg -Encoding UTF8" in _function(name), name
 
 
 def test_no_path_reaches_a_python_already_on_the_machine():

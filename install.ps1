@@ -6694,7 +6694,7 @@ exit 0
         param([Parameter(Mandatory = $true)][string]$VenvDir)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
         if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
-        foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
+        foreach ($line in @(Get-Content -LiteralPath $cfg -Encoding UTF8 -ErrorAction SilentlyContinue)) {
             if ($line -match '^\s*version(_info)?\s*=\s*(3\.1[1-3])\.\d+') { return $Matches[2] }
         }
         return $null
@@ -6705,6 +6705,15 @@ exit 0
     # A reinstall keeps its minor so cached cp3XX wheels (torch) are reused; UNSLOTH_TORCH_UPGRADE=1 moves it.
     if (-not $PythonExplicitRequest -and $env:UNSLOTH_TORCH_UPGRADE -ne '1') {
         $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $VenvDir
+        # A legacy layout is migrated or rebuilt below, in this order; it keeps its minor too.
+        if (-not $_existingPythonMinor -and $studioUsesLegacyLayout) {
+            $_legacyDirs = @((Join-Path $StudioHome ".venv"))
+            if ($env:USERPROFILE) { $_legacyDirs += (Join-Path $env:USERPROFILE "unsloth_studio") }
+            foreach ($_legacyDir in $_legacyDirs) {
+                $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $_legacyDir
+                if ($_existingPythonMinor) { break }
+            }
+        }
         if ($_existingPythonMinor) { $PythonVersion = $_existingPythonMinor }
     }
     # uv's builds are GIL-enabled, which is what this probe assumes.
@@ -7102,9 +7111,16 @@ exit 0
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
         $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
         $wantTag = if ($Arch -eq "arm64") { "win-arm64" } else { "win-amd64" }
-        $version = if ($Patch) { $Patch } else { $Minor }
-        # An arch-qualified key takes no version range, so a skipped patch is stepped past.
-        for ($attempt = 0; $attempt -lt 4; $attempt++) {
+        # An arch-qualified key takes no version range, so a skipped patch is stepped past: the
+        # next patch first, then an older one, which an offline machine may already have.
+        $queue = [System.Collections.Generic.List[string]]::new()
+        $queue.Add($(if ($Patch) { $Patch } else { $Minor }))
+        $tried = @{}
+        while ($queue.Count -gt 0 -and $tried.Count -lt 5) {
+            $version = $queue[0]
+            $queue.RemoveAt(0)
+            if ($tried.ContainsKey($version)) { continue }
+            $tried[$version] = $true
             $key = "cpython-$version-windows-$uvArch-none"
             $null = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $key" {
                 & $script:UvExe python install --no-bin --no-registry $key
@@ -7115,7 +7131,7 @@ exit 0
                 $exe = (& $script:UvExe python find --system --managed-python $key 2>$null | Select-Object -First 1)
             } catch {}
             $exe = "$exe".Trim()
-            if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+            if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
             $facts = ""
             try {
                 $facts = (& $exe -S -I -c "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))" 2>$null | Select-Object -First 1)
@@ -7129,7 +7145,10 @@ exit 0
                 return @{ Version = $Minor; Full = $full; Path = $exe; Arch = $Arch }
             }
             if ($Patch) { return $null }
-            $version = "$Minor.$([int]($full.Split('.')[2]) + 1)"
+            $skipped = [int]($full.Split('.')[2])
+            foreach ($n in @(($skipped + 1), ($skipped - 1), ($skipped + 2), ($skipped - 2))) {
+                if ($n -ge 0) { $queue.Add("$Minor.$n") }
+            }
         }
         return $null
     }
@@ -7141,11 +7160,15 @@ exit 0
         if (-not $Python -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
         $venvHome = $null
         $venvVersion = $null
-        foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
+        # uv writes pyvenv.cfg as UTF-8 without a BOM; Windows PowerShell 5.1 would read it as ANSI.
+        foreach ($line in @(Get-Content -LiteralPath $cfg -Encoding UTF8 -ErrorAction SilentlyContinue)) {
             if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
             elseif ($line -match '^\s*version(_info)?\s*=\s*(\d+\.\d+\.\d+)') { $venvVersion = $Matches[2] }
         }
         if (-not $venvHome -or -not $venvVersion) { return $false }
+        # uv names each build's directory cpython-<version>-windows-<arch>-none.
+        $wantArch = if ($Python.Arch -eq "arm64") { "aarch64" } else { "x86_64" }
+        if ((Split-Path -Leaf $venvHome.TrimEnd('\', '/')) -notmatch "-windows-$wantArch-") { return $false }
         if ($Exact) {
             if ($venvVersion -ne $Python.Full) { return $false }
         } elseif ($venvVersion -notlike "$($Python.Version).*") {
