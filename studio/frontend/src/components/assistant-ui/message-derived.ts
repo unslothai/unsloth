@@ -24,6 +24,24 @@ export function memoOnArray<A extends readonly unknown[], T>(
   };
 }
 
+const memoByArrayAndKey = new WeakMap<object, Map<unknown, unknown>>();
+
+export function memoOnArrayByKey<K, V>(
+  array: readonly unknown[],
+  key: K,
+  compute: () => V,
+): V {
+  let byKey = memoByArrayAndKey.get(array);
+  if (byKey === undefined) {
+    byKey = new Map();
+    memoByArrayAndKey.set(array, byKey);
+  }
+  if (byKey.has(key)) return byKey.get(key) as V;
+  const value = compute();
+  byKey.set(key, value);
+  return value;
+}
+
 type PartLike = { readonly type: string; readonly text?: unknown };
 
 export const partsHaveRenderableRenderHtmlTool = memoOnArray(

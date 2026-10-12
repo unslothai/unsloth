@@ -128,6 +128,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    switch_training_mode,
     _is_seq2seq_lm_config,
 )
 from ._utils import *
@@ -4482,6 +4483,30 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them, and when trainable_token_indices already trains the rows.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+            and not kwargs.get("trainable_token_indices")
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
@@ -5009,12 +5034,9 @@ class FastBaseModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
-        model.eval()  # to turn off training on modules deeper in
-
-        # Since transformers 4.53, this must be turned off explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = False
+        # Since transformers 4.53, checkpointing must be turned off explicitly.
+        for module in switch_training_mode(model, False):
+            module.gradient_checkpointing = False
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -5029,6 +5051,10 @@ class FastBaseModel:
 
         # Returning hidden states must be disabled for GRPO, and returning logits enabled.
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
+        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        if _return_logits != "1":
+            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
@@ -5040,15 +5066,14 @@ class FastBaseModel:
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
+        checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
-            model, use_gradient_checkpointing
+            model, use_gradient_checkpointing, checkpointing
         )
-        if use_gradient_checkpointing:
-            arm_gradient_checkpointing(model)
-
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
+        if use_gradient_checkpointing and arm_gradient_checkpointing(model, checkpointing):
+            # Arming runs the model's enabler once (remote code can flag layers the walk did not see).
+            checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5069,12 +5094,10 @@ class FastBaseModel:
             _for_training(m)
             m = m.model
         _for_training(m)
-        model.train()  # to turn on training on modules deeper in
-
+        apply_training_mode()
         # Since transformers 4.53, this must be turned on explicitly.
-        for module in model.modules():
-            if hasattr(module, "gradient_checkpointing"):
-                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
+        for module in checkpointing:
+            set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
@@ -5087,7 +5110,11 @@ class FastBaseModel:
         except ImportError:
             pass
 
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
+        if _return_logits is None:
+            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
+        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model

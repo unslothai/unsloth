@@ -8,12 +8,14 @@ import ast
 import codecs
 import copy
 from collections import deque
+from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
 from html.parser import HTMLParser
 import json
 import http.client
+import ntpath
 import os
 from functools import partial
 import signal
@@ -1384,6 +1386,38 @@ _START_SWITCHES = frozenset(
 )
 
 
+# A program spelled as a Windows path, spaces allowed (C:\Program Files\..., %SystemDrive%\...). The characters
+# Windows forbids in a file name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
+_WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2}|%[A-Za-z_][\w()]*%)?[\\/][^:*?"<>|\r\n]*')
+_WIN_RELATIVE_PROGRAM_PATH_RE = re.compile(r'[^:*?"<>|\r\n]*[\\/][^:*?"<>|\r\n]*')
+
+
+def _blocked_program_path(word: str, program_slot: bool = False) -> str:
+    r"""The blocked name ``word`` runs when cmd or START takes it as one program path. Re-lexing it
+    as a command line splits `C:\Program Files\PowerShell\7\pwsh.exe` at the space. ntpath, not
+    os.path, so the Linux test runner reads backslashes the way Windows does."""
+    word = word.strip('"')
+    # ``program_slot``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too.
+    # An extensionless path resolves through PATHEXT either way.
+    if not (
+        _WIN_PROGRAM_PATH_RE.fullmatch(word)
+        or (program_slot and _WIN_RELATIVE_PROGRAM_PATH_RE.fullmatch(word))
+    ):
+        return ""
+    base = ntpath.basename(word).lower()
+    stem, ext = ntpath.splitext(base)
+    if (
+        not program_slot
+        and any(char.isspace() for char in word)
+        and any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
+    ):
+        # A rooted command line (`\Windows\System32\where.exe \src\rm`), not one path holding spaces.
+        return ""
+    if ext in {".exe", ".com", ".bat", ".cmd"}:
+        base = stem
+    return base if base in _BLOCKED_COMMANDS else ""
+
+
 def _is_start_title(token: str) -> bool:
     """True when START would read ``token`` as its window title, not the program. The cmd lexer
     keeps the quote marks, so a title still arrives quoted; the posix lexer leaves two spellings
@@ -1412,14 +1446,20 @@ def _blocked_word_re(assignment_prefixes: bool):
     """
     if not _BLOCKED_COMMANDS:
         return None
+    # `.` (source) is left to the token walk: here `\b` let it match only a dot glued to a word, never `source`, so
+    # `.venv/bin/python` and `C:/x/app.exe` were refused as `.` (#12054).
+    words = sorted(w for w in _BLOCKED_COMMANDS if w[:1].isalnum() or w[:1] == "_")
+    if not words:
+        return None
     return re.compile(
         # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
-        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        # Both prefixes end at a separator, so the name is a whole path segment.
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w./\\-]*[/\\])?)?"
         + r"("
-        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + "|".join(re.escape(w) for w in words)
         + r")"
         + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
@@ -2040,6 +2080,16 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
                 blocked |= _find_blocked_commands(payload, posix = posix)
+                # cmd runs a leading quoted path as the program (`cmd /c "C:\x y\pwsh.exe" -c ...`); `""prog" args"`
+                # loses its outer pair first. The posix lexer already handed that path over as one token.
+                if lexed_posix:
+                    program = tokens[i + 1]
+                else:
+                    rest = " ".join(tokens[i + 1 :])
+                    rest = '"' + rest[2:].lstrip() if rest.startswith('""') else rest
+                    quoted = re.match(r'"([^"]*)"', rest)
+                    program = quoted.group(1) if quoted else ""
+                blocked |= {_blocked_program_path(program)} - {""}
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -2057,6 +2107,8 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         # approximation under-approximated.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j], posix = posix)
+            if not _is_start_title(tokens[j]):
+                blocked |= {_blocked_program_path(tokens[j], program_slot = True)} - {""}
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
@@ -2064,6 +2116,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
                 blocked |= _find_blocked_commands(tokens[k], posix = posix)
+                blocked |= {_blocked_program_path(tokens[k], program_slot = True)} - {""}
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -10082,10 +10135,20 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
     return False
 
 
-def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+def _prepare_tool_launch(
+    plan,
+    *,
+    host_access_approved: bool = False,
+    user_folder: bool = False,
+):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
+    # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
+    # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
+    # never after a scan finding, which tool code could plant to drop its own boundary.
+    if user_folder and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_working_folder")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -10837,6 +10900,32 @@ def _project_exists(project_id: str) -> bool:
         return True
 
 
+def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
+    """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import get_chat_project
+
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        sandbox = (project or {}).get("sandboxPath")
+        return bool(sandbox) and os.path.realpath(sandbox) == workdir
+    except Exception:
+        return False
+
+
+def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
+    """Whether *workdir* is the owner's chosen folder for this project; False when unsure, which keeps isolation."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        return available_project_working_folder(project) == os.path.realpath(workdir)
+    except Exception:
+        return False
+
+
 def _project_workdir_for(session_id: "str | None") -> "str | None":
     """The project workspace a session id names, if it names one. The prefixed id can be longer than
     a directory name may be, or carry a character one may not: it is the project part that has to
@@ -10879,7 +10968,9 @@ def _get_project_workdir(session_id: str) -> str | None:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
-    return sandbox_real
+    from storage.studio_db import available_project_working_folder
+
+    return available_project_working_folder(project) or sandbox_real
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
@@ -11619,7 +11710,10 @@ def _get_workdir(session_id: str | None = None) -> str:
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
-    if cached is not None and not _get_project_workdir(session_id or ""):
+    project_now = _get_project_workdir(session_id or "") if cached is not None else None
+    if cached is not None and project_now and os.path.realpath(cached) != project_now:
+        cached = None
+    if cached is not None and not project_now:
         # The same checks a fresh resolve makes: the entry can have been renamed and replaced with a link to another
         # chat's directory since, and containment alone accepts that.
         root_now = sandbox_root()
@@ -11686,8 +11780,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it.
-        if created or _sandbox_is_ours(workdir):
+        # whoever else uses it. Never the user's project folder.
+        if (created or _sandbox_is_ours(workdir)) and (
+            not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
+        ):
             try:
                 os.chmod(workdir, 0o700)
             except OSError:
@@ -21541,8 +21637,31 @@ def materialize_sandbox_attachments(
                     logger.warning(
                         "could not copy attachment %s into the sandbox", sha256, exc_info = True
                     )
+            if _is_user_project_folder(session_id, workdir):
+                _git_ignore_dir(os.path.join(workdir, _ATTACHMENTS_DIR))
         finally:
             _call_finished(token)
+
+
+def _git_ignore_dir(directory: str) -> None:
+    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent.
+    Never through a link: the directory is opened no-follow and the file created relative to it."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        if _DIR_FD_WRITES:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                fd = os.open(".gitignore", flags, 0o644, dir_fd = dir_fd)
+            finally:
+                os.close(dir_fd)
+        else:
+            if os.path.islink(directory) or not os.path.isdir(directory):
+                return
+            fd = os.open(os.path.join(directory, ".gitignore"), flags, 0o644)
+    except OSError:
+        return
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write("*\n")
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
@@ -21595,6 +21714,98 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
     finally:
         for fd in fds:
             os.close(fd)
+
+
+class SandboxUploadExists(Exception):
+    """The upload's name is taken and the caller did not ask to replace it."""
+
+
+def sandbox_upload_name(name: "str | None") -> str:
+    """The name an uploaded file is saved under at the sandbox root, one the download route serves back."""
+    base = _UNSAFE_NAME_CHARS.sub("_", re.split(r"[\\/]", name or "")[-1]).strip(" .") or "upload"
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    if len(base.encode()) > 255:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        base = stem.encode()[: 255 - len(ext.encode())].decode("utf-8", "ignore").rstrip(" .") + ext
+    return base if _servable_segment(base) else "upload"
+
+
+def save_sandbox_upload(
+    session_id: "str | None",
+    name: "str | None",
+    chunks: "Iterable[bytes]",
+    overwrite: bool = False,
+) -> dict:
+    """Write an uploaded file into the root of a chat's sandbox. Raises SandboxUploadExists when the
+    name is taken, unless ``overwrite``."""
+    name = sandbox_upload_name(name)
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        # Registered as a call, so a tool call running meanwhile does not offer the upload as its own file.
+        token = _call_started(workdir)
+        try:
+            replaced = _install_upload(workdir, name, chunks, overwrite)
+        finally:
+            _call_finished(token)
+    return {"name": name, "path": os.path.join(workdir, name), "replaced": replaced}
+
+
+def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrite: bool) -> bool:
+    """Stream into a fresh O_EXCL file, then link it in or, when replacing, rename onto the name. Through a
+    directory descriptor where the platform has one, like the spill writer, so no link is followed."""
+    dir_fd = (
+        os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if _DIR_FD_WRITES else None
+    )
+    tmp, dest = f".tmp-{uuid.uuid4().hex[:12]}", name
+    if dir_fd is None:
+        tmp, dest = os.path.join(workdir, tmp), os.path.join(workdir, name)
+    at = {} if dir_fd is None else {"dir_fd": dir_fd}
+    pair = {} if dir_fd is None else {"src_dir_fd": dir_fd, "dst_dir_fd": dir_fd}
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        with os.fdopen(os.open(tmp, flags, 0o600, **at), "wb") as out:
+            for chunk in chunks:
+                out.write(chunk)
+        try:
+            os.stat(dest, follow_symlinks = False, **at)
+            existed = True
+        except FileNotFoundError:
+            existed = False
+        if existed and not overwrite:
+            raise SandboxUploadExists(name)
+        if not existed:
+            try:
+                # link, not rename: it fails when a tool took the name since the check.
+                os.link(tmp, dest, **pair)
+                return False
+            except FileExistsError:
+                if not overwrite:
+                    raise SandboxUploadExists(name) from None
+            except OSError:
+                # A volume without hard links: claim the name exclusively, then rename onto the claim.
+                try:
+                    os.close(os.open(dest, flags, 0o600, **at))
+                except FileExistsError:
+                    if not overwrite:
+                        raise SandboxUploadExists(name) from None
+        try:
+            os.replace(tmp, dest, **pair)
+        except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:
+            # A folder holds the name (Windows reports that as access denied).
+            raise SandboxUploadExists(name) from exc
+        return existed
+    finally:
+        _quiet_unlink(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
@@ -22695,6 +22906,7 @@ def _python_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+                user_folder = _is_user_project_folder(session_id, workdir),
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
@@ -22931,7 +23143,15 @@ def _bash_exec(
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
-        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
+        # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
+        # advertised) but runs it with software safeguards (_prepare_tool_launch).
+        chosen_folder = _is_user_project_folder(session_id, workdir)
+        if (
+            profile == "cmd_isolated"
+            and requested_mode == "auto"
+            and not host_reach_approved
+            and not chosen_folder
+        ):
             # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
             # isolation drops out between the profile check and the launch.
             requested_mode = "required"
@@ -22955,6 +23175,7 @@ def _bash_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_reach_approved,
+                user_folder = chosen_folder,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
