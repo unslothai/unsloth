@@ -86,6 +86,8 @@ def test_navigate_honours_the_website_policy():
 def test_refs_are_normalized_and_validated():
     assert _request("browser_click", {"ref": "[r12]"}) == {"op": "click", "ref": "r12"}
     assert _request("browser_click", {"ref": "7"}) == {"op": "click", "ref": "r7"}
+    # Each page numbers refs in its own 100000-wide range (executor.ts REF_SPAN).
+    assert _request("browser_click", {"ref": "r900000001"})["ref"] == "r900000001"
     with pytest.raises(ValueError, match = "ref"):
         _request("browser_click", {"ref": "the search button"})
     with pytest.raises(ValueError, match = "required"):

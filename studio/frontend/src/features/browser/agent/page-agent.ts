@@ -73,6 +73,8 @@ export function installPageAgent(): void {
   const SECRET = /\b(current-password|new-password|one-time-code|cc-[a-z-]+)\b/i;
   const SECRET_NAME = /\b(password|passcode|card ?number|cvc|cvv|security code|ssn|social security)\b/i;
   const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "number", "password", ""]);
+  const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
+  const NOT_TEXT = new Set([...BUTTON_INPUTS, "checkbox", "radio", "range", "file", "color", "hidden"]);
 
   const refs = new WeakMap<Element, number>();
   const byRef = new Map<number, WeakRef<Element>>();
@@ -86,9 +88,12 @@ export function installPageAgent(): void {
     // A page without a document element yet: settling then reads as quiet.
   }
 
+  let lastRef = Number.MAX_SAFE_INTEGER;
   const refOf = (el: Element): string => {
     let id = refs.get(el);
     if (id === undefined) {
+      // Past its range a number would belong to the next page's refs.
+      if (nextRef > lastRef) throw new Error("this page has too many elements to number; use browser_find.");
       id = nextRef++;
       refs.set(el, id);
       byRef.set(id, new WeakRef(el));
@@ -141,6 +146,23 @@ export function installPageAgent(): void {
     return null;
   };
 
+  // A control's words, minus what the page hides inside it: hidden text must not name a button.
+  const visibleText = (root: Element): string => {
+    const words: string[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      let shown = true;
+      for (let el = node.parentElement; el && shown; el = el === root ? null : el.parentElement) {
+        const style = getComputedStyle(el);
+        if (hidden(el, style)) shown = false;
+        // display: contents draws no box of its own.
+        else if (el !== root && style.display !== "contents" && !sized(el.getBoundingClientRect())) shown = false;
+      }
+      if (shown) words.push(node.nodeValue ?? "");
+    }
+    return words.join(" ");
+  };
+
   const nameOf = (el: Element): string => {
     const aria = el.getAttribute("aria-label");
     if (aria?.trim()) return clean(aria);
@@ -155,7 +177,7 @@ export function installPageAgent(): void {
     const field = el as HTMLInputElement;
     if (field.labels?.length) {
       const text = Array.from(field.labels)
-        .map((label) => label.innerText || label.textContent || "")
+        .map((label) => visibleText(label))
         .join(" ");
       if (text.trim()) return clean(text);
     }
@@ -166,8 +188,8 @@ export function installPageAgent(): void {
       return clean(hint);
     }
     if (tag === "select") return clean(el.getAttribute("title") || el.getAttribute("name"));
-    const text = (el as HTMLElement).innerText ?? el.textContent;
-    if (text?.trim()) return clean(text);
+    const text = visibleText(el);
+    if (text.trim()) return clean(text);
     // An icon link: its picture's alt, or a title on it or inside it (an upvote arrow).
     const img = el.querySelector("img[alt]");
     const titled = el.querySelector("[title], [aria-label]");
@@ -192,6 +214,31 @@ export function installPageAgent(): void {
     }
   };
 
+  const isSecret = (el: Element, role: string | null): boolean =>
+    role === "password" ||
+    SECRET.test(el.getAttribute("autocomplete") ?? "") ||
+    Boolean((el as HTMLInputElement).value && SECRET_NAME.test(nameOf(el)));
+
+  // Inline styles the mask replaced, put back after the screenshot.
+  const masked = new Map<HTMLElement, string | null>();
+  /** Hides what the user typed into secret fields while a screenshot is taken. */
+  const mask = (on: boolean): Record<string, unknown> => {
+    for (const [el, style] of masked) {
+      el.style.cssText = style ?? "";
+      if (style === null) el.removeAttribute("style");
+    }
+    masked.clear();
+    if (!on) return { ok: true };
+    for (const el of Array.from(document.querySelectorAll<HTMLInputElement>("input, textarea"))) {
+      if (!el.value || !isSecret(el, roleOf(el))) continue;
+      masked.set(el, el.getAttribute("style"));
+      el.style.setProperty("color", "transparent", "important");
+      el.style.setProperty("-webkit-text-fill-color", "transparent", "important");
+      el.style.setProperty("text-shadow", "none", "important");
+    }
+    return { ok: true };
+  };
+
   const stateOf = (el: Element, role: string): string[] => {
     const parts: string[] = [];
     const tag = el.tagName.toLowerCase();
@@ -199,11 +246,7 @@ export function installPageAgent(): void {
       const field = el as HTMLInputElement;
       if (role === "checkbox" || role === "radio") parts.push(field.checked ? "checked" : "unchecked");
       // The same fields the panel never types into: what the user filled in stays theirs.
-      else if (
-        role === "password" ||
-        SECRET.test(el.getAttribute("autocomplete") ?? "") ||
-        (field.value && SECRET_NAME.test(nameOf(el)))
-      ) {
+      else if (isSecret(el, role)) {
         parts.push(field.value ? "filled" : "empty");
       }
       else if (role !== "button" && role !== "file-input" && field.value) parts.push(`value=${quoted(clean(field.value, 60))}`);
@@ -424,7 +467,8 @@ export function installPageAgent(): void {
       autocomplete: (el.getAttribute("autocomplete") ?? "").toLowerCase(),
       formMethod: form ? method.toLowerCase() : "get",
       formAction: form ? action : "",
-      formHasPassword: Boolean(form?.querySelector("input[type=password]")),
+      // form.elements, not descendants: a field joins a form from anywhere with form="id".
+      formHasPassword: Array.from(form?.elements ?? []).some((node) => (node as HTMLInputElement).type === "password"),
       submits,
     };
     return { ok: true, info };
@@ -473,12 +517,8 @@ export function installPageAgent(): void {
     }
     const over = covering(el);
     if (over) {
-      const role = roleOf(over);
-      const label = clean((over as HTMLElement).innerText, 60);
-      return {
-        ok: false,
-        error: `${ref} is covered by ${role ?? over.tagName.toLowerCase()}${label ? ` ${quoted(label)}` : ""}; close it or scroll first.`,
-      };
+      // No page words here: errors reach the model outside the untrusted-content fence.
+      return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
     mouse(el, "pointerover");
     mouse(el, "pointerdown");
@@ -516,12 +556,14 @@ export function installPageAgent(): void {
     if (!proceed) return { ok: true };
     const tag = target.tagName.toLowerCase();
     if (name === "Enter") {
-      const form = (target as HTMLInputElement).form;
-      if (tag === "input" && form) {
-        form.requestSubmit();
+      const field = target as HTMLInputElement;
+      const inputType = tag === "input" ? (field.type || "text").toLowerCase() : "";
+      // Only a text field sends its form on Enter, the case the panel gates as a submit.
+      if (tag === "input" && field.form && !NOT_TEXT.has(inputType)) {
+        field.form.requestSubmit();
         return { ok: true, note: "Submitted the form." };
       }
-      if (tag === "button" || tag === "a") (target as HTMLElement).click();
+      if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
     } else if (name === "Backspace" && (tag === "input" || tag === "textarea")) {
@@ -618,6 +660,9 @@ export function installPageAgent(): void {
     // misses rather than landing on whatever has that number here.
     if (nextRef === 1 && typeof command.base === "number" && Number.isSafeInteger(command.base) && command.base > 0) {
       nextRef = command.base;
+      if (typeof command.span === "number" && Number.isSafeInteger(command.span) && command.span > 0) {
+        lastRef = command.base + command.span - 1;
+      }
     }
     try {
       const ref = typeof command.ref === "string" ? command.ref : "";
@@ -640,6 +685,8 @@ export function installPageAgent(): void {
           return scrollPage(String(command.direction ?? "down"), ref || undefined);
         case "press":
           return press(String(command.key ?? ""));
+        case "mask":
+          return mask(command.on === true);
         default:
           return { ok: false, error: "unknown command" };
       }

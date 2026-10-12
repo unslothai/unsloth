@@ -151,7 +151,9 @@ export function gateElement(
   }
   // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.
   const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(info.name);
-  if ((action === "click" || submits) && consequential) {
+  // Selecting a checkbox, radio or switch is a click on it.
+  const clicks = action === "click" || submits || (action === "select" && info.role !== "combobox");
+  if (clicks && consequential) {
     return { kind: "ask", ask: "click", host, name: clip(info.name), prompt: `Click “${clip(info.name)}” on ${host}?`, detail: describe(info) };
   }
   return ALLOW;

@@ -91,6 +91,8 @@ const seen = new Set<string>();
 export function runBrowserAction(action: BrowserAction, context: ActionContext): Promise<void> {
   if (seen.has(action.id)) return queue;
   seen.add(action.id);
+  // The server's wait starts when it sends the action, not when an earlier one lets this one run.
+  const expires = action.timeoutS ? Date.now() + (action.timeoutS - 2) * 1000 : null;
   const next = queue.then(async () => {
     // Ends with the chat run, with Stop, or when the server stops waiting: a question still open
     // then must not be answerable, or a late Allow would act for nobody.
@@ -98,7 +100,8 @@ export function runBrowserAction(action: BrowserAction, context: ActionContext):
     const abort = () => controller.abort();
     context.signal?.addEventListener("abort", abort, { once: true });
     if (context.signal?.aborted) abort();
-    const deadline = action.timeoutS ? setTimeout(abort, Math.max(1, action.timeoutS - 2) * 1000) : null;
+    if (expires !== null && expires <= Date.now()) abort();
+    const deadline = expires !== null ? setTimeout(abort, Math.max(0, expires - Date.now())) : null;
     setActiveAction(controller);
     let result: Result;
     try {
@@ -202,9 +205,11 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
   };
 }
 
-// Where each newly installed page starts its refs (page-agent.ts `base`): r1, r1001, r2001...
+// Each newly installed page numbers its refs in its own range (page-agent.ts `base`, `span`),
+// within the server's 9 digits: r1, r100001, r200001...
 let nextBase = 1;
-const REF_STRIDE = 1000;
+const REF_SPAN = 100_000;
+const LAST_BASE = 9_000 * REF_SPAN;
 
 /** One command in the tab's page, installing the agent there first if this page lacks it. */
 async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Promise<AgentAnswer> {
@@ -212,8 +217,8 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
   const started = Date.now();
   const fresh = () => {
     const base = nextBase;
-    nextBase = nextBase > 90 * REF_STRIDE ? 1 : nextBase + REF_STRIDE;
-    return { ...command, base };
+    nextBase = nextBase > LAST_BASE ? 1 : nextBase + REF_SPAN;
+    return { ...command, base, span: REF_SPAN };
   };
   while (true) {
     let reply: { installed: boolean; result: unknown } | null = null;
@@ -277,7 +282,8 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   if (tab.pageError || tab.nativeError) {
     return {
       ok: false,
-      error: `${tabUrl(tab)} could not be loaded (the site refused, needs a check the panel can't pass, or is unreachable).`,
+      // The host only: an error is outside the untrusted-content fence, and a path is the page's words.
+      error: `${hostOfUrl(tabUrl(tab)) || "The page"} could not be loaded (the site refused, needs a check the panel can't pass, or is unreachable).`,
     };
   }
   const answer = await pageCall(tab, op);
@@ -325,6 +331,7 @@ function navigationContext(action: BrowserAction, context: ActionContext) {
 async function perform(action: BrowserAction, context: ActionContext): Promise<Result> {
   const { signal } = context;
   if (useBrowserAgentStore.getState().stoppedRun === context.runKey) return { ok: false, error: STOPPED };
+  if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
   if (!browserPanelAvailable()) {
     return { ok: false, error: "the browser panel can't be shown in this window; ask the user to widen it or open the chat." };
   }
@@ -361,6 +368,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
   if (!ready) return { ok: false, error: "the browser tab closed." };
+  const moved = await stillAllowed(ready, action, context);
+  if (moved) return { ok: false, error: moved };
 
   switch (action.op) {
     case "snapshot":
@@ -393,9 +402,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   const submits =
     (action.op === "type" && action.submit) ||
     (action.op === "press" && action.key === "Enter" && TEXT_ROLES.has(info.role)) ||
-    (action.op === "click" && info.submits);
+    ((action.op === "click" || activates) && info.submits);
   if (submits && info.formAction) {
-    if (action.op !== "click") gates.push(gateElement("submit", info, before, action.policy, permissions()));
+    // A submit button's own click gate already asks what a submit would.
+    if (!info.submits) gates.push(gateElement("submit", info, before, action.policy, permissions()));
     // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
     if (hostOfUrl(info.formAction) !== hostOfUrl(before)) gates.push(gateNavigation(info.formAction, navigationContext(action, context)));
   }
@@ -466,6 +476,21 @@ async function arrive(
   return observeLoaded(tab, note);
 }
 
+/** The page the tab shows now, before the model reads or acts on it: the page may have moved on
+ *  its own, or the user declined where a redirect landed and it is still loaded. */
+async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: ActionContext): Promise<string | null> {
+  const url = tabUrl(tab);
+  const host = hostOfUrl(url);
+  if (!host) return null;
+  const blocked = navigationBlocks(url, action.policy, permissions());
+  if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;
+  if (knownHosts.has(host)) return null;
+  const refused = await pass(gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" }), context.signal);
+  if (refused) return `The page is on ${host}. ${refused}`;
+  knownHosts.add(host);
+  return null;
+}
+
 async function observeLoaded(tab: BrowserTab, note?: string): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
@@ -484,7 +509,16 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   const pages = document.querySelectorAll<HTMLElement>("[data-browser-page]");
   const element = pages[pages.length - 1];
   if (!element) return { ok: false, error: "the browser panel is not on screen." };
-  const blob = await screenshotPage(tab, element);
+  // What the user typed into card, code and password fields stays out of the picture, as out of the text.
+  const masked = await pageCall(tab, { op: "mask", on: true }).catch(() => null);
+  if (!masked?.ok) return { ok: false, error: "the page could not be prepared for a screenshot; use browser_snapshot." };
+  let blob: Blob | null;
+  try {
+    await sleep(100);
+    blob = await screenshotPage(tab, element);
+  } finally {
+    await pageCall(tab, { op: "mask", on: false }).catch(() => null);
+  }
   if (!blob) return { ok: false, error: "the screenshot failed." };
   const image = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();

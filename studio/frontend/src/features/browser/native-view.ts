@@ -166,7 +166,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       ? Promise.resolve(false)
       : saveAs
         ? approveChosenDownload(url, name)
-        : approveDownload(url, name, asking, tab ? agentDownloadRule(tab.id, url) : null);
+        : approveDownload(url, name, asking, tab ? agentDownloadRule(tab.id, asking, url) : null);
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {

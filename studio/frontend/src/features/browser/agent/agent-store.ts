@@ -118,10 +118,18 @@ export function answerQuestion(id: number, allow: boolean): void {
   answers.get(id)?.(allow);
 }
 
-/** The Downloads permission for a download from `tabId`, or null when that isn't the agent's tab. */
-export function agentDownloadRule(tabId: string, url: string): DownloadsRule | null {
+const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };
+
+/** The Downloads permission for a download from `tabId`, or null when that isn't the agent's tab.
+ *  The site that started it decides, so a blocked site can't hand its files to an allowed CDN; the
+ *  file's own host only when it has a rule of its own, and then the stricter one wins. */
+export function agentDownloadRule(tabId: string, site: string, fileUrl: string): DownloadsRule | null {
   const state = useBrowserAgentStore.getState();
-  return state.tabId === tabId ? ruleFor(url, state.permissions).rule.downloads : null;
+  if (state.tabId !== tabId) return null;
+  const rule = ruleFor(site || fileUrl, state.permissions).rule.downloads;
+  const file = ruleFor(fileUrl, state.permissions);
+  if (!file.site) return rule;
+  return DOWNLOAD_STRICTNESS[file.rule.downloads] > DOWNLOAD_STRICTNESS[rule] ? file.rule.downloads : rule;
 }
 
 let activeAction: AbortController | null = null;
