@@ -479,14 +479,19 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
 ];
 
-// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames, Diffusers pack (the single file
-// assembles the same components). Host RAM is the server's peak RSS plus the Gemma 4 encoder worker's, which runs
-// on the CPU in both tiers. 24 GiB: int8 DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host.
-// 48 GiB: int8 DiT resident, encoder streamed, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames. Host RAM is the server's peak
+// RSS plus the Gemma 4 encoder worker's.
+// Diffusers pack (int8 DiT), encoder on the CPU in both tiers. 24 GiB: DiT streamed by group offload, 21.0 GB card
+// peak, 47.7 + 25.3 GiB host. 48 GiB: DiT resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
 const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
   { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true },
   { gpuGb: 48, systemRamGb: 48 },
 ];
+
+// The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
+// tiers. 24 GiB: encoder on the CPU, 21.3 GB card peak, 72.0 + 25.3 GiB host. 48 GiB: encoder on the card, 37.2 GB
+// card peak, 72.1 + 23.6 GiB host. Both need about 97 GiB of RAM, so one tier covers them.
+const LTX25_SINGLE_FILE_OFFLOAD_TIERS: readonly OffloadFitTier[] = [{ gpuGb: 24, systemRamGb: 100 }];
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
@@ -570,7 +575,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "Lightricks/LTX-2.5",
         "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
         75,
-        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_OFFLOAD_TIERS },
+        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
       ),
     ],
   },

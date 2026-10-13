@@ -279,9 +279,10 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
   // LTX-2.5 (diffusers' pre-release "2.4" too), named the way the backend's ltx_name_version reads it, file before
   // repo ("ltx-2.5", "LTX25", "ltx2.5", "LTX-Video-2.5"). The distilled default (pack or file) runs 8 steps at
-  // guidance 1; a dev pick runs 30 at guidance 3. Like ltx25_is_dev, which gets the selected file and then the repo
-  // (or local folder): the file name decides when it names a variant ("distill" wins, then a dev / full / sft token;
-  // transformer_full folds to "transformer-full-"), otherwise the nearest folder naming LTX does.
+  // guidance 1; a dev pick runs 30 at guidance 3. Like ltx25_is_dev, which gets the selected file and then the repo:
+  // the file name decides when it names a variant ("distill" wins, then a dev / full / sft token; transformer_full
+  // folds to "transformer-full-"), otherwise the repo's name does. A local file's repo is the folder it sits in (the
+  // picker loads it from that directory), a Hub file's is the repo segment after the owner.
   const ltxMinor = (text: string) => {
     for (const found of text.toLowerCase().matchAll(
       /(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))/g,
@@ -294,7 +295,8 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const leaf = segments[segments.length - 1] ?? "";
   const minor = ltxMinor(leaf) ?? ltxMinor(repoId);
   if (minor === 4 || minor === 5) {
-    const repoLeaf = segments.slice(0, -1).reverse().find((segment) => /ltx/i.test(segment));
+    const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
+    const repoLeaf = local ? segments[segments.length - 2] : segments.length >= 3 ? segments[1] : undefined;
     for (const segment of [name, ...(repoLeaf ? [fold(repoLeaf)] : [])]) {
       if (/(^|-)distill/.test(segment)) break;
       if (/(^|-)(dev|full|sft)-/.test(segment)) return { steps: 30, guidance: 3 };
