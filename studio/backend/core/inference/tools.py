@@ -22684,7 +22684,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
-            return snapshot
+            return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
@@ -22722,8 +22722,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return snapshot
+                return _CappedSnapshot(snapshot)
     return snapshot
+
+
+class _CappedSnapshot(dict):
+    """A walk cut short by a cap: a file missing from it is not known to be gone."""
 
 
 # Scratch scripts of calls running right now. Chats in one project share a workdir and each snapshots all of it, so
@@ -22777,7 +22781,7 @@ def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
     with _scratch_lock:
         scratch = set(_active_scratch)
     kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
-    return kept, len(snap) < _MAX_SNAPSHOT_FILES
+    return kept, not isinstance(snap, _CappedSnapshot)
 
 
 def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
@@ -22823,7 +22827,13 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     rel = rel.replace(os.sep, "/")
     if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
         return {}
-    if file_history.store().needs_baseline(workdir):
+    try:
+        baseline = file_history.store().needs_baseline(workdir)
+    except Exception:
+        # History is an extra: an index it cannot open must not stop the edit.
+        logger.warning("file history: could not open the index", exc_info = True)
+        return {}
+    if baseline:
         snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
     else:
         snap, complete = _history_file_snapshot(workdir, rel), True
@@ -22874,8 +22884,6 @@ def _created_file_sentinels(
         return ""
     after = _snapshot_workdir_files(workdir)
     _history_end(token, after)
-    if token is not None and token.get("shared"):
-        return ""
     if token is not None and token.get("shared"):
         # A call that started while that walk was running. What it wrote is in `after` and cannot be told apart from
         # ours, so the same rule applies: the check above only saves the walk when the sharing was already known.

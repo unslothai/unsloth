@@ -66,7 +66,31 @@ function toastRestoreResult(
                 turn_ids: [undoTurnId],
                 dry_run: false,
               }).then(
-                () => toast.success(t("rewind.undone")),
+                (undo) => {
+                  const skippedUndo =
+                    rewindSkippedCount(undo) + undo.errors.length;
+                  if (rewindChangedCount(undo) === 0) {
+                    toast.error(t("rewind.undoFailed"), {
+                      ...(skippedUndo > 0
+                        ? {
+                            description: t("rewind.skippedCount", {
+                              count: skippedUndo,
+                            }),
+                          }
+                        : {}),
+                    });
+                  } else {
+                    toast.success(t("rewind.undone"), {
+                      ...(skippedUndo > 0
+                        ? {
+                            description: t("rewind.skippedCount", {
+                              count: skippedUndo,
+                            }),
+                          }
+                        : {}),
+                    });
+                  }
+                },
                 (error: unknown) =>
                   toast.error(t("rewind.undoFailed"), {
                     description: errorMessage(error),
@@ -192,7 +216,7 @@ const RewindChoices: FC<{
       (result) => {
         if (cancelled) return;
         setDryRun({ state: "done", result });
-        setMode(defaultRewindMode(result.has_changes));
+        setMode(defaultRewindMode(rewindChangedCount(result) > 0));
       },
       (error: unknown) => {
         if (!cancelled) setDryRun({ state: "error", message: errorMessage(error) });
@@ -204,7 +228,8 @@ const RewindChoices: FC<{
   }, [remoteId, turnKey]);
 
   const result = dryRun.state === "done" ? dryRun.result : null;
-  const hasChanges = Boolean(result?.has_changes);
+  // Rows can exist with nothing left to put back (right after a rewind): that is no change.
+  const hasChanges = result !== null && rewindChangedCount(result) > 0;
 
   const confirm = async () => {
     if (aui.thread().getState().isRunning) {
@@ -274,7 +299,7 @@ const RewindChoices: FC<{
           <p className="text-destructive">
             {t("rewind.checkFailed", { error: dryRun.message })}
           </p>
-        ) : !hasChanges || !result ? (
+        ) : !result?.has_changes ? (
           <p className="text-muted-foreground">{t("rewind.noFileChanges")}</p>
         ) : (
           <>

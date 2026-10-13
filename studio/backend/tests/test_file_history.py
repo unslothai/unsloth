@@ -212,3 +212,52 @@ def test_the_route_previews_rewinds_and_refuses_while_generating(chat, monkeypat
     done = call()
     assert done["deleted"] == ["a.txt"] and done["undo_turn_id"]
     assert not (workdir / "a.txt").exists()
+
+
+def test_a_walk_cut_short_by_the_folder_cap_is_not_complete(chat, monkeypatch):
+    workdir, _history = chat
+    for name in ("a", "b", "c"):
+        (workdir / name).mkdir()
+        (workdir / name / "f.txt").write_text(name)
+    assert _walk(str(workdir))[1] is True
+    # Fewer files than the file cap, so only the folder cap can say the walk missed some.
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 2)
+    assert _walk(str(workdir))[1] is False
+
+
+def test_a_damaged_copy_is_one_files_error_not_a_failed_rewind(chat):
+    workdir, history = chat
+    (workdir / "a.txt").write_text("a" * 4096)
+    (workdir / "b.txt").write_text("b" * 4096)
+    file_history.set_turn("chat-1", "u1")
+    _edit("a.txt", "a" * 4096, "x")
+    _edit("b.txt", "b" * 4096, "y")
+    for blob in Path(history.objects).glob("??/*"):
+        payload = blob.read_bytes()
+        if payload[:1] != b"R":
+            blob.write_bytes(payload[:1] + b"\0garbage")
+    report = _rewind(history, ["u1"])
+    assert report.errors and all("damaged" in error for error in report.errors)
+
+
+def test_the_cap_counts_history_not_the_folders_current_files(chat, monkeypatch):
+    workdir, history = chat
+    (workdir / "big.txt").write_text("z" * 1000)
+    file_history.set_turn("chat-1", "u1")
+    _edit("app.py", "", "x = 1\n")
+    monkeypatch.setattr(file_history, "GLOBAL_CAP_BYTES", 1)
+    history.gc()
+    # Only the current images (big.txt, app.py) are over the cap, and they cannot be dropped.
+    assert history._db.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] >= 1
+
+
+def test_edit_file_still_works_when_history_cannot_open(chat, monkeypatch):
+    workdir, _history = chat
+
+    def broken():
+        raise OSError("read-only")
+
+    monkeypatch.setattr(file_history, "store", broken)
+    file_history.set_turn("chat-1", "u1")
+    _edit("app.py", "", "x = 1\n")
+    assert (workdir / "app.py").read_text() == "x = 1\n"

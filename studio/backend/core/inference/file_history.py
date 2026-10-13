@@ -191,14 +191,19 @@ class FileHistory:
         with open(self._blob_path(digest), "rb") as fh:
             payload = fh.read()
         codec, body = payload[:1], payload[1:]
-        if codec == _ZLIB:
-            data = zlib.decompress(body)
-        elif codec == _ZSTD:
-            if _ZSTD_D is None:
-                raise OSError("this file was stored with zstd, which is not installed")
-            data = _ZSTD_D.decompress(body)
-        else:
-            data = body
+        try:
+            if codec == _ZLIB:
+                data = zlib.decompress(body)
+            elif codec == _ZSTD:
+                if _ZSTD_D is None:
+                    raise OSError("this file was stored with zstd, which is not installed")
+                data = _ZSTD_D.decompress(body)
+            else:
+                data = body
+        except OSError:
+            raise
+        except Exception as exc:  # zlib.error, zstd.ZstdError: one file's error, not the rewind's
+            raise OSError("stored copy is damaged") from exc
         # A torn write after a crash is reported, never restored.
         if hashlib.sha256(data).hexdigest() != digest:
             raise OSError("stored copy is damaged")
@@ -562,8 +567,31 @@ class FileHistory:
 
     def delete_chat(self, chat_id) -> None:
         with self._lock:
+            workdirs = [
+                row[0]
+                for row in self._db.execute(
+                    "SELECT DISTINCT workdir FROM checkpoints WHERE chat_id=?", (chat_id,)
+                )
+            ]
             self._db.execute("DELETE FROM checkpoints WHERE chat_id=?", (chat_id,))
+            # A folder no other chat has history in keeps no stored images either.
+            for workdir in workdirs:
+                if (
+                    workdir not in self._active
+                    and self._db.execute(
+                        "SELECT 1 FROM checkpoints WHERE workdir=? AND chat_id IS NOT NULL LIMIT 1",
+                        (workdir,),
+                    ).fetchone()
+                    is None
+                ):
+                    self._forget_workdir(workdir)
             self.gc()
+
+    def _forget_workdir(self, workdir: str) -> None:
+        self._db.execute("DELETE FROM checkpoints WHERE workdir=?", (workdir,))
+        self._db.execute("DELETE FROM workdir_state WHERE workdir=?", (workdir,))
+        self._db.execute("DELETE FROM workdirs WHERE workdir=?", (workdir,))
+        self._state.pop(workdir, None)
 
     def gc(self) -> int:
         """Oldest checkpoints go first while the store is over its cap, then unreferenced blobs."""
@@ -571,8 +599,13 @@ class FileHistory:
             self._db.execute(
                 "DELETE FROM checkpoints WHERE kind='external' AND id NOT IN (SELECT checkpoint_id FROM file_versions)"
             )
+            # Counts history only: images of the files folders hold now cannot be freed by dropping
+            # checkpoints, and counting them would drop every checkpoint once they pass the cap.
             while (
-                self._db.execute("SELECT COALESCE(SUM(stored),0) FROM blobs").fetchone()[0]
+                self._db.execute(
+                    "SELECT COALESCE(SUM(stored),0) FROM blobs b"
+                    " WHERE NOT EXISTS (SELECT 1 FROM workdir_state WHERE blob=b.hash)"
+                ).fetchone()[0]
                 > GLOBAL_CAP_BYTES
             ):
                 oldest = self._db.execute("SELECT MIN(id) FROM checkpoints").fetchone()[0]
