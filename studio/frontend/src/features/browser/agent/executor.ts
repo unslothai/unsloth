@@ -322,9 +322,9 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
   }
 }
 
-/** Waits on the page at `url` in `tabId` for what an action sent at `since` set off: every request
- *  the page started since then, and its DOM, given `changingMaxMs` to rest. */
-function waitOnPage(tabId: string, url: string, since: number, changingMaxMs: number, signal?: AbortSignal) {
+/** Waits on the page in `tabId` for what an action sent at `since` set off: every request the page
+ *  started since then, and its DOM, given `changingMaxMs` to rest. `left` says when it is another page. */
+function waitOnPage(tabId: string, left: (tab: BrowserTab) => boolean, since: number, changingMaxMs: number, signal?: AbortSignal) {
   return waitForPage({
     maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, now: Date.now, sleep,
     status: () => {
@@ -333,7 +333,7 @@ function waitOnPage(tabId: string, url: string, since: number, changingMaxMs: nu
     },
     moved: () => {
       const tab = findTab(tabId);
-      return !tab || tab.loading || tabUrl(tab) !== url;
+      return !tab || tab.loading || left(tab);
     },
     aborted: () => Boolean(signal?.aborted),
   });
@@ -343,7 +343,7 @@ function waitOnPage(tabId: string, url: string, since: number, changingMaxMs: nu
  *  navigation it started. */
 async function settle(tabId: string, urlBefore: string, since: number, signal?: AbortSignal): Promise<BrowserTab | null> {
   await sleep(120);
-  const state = await waitOnPage(tabId, urlBefore, since, SETTLE_MAX_MS, signal);
+  const state = await waitOnPage(tabId, (tab) => tabUrl(tab) !== urlBefore, since, SETTLE_MAX_MS, signal);
   if (state === "moved" && findTab(tabId)) return waitForLoad(tabId, signal);
   return findTab(tabId) ?? null;
 }
@@ -351,10 +351,11 @@ async function settle(tabId: string, urlBefore: string, since: number, signal?: 
 /** After a load that began at `since`, until the page has filled itself in (a list a script fetches
  *  after load reads as empty until then): up to SETTLE_MAX_MS for its requests, but only
  *  FILL_QUIET_MAX_MS for a DOM that never rests (an animation), which a read handles fine. True when
- *  requests were still open at the end. A page that moved on is left to observe(), and the next
- *  action checks where it went. */
+ *  requests were still open at the end. A router rewriting the address is still this page; a page
+ *  that moved on is left to observe(), and the next action checks where it went. */
 async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal): Promise<boolean> {
-  return (await waitOnPage(tab.id, tabUrl(tab), since, FILL_QUIET_MAX_MS, signal)) === "loading";
+  const entry = currentEntry(tab);
+  return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal)) === "loading";
 }
 
 async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
@@ -692,7 +693,9 @@ async function observeLoaded(tab: BrowserTab, since: number, note?: string, sign
   if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, since, signal))) {
     note = [note, "The page still had requests open when read; snapshot again if something is missing."].filter(Boolean).join(" ");
   }
-  return observe(tab, note);
+  // Read at the address its router (same site, shell-checked) moved to while it filled in.
+  const fresh = findTab(tab.id);
+  return observe(fresh && !fresh.loading && currentEntry(fresh) === entry ? fresh : tab, note);
 }
 
 async function screenshot(tab: BrowserTab): Promise<Result> {
