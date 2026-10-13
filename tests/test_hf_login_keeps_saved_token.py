@@ -18,7 +18,12 @@ UTILS_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_util
 def _load(name = "hf_login"):
     tree = ast.parse(UTILS_PATH.read_text(encoding = "utf-8"))
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    namespace = {"Optional": Optional, "logger": logging.getLogger(__name__), "contextlib": contextlib, "os": os}
+    namespace = {
+        "Optional": Optional,
+        "logger": logging.getLogger(__name__),
+        "contextlib": contextlib,
+        "os": os,
+    }
     exec(compile(ast.Module([node], []), str(UTILS_PATH), "exec"), namespace)
     return namespace[name]
 
