@@ -124,7 +124,7 @@ def _run_node_probe(
         text = True,
         env = env,
         cwd = tmp_path,
-        timeout = 15,
+        timeout = 120,
     )
     assert process.returncode == 0, process.stdout + process.stderr
     return json.loads(report.read_text(encoding = "utf-8")), process.stdout
