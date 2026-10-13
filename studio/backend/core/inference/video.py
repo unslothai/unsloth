@@ -6361,12 +6361,10 @@ class VideoBackend:
 
         components = video_components_gb(
             fam,
-            # a GGUF / single-file load takes its companions from the resolved base (a caller-supplied base_repo
-            # included), not the family default
+            # GGUF / single-file: companions come from the resolved base, not the family default
             repo_id if kind == "pipeline" else base,
             allow_hub = not local_files_only,
             token = hf_token,
-            # a dev (single-stage) LTX-2.5 load attaches no latent upsampler, so it is not a loaded role
             dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id),
         )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
@@ -9905,15 +9903,12 @@ class VideoBackend:
                         offload_policy = state.offload_policy,
                         device = state.device,
                     )
-                    # The step-cache mode THIS request runs: an AUTO decision is re-taken per request below
-                    # (maybe_toggle_step_cache), so the key uses the same rule now and is corrected after the
-                    # runner-aware toggle if that disagrees.
+                    # Key on the cache mode this request runs; corrected after the runner-aware toggle.
                     if state.cache_auto:
                         from .diffusion_cache import auto_step_cache_mode
                         request_cache_mode = auto_step_cache_mode(steps)
                     else:
                         request_cache_mode = getattr(state, "transformer_cache", None)
-                    # This request's peak sizes the next request of its size (refusal below, Wan residency fit).
                     calibration = video_stream_residency.calibration_key(
                         fam.name,
                         getattr(state, "repo_id", None),
@@ -9934,7 +9929,6 @@ class VideoBackend:
                         memory_mode = getattr(state, "memory_mode", None),
                         transformer_quant = getattr(state, "transformer_quant", None),
                         text_encoder_quant = getattr(state, "text_encoder_quant", None),
-                        # fps (audio length), keyframes / references (extra latents) and CFG all move the peak
                         fps = out_fps if getattr(fam, "has_audio", False) else None,
                         conditioning = conditioning,
                         first_frame = first_pil is not None,
@@ -9964,7 +9958,6 @@ class VideoBackend:
                             logger = logger,
                         )
                     else:
-                        # the fit arms its own measurement; every other family is armed here
                         video_stream_residency.arm_request(
                             state.pipe,
                             key = calibration,
