@@ -381,3 +381,27 @@ def test_a_folder_variant_delete_takes_its_own_voice_files(hub, monkeypatch):
     assert (snap / "PocketTTS-GGUF/french/embeddings/alba.safetensors").exists()
     assert (snap / "PocketTTS-GGUF/french/pocket-tts-french-q8_0.gguf").exists()
     assert len(_left(hub)) == 4
+
+
+def test_a_folder_delete_preview_counts_extras_its_variants_share(hub, monkeypatch):
+    from hub.services.models import companion_cleanup, deletion
+
+    _idle(monkeypatch)
+    snap = hub / SNAPSHOT
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
+    for quant in ("q8_0", "f16"):
+        rel = f"PocketTTS-GGUF/english/pocket-tts-english-{quant}.gguf"
+        _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+    voice = blobs / "voice-english"
+    voice.write_bytes(b"v" * 900)
+    path = snap / "PocketTTS-GGUF/english/embeddings/alba.safetensors"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    os.symlink(os.path.relpath(voice, path.parent), path)
+    acm.forget()
+    ggufs = sum(p.stat().st_size for p in (snap / "PocketTTS-GGUF/english").glob("*.gguf"))
+    impact = asyncio.run(companion_cleanup.delete_impact_response(pocket, None))
+    assert impact["reclaimed_bytes"] == ggufs + 900
+    asyncio.run(deletion.delete_cached_model_response(pocket, None))
+    assert not path.exists() and not voice.exists()
+    assert len(_left(hub)) == 3

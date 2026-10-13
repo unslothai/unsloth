@@ -250,12 +250,46 @@ def _folder_delete_impact_blocking(
     return {
         "repo_id": repo_id,
         "variant": variant,
-        "reclaimed_bytes": sum(impact["reclaimed_bytes"] for impact in impacts),
+        "reclaimed_bytes": sum(impact["reclaimed_bytes"] for impact in impacts)
+        + (_shared_folder_extra_bytes(repo_id, keys) if len(keys) > 1 else 0),
         "cache_path": impacts[0]["cache_path"],
         "retained_companions": merged("retained_companions"),
         "freeable_companions": merged("freeable_companions"),
         "blocked_by": sorted({name for impact in impacts for name in impact["blocked_by"]}),
     }
+
+
+def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
+    """Bytes of the files several deleted variants of one folder share and no kept variant lists
+    (a voice embedding beside two quants). Each per-variant preview counts them as still needed by
+    the other, but deleting the variants in turn removes them with the last."""
+    from core.inference.audio_cpp_models import resolve, snapshot_dirs
+
+    model = resolve(repo_id, network = False)
+    if model is None or not model.repo_id:
+        return 0
+    deleting = {key.lower() for key in keys}
+    listed: dict[str, int] = {}
+    kept: set[str] = set()
+    for candidate in model.variants:
+        files = {f.path for f in candidate.files}
+        if candidate.primary and gguf_variant_key(candidate.primary).lower() in deleting:
+            for path in files:
+                listed[path] = listed.get(path, 0) + 1
+        else:
+            kept |= files
+    total = 0
+    seen: set[Path] = set()
+    for path in sorted(p for p, count in listed.items() if count > 1 and p not in kept):
+        for snapshot in snapshot_dirs(model.repo_id):
+            try:
+                blob = (snapshot / path).resolve(strict = True)
+            except OSError:
+                continue
+            if blob not in seen:
+                seen.add(blob)
+                total += blob.stat().st_size
+    return total
 
 
 async def delete_impact_response(
