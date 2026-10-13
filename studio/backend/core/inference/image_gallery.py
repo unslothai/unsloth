@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import json
 import os
 import re
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -43,17 +45,26 @@ def gallery_dir() -> Path:
     return ensure_account_dir(account_path("images"))
 
 
+# Workflows whose strength is AUTOMATIC1111's img2img "Denoising strength".
+_IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit")
+
+
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
     lines = [str(meta.get("prompt", ""))]
     negative = meta.get("negative_prompt")
     if negative:
         lines.append(f"Negative prompt: {negative}")
-    lines.append(
+    fields = (
         f"Steps: {meta.get('steps')}, CFG scale: {meta.get('guidance')}, "
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
+        fields += f", Denoising strength: {meta['strength']}"
+    if meta.get("generator"):
+        fields += f", Version: {meta['generator']}"
+    lines.append(fields)
     return "\n".join(lines)
 
 
@@ -84,10 +95,34 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+@functools.lru_cache(maxsize = 1)
+def _generator() -> str:
+    try:
+        from utils.studio_version import get_studio_version
+        return f"Unsloth Studio {get_studio_version()}"
+    except Exception:
+        return "Unsloth Studio"
+
+
+def _engine() -> Optional[str]:
+    # Read only when a generation already loaded the router: diffusers and the native engine draw
+    # different pixels from the same seed, so a replay needs to know which one ran.
+    router = sys.modules.get("core.inference.diffusion_engine_router")
+    try:
+        return router.active_engine_name() if router is not None else None
+    except Exception:
+        return None
+
+
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
-    meta = {**meta, "schema_version": RECIPE_SCHEMA_VERSION}
+    meta = {
+        "engine": _engine(),
+        "generator": _generator(),
+        **meta,
+        "schema_version": RECIPE_SCHEMA_VERSION,
+    }
     # Encoded before the folder is looked up: a Settings move during the encode would otherwise
     # finish first, and the image land in the folder it left.
     data = _png_bytes(image, meta)

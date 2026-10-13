@@ -9,7 +9,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { Bookmark, Check, ChevronDown, Trash2 } from "lucide-react";
+import { Bookmark, Check, ChevronDown, ImageUp, Trash2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
 
@@ -22,6 +22,8 @@ interface MediaGenerationPresetControlProps {
   onSelect: (name: string) => void;
   onSave: (name: string) => Promise<string | null>;
   onDelete: () => Promise<boolean>;
+  // Images only: restore the settings embedded in an image file.
+  onImportFromImage?: () => void;
 }
 
 export function MediaGenerationPresetControl({
@@ -33,6 +35,7 @@ export function MediaGenerationPresetControl({
   onSelect,
   onSave,
   onDelete,
+  onImportFromImage,
 }: MediaGenerationPresetControlProps) {
   const [open, setOpen] = useState(false);
   const [draftName, setDraftName] = useState<string | null>(null);
@@ -214,6 +217,20 @@ export function MediaGenerationPresetControl({
               {saveLabel}
             </Button>
           </div>
+          {onImportFromImage ? (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                changeOpen(false);
+                onImportFromImage();
+              }}
+              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <ImageUp className="size-3.5" />
+              Load settings from an image
+            </button>
+          ) : null}
           {activeIsCustom ? (
             <button
               type="button"

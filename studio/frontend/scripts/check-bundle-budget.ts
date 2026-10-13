@@ -54,8 +54,11 @@ export const BUDGET = {
   // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
   // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
   // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
-  transferBytes: 2_007_100,
-  rawBytes: 6_687_800,
+  // The image info stamp setting (#13444) adds its Library settings row and strings to the eager
+  // settings and locale chunks: 6,525.0 -> 6,525.3 KB raw, 1,960.0 -> 1,960.2 KB transfer against
+  // 318ab67, one machine and build. The stamp and metadata code itself loads with the Images page.
+  transferBytes: 2_007_400,
+  rawBytes: 6_688_200,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

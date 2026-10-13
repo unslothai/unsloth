@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Optional visible info stamp for a downloaded image: `Model | date time | Seed: N` on a shaded
- *  bar along the bottom edge. Drawn only on the exported copy, from the stored original, so the
- *  gallery file, the recipe and any later edit input stay clean and re-exporting never stacks. */
+/** Info stamp for a downloaded image: `Model | date time | Seed: N` on a shaded bar along the
+ *  bottom edge. Drawn only on the exported copy, from the stored original, so the gallery file and
+ *  any later edit input stay clean and re-exporting never stacks. */
 
 export interface StampSource {
   model: string | null;
@@ -103,62 +103,4 @@ export function drawInfoStamp(
     ctx.fillText(BRAND, width - layout.padX, mid);
   }
   return layout;
-}
-
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const TEXT_CHUNKS = new Set(["tEXt", "iTXt", "zTXt"]);
-
-interface PngChunk {
-  type: string;
-  start: number;
-  end: number;
-}
-
-function pngChunks(bytes: Uint8Array): PngChunk[] | null {
-  if (bytes.length < 8 || PNG_SIGNATURE.some((b, i) => bytes[i] !== b)) {
-    return null;
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const chunks: PngChunk[] = [];
-  let offset = 8;
-  while (offset + 12 <= bytes.length) {
-    const length = view.getUint32(offset);
-    const end = offset + 12 + length;
-    if (end > bytes.length) {
-      return null;
-    }
-    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
-    chunks.push({ type, start: offset, end });
-    offset = end;
-    if (type === "IEND") {
-      return chunks;
-    }
-  }
-  return null;
-}
-
-/** `target` with its text chunks replaced by `source`'s (copied verbatim, CRCs intact) right after
- *  IHDR, so a stamped PNG still carries the recipe. Either side unparsable: `target` unchanged. */
-export function copyPngTextChunks(
-  source: Uint8Array,
-  target: Uint8Array<ArrayBuffer>,
-): Uint8Array<ArrayBuffer> {
-  const from = pngChunks(source);
-  const into = pngChunks(target);
-  if (!from || !into || into[0]?.type !== "IHDR") {
-    return target;
-  }
-  const text = from.filter((c) => TEXT_CHUNKS.has(c.type));
-  const parts: Uint8Array[] = [target.subarray(0, into[0].end)];
-  for (const c of text) parts.push(source.subarray(c.start, c.end));
-  for (const c of into.slice(1)) {
-    if (!TEXT_CHUNKS.has(c.type)) parts.push(target.subarray(c.start, c.end));
-  }
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
 }

@@ -5,14 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  copyPngTextChunks,
   drawInfoStamp,
   infoStampText,
   layoutInfoStamp,
   stampModelName,
   type StampContext,
 } from "../src/features/images/lib/info-stamp.ts";
-import { readSrc } from "./helpers/kit.ts";
 
 function fakeContext() {
   const calls: { op: string; args: unknown[] }[] = [];
@@ -84,95 +82,4 @@ test("a narrow image drops the brand and shrinks the line to fit", () => {
   assert.equal(layout.showBrand, false);
   ctx.font = `${layout.fontPx}px monospace`;
   assert.ok(ctx.measureText(text).width <= 256 - layout.padX * 2);
-});
-
-const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-
-function chunk(type: string, data: number[] = []): number[] {
-  const len = data.length;
-  return [
-    (len >>> 24) & 255,
-    (len >>> 16) & 255,
-    (len >>> 8) & 255,
-    len & 255,
-    ...[...type].map((c) => c.charCodeAt(0)),
-    ...data,
-    1,
-    2,
-    3,
-    4,
-  ];
-}
-
-const bytes = (s: string) => [...s].map((c) => c.charCodeAt(0));
-
-function png(...chunks: number[][]): Uint8Array<ArrayBuffer> {
-  return new Uint8Array([...SIG, ...chunks.flat()]);
-}
-
-function chunkTypes(p: Uint8Array): string[] {
-  const types: string[] = [];
-  let at = 8;
-  while (at < p.length) {
-    const len =
-      (p[at] << 24) | (p[at + 1] << 16) | (p[at + 2] << 8) | p[at + 3];
-    types.push(String.fromCharCode(...p.subarray(at + 4, at + 8)));
-    at += 12 + len;
-  }
-  return types;
-}
-
-test("the stamped PNG keeps the original's recipe chunks, once", () => {
-  const original = png(
-    chunk("IHDR", [0, 0, 0, 1]),
-    chunk("tEXt", bytes("unsloth\0{}")),
-    chunk("tEXt", bytes("parameters\0a sloth")),
-    chunk("IDAT", [9, 9]),
-    chunk("IEND"),
-  );
-  const canvasPng = png(
-    chunk("IHDR", [0, 0, 0, 2]),
-    chunk("IDAT", [7]),
-    chunk("IEND"),
-  );
-  const once = copyPngTextChunks(original, canvasPng);
-  assert.deepEqual(chunkTypes(once), ["IHDR", "tEXt", "tEXt", "IDAT", "IEND"]);
-  // The stamped pixels and header are the canvas's, not the original's.
-  assert.ok(Buffer.from(once).includes(Buffer.from([0, 0, 0, 2])));
-  assert.ok(
-    Buffer.from(once).includes(Buffer.from(bytes("parameters\0a sloth"))),
-  );
-  assert.deepEqual(copyPngTextChunks(original, once), once);
-});
-
-test("an unparsable PNG on either side leaves the canvas output untouched", () => {
-  const canvasPng = png(chunk("IHDR", [1]), chunk("IDAT", [7]), chunk("IEND"));
-  assert.equal(
-    copyPngTextChunks(new Uint8Array([1, 2, 3]), canvasPng),
-    canvasPng,
-  );
-  const truncated = canvasPng.subarray(0, canvasPng.length - 3);
-  assert.equal(copyPngTextChunks(canvasPng, truncated), truncated);
-});
-
-test("the existing download choices are unchanged and the stamp is a separate item", () => {
-  const page = readSrc("features/images/images-page.tsx");
-  for (const [label, format] of [
-    ["PNG (original, keeps recipe)", "png"],
-    ["JPEG (smaller)", "jpeg"],
-    ["WebP", "webp"],
-  ]) {
-    const at = page.indexOf(`>\n                        ${label}\n`);
-    assert.ok(at > 0, `${label} item moved`);
-    const call = page.lastIndexOf("onClick", at);
-    assert.ok(
-      page
-        .slice(call, at)
-        .includes(`downloadImage(selectedSrc, selected, "${format}")`),
-      `${label} no longer downloads ${format}`,
-    );
-  }
-  assert.ok(page.includes("downloadStampedImage(selectedSrc, selected)"));
-  // The one-click quick download still saves the untouched original.
-  assert.match(page, /await downloadImage\(src, image, "png"\);/);
 });

@@ -1011,6 +1011,9 @@ export const he = {
       resetButton: "איפוס",
       resetDone: "הגדרות הספרייה אופסו",
       storageSection: "אחסון",
+      downloadsSection: "הורדות תמונות",
+      imageInfoStamp: "חותמת מידע",
+      imageInfoStampDescription: "הצגת המודל, התאריך וה-seed בתחתית התמונות שמורידים. הגדרות היצירה נשמרות בתוך הקובץ בכל מקרה.",
       storageDescription:
         "פתח קטגוריה כדי לראות את הקבצים שלה מהגדול לקטן, ומחק את מה שאינך צריך עוד.",
       storageUsed: "{size} בשימוש הספרייה",
