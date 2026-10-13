@@ -98,7 +98,7 @@ function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null)
     window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
     cfg: { url: pageUrl }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
-    setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer,
+    setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer, URLSearchParams,
   });
   /** The panel's answer to request `id`, as the shell relays it. */
   const reply = (id: unknown, answer: Record<string, unknown>, source: unknown = parent) =>
@@ -401,6 +401,24 @@ test("an XHR's Document body is sent serialized, as UTF-8 HTML or XML", async ()
     const sent = t.posted.at(-1) as Record<string, unknown>;
     assert.equal(new TextDecoder().decode(sent.body as ArrayBuffer), markup);
     assert.deepEqual(plain(sent.headers), [["Content-Type", type]]);
+  }
+});
+
+test("an XHR's text body relabels the page's charset as the UTF-8 it is sent in", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  for (const [type, body, sent] of [
+    ["text/plain;charset=iso-8859-1", "caf\u00e9", "text/plain;charset=UTF-8"],
+    ['text/plain; charset="Shift_JIS"; foo=bar', "x", 'text/plain; charset="UTF-8"; foo=bar'],
+    ["text/plain;Charset=latin1;format=flowed", new URLSearchParams("a=1"), "text/plain;Charset=UTF-8;format=flowed"],
+    ["text/plain", "x", "text/plain"],
+    ["application/octet-stream;charset=latin1", new Uint8Array([233]).buffer, "application/octet-stream;charset=latin1"],
+  ] as const) {
+    const xhr = new t.window.XMLHttpRequest() as PageXHR;
+    xhr.open("POST", "/api");
+    xhr.setRequestHeader("Content-Type", type);
+    xhr.send(body as unknown as string);
+    await tick();
+    assert.deepEqual(plain((t.posted.at(-1) as Record<string, unknown>).headers), [["Content-Type", sent]]);
   }
 });
 

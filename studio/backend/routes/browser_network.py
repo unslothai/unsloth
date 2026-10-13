@@ -190,7 +190,12 @@ BROWSER_NETWORK_JS = r"""
               const request = new Request(state.url, { method: "POST", body: content });
               const type = !(body instanceof Document) ? request.headers.get("content-type")
                 : (html ? "text/html" : "application/xml") + ";charset=UTF-8";
-              if (type && !state.headers.some(([name]) => name.toLowerCase() === "content-type")) state.headers.push(["Content-Type", type]);
+              const own = state.headers.filter(([name]) => name.toLowerCase() === "content-type");
+              if (!own.length) { if (type) state.headers.push(["Content-Type", type]); }
+              // Sent as UTF-8, so the browser relabels the page's charset as UTF-8, other parameters kept.
+              else if (typeof content === "string" || content instanceof URLSearchParams) {
+                for (const header of own) header[1] = header[1].replace(/(;\s*charset=)("?)[^;"]*/i, "$1$2UTF-8");
+              }
               return request.arrayBuffer();
             })();
             bytes
