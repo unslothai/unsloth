@@ -90,7 +90,7 @@ const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
 function isLoopbackBase(base: string): boolean {
   try {

@@ -230,3 +230,10 @@ test("the Agents tab uses the shared agent list and copy blocks", () => {
   assert.doesNotMatch(TAB, /const SUPPORTED_AGENTS/);
   assert.doesNotMatch(TAB, /function (CommandBlock|useCopyButton)\(/);
 });
+
+test("every agent whose unsloth start supports --as-subagent shows the subagent setup", () => {
+  assert.match(
+    TAB,
+    /const SUBAGENT_AGENT_IDS = new Set\(\["claude", "codex", "opencode", "pi"\]\);/,
+  );
+});

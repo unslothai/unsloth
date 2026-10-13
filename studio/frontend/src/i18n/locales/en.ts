@@ -2485,7 +2485,7 @@ export const en = {
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
         asSubagent:
-          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         reasoning:
           "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
