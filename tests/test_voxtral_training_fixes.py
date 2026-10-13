@@ -56,6 +56,22 @@ def test_set_legacy_format_and_prefix_still_reach_the_tokenizer(tmp_path):
     assert seen["legacy_format"] is False and seen["filename_prefix"] == "p"
 
 
+def test_save_only_options_stay_out_of_push_to_hub(tmp_path):
+    pushed = {}
+
+    class _Pushing:
+        def original_save_pretrained(self, save_directory, **kwargs):
+            pass
+
+        def push_to_hub(self, repo_id, **kwargs):
+            pushed.update(kwargs, repo_id = repo_id)
+
+    unsloth_tokenizer_save_pretrained(
+        _Pushing(), str(tmp_path), legacy_format = False, push_to_hub = True, token = "t"
+    )
+    assert pushed == {"repo_id": str(tmp_path), "token": "t"}
+
+
 def test_patched_voxtral_processor_saves(tmp_path):
     pytest.importorskip("mistral_common")
     try:

@@ -7437,14 +7437,15 @@ def unsloth_tokenizer_save_pretrained(
     **kwargs,
 ):
     # Forward only what the caller set: MistralCommonBackend (Voxtral, tekken checkpoints) rejects these even as None.
+    save_kwargs = dict(kwargs)
     if legacy_format is not None:
-        kwargs["legacy_format"] = legacy_format
+        save_kwargs["legacy_format"] = legacy_format
     if filename_prefix is not None:
-        kwargs["filename_prefix"] = filename_prefix
+        save_kwargs["filename_prefix"] = filename_prefix
     result = self.original_save_pretrained(
         save_directory,
         push_to_hub = False,
-        **kwargs,
+        **save_kwargs,
     )
     _preserve_sentencepiece_tokenizer_assets(
         self,
