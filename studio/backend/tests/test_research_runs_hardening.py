@@ -251,6 +251,7 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"Authorization: Custom oauthAccessToken = {secret} why",
         f"Authorization: Digest username=bob;token= {secret} why",
         f"Authorization: Bearer oauthAccessToken= {secret} why",
+        f"Authorization: Bearer oauthAccessToken=`{secret}` why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text
