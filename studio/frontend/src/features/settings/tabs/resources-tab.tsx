@@ -25,6 +25,7 @@ import {
   sharedMemoryAvailableGb,
 } from "@/hooks/gpu-memory-display";
 import {
+  deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
@@ -891,6 +892,8 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
@@ -914,6 +917,10 @@ export function ResourcesTab() {
                       <span className="text-xs text-muted-foreground">
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
+                    ) : sharedSplit ? (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}
+                      </span>
                     ) : (
                       <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}{" "}
@@ -921,6 +928,17 @@ export function ResourcesTab() {
                       </span>
                     )}
                   </div>
+                  {/* Own line: beside the pill it truncates the backend label first. */}
+                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {sharedSplit.dedicated > 0
+                        ? t("settings.resources.environment.vramWithShared", {
+                            vram: formatGiB(sharedSplit.dedicated),
+                            shared: formatGiB(sharedSplit.shared),
+                          })
+                        : t("settings.resources.gpu.sharedWithSystemRam")}
+                    </div>
+                  ) : null}
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
                     being squeezed into the gap beside them. Same 392px as the
