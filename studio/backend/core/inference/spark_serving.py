@@ -611,16 +611,19 @@ async def ssh_run(
     remote: str,
     *,
     timeout: float = 20.0,
+    stdin: Optional[bytes] = None,
 ) -> Tuple[int, str, str]:
     """Run one command on the peer without blocking the loop. rc 255 on transport failure."""
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *ssh_argv(peer, remote),
+            stdin = asyncio.subprocess.PIPE if stdin is not None else None,
             stdout = asyncio.subprocess.PIPE,
             stderr = asyncio.subprocess.PIPE,
         )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout = timeout)
+        exchange = proc.communicate(stdin) if stdin is not None else proc.communicate()
+        out, err = await asyncio.wait_for(exchange, timeout = timeout)
         return (
             proc.returncode if proc.returncode is not None else 255,
             out.decode("utf-8", "replace"),
@@ -1093,6 +1096,40 @@ def generated_launch_files(files: Sequence[str]) -> List[str]:
         except OSError:
             continue
     return out
+
+
+# The per-launch llama-server key (llama_cpp._write_direct_stream_key): the replica runs the same
+# argv, so its --api-key-file must exist on the peer too, or every replica load falls back to single.
+_SECRET_NAME_PATTERNS = ("llama_api_key_*",)
+
+
+def secret_launch_files(files: Sequence[str]) -> List[str]:
+    return [
+        str(path)
+        for path in files
+        if any(fnmatch.fnmatch(osp.basename(str(path)), p) for p in _SECRET_NAME_PATTERNS)
+        and osp.isfile(str(path))
+    ]
+
+
+async def replicate_secret_files(peer: str, files: Sequence[str]) -> Optional[str]:
+    """Copy each key file to the same path on the peer, 0600, over ssh stdin (never in an argv)."""
+    for path in files:
+        try:
+            payload = Path(path).read_bytes()
+        except OSError as exc:
+            return f"{path} could not be read ({exc})"
+        target = shlex.quote(path)
+        parent = shlex.quote(osp.dirname(path))
+        rc, _out, err = await ssh_run(
+            peer,
+            f"umask 077 && mkdir -p {parent} && cat > {target} && chmod 600 {target}",
+            timeout = 25.0,
+            stdin = payload,
+        )
+        if rc != 0:
+            return f"{path} ({(err or '').strip() or f'ssh exit {rc}'})"
+    return None
 
 
 async def replicate_generated_files(peer: str, files: Sequence[str]) -> Optional[str]:
@@ -2289,7 +2326,7 @@ class SparkServing:
                     variant,
                     getattr(request, "hf_token", None),
                 )
-                size = remote_size
+                size = None if remote_size is None else remote_size + sidecars
             requested_ctx, cache_type, cache_type_v = effective_kv_settings(
                 request, extras_for_sizing
             )
@@ -2762,7 +2799,17 @@ class SparkServing:
             logger.info(
                 "spark serving: copied %d generated launch file(s) to %s", len(generated), peer
             )
-        needed = [p for p in needed if p not in set(generated)]
+        secrets_needed = secret_launch_files(needed)
+        if secrets_needed:
+            failed = await replicate_secret_files(peer, secrets_needed)
+            if failed:
+                self.topology, self.reason = (
+                    "single",
+                    f"the llama-server key could not be put on {peer}: {failed}",
+                )
+                logger.warning("spark serving: %s", self.reason)
+                return
+        needed = [p for p in needed if p not in set(generated) | set(secrets_needed)]
         # Size and mtime, not just existence.
         mismatch: List[str] = []
         if needed:

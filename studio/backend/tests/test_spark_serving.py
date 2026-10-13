@@ -2462,6 +2462,22 @@ def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatc
     assert "--rpc" in (out.llama_extra_args or [])
 
 
+def test_an_uncached_repo_is_priced_with_its_local_sidecars(cluster, monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"x" * 1024)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda path, variant, token = None: 4096)
+    cluster.topology = "single"
+    run(
+        ss.before_load(
+            _FakeRequest("unsloth/Huge-GGUF", llama_extra_args = ["--mmproj", str(projector)]), 4
+        )
+    )
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024
+
+
 def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
@@ -4240,3 +4256,29 @@ def test_speculation_switched_off_through_the_environment_is_off(monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_MODEL")
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     assert ss.caller_speculation_off(None, []) is False
+
+
+def test_the_launch_key_reaches_the_peer_over_stdin_only(monkeypatch, tmp_path):
+    key = tmp_path / "llama_api_key_abcd"
+    key.write_text("s3cret", encoding = "utf-8")
+    template = tmp_path / "unsloth_chat_template_1.jinja"
+    template.write_text("{{x}}", encoding = "utf-8")
+    assert ss.secret_launch_files([str(key), str(template), str(tmp_path / "m.gguf")]) == [str(key)]
+
+    calls = []
+
+    async def fake_ssh(
+        peer,
+        remote,
+        *,
+        timeout = 20.0,
+        stdin = None,
+    ):
+        calls.append((remote, stdin))
+        return 0, "", ""
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    assert run(ss.replicate_secret_files("192.168.200.13", [str(key)])) is None
+    remote, stdin = calls[0]
+    assert stdin == b"s3cret" and "s3cret" not in remote
+    assert remote.startswith("umask 077") and "chmod 600" in remote
