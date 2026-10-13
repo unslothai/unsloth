@@ -490,6 +490,8 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
     )  # non-MoE, no audio: no transformer_2 / audio_vae / connectors / vocoder
     _stub_for_table(tmp_path, fam)
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    # the ref still points at the cached snapshot, so only the folder rule is under test
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
     monkeypatch.setattr(
         dcs, "hub_component_sizes", lambda *a, **k: pytest.fail("hub read for a fully cached model")
     )
@@ -510,6 +512,7 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
     _stub_for_table(root, ltx)
     _component(root, "connectors", 1.0)
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: root)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: root.name)
     got = dcs.video_components_gb(ltx, "someone/ltx-finetune", allow_hub = True)
     assert got[2] == pytest.approx(round(ltx.bf16_components_gb[2] + 1.0, 1))
     # a missing required folder still asks the Hub (with the load's token)
@@ -1010,3 +1013,62 @@ def test_sub_byte_floats_count_parameters_by_bit_width(tmp_path):
     assert size.nonfloat_bytes == 0
     assert size.resident_bytes(2) == (64 + 8 + 16 + 4) * 2  # a bf16 load budgets 2 bytes per param
     assert dcs.FLOAT_BITS["F4"] == 4 and dcs.FLOAT_BITS["F6_E2M3"] == dcs.FLOAT_BITS["F6_E3M2"] == 6
+
+
+# ---- review round 5 ----
+
+
+def test_unresolved_ref_probes_the_hub_and_falls_back_to_local(tmp_path, monkeypatch):
+    fam = _fam("wan2.2-ti2v-5b")
+    snap = tmp_path / ("a" * 40)
+    _stub_for_table(snap, fam)
+    _component(snap, "transformer", fam.bf16_components_gb[0] + 5.0)
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: snap)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: None)
+    fresh_root = tmp_path / "fresh"
+    _stub_for_table(fresh_root, fam)
+    hub = [dcs.local_component_sizes(fresh_root)]
+    calls = []
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: calls.append(repo) or hub[0])
+    # head unknown: the Hub answers
+    assert dcs.video_components_gb(fam, "o/variant", allow_hub = True) == fam.bf16_components_gb
+    assert calls == ["o/variant"]
+    # head unknown and the Hub probe fails too: the cached local sizes stand (no refusal on a network blip)
+    hub[0] = None
+    got = dcs.video_components_gb(fam, "o/variant", allow_hub = True)
+    assert got[0] == round(fam.bf16_components_gb[0] + 5.0, 1) and len(calls) == 2
+
+
+def test_extra_text_encoders_need_the_family_or_manifest(tmp_path):
+    wan = _fam("wan2.2-ti2v-5b")
+    _stub_for_table(tmp_path, wan)
+    base = dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1]
+    _component(tmp_path, "text_encoder_2", 1.0, stem = "model")
+    _component(tmp_path, "text_encoder_3", 2.0, stem = "model")
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(base)
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"text_encoder": ["t", "A"], "text_encoder_2": ["t", "B"], "text_encoder_3": [None, None]})
+    )
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(base + 1.0)
+    # HunyuanVideo-1.5 loads its ByT5 text_encoder_2 without a manifest
+    hv = _fam("hunyuanvideo-1.5")
+    root = tmp_path / "hv"
+    _stub_for_table(root, hv)
+    before = dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1]
+    _component(root, "text_encoder_2", 0.44, stem = "model")
+    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] == pytest.approx(before + 0.44)
+
+
+def test_same_stem_order_follows_the_loader(tmp_path):
+    for folder in ("text_encoder", "transformer"):
+        d = tmp_path / folder
+        stem = "model" if folder == "text_encoder" else "diffusion_pytorch_model"
+        _write_header(d / f"{stem}.safetensors", {"u": ("BF16", 10)})
+        _write_header(d / f"{stem}-00001-of-00001.safetensors", {"s": ("BF16", 999)})
+        _index(d / f"{stem}.safetensors.index.json", [f"{stem}-00001-of-00001.safetensors"])
+    sizes = dcs.local_component_sizes(tmp_path)
+    # transformers folder: the unsharded file first; diffusers folder: the index first
+    assert sizes.get("text_encoder").files == ("model.safetensors",)
+    assert sizes.get("transformer").files == ("diffusion_pytorch_model-00001-of-00001.safetensors",)

@@ -228,8 +228,14 @@ def _pick_files(
     """Only the loader's PREFERRED index counts (it never falls back to a stale second one); unreadable or
     naming a missing shard makes the component unknown, never a smaller subset."""
     names = list(names)
+    # Same-stem order follows the loader: transformers (5.5 modeling_utils._get_resolved_checkpoint_files) takes an
+    # unsharded model.safetensors before the index; diffusers (ModelMixin.from_pretrained, _fetch_index_file) takes
+    # the index first.
+    unsharded_first = bool(_TRANSFORMERS_FOLDER_RE.match(folder or ""))
     for stem in _stem_order(folder):
         index = f"{stem}.safetensors.index.json"
+        if unsharded_first and f"{stem}.safetensors" in names:
+            return [f"{stem}.safetensors"]
         if index in names:
             try:
                 shards = _index_shards(read_text(index))
@@ -647,8 +653,9 @@ def component_sizes(
         if not allow_hub or snap is None or hub_disabled():
             return local
         # online: the cached snapshot answers only while the ref still points at it (TTL-cached resolve)
+        # an unresolved ref (head None) is not a match: probe the Hub, and keep the local sizes only if that fails too
         head = resolve_ref(str(repo_or_dir), token=token)
-        if head is None or head == snap.name:
+        if head is not None and head == snap.name:
             return local
     if allow_hub:
         hub = hub_component_sizes(str(repo_or_dir), components=components, token=token)
@@ -660,7 +667,7 @@ def component_sizes(
 
 # Folders not named here are outside the table (unloaded, or priced separately like LTX-2.5's upsampler).
 VIDEO_ROLE_DENOISER = ("transformer", "transformer_2")
-VIDEO_ROLE_TEXT = ("text_encoder", "text_encoder_2")
+VIDEO_ROLE_TEXT = ("text_encoder", "text_encoder_2", "text_encoder_3")
 VIDEO_ROLE_VAE = ("vae", "audio_vae", "vocoder", "connectors")
 VIDEO_EXTRA_VAE_ROLE: dict[str, tuple[str, ...]] = {"ltx-2.5": ("latent_upsampler",)}
 # Companion folders and when a family loads them; one that is present is counted only when its family rule says so
@@ -669,6 +676,9 @@ VIDEO_COMPANION_RULES: dict[str, Callable[[Any], bool]] = {
     "audio_vae": lambda fam: bool(getattr(fam, "has_audio", False)),
     "vocoder": lambda fam: bool(getattr(fam, "has_audio", False)),
     "connectors": lambda fam: str(getattr(fam, "name", "") or "").startswith("ltx"),
+    # HunyuanVideo-1.5 loads its ByT5 glyph encoder as text_encoder_2; any other extra encoder needs the manifest.
+    "text_encoder_2": lambda fam: str(getattr(fam, "name", "") or "").startswith("hunyuanvideo"),
+    "text_encoder_3": lambda fam: False,
 }
 
 
@@ -679,6 +689,8 @@ def _companion_loaded(fam: Any, sizes: ComponentSizes, name: str) -> bool:
     if rule(fam):
         return True
     return sizes.manifest is not None and name in sizes.manifest
+
+
 TABLE_ROUNDING_GB = 0.06
 
 _MISMATCHES: dict = {}
@@ -716,7 +728,13 @@ def video_header_terms(
         else None
     )
     text = (
-        sizes.resident_gb([n for n in VIDEO_ROLE_TEXT if sizes.get(n) is not None])
+        sizes.resident_gb(
+            [
+                n
+                for n in VIDEO_ROLE_TEXT
+                if sizes.get(n) is not None and _companion_loaded(fam, sizes, n)
+            ]
+        )
         if sizes.get("text_encoder") is not None
         else None
     )
