@@ -1665,6 +1665,7 @@ def _offline_quantize_to_fp8(
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1676,7 +1677,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1729,9 +1730,14 @@ def _offline_quantize_to_fp8(
                 model_name,
                 config = config,
                 revision = revision,
+                token = token,
                 **load_kwargs,
             )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
+        tokenizer = auto_processor.from_pretrained(
+            model_name,
+            revision = revision,
+            token = token,
+        )
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -3358,7 +3364,7 @@ def sync_load_when_quantizing(quantization_config, model_config):
 
 
 def gptq_trainable_quantization_config(model_config, user_quantization_config):
-    """GPTQConfig asking gptqmodel for a trainable kernel on a GPTQ checkpoint, else None.
+    """GPTQConfig / AwqConfig asking gptqmodel for a trainable kernel on a GPTQ or AWQ checkpoint, else None.
 
     gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
     `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
@@ -3368,17 +3374,31 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and not isinstance(qc, dict):
         qc = qc.to_dict()
-    if not qc or str(qc.get("quant_method", "")).lower() != "gptq":
+    quant_method = str((qc or {}).get("quant_method", "")).lower()
+    if quant_method not in ("gptq", "awq"):
         return None
-    if qc.get("backend") not in (None, "auto"):
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
         return None
     try:
-        from transformers import GPTQConfig
+        from transformers import AwqConfig, GPTQConfig
         from transformers.utils import is_gptqmodel_available
     except ImportError:
         return None
     if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
         return None
+    if quant_method == "awq":
+        # transformers < 5 AwqConfig has no auto_trainable backend (autoawq era).
+        try:
+            from transformers.utils.quantization_config import AwqBackend
+        except ImportError:
+            return None
+        if not hasattr(AwqBackend, "AUTO_TRAINABLE"):
+            return None
+        return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
     return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
 
 

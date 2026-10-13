@@ -268,6 +268,7 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     monkeypatch.setattr(
         srv.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
     )
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: {"nvidia"})
 
     def build(name, backends):
         binary = tmp_path / name / "audiocpp_server"
@@ -281,6 +282,154 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
     # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
+
+
+def _recorded_build(tmp_path, backend):
+    binary = tmp_path / backend / srv.BINARY_NAME
+    binary.parent.mkdir()
+    binary.write_bytes(b"")
+    (binary.parent / srv.INSTALL_RECORD).write_text(json.dumps({"backend": backend}))
+    return str(binary)
+
+
+@pytest.mark.parametrize(
+    "backend, vendors, expected",
+    [
+        # CUDA_VISIBLE_DEVICES="" or a container without the NVIDIA device nodes.
+        ("cuda", set(), "cpu"),
+        ("cuda", {"nvidia"}, "cuda"),
+        # Nothing detected at all: an unknown host keeps the build's backend.
+        ("cuda", None, "cuda"),
+        ("hip", {"nvidia"}, "cpu"),
+        ("hip", {"amd"}, "hip"),
+        ("vulkan", set(), "vulkan"),
+        ("metal", {"apple"}, "metal"),
+    ],
+)
+def test_a_gpu_build_launches_on_cpu_when_its_gpu_is_not_visible(
+    tmp_path, monkeypatch, backend, vendors, expected
+):
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: vendors)
+    assert srv.select_backend(_recorded_build(tmp_path, backend), False) == expected
+
+
+def test_an_explicit_backend_or_cpu_request_is_not_second_guessed(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: set())
+    binary = _recorded_build(tmp_path, "cuda")
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_BACKEND", "CUDA")
+    assert srv.select_backend(binary, False) == "cuda"
+    assert srv.select_backend(binary, True) == "cpu"
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: {"nvidia"})
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND")
+    assert srv.select_backend(binary, True) == "cpu"
+
+
+def test_nvidia_smi_on_path_is_not_a_visible_gpu(tmp_path, monkeypatch):
+    """No install record: nvidia-smi stays on PATH when CUDA_VISIBLE_DEVICES hides every GPU."""
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(srv.sys, "platform", "linux")
+    monkeypatch.setattr(
+        srv.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
+    monkeypatch.setattr(srv, "compiled_backends", lambda binary: frozenset({"cpu", "cuda"}))
+    binary = str(tmp_path / srv.BINARY_NAME)
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: set())
+    assert srv.select_backend(binary, False) == "cpu"
+    monkeypatch.setattr(srv, "_gpu_vendors", lambda: None)
+    assert srv.select_backend(binary, False) == "cuda"
+
+
+def test_gpu_vendor_probe_failure_reads_as_unknown(monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    def boom():
+        raise OSError("sysfs unreadable")
+
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", boom)
+    assert srv._gpu_vendors() is None
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # With no HIP or ROCR mask set, CUDA_VISIBLE_DEVICES stands in for AMD too.
+        ({"CUDA_VISIBLE_DEVICES": ""}, set()),
+        ({"CUDA_VISIBLE_DEVICES": "-1", "HIP_VISIBLE_DEVICES": "0"}, {"amd"}),
+        ({"HIP_VISIBLE_DEVICES": ""}, {"nvidia"}),
+        ({"CUDA_VISIBLE_DEVICES": "0"}, {"nvidia", "amd"}),
+        ({}, {"nvidia", "amd"}),
+    ],
+)
+def test_visibility_masks_hide_vendors_found_by_driver_dlls(monkeypatch, env, expected):
+    """Windows detection only globs driver DLLs, so the masks are applied on top of it."""
+    from utils import llama_cpp_path_settings
+
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia", "amd"})
+    assert srv._gpu_vendors() == expected
+
+
+def test_a_masked_windows_gpu_build_launches_on_cpu(tmp_path, monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia"})
+    binary = _recorded_build(tmp_path, "cuda")
+    assert srv.select_backend(binary, False) == "cpu"
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: None)
+    assert srv.select_backend(binary, False) == "cuda"
+
+
+_EXITS_WITH = textwrap.dedent(
+    """
+    import sys
+    print({output!r}, flush=True)
+    sys.exit(1)
+    """
+)
+
+
+def test_a_gpu_init_failure_says_so_instead_of_blaming_the_model(
+    fake_binary, tmp_path, monkeypatch
+):
+    (tmp_path / "fake_server.py").write_text(
+        _EXITS_WITH.format(
+            output = "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n"
+            "audiocpp_server failed: CUDA backend requested but registry 'CUDA' has no device 0"
+        ),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
+    message = str(raised.value)
+    assert "incomplete" not in message
+    assert "CUDA backend" in message and "Unsloth Studio" in message
+    assert "UNSLOTH_AUDIO_CPP_BACKEND=cpu" in message
+    assert "has no device 0" in message
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "gguf: unknown tensor type 42",
+        # A CUDA build on the CPU backend logs its CUDA init failure before the real one.
+        "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n"
+        "audiocpp_server failed: unknown tensor type 42",
+    ],
+)
+def test_other_early_exits_keep_pointing_at_the_model(fake_binary, tmp_path, output):
+    (tmp_path / "fake_server.py").write_text(_EXITS_WITH.format(output = output), encoding = "utf-8")
+    with pytest.raises(srv.AudioCppUnavailableError) as raised:
+        srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
+    message = str(raised.value)
+    assert "the model file may be incomplete or unsupported by this build" in message
+    assert "unknown tensor type 42" in message
 
 
 def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):

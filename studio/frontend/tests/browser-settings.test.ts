@@ -862,7 +862,7 @@ test("the agent's Downloads rule covers its tab while a chat run is using it, an
   const { agentDownloadRule, endBrowserAgentRun, useBrowserAgentStore } = await import(
     "../src/features/browser/agent/agent-store.ts"
   );
-  const blocked = { browsing: "ask", actions: "ask", downloads: "block" } as const;
+  const blocked = { browsing: "ask", actions: "ask", downloads: "block", unlabelled: "ask" } as const;
   useBrowserAgentStore.setState({ tabId: "t1", runKey: "run1", permissions: { defaults: blocked, sites: {} } });
   assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");
   assert.equal(agentDownloadRule("t2", "https://example.com/", "https://example.com/f.pdf"), null);

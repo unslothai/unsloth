@@ -10,6 +10,7 @@ import {
   type DownloadsRule,
   type HistoryAccess,
   MAX_SITE_RULES,
+  type ScriptAccess,
   type SiteRule,
   checkedPermissions,
   ruleFor,
@@ -26,6 +27,8 @@ type BrowserAgentState = {
   setSiteRule: (site: string, rule: SiteRule | null) => void;
   historyAccess: HistoryAccess;
   setHistoryAccess: (access: HistoryAccess) => void;
+  scriptAccess: ScriptAccess;
+  setScriptAccess: (access: ScriptAccess) => void;
   /** The tab the agent drives; the model can't reach any other. */
   tabId: string | null;
   working: boolean;
@@ -54,6 +57,8 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
         }),
       historyAccess: "ask",
       setHistoryAccess: (historyAccess) => set({ historyAccess }),
+      scriptAccess: "ask",
+      setScriptAccess: (scriptAccess) => set({ scriptAccess }),
       tabId: null,
       working: false,
       question: null,
@@ -69,6 +74,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
         enabled: state.enabled,
         permissions: state.permissions,
         historyAccess: state.historyAccess,
+        scriptAccess: state.scriptAccess,
       }),
       // Checked on the way in: storage another build wrote must never read as "allow".
       merge: (persisted, current) => {
@@ -78,6 +84,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
           enabled: saved.enabled === true,
           permissions: checkedPermissions(saved.permissions),
           historyAccess: saved.historyAccess === "allow" || saved.historyAccess === "never" ? saved.historyAccess : "ask",
+          scriptAccess: saved.scriptAccess === "never" ? "never" : "ask",
         };
       },
     },

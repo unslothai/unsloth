@@ -3881,6 +3881,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_ggml_sidecar.py",
         "core/inference/stt_mtmd_sidecar.py",
         "core/inference/stt_transformers_worker.py",
+        "core/inference/video_ltx25.py",
         "core/rag/embed_llama_server.py",
         "core/systemone/native_worker.py",
         "core/systemone/laya_worker.py",

@@ -8,6 +8,15 @@ import {
 
 export type AudioSttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
+export function isAudioSttEngine(value: unknown): value is AudioSttEngine {
+  return (
+    value === "transformers" ||
+    value === "gguf" ||
+    value === "mtmd" ||
+    value === "audiocpp"
+  );
+}
+
 const TRANSFORMERS_REPO_BY_KEY: Record<string, string> = {
   tiny: "unsloth/whisper-tiny",
   base: "unsloth/whisper-base",

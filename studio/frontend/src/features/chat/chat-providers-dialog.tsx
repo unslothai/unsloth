@@ -327,7 +327,7 @@ export function ChatProvidersSettings({
     (!editingProviderId || editingBackendProviderType === "custom");
   const showCustomReasoning =
     isCustomReasoningConnection && apiType === "chat_completions";
-  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
+  // Unsloth runs Search, Tools, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
@@ -1882,8 +1882,8 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Code,
-                    MCP and Docs tools. Those run on this machine, and their
+                    Models on this connection can use Unsloth&apos;s Search, Tools,
+                    MCP and Docs. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything
                     risky runs.
@@ -2426,7 +2426,7 @@ export function ChatProvidersDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        overlayClassName="bg-black/50 backdrop-blur-sm"
+        overlayClassName="bg-black/50"
         className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[calc(44rem*var(--ui-space-scale,1))]"
       >
         <DialogHeader className="sr-only">
