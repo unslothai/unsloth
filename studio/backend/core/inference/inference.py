@@ -84,12 +84,11 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
-# A checkpoint past this share of free VRAM leaves no room to run; "auto" then plans the load.
 _OFFLOAD_FIT_FRACTION = 0.9
 
 
 def _loader_repo(path: str, load_in_4bit: bool) -> str:
-    """The repo Unsloth's mapper loads for `path` (a 4-bit load's bnb-4bit twin, a 16-bit load's full-precision one), else `path`."""
+    """The repo Unsloth's mapper will load for `path`, else `path`."""
     try:
         from unsloth.models import loader, loader_utils
 
@@ -110,7 +109,7 @@ def _loader_repo(path: str, load_in_4bit: bool) -> str:
 
 
 def _complete_local_safetensors_bytes(folder: Path) -> Optional[int]:
-    """Top-level safetensors bytes in `folder`, or None while a shard the index names is missing (an interrupted download)."""
+    """None while a shard the index names is missing (interrupted download)."""
     try:
         index = folder / "model.safetensors.index.json"
         if index.is_file():
@@ -126,7 +125,6 @@ def _complete_local_safetensors_bytes(folder: Path) -> Optional[int]:
 
 
 def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
-    """Bytes of the top-level safetensors `name` holds: a local folder, the HF cache, then the Hub."""
     folder = Path(name)
     if not folder.is_dir():
         try:
@@ -161,7 +159,7 @@ def _offload_kwargs_for_fit(
     hf_token = None,
     mapped: bool = True,
 ) -> dict:
-    """offload_layers = "auto" for a single-GPU load whose checkpoint nearly fills free VRAM (#13388): Gemma 4 E2B in 4-bit is 8.1 GB, 4.4 GB of it one bf16 token table, so an 8 GB card cannot hold it. The planner then keeps large tables (and decoder layers if needed) in host RAM, and loads everything onto the GPU when it fits after all. Several cards are left to the multi-GPU placement, which cannot load into host RAM."""
+    """Gemma 4 E2B 4-bit is 8.1 GB on an 8 GB card (#13388); "auto" still loads it all onto the GPU if it fits."""
     # "sequential" over several visible cards pools them; "auto" would plan for one.
     if device_map != "sequential" or not torch.cuda.is_available():
         return {}
@@ -171,7 +169,7 @@ def _offload_kwargs_for_fit(
         free = torch.cuda.mem_get_info(0)[0]
     except Exception:
         return {}
-    # `mapped` = False: the loader reads `name` verbatim (use_exact_model_name).
+    # mapped = False: use_exact_model_name reads `name` verbatim.
     size = _checkpoint_bytes(_loader_repo(name, load_in_4bit) if mapped else name, hf_token)
     if not size or size < _OFFLOAD_FIT_FRACTION * free:
         return {}
@@ -182,7 +180,7 @@ def _offload_kwargs_for_fit(
 
 
 def _load_with_offload_fallback(load, **kwargs):
-    """Run the load; when the size check let a single-GPU load through and it still spills to the CPU (size unknown or underestimated), free that attempt entirely and retry once with offload_layers = "auto"."""
+    """A single-GPU load the size check missed that spills to the CPU: free it, retry with offload_layers = "auto"."""
     try:
         return load(**kwargs)
     except ValueError as e:
@@ -198,8 +196,7 @@ def _load_with_offload_fallback(load, **kwargs):
             or torch.cuda.device_count() != 1
         ):
             raise
-    # Outside the except block, so the exception and its traceback (whose frames hold the
-    # half-built model) are already released; collect, then hand the cached blocks back.
+    # After the except block: its traceback's frames held the half-built model.
     import gc
 
     gc.collect()
@@ -1027,7 +1024,7 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
-            # A LoRA loads its base model; the adapter's own safetensors say nothing about fit.
+            # A LoRA loads its base model.
             offload_kwargs = _offload_kwargs_for_fit(
                 config.base_model if config.is_lora and config.base_model else load_path,
                 device_map,
