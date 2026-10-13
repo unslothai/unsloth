@@ -2285,7 +2285,9 @@ def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, l
     specs = tools_mod.cached_mcp_tools()[0]
     assert _names(specs) == ["mcp_tool_search"]
     # Too small to name them within its share, so it only counts them.
-    assert _search_spec(specs)["function"]["description"].endswith("Tools:\nA:\n- and 2 more")
+    assert _search_spec(specs)["function"]["description"].endswith(
+        "Tools:\n2 tools, found by searching."
+    )
 
 
 def test_mcp_listing_defers_every_tool_past_its_share(tmp_path, monkeypatch, listing_window):
@@ -2625,6 +2627,33 @@ def test_the_search_tool_names_tools_within_a_character_budget():
     description = tools_mod._mcp_tool_search_spec(catalog, 500)["function"]["description"]
     assert description.count("- " + "t" * 60) == 3
     assert description.endswith("- and 7 more")
+
+
+def test_a_repeated_search_runs_again_and_tools_run_unsearched_are_remembered(
+    tmp_path, monkeypatch
+):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    call = {"function": {"name": "mcp_tool_search", "arguments": '{"query": "move pages"}'}}
+    controller.record_result(controller.prepare_call(call), "Loaded")
+    assert controller.prepare_call(call).action == "execute"
+
+    # A catalog listed in full has no search tool, and what the thread ran is still remembered.
+    full = ToolLoopController(tools = tools_mod.cached_mcp_tools()[0], thread_id = "t9")
+    ran = full.prepare_call({"function": {"name": "mcp__srv1__get-users", "arguments": "{}"}})
+    full.record_result(ran, "users")
+    ctx = contextvars.copy_context()
+    ctx.run(tools_mod.set_mcp_listing_context_tokens, 100_000, "t9")
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_SHARE", 0.0)
+    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
+        "mcp_tool_search",
+        "mcp__srv1__get-users",
+    ]
 
 
 def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monkeypatch):

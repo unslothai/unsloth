@@ -1286,9 +1286,11 @@ class ToolLoopController:
             self._deduplicate_tool_calls
             and key in self._successful_keys
             and tool_name not in BROWSER_TOOL_NAMES
+            and tool_name != MCP_TOOL_SEARCH_NAME
         ):
             # Not the browser tools: each acts on or reads the page as it is now, so a second
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
+            # Nor mcp_tool_search: a repeat restores tools a later load evicted.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
@@ -1368,7 +1370,8 @@ class ToolLoopController:
             self._successful_keys.add(decision.key)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
                 self._load_mcp_tools(_mcp_tool_search_specs(decision.arguments))
-            elif self._mcp_search and decision.tool_name.startswith(MCP_TOOL_PREFIX):
+            elif decision.tool_name.startswith(MCP_TOOL_PREFIX):
+                # Also while the catalog is listed in full, for a later turn that defers it.
                 self._remember_mcp_tools([decision.tool_name])
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)

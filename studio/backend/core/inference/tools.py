@@ -13643,7 +13643,7 @@ def _mcp_tool_search_spec(
     catalog: list[tuple[str, list[tuple[str, str]]]], max_chars: int | None = None
 ) -> dict:
     """``catalog`` is (server display name, [(tool name, summary)]) per server, in listing order; the tool lines
-    stop at ``_MCP_TOOL_SEARCH_MAX_NAMES`` and at ``max_chars``."""
+    stop at ``_MCP_TOOL_SEARCH_MAX_NAMES`` and at ``max_chars``, and at 0 only the count is left."""
     names_left = _MCP_TOOL_SEARCH_MAX_NAMES
     chars_left = max_chars if max_chars is not None else float("inf")
     groups = []
@@ -13659,6 +13659,8 @@ def _mcp_tool_search_spec(
         if len(tools) > len(lines):
             lines.append(f"- and {len(tools) - len(lines)} more")
         groups.append(f"{display[:_MCP_SUMMARY_CHARS]}:\n" + "\n".join(lines))
+    if max_chars == 0:
+        groups = [f"{sum(len(tools) for _, tools in catalog)} tools, found by searching."]
     return {
         "type": "function",
         "function": {
@@ -13866,9 +13868,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     # Halved until the finished declaration fits the share, since summaries can run a token a character.
     max_chars = int(budget * 4)
     search = _mcp_tool_search_spec(catalog, max_chars)
-    while (
-        max_chars > 0 and _text_token_cost(json.dumps(search, separators = (",", ":")), ctx) > budget
-    ):
+    while max_chars and _text_token_cost(json.dumps(search, separators = (",", ":")), ctx) > budget:
         max_chars //= 2
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
@@ -13876,13 +13876,14 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
     )
-    tokens_per_char = listing_tokens / max(len(text), 1)
     # Then the tools this chat ran, newest first, and the ones its message asks for, within the preload share.
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
     for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
-        cost = len(json.dumps(by_name[name], separators = (",", ":"))) * tokens_per_char
-        if by_name[name] not in listing and cost <= room:
+        if by_name[name] in listing:
+            continue
+        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+        if cost <= room:
             listing.append(by_name[name])
             room -= cost
     return listing
