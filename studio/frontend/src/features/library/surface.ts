@@ -14,6 +14,7 @@ const CONTROL_EDGE =
 
 export const OVERLAY_CONTROL = `bg-white ${CONTROL_EDGE} dark:bg-neutral-700 dark:ring-0`;
 
-export const GLASS_SURFACE = `bg-white/60 text-neutral-900 ${CONTROL_EDGE} backdrop-blur-md dark:bg-black/40 dark:text-white dark:ring-white/20`;
+// Solid, not frosted: the blur smeared the thumbnail behind each control.
+export const GLASS_SURFACE = `bg-white text-neutral-900 ${CONTROL_EDGE} dark:bg-neutral-700 dark:text-white dark:ring-0`;
 
-export const GLASS_CONTROL = `${GLASS_SURFACE} hover:bg-white/80 hover:text-neutral-900 dark:hover:bg-black/55 dark:hover:text-white`;
+export const GLASS_CONTROL = `${GLASS_SURFACE} hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-600 dark:hover:text-white`;
