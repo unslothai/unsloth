@@ -121,12 +121,17 @@ class FamilyHook:
     backends: tuple[str, ...] = ("video",)
 
 
-def _is_ltx(family: Any) -> bool:
-    try:
-        from ..video_families import LTX_FAMILIES  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return False
-    return getattr(family, "name", None) in LTX_FAMILIES
+def _profile_flag(attr: str) -> Callable[[Any], bool]:
+    """Gate a hook on a ``FamilyProfile`` flag (registry data), so a new family opts in by data."""
+
+    def applies(family: Any) -> bool:
+        try:
+            from ..family_profile import profile_for  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(getattr(profile_for(family), attr, False))
+
+    return applies
 
 
 def _ltx_static_pre(view: Any, family: Any) -> None:
@@ -157,8 +162,8 @@ def _cudnn_off_post(view: Any, family: Any, applied: dict, logger: Any) -> Optio
 
 
 FAMILY_HOOKS: list[FamilyHook] = [
-    FamilyHook("ltx_static_compile", _is_ltx, pre = _ltx_static_pre),
-    FamilyHook("ltx_stg_compile_adapter", _is_ltx, post = _ltx_stg_post),
+    FamilyHook("ltx_static_compile", _profile_flag("compile_static"), pre = _ltx_static_pre),
+    FamilyHook("ltx_stg_compile_adapter", _profile_flag("stg_compile_adapter"), post = _ltx_stg_post),
     FamilyHook(
         "cudnn_benchmark_off",
         lambda fam: not getattr(fam, "cudnn_benchmark", True),
