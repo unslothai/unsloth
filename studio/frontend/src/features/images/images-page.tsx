@@ -4014,6 +4014,7 @@ export function ImagesPage({
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
               removeLabel={`Remove image ${numberOf(i)}`}
+              cropSubject={`Image ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -5050,7 +5051,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to transform. Generation redraws it guided by your prompt; the Strength below controls how far."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Strength"
@@ -5140,7 +5141,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to outpaint. The canvas grows on the selected sides and the new area is filled from your prompt; the original is kept."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Expand by"
@@ -5192,7 +5193,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to upscale. It is enlarged by the factor below, then re-detailed at higher resolution guided by your prompt; keep the prompt describing the same content."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Scale"
@@ -5221,7 +5222,7 @@ export function ImagesPage({
                   label={unifiedEdit ? "Image 1" : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -5237,7 +5238,7 @@ export function ImagesPage({
                 label="Source image"
                 hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
               >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
+                <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
               </Field>
             )}
 
@@ -5281,7 +5282,7 @@ export function ImagesPage({
                     label="Image 1 (source)"
                     hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -5585,7 +5586,7 @@ export function ImagesPage({
                   </Select>
                   {controlnetId && (
                     <>
-                      <ImageDropzone value={controlImage} onChange={setControlImage} />
+                      <ImageDropzone value={controlImage} onChange={setControlImage} cropSubject="Control image" />
                       <div className="flex items-center gap-2">
                         <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
                         <Select value={controlType} onValueChange={setControlType}>

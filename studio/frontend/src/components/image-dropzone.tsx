@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageAdd02Icon } from "@hugeicons/core-free-icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,12 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import {
+  type StagedReferenceImage,
+  stageReferenceImage,
+} from "@/lib/image-crop";
+import { ReferenceImageEditor } from "@/components/image-crop-editor";
+import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -28,6 +34,8 @@ export function ImageDropzone({
   label = "Click or drop an image",
   removeLabel = "Remove source image",
   className,
+  maxSide = MAX_UPLOAD_IMAGE_SIDE,
+  cropSubject,
 }: {
   value: string | null;
   onChange: (dataUrl: string | null) => void;
@@ -36,6 +44,10 @@ export function ImageDropzone({
   /** Accessible remove-button name. */
   removeLabel?: string;
   className?: string;
+  /** Larger uploads are downscaled to this per side; null keeps them as chosen. */
+  maxSide?: number | null;
+  /** Shows a crop button; names the image in the crop dialog. */
+  cropSubject?: string;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -70,14 +82,20 @@ export function ImageDropzone({
       selection.current += 1;
       const claimed = selection.current;
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         if (claimed !== selection.current) return;
-        onChange(typeof reader.result === "string" ? reader.result : null);
+        if (typeof reader.result !== "string") {
+          onChange(null);
+          return;
+        }
+        const dataUrl = maxSide ? await fitImageDataUrl(reader.result, maxSide) : reader.result;
+        if (!mounted.current || claimed !== selection.current) return;
+        onChange(dataUrl);
       };
       reader.onerror = () => toast.error("Could not read the image");
       reader.readAsDataURL(file);
     },
-    [onChange],
+    [onChange, maxSide],
   );
 
   // Tauri suppresses the webview drop event, so desktop drops arrive as paths
@@ -97,14 +115,35 @@ export function ImageDropzone({
         const intent = await registerNativeAttachmentPath(path);
         const file = await readNativeAttachmentFile(intent.path.token);
         if (!mounted.current || claimed !== selection.current) return;
-        onChange(`data:${file.mimeType};base64,${file.base64}`);
+        const raw = `data:${file.mimeType};base64,${file.base64}`;
+        const dataUrl = maxSide ? await fitImageDataUrl(raw, maxSide) : raw;
+        if (!mounted.current || claimed !== selection.current) return;
+        onChange(dataUrl);
       } catch (error) {
         toast.error("Could not read the image", {
           description: error instanceof Error ? error.message : String(error),
         });
       }
     },
-    [onChange],
+    [onChange, maxSide],
+  );
+
+  // The crop dialog always starts from the upload, so re-cropping never compounds. Keyed to the
+  // value it opened on, so a replaced or removed image closes it.
+  const [cropFor, setCropFor] = useState<string | null>(null);
+  const [staged, setStaged] = useState<StagedReferenceImage | null>(null);
+  const picture = useMemo(
+    () => (value ? (staged?.dataUrl === value ? staged : stageReferenceImage(value)) : null),
+    [staged, value],
+  );
+  const applyCrop = useCallback(
+    (dataUrl: string, crop: StagedReferenceImage["crop"]) => {
+      if (!picture) return;
+      setStaged({ originalDataUrl: picture.originalDataUrl, dataUrl, crop });
+      selection.current += 1;
+      onChange(dataUrl);
+    },
+    [onChange, picture],
   );
 
   const nativeDropRef = useNativeDropTarget({
@@ -129,6 +168,34 @@ export function ImageDropzone({
             backgroundSize: "16px 16px",
           }}
         />
+        {cropSubject && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  aria-label={`Crop ${cropSubject.charAt(0).toLowerCase()}${cropSubject.slice(1)}`}
+                  className="absolute right-10 top-1.5 size-7"
+                  onClick={() => setCropFor(value)}
+                >
+                  <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Crop</TooltipContent>
+            </Tooltip>
+            {cropFor === value && (
+              <ReferenceImageEditor
+                open={true}
+                picture={picture}
+                subject={cropSubject}
+                onOpenChange={(open) => setCropFor(open ? value : null)}
+                onApply={applyCrop}
+              />
+            )}
+          </>
+        )}
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
