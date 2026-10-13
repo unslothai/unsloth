@@ -83,7 +83,8 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
         f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
-        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers)."
+        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
+        "unsloth/LTX-2.5-GGUF)."
     )
 
 
@@ -596,6 +597,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
+        # The DiT (plus its text connectors) as single-file GGUF quants: dev at the root, distilled under distilled/.
+        # The file name picks the variant (ltx25_is_dev) and the pack above stays the base for VAEs and connectors.
+        gguf_repo = "unsloth/LTX-2.5-GGUF",
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.
