@@ -1907,8 +1907,7 @@ def _should_compile(
 # Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
 NF4_COMPILE_MIN_TORCH = "2.10"
 NF4_COMPILE_MIN_BNB = "0.46.1"
-# The nf4 compile costs 60-130 s even with a warm inductor cache and saves ~0.15 s/step on a B200 (break-even ~400
-# steps; sooner on slower GPUs), so a short test run stays eager.
+# The nf4 compile only pays back after a few hundred steps, so a short run stays eager.
 NF4_COMPILE_MIN_STEPS = 200
 
 
@@ -2508,7 +2507,6 @@ def _train_dit(
     if sample_plan is not None and resumed < cfg.train_steps:
         _sample(resumed)
 
-    # Reported peak VRAM = training peak, not the higher load / encode peak.
     train_peak = TrainingPeakMemory(device)
     for opt_step in range(resumed, cfg.train_steps):
         if stop_latched:

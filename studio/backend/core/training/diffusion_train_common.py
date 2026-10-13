@@ -857,8 +857,7 @@ def resume_steps_left(cfg: Any, identity: Any) -> int:
 
 
 class TrainingPeakMemory:
-    """Training-only peak across preview rounds: ``pause`` banks the peak so far before a round, ``resume`` resets the
-    allocator high-water mark after it, so a preview's VAE decode never reads as training memory."""
+    """Training-only peak: ``pause`` banks it before a preview round, ``resume`` resets after, so VAE decode is excluded."""
 
     def __init__(self, device: str):
         self.device = device
@@ -1052,8 +1051,7 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 compiles under the backend's auto rule (dynamic shapes cover its per-caption lengths); the panel control
-        # stays a DiT / SDXL one.
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
         supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
         if not is_dit or dit_block:
             fam_modes: list[str] = []

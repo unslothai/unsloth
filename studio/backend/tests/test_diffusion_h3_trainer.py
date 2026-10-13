@@ -1170,7 +1170,6 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
     # The case the bug was: a host that CAN train the DiT families must be able to train H3.
     if reference["precision_modes"]:
         assert h3["precision_modes"], "an empty list disables Start in the Train panel"
-    # H3 compiles under the backend's auto rule; the panel control stays hidden so the Train tab is unchanged.
     assert h3["supports_compile"] is False
     assert infos["sdxl"]["supports_compile"] is True
     if reference["precision_modes"]:
@@ -1901,8 +1900,7 @@ def test_h3_accepts_every_compile_mode():
 def test_h3_routes_its_transformer_through_the_shared_regional_compile(
     precision, expect_bnb, monkeypatch, tmp_path
 ):
-    """The H3 loop hands its adapted transformer to the DiT trainer's never-fatal compile wrapper (the
-    same int8 / nf4 gates), after the int8 conversion and before the optimizer is built."""
+    """H3 hands its transformer to the DiT compile wrapper after int8 conversion, before the optimizer."""
     import torch
 
     import core.training.diffusion_dit_trainer as dit

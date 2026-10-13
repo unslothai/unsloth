@@ -740,7 +740,6 @@ def run_diffusion_lora_training(
             if resumed < cfg.train_steps:
                 _sample(resumed)
 
-        # Reported peak VRAM = training peak, not the higher load / encode peak.
         train_peak = TrainingPeakMemory(device)
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
