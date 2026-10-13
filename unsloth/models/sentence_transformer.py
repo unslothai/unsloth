@@ -102,7 +102,7 @@ def _ensure_sentence_attention_masks(model):
 
 
 def _encoder_gc_use_reentrant():
-    # Under DDP, reentrant checkpointing re-runs each layer in its own backward, so a LoRA weight's grad hook fires once per checkpoint call and DDP raises "marked as ready twice" (#4680). Same fallback as the FastModel route (#3751).
+    # Reentrant checkpointing fires a LoRA weight's DDP hook once per checkpoint call: "marked as ready twice" (#4680, as #3751 for FastModel).
     return not is_distributed()
 
 

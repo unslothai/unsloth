@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""FastSentenceTransformer LoRA with gradient checkpointing must train under DDP (#4680).
-
-Reentrant checkpointing runs one backward per checkpointed layer call, and a loss like
-MultipleNegativesRankingLoss calls the model twice, so each LoRA weight's grad hook fires
-twice and DDP raises "marked as ready twice". One GPU keeps the old checkpointing.
-"""
+"""FastSentenceTransformer LoRA with gradient checkpointing must train under DDP (#4680); one GPU keeps reentrant checkpointing."""
 
 from __future__ import annotations
 
