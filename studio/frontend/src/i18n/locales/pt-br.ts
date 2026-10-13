@@ -89,6 +89,7 @@ export const ptBR = {
         click: "Permitir que o Unsloth clique em “{name}” em {host}?",
         history: "Permitir que o Unsloth leia seu histórico de navegação?",
         script: "Permitir que o Unsloth execute este script em {host}?",
+        pointer: "Permitir que o Unsloth clique em partes sem rótulo de {host}, como um canvas?",
       },
     },
     title: "Navegador",

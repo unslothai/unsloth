@@ -89,6 +89,7 @@ export const ar = {
         click: "هل تسمح لـ Unsloth بالنقر على «{name}» في {host}؟",
         history: "هل تسمح لـ Unsloth بقراءة سجل التصفح؟",
         script: "هل تسمح لـ Unsloth بتشغيل هذا البرنامج النصي على {host}؟",
+        pointer: "هل تسمح لـ Unsloth بالنقر على أجزاء بلا تسمية في {host}، مثل لوحة الرسم؟",
       },
     },
     title: "المتصفح",

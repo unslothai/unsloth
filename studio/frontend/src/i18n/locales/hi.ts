@@ -89,6 +89,7 @@ export const hi = {
         click: "क्या Unsloth को {host} पर “{name}” पर क्लिक करने दें?",
         history: "क्या Unsloth को आपका ब्राउज़िंग इतिहास पढ़ने दें?",
         script: "क्या Unsloth को {host} पर यह स्क्रिप्ट चलाने दें?",
+        pointer: "क्या Unsloth को {host} के बिना लेबल वाले हिस्सों, जैसे कैनवस, पर क्लिक करने दें?",
       },
     },
     title: "ब्राउज़र",

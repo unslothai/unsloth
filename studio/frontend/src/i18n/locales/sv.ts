@@ -87,6 +87,7 @@ export const sv = {
         click: "Låta Unsloth klicka på ”{name}” på {host}?",
         history: "Låta Unsloth läsa din webbhistorik?",
         script: "Låta Unsloth köra det här skriptet på {host}?",
+        pointer: "Låta Unsloth klicka på omärkta delar av {host}, till exempel en rityta?",
       },
     },
     title: "Webbläsare",

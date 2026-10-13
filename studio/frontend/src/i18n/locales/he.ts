@@ -90,6 +90,7 @@ export const he = {
         click: "לאפשר ל-Unsloth ללחוץ על „{name}” ב-{host}?",
         history: "לאפשר ל-Unsloth לקרוא את היסטוריית הגלישה?",
         script: "לאפשר ל-Unsloth להריץ את הסקריפט הזה ב-{host}?",
+        pointer: "לאפשר ל-Unsloth ללחוץ על חלקים ללא תווית ב-{host}, כמו קנבס?",
       },
     },
     title: "דפדפן",

@@ -698,8 +698,12 @@ export function installPageAgent(): PageAgent {
   };
 
   const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
-  const pressAt = (el: Element, at: Point) => {
+  const pressAt = (el: Element, at: Point, expect?: unknown, sig?: unknown) => {
     hoverTo(el, at);
+    // A hover handler can open an overlay or rewire the target: the press waits for a fresh check.
+    if (expect && stillAt(at, expect, sig) !== el) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
     mouse(el, "pointerdown", at, 1);
     // As a browser does, unless the page cancelled the press.
     if (mouse(el, "mousedown", at, 1)) (el.closest(FOCUSABLE) as HTMLElement | null)?.focus?.({ preventScroll: true });
@@ -712,7 +716,7 @@ export function installPageAgent(): PageAgent {
     if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
     const navigate = linkOut(el, directLinks);
     if (navigate) return { ok: true, navigate };
-    pressAt(el, at);
+    pressAt(el, at, expect, sig);
     mouse(el, "pointerup", at);
     mouse(el, "mouseup", at);
     // A dispatched click still runs a link's, button's or checkbox's default action.
@@ -749,9 +753,10 @@ export function installPageAgent(): PageAgent {
     // The press and the release are held to the elements the user was asked about; moves are not.
     const el = phase === "down" || phase === "up" ? stillAt(at, expect, sig) : elementAt(at);
     if (phase === "down") {
-      pressAt(el, at);
+      pressAt(el, at, expect, sig);
       drag = { html: null };
-      const source = el.closest('[draggable="true"]');
+      // Through shadow roots: a web component's draggable host is still the drag's source.
+      const source = lineage(el).find((node) => node.getAttribute("draggable") === "true");
       if (source && typeof DataTransfer === "function" && typeof DragEvent === "function") {
         const data = new DataTransfer();
         if (dragEvent(source, "dragstart", at, data)) drag.html = { source, data, over: null, accepted: false };

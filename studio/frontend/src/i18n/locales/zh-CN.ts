@@ -89,6 +89,7 @@ export const zhCN = {
         click: "允许 Unsloth 点击 {host} 上的“{name}”？",
         history: "允许 Unsloth 读取你的浏览记录？",
         script: "允许 Unsloth 在 {host} 上运行这段脚本？",
+        pointer: "允许 Unsloth 点击 {host} 上没有标签的区域（如画布）？",
       },
     },
     title: "浏览器",

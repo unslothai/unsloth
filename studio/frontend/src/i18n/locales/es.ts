@@ -89,6 +89,7 @@ export const es = {
         click: "¿Permitir que Unsloth haga clic en «{name}» en {host}?",
         history: "¿Permitir que Unsloth lea tu historial de navegación?",
         script: "¿Permitir que Unsloth ejecute este script en {host}?",
+        pointer: "¿Permitir que Unsloth haga clic en partes sin etiqueta de {host}, como un lienzo?",
       },
     },
     title: "Navegador",

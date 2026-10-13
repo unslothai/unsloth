@@ -90,6 +90,7 @@ export const ja = {
         click: "Unsloth に {host} の「{name}」をクリックさせますか？",
         history: "Unsloth に閲覧履歴を読ませますか？",
         script: "Unsloth に {host} でこのスクリプトを実行させますか？",
+        pointer: "Unsloth に {host} のキャンバスなどラベルのない部分をクリックさせますか？",
       },
     },
     title: "ブラウザ",

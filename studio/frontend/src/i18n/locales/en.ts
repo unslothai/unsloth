@@ -86,6 +86,7 @@ export const en = {
         click: "Let Unsloth click “{name}” on {host}?",
         history: "Let Unsloth read your browsing history?",
         script: "Let Unsloth run this script on {host}?",
+        pointer: "Let Unsloth click unlabelled parts of {host}, such as a canvas?",
       },
     },
     title: "Browser",

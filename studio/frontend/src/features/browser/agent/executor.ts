@@ -15,6 +15,7 @@ import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
 import { askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
+import { ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 
 export type BrowserAction = {
@@ -100,6 +101,8 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
 // links on the page the agent last read. All per chat.
 const knownHosts = new Set<string>();
 const reachedHosts = new Set<string>();
+// Sites where the user let the agent click or drag where the page says nothing about what is there.
+const opaqueHosts = new Set<string>();
 let pageLinks = new Set<string>();
 let scope: string | undefined;
 // Where the agent's own moves in this chat landed: a native view's Back or Forward doesn't say where
@@ -111,6 +114,7 @@ function enterScope(next: string | undefined): void {
   if (next === scope) return;
   knownHosts.clear();
   reachedHosts.clear();
+  opaqueHosts.clear();
   pageLinks = new Set();
   trail = [];
   at = -1;
@@ -381,6 +385,7 @@ const DECLINED: Record<Question["ask"], string> = {
   click: "that click",
   history: "sharing their browsing history",
   script: "running that script",
+  pointer: "clicking where the page doesn't say what is there",
 };
 
 /** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
@@ -569,6 +574,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions()));
+  const opaque = point ? opaqueGate(info, here) : null;
+  if (opaque) gates.push(opaque);
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
@@ -614,6 +621,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
+  if (opaque) opaqueHosts.add(opaque.host);
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
     if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
@@ -752,10 +760,13 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
-    const gate = gateElement("click", described.info, before, action.policy, permissions());
-    asked ||= gate.kind === "ask";
-    const refused = await pass(gate, signal);
-    if (refused) return { ok: false, error: refused };
+    for (const gate of [gateElement("click", described.info, before, action.policy, permissions()), opaqueGate(described.info, before)]) {
+      if (!gate) continue;
+      asked ||= gate.kind === "ask";
+      const refused = await pass(gate, signal);
+      if (refused) return { ok: false, error: refused };
+      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+    }
     hits.push(described.hit ?? "");
     sigs.push(described.sig ?? "");
     infos.push(JSON.stringify(described.info));
@@ -790,14 +801,27 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
-    const refused = await pass(gateElement("click", target.info, before, action.policy, permissions()), signal);
-    if (refused) return cancel(refused);
+    for (const gate of [gateElement("click", target.info, before, action.policy, permissions()), opaqueGate(target.info, before)]) {
+      if (!gate) continue;
+      const refused = await pass(gate, signal);
+      if (refused) return cancel(refused);
+      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+    }
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
   }
   // In the same call as the drop: nothing can swap the target between the check and the release.
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, up.note);
+}
+
+/** A point on something the page gives no role or words for, a canvas say: its pixels may be a
+ *  Buy button nothing here can read, so the user is asked once per site in this chat. */
+function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }) | null {
+  if (info.role !== "element" || info.name.trim() || info.href) return null;
+  const host = hostOfUrl(pageUrl);
+  if (!host || opaqueHosts.has(host) || ruleFor(pageUrl, permissions()).rule.actions === "allow") return null;
+  return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
 }
 
 const CHANGED_UNDER_POINT = "the page changed under that point; take a screenshot to see it again.";

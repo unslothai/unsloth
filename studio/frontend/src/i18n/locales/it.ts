@@ -88,6 +88,7 @@ export const it = {
         click: "Consentire a Unsloth di fare clic su «{name}» su {host}?",
         history: "Consentire a Unsloth di leggere la tua cronologia di navigazione?",
         script: "Consentire a Unsloth di eseguire questo script su {host}?",
+        pointer: "Consentire a Unsloth di fare clic su parti senza etichetta di {host}, come un canvas?",
       },
     },
     title: "Browser",

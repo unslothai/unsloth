@@ -10,7 +10,7 @@ import { type AgentPermissions, patternMatches, ruleFor } from "./permissions";
 
 /** `prompt` is for the model; `ask`, `host` and `name` let the panel say it in the reader's language. */
 export type Question = {
-  ask: "open" | "signIn" | "submit" | "click" | "history" | "script";
+  ask: "open" | "signIn" | "submit" | "click" | "history" | "script" | "pointer";
   host: string;
   name: string;
   detail: string;
