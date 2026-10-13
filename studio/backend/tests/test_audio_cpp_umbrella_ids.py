@@ -776,3 +776,18 @@ def test_a_file_name_two_directories_share_names_neither(hub):
         variants[0]
     ]
     assert acm._cached_variants_named(variants, "small/Q8_0", "Moon-GGUF") == [variants[1]]
+
+
+def test_cached_path_of_a_folder_skips_a_newer_snapshot_missing_voice_files(hub):
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    rel = "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf"
+    older = _add_snapshot(hub, "0" * 40, {rel: "pocket_tts"}, main = False)
+    voice = blobs / "voice-english"
+    voice.write_bytes(b"v" * 900)
+    path = older / "PocketTTS-GGUF/english/embeddings/alba.safetensors"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    os.symlink(os.path.relpath(voice, path.parent), path)
+    # refs/main's snapshot got the GGUF again but not its voices.
+    _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+    acm.forget()
+    assert acm.folder_snapshot_dir(f"{AUDIO_CPP_REPO}/PocketTTS-GGUF") == older / "PocketTTS-GGUF"

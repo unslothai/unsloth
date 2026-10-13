@@ -2725,10 +2725,13 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     snapshots = [s for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
     # The snapshot holding a cached variant's weights, not a newer one that kept only metadata,
     # an adapter or a partial file.
+    from core.inference.audio_cpp_files import _file_complete
+
     model = resolve(ref.id, network = False)
-    primaries = [v.primary for v in (model.variants if model is not None else ()) if v.primary]
+    variants = [v for v in (model.variants if model is not None else ()) if v.files]
     for snapshot in snapshots:
-        if any((snapshot / primary).is_file() for primary in primaries):
+        # Every file of some variant, voice embeddings included, as the On Device listing requires.
+        if any(all(_file_complete(snapshot / f.path, f.size) for f in v.files) for v in variants):
             return snapshot / ref.folder
     for snapshot in snapshots:
         if any(p.suffix.lower() == ".gguf" for p in (snapshot / ref.folder).rglob("*")):
