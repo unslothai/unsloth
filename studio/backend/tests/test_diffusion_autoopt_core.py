@@ -72,7 +72,6 @@ def test_body_has_and_once():
 
 def test_arch_patches_keep_a_monkeypatchable_body_has():
     from core.inference import diffusion_arch_patches
-
     assert diffusion_arch_patches._body_has is ap.body_has
 
 
@@ -157,7 +156,9 @@ def test_registry_lifecycle_kill_switch_speed_only_and_failures(scratch_registry
     log = types.SimpleNamespace(warning = lambda *a: warnings.append(a))
     pipe = types.SimpleNamespace(transformer = type("MyDiT", (), {})())
 
-    res = ap.install_stage(ap.STAGE_LOAD, ap.PatchContext(pipe = pipe, speed_mode = "default", logger = log), audit = audit)
+    res = ap.install_stage(
+        ap.STAGE_LOAD, ap.PatchContext(pipe = pipe, speed_mode = "default", logger = log), audit = audit
+    )
     assert res == {"fuse": True} and state["on"]
     assert audit.entries["patch:fuse"]["status"] == "engaged"
     assert audit.entries["patch:broken"]["status"] == "failed"
@@ -173,7 +174,10 @@ def test_registry_lifecycle_kill_switch_speed_only_and_failures(scratch_registry
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PATCH_FUSE", "0")
     audit2 = ao.new_audit(backend = "image", family = None)
     ap.install_stage(ap.STAGE_LOAD, ap.PatchContext(pipe = pipe, speed_mode = "max"), audit = audit2)
-    assert audit2.entries["patch:fuse"] == {"status": "declined", "reason": "UNSLOTH_DIFFUSION_PATCH_FUSE=0"}
+    assert audit2.entries["patch:fuse"] == {
+        "status": "declined",
+        "reason": "UNSLOTH_DIFFUSION_PATCH_FUSE=0",
+    }
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PATCH_FUSE")
 
     ap.install_stage(ap.STAGE_LOAD, ap.PatchContext(pipe = pipe, speed_mode = "max"))
@@ -238,7 +242,9 @@ def test_denoiser_dits_contract_is_unchanged():
     from core.inference import diffusion_attention, diffusion_speed
 
     a, b = object(), object()
-    pipe = types.SimpleNamespace(transformer = a, transformer_2 = b, unconditional_transformer = a, unet = object())
+    pipe = types.SimpleNamespace(
+        transformer = a, transformer_2 = b, unconditional_transformer = a, unet = object()
+    )
     assert targets.denoiser_dits(pipe) == [a, b]
     assert diffusion_speed._denoiser_dits(pipe) == [a, b]
     assert diffusion_attention._attention_dits(pipe) == [a, b]
@@ -283,10 +289,12 @@ def _toy_model(block_src_sync: bool):
             self.lin = torch.nn.Linear(4, 4)
 
         if block_src_sync:
+
             def forward(self, x):
                 k = int(x.abs().max().item())
                 return self.lin(x) + k
         else:
+
             def forward(self, x):
                 return self.lin(x)
 
@@ -325,7 +333,6 @@ def test_profile_discovers_blocks_and_is_cached():
 # -------------------------------------------------------------------------------------------- plan / generic
 def _target():
     import torch
-
     return types.SimpleNamespace(
         device = "cuda", backend = "cuda", dtype = torch.bfloat16, supports_default_torch_compile = True
     )
@@ -354,7 +361,11 @@ def test_plan_reasons_mirror_the_primitive_gates():
     assert eager.reason("compiled") == "eager tier does not compile"
 
 
-def _generic_run(model, monkeypatch, env = None):
+def _generic_run(
+    model,
+    monkeypatch,
+    env = None,
+):
     from core.inference import diffusion_speed as ds
 
     if env is not None:
@@ -422,8 +433,12 @@ def test_registered_family_passes_through_untouched():
         return {"compiled": False}
 
     ao.run_speed_layer(
-        types.SimpleNamespace(transformer = None), _target(), family = fam, backend = "image",
-        speed_mode = "default", apply = apply,
+        types.SimpleNamespace(transformer = None),
+        _target(),
+        family = fam,
+        backend = "image",
+        speed_mode = "default",
+        apply = apply,
     )
     assert seen["family"] is fam
 
@@ -467,7 +482,9 @@ def test_compile_cache_kwargs_match_the_former_inline_dicts():
                 "vae_decode": ds.vae_decode_compile_allowed(pipe, mode),
                 **({"below_hooks": True} if below else {}),
             }
-            got = plan_mod.compile_cache_kwargs(pipe, speed_mode = mode, fullgraph = True, offload_below_hooks = below)
+            got = plan_mod.compile_cache_kwargs(
+                pipe, speed_mode = mode, fullgraph = True, offload_below_hooks = below
+            )
             assert got == want
     deferred = plan_mod.compile_cache_kwargs(
         pipe, speed_mode = "max", fullgraph = False, offload_below_hooks = False, deferred = True
@@ -524,11 +541,19 @@ def test_video_family_hooks_are_data():
         seen["static"] = getattr(dit, "_unsloth_compile_static", False)
         return {"compiled": False, "cudnn_benchmark": False}
 
-    ao.run_speed_layer(view, _target(), family = ltx, backend = "video", speed_mode = "default", apply = apply)
+    ao.run_speed_layer(
+        view, _target(), family = ltx, backend = "video", speed_mode = "default", apply = apply
+    )
     assert seen["static"] is True
     image_dit = types.SimpleNamespace()
     ao.run_speed_layer(
-        types.SimpleNamespace(transformer = image_dit), _target(), family = ltx, backend = "image",
-        speed_mode = "default", apply = apply,
+        types.SimpleNamespace(transformer = image_dit),
+        _target(),
+        family = ltx,
+        backend = "image",
+        speed_mode = "default",
+        apply = apply,
     )
-    assert not hasattr(image_dit, "_unsloth_compile_static")  # video hooks never run on the image backend
+    assert not hasattr(
+        image_dit, "_unsloth_compile_static"
+    )  # video hooks never run on the image backend

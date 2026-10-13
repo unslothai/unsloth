@@ -120,9 +120,7 @@ def _unresolved_names(tree: ast.AST, fn_globals: dict) -> list[str]:
                 bound.add((alias.asname or alias.name).split(".")[0])
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
-    return sorted(
-        n for n in loaded - bound if n not in fn_globals and not hasattr(builtins, n)
-    )
+    return sorted(n for n in loaded - bound if n not in fn_globals and not hasattr(builtins, n))
 
 
 def splice_source(
@@ -146,7 +144,9 @@ def splice_source(
     if fingerprints is not None:
         digest = source_digest(raw)
         if digest not in set(fingerprints):
-            raise SpliceError(f"source differs from the version this was written against ({digest})")
+            raise SpliceError(
+                f"source differs from the version this was written against ({digest})"
+            )
     src = _source(raw)
     if src is None:
         raise SpliceError("source unavailable")
@@ -228,7 +228,10 @@ class PatchSpec:
 
     @property
     def kill_env(self) -> str:
-        return "UNSLOTH_DIFFUSION_PATCH_" + "".join(c if c.isalnum() else "_" for c in self.name).upper()
+        return (
+            "UNSLOTH_DIFFUSION_PATCH_"
+            + "".join(c if c.isalnum() else "_" for c in self.name).upper()
+        )
 
 
 @dataclass
@@ -288,7 +291,11 @@ def install_stage(
         if ctx.backend not in spec.backends:
             continue
         if spec.classes:
-            subject = ctx.transformer if ctx.transformer is not None else getattr(ctx.pipe, "transformer", None)
+            subject = (
+                ctx.transformer
+                if ctx.transformer is not None
+                else getattr(ctx.pipe, "transformer", None)
+            )
             if _class_name(subject) not in spec.classes:
                 continue
         if _env_off(spec.kill_env):

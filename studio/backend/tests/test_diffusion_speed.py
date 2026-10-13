@@ -1921,12 +1921,18 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
     try:
         ds_mod.vae_decode_compile_allowed = lambda pipe, mode: seen.append(mode) or mode == "max"
         pipe = types.SimpleNamespace(transformer = None)
-        assert compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
-            "vae_decode"
-        ] is True
-        assert compile_cache_kwargs(
-            pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
-        )["vae_decode"] is False
+        assert (
+            compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
+                "vae_decode"
+            ]
+            is True
+        )
+        assert (
+            compile_cache_kwargs(
+                pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
+            )["vae_decode"]
+            is False
+        )
     finally:
         ds_mod.vae_decode_compile_allowed = orig
     assert seen == ["max", "default"]

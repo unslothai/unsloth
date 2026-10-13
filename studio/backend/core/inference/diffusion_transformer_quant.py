@@ -260,7 +260,9 @@ _INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
 
 # Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``). For ltx-2.5 this only
 # picks the hosted rotated file (the env's ``0`` picks the plain one).
-_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image", "ltx-2.5"})
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
+    {"qwen-image-2.1", "z-image", "ltx-2.5"}
+)
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 

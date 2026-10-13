@@ -33,7 +33,16 @@ PARTITION_ATTRS: tuple[str, ...] = ("transformer_ref",)
 UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
 
 # Component names that are never a denoiser even when they are a ModelMixin with repeated blocks.
-_NOT_DENOISERS = ("vae", "controlnet", "text_encoder", "image_encoder", "audio", "vocoder", "upsampler", "connector")
+_NOT_DENOISERS = (
+    "vae",
+    "controlnet",
+    "text_encoder",
+    "image_encoder",
+    "audio",
+    "vocoder",
+    "upsampler",
+    "connector",
+)
 
 
 def _unique(modules: Iterable[Any]) -> list:
