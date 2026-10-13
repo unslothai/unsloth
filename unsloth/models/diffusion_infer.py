@@ -167,7 +167,8 @@ class GraphedForward:
                 raise
             except Exception as error:  # capture-unsafe forward: eager from here on
                 self.failed = f"{type(error).__name__}: {error}"[:300]
-                if self.owner is not None:
+                # Out of memory is transient (a shared card, a long canvas): eager for this call only.
+                if self.owner is not None and not isinstance(error, torch.cuda.OutOfMemoryError):
                     self.owner.__dict__["_unsloth_graph_capture_failed"] = self.failed
                 self.graphs.clear()
                 torch.cuda.synchronize()

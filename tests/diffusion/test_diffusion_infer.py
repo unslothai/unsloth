@@ -225,3 +225,19 @@ def test_graphed_forward_cancel_during_capture_does_not_disable_graphs(monkeypat
         graphed(torch.zeros(2))
     assert graphed.failed is None
     assert "_unsloth_graph_capture_failed" not in model.__dict__
+
+
+def test_graphed_forward_out_of_memory_is_not_remembered_on_the_model(monkeypatch):
+    from unsloth.models.diffusion_infer import GraphedForward
+
+    model = torch.nn.Module()
+    graphed = GraphedForward(lambda x: x + 1, owner = model)
+
+    def out_of_memory(x):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(graphed, "_capture", out_of_memory)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    assert torch.equal(graphed(torch.zeros(2)), torch.ones(2))
+    assert "_unsloth_graph_capture_failed" not in model.__dict__
+    assert GraphedForward(lambda x: x, owner = model).failed is None
