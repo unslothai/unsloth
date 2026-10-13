@@ -507,15 +507,53 @@ def _nemotron_sample(
 ):
     """Nemotron-Labs-Diffusion's own generate: block diffusion with a causal context between blocks."""
     block_length = int(block_length or getattr(base.config, "block_size", None) or 32)
-    output_ids, _nfe = base.generate(
-        input_ids,
-        max_new_tokens = _round_up(max_new_tokens, block_length),
-        block_length = block_length,
-        threshold = threshold,
-        temperature = temperature,
-        eos_token_id = eos_ids[0] if eos_ids else None,
-    )
+    progress = unused.get("progress")
+    with _nemotron_frames(base, progress, block_length, int(max_new_tokens), mask_id):
+        output_ids, _nfe = base.generate(
+            input_ids,
+            max_new_tokens = _round_up(max_new_tokens, block_length),
+            block_length = block_length,
+            threshold = threshold,
+            temperature = temperature,
+            eos_token_id = eos_ids[0] if eos_ids else None,
+        )
     return output_ids[:, input_ids.shape[1] :]
+
+
+@contextlib.contextmanager
+def _nemotron_frames(base, progress, block_length, budget, mask_id):
+    """Canvas frames from Nemotron's own generate without touching its loop. It makes three kinds of forward:
+    the prompt prefill (no cache yet), a denoising step on the active block (cache, use_cache=False) and a
+    commit of the finished block (cache, use_cache=True). A pre-hook reads which one from the kwargs."""
+    if progress is None or progress.on_frame is None:
+        yield
+        return
+    committed, state = [], {"step": 0}
+
+    def canvas(block):
+        done = sum(part.shape[1] for part in committed) + block.shape[1]
+        pad = block.new_full((block.shape[0], max(budget - done, 0)), mask_id)
+        return torch.cat([*committed, block, pad], dim = 1)
+
+    def hook(module, args, kwargs):
+        ids = args[0] if args else kwargs.get("input_ids")
+        if kwargs.get("past_key_values") is None or ids is None or ids.shape[1] != block_length:
+            return None
+        if kwargs.get("use_cache"):
+            # The finished block: one block-end frame, then it joins the committed prefix.
+            progress.frame(len(committed), block_length, block_length, canvas(ids), force = True)
+            committed.append(ids.clone())
+            state["step"] = 0
+        else:
+            progress.frame(len(committed), state["step"], block_length, canvas(ids))
+            state["step"] += 1
+        return None
+
+    handle = base.register_forward_pre_hook(hook, with_kwargs = True)
+    try:
+        yield
+    finally:
+        handle.remove()
 
 
 @_register("diffusion_gemma")
@@ -617,7 +655,9 @@ def generate_text(
 
     on_frame(frame) receives the canvas while it denoises: {"block", "step", "total", "tokens" (the generated
     region, `max_new_tokens` ids, unresolved slots = "mask_id"), "mask_id"}, at most once per
-    `frame_interval_s` plus once per finished block, always on this thread and never after return.
+    `frame_interval_s` plus once per finished block, always on this thread and never after return. Every
+    family streams frames except DiffusionGemma (transformers' own generate) and the
+    UNSLOTH_DIFFUSION_KV_CACHE=0 block fallback; stop_callback works for all of them.
     `compile`: "auto" (CUDA only), True, False, or a torch.compile mode such as "reduce-overhead"."""
     name = diffusion_profile_name(model)
     sampler = _SAMPLERS.get(name)

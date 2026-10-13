@@ -241,3 +241,99 @@ def test_graphed_forward_out_of_memory_is_not_remembered_on_the_model(monkeypatc
     assert torch.equal(graphed(torch.zeros(2)), torch.ones(2))
     assert "_unsloth_graph_capture_failed" not in model.__dict__
     assert GraphedForward(lambda x: x, owner = model).failed is None
+
+
+class _ToyNemotron(torch.nn.Module):
+    """Nemotron-Labs-Diffusion's generate call pattern: prefill, per-step block denoise, block commit."""
+
+    def __init__(self):
+        super().__init__()
+        self.config = type("Config", (), {"block_size": 4})()
+        self.weight = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(
+        self,
+        ids,
+        past_key_values = None,
+        use_cache = False,
+        use_causal_mask = False,
+    ):
+        return type("Out", (), {"past_key_values": object()})()
+
+    def generate(
+        self,
+        prompt_ids,
+        max_new_tokens,
+        block_length,
+        threshold = None,
+        temperature = 0.0,
+        eos_token_id = None,
+    ):
+        x = prompt_ids.clone()
+        out = self(prompt_ids, use_cache = True, use_causal_mask = True)
+        for block in range(max_new_tokens // block_length):
+            x = torch.cat([x, torch.full((1, block_length), 99)], dim = 1)
+            start = x.shape[1] - block_length
+            for step in range(block_length):
+                self(x[:, start:], past_key_values = out.past_key_values, use_cache = False)
+                x[0, start + step] = 10 * block + step
+            out = self(
+                x[:, start:],
+                past_key_values = out.past_key_values,
+                use_cache = True,
+                use_causal_mask = True,
+            )
+        return x, 0
+
+
+def test_nemotron_streams_frames_from_its_own_generate():
+    from unsloth.models import diffusion_samplers
+    from unsloth.models.diffusion_infer import make_progress
+
+    frames = []
+    progress = make_progress(frames.append, None, 0.0, 99, 6)
+    model = _ToyNemotron()
+    out = diffusion_samplers._nemotron_sample(
+        model,
+        None,
+        torch.tensor([[1, 2, 3]]),
+        None,
+        max_new_tokens = 6,
+        steps = None,
+        block_length = 4,
+        temperature = 0.0,
+        mask_id = 99,
+        eos_ids = [],
+        progress = progress,
+    )
+    progress.close()
+    ends = [f for f in frames if f["step"] == f["total"]]
+    assert [f["block"] for f in ends] == [0, 1]
+    assert ends[-1]["tokens"] == out[0, :6].tolist() == [0, 1, 2, 3, 10, 11]
+    assert all(len(f["tokens"]) == 6 for f in frames)
+    assert [f["step"] for f in frames if f["block"] == 0] == [0, 1, 2, 3, 4]
+    assert frames[1]["tokens"] == [0, 99, 99, 99, 99, 99]
+    assert not model._forward_pre_hooks
+
+
+def test_nemotron_without_on_frame_adds_no_hook():
+    from unsloth.models import diffusion_samplers
+    from unsloth.models.diffusion_infer import make_progress
+
+    model = _ToyNemotron()
+    seen = []
+    model.register_forward_pre_hook(lambda m, a: seen.append(len(m._forward_pre_hooks)))
+    diffusion_samplers._nemotron_sample(
+        model,
+        None,
+        torch.tensor([[1]]),
+        None,
+        max_new_tokens = 4,
+        steps = None,
+        block_length = 4,
+        temperature = 0.0,
+        mask_id = 99,
+        eos_ids = [],
+        progress = make_progress(None, None, 0.0, 99, 4),
+    )
+    assert set(seen) == {1}
