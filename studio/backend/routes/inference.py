@@ -2571,6 +2571,16 @@ def _openai_llama_admission_reserve(
     return reservation, config
 
 
+def _replay_preserve_thinking(llama_backend, payload, messages):
+    """The preserve_thinking generation will render with, so counts price the same prompt."""
+    resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
+    if resolver is None:
+        return payload.preserve_thinking
+    return resolver(
+        payload.preserve_thinking, messages, payload.enable_thinking, payload.reasoning_effort
+    )
+
+
 def _count_gguf_admission_prompt(
     llama_backend,
     payload,
@@ -2593,7 +2603,9 @@ def _count_gguf_admission_prompt(
             strict = True,
             prefer_native = images == 0,
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
-                payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+                payload.enable_thinking,
+                payload.reasoning_effort,
+                _replay_preserve_thinking(llama_backend, payload, messages),
             ),
             continue_final_message = _continue_final_message(payload, thought = True)
             and trailing_assistant_resume_kind(messages) is not None,
@@ -41215,8 +41227,9 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         from core.inference.tool_loop_controller import restore_replayed_tool_results
 
-        # As the completion path restores them, or failed results are undercounted.
-        _count_dumped = restore_replayed_tool_results(_count_dumped)
+        # As the completion path restores them, or failed results are undercounted. Off the
+        # loop: placing feedback before an envelope parses it.
+        _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
@@ -41354,7 +41367,12 @@ async def chat_count_tokens(
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
-        payload.preserve_thinking,
+        # Off the loop: the first call per server probes the template over HTTP.
+        payload.preserve_thinking
+        if _takes_passthrough
+        else await asyncio.to_thread(
+            _replay_preserve_thinking, llama_backend, payload, openai_messages
+        ),
     )
 
     # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load

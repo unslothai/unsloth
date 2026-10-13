@@ -30,15 +30,18 @@ export function toolModelNoteTarget(
   return -1;
 }
 
-/** Provenance with `suffix` appended to any suffix already noted. */
+/** Provenance with `suffix` appended to any suffix already noted. A note delivered twice (a
+ *  reconnect replaying the stream) is kept once. */
 export function withToolModelSuffix(
   provenance: Record<string, unknown> | undefined,
   suffix: string,
 ): Record<string, unknown> {
-  const previous = provenance?.model_suffix;
+  const previous =
+    typeof provenance?.model_suffix === "string" ? provenance.model_suffix : "";
+  if (suffix && previous.endsWith(suffix)) return { ...(provenance ?? {}) };
   return {
     ...(provenance ?? {}),
-    model_suffix: (typeof previous === "string" ? previous : "") + suffix,
+    model_suffix: previous + suffix,
   };
 }
 

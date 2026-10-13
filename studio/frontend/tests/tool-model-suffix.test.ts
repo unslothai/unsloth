@@ -33,6 +33,8 @@ test("suffixes accumulate in order and keep the rest of the provenance", () => {
     round_id: 3,
     model_suffix: "\n\nfirst\n\nsecond",
   });
+  // A reconnect that replays the same note keeps it once.
+  assert.deepEqual(withToolModelSuffix(twice, "\n\nsecond"), twice);
 });
 
 test("only a noted card replays extra_content", () => {

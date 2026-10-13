@@ -9012,26 +9012,48 @@ class LlamaCppBackend:
         return {"enable_thinking": enable_thinking}
 
     def _replay_preserve_thinking(
-        self, preserve_thinking: Optional[bool], messages
+        self,
+        preserve_thinking: Optional[bool],
+        messages,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Optional[bool]:
-        """``preserve_thinking`` for a history that carries no reasoning at all.
+        """``preserve_thinking`` for a thinking-off request whose history carries no reasoning.
 
         With nothing to preserve, the kwarg only decides whether earlier answers keep the empty
         think block the generation prompt put in front of them. Dropped, every follow-up of a
         thinking-off chat diverges from llama-server's cache at the previous answer, and a hybrid
         or SWA model re-processes it. Kept only where the template's own render proves it is
-        byte-identical to what was generated, so other templates see no change.
+        byte-identical to what was generated, so other templates see no change. A thinking-on
+        request keeps the caller's setting: its own reasoning is real and theirs to drop.
         """
         if preserve_thinking is not False or not getattr(
             self, "_supports_preserve_thinking", False
         ):
             return preserve_thinking
+        mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
+        if mode.get("enable_thinking") is not False:
+            return preserve_thinking
+        answered = False
         for message in messages or ():
             if not isinstance(message, dict) or message.get("role") != "assistant":
                 continue
+            answered = True
             reasoning = message.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning.strip():
                 return preserve_thinking
+            # Reasoning carried inline in the answer, which templates split back out.
+            content = message.get("content")
+            parts = content if isinstance(content, list) else [content]
+            if any(
+                "</think>" in (part.get("text") if isinstance(part, dict) else part)
+                for part in parts
+                if isinstance(part, str)
+                or (isinstance(part, dict) and isinstance(part.get("text"), str))
+            ):
+                return preserve_thinking
+        if not answered:
+            return preserve_thinking
         return True if self._empty_think_replays_with_preserve() else preserve_thinking
 
     def _empty_think_replays_with_preserve(self) -> bool:
@@ -9040,7 +9062,11 @@ class LlamaCppBackend:
         Probed once per server through /apply-template: the generation prompt plus the answer
         must be a prefix of the next turn's render with preserve_thinking on, and not with it off.
         """
-        key = (getattr(self, "base_url", None), id(getattr(self, "_chat_template", None)))
+        key = (
+            getattr(self, "base_url", None),
+            id(getattr(self, "_chat_template", None)),
+            id(getattr(self, "_chat_template_override", None)),
+        )
         cached = getattr(self, "_empty_think_preserve_probe", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -37576,7 +37602,9 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
         # Before anything prices or renders the prompt, so every pass agrees.
-        preserve_thinking = self._replay_preserve_thinking(preserve_thinking, messages)
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -38042,7 +38070,9 @@ class LlamaCppBackend:
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
         # Before anything prices or renders the prompt, so every pass agrees.
-        preserve_thinking = self._replay_preserve_thinking(preserve_thinking, messages)
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,

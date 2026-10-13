@@ -41,19 +41,30 @@ def _history(reasoning = None) -> list[dict]:
 def test_no_reasoning_history_keeps_the_empty_think_block(monkeypatch):
     backend = _backend()
     monkeypatch.setattr(LlamaCppBackend, "_empty_think_replays_with_preserve", lambda self: True)
-    assert backend._replay_preserve_thinking(False, _history()) is True
-    assert backend._replay_preserve_thinking(False, _history("")) is True
+    assert backend._replay_preserve_thinking(False, _history(), False) is True
+    assert backend._replay_preserve_thinking(False, _history(""), False) is True
 
 
 def test_the_users_choice_stands_wherever_there_is_reasoning_or_no_proof(monkeypatch):
     backend = _backend()
     monkeypatch.setattr(LlamaCppBackend, "_empty_think_replays_with_preserve", lambda self: True)
-    assert backend._replay_preserve_thinking(False, _history("thought about it")) is False
-    assert backend._replay_preserve_thinking(None, _history()) is None
-    assert backend._replay_preserve_thinking(True, _history()) is True
-    assert _backend(supports = False)._replay_preserve_thinking(False, _history()) is False
+    assert backend._replay_preserve_thinking(False, _history("thought about it"), False) is False
+    assert backend._replay_preserve_thinking(None, _history(), False) is None
+    assert backend._replay_preserve_thinking(True, _history(), False) is True
+    assert _backend(supports = False)._replay_preserve_thinking(False, _history(), False) is False
+    # Thinking on: its reasoning is real, so the caller's choice to drop it stands.
+    assert backend._replay_preserve_thinking(False, _history(), True) is False
+    assert backend._replay_preserve_thinking(False, _history(), None) is False
+    # Reasoning carried inline in the answer is still reasoning.
+    inline = _history()
+    inline[1]["content"] = "<think>\nplan\n</think>\n\nPip paints."
+    assert backend._replay_preserve_thinking(False, inline, False) is False
+    inline[1]["content"] = [{"type": "text", "text": "<think>plan</think>Pip paints."}]
+    assert backend._replay_preserve_thinking(False, inline, False) is False
+    # Nothing answered yet: nothing to replay, so no probe either.
+    assert backend._replay_preserve_thinking(False, _history()[:1], False) is False
     monkeypatch.setattr(LlamaCppBackend, "_empty_think_replays_with_preserve", lambda self: False)
-    assert backend._replay_preserve_thinking(False, _history()) is False
+    assert backend._replay_preserve_thinking(False, _history(), False) is False
 
 
 class _FakeClient:
