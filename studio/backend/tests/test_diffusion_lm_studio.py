@@ -1024,7 +1024,7 @@ def test_plain_stream_forwards_frames_only_to_event_clients():
     from routes import inference as routes_mod
 
     src = inspect.getsource(routes_mod)
-    branch = src[src.index("# Per-step canvas, as on the GGUF path") :][:400]
+    branch = src[src.index("# As on the GGUF path: never in the transcript.") :][:400]
     assert "if _sf_ui_events:" in branch and "_drop_keepalive.due()" in branch
     gate = src[
         src.index("_sf_frame_kwargs = (") : src.index(
