@@ -1309,6 +1309,35 @@ def test_a_drafterless_retry_that_fails_at_the_restored_slots_runs_as_cut(tmp_pa
     assert backend.effective_parallel_slots == 1
 
 
+@pytest.mark.parametrize(
+    "refuses_unified_kv, ctxs", [(False, ["7424", "8192"]), (True, ["7424", "8192", "7424"])]
+)
+def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unified_kv, ctxs):
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, 7424) if mtp_engaged else requested
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = refuses_unified_kv)
+
+    assert [c[c.index("-c") + 1] for c in cmds] == ctxs
+
+
+def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):
+    """The launch scrubs LLAMA_ARG_N_PARALLEL, so it never reaches the server."""
+    monkeypatch.setenv("LLAMA_ARG_N_PARALLEL", "4")
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == "2"
+
+
 def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
     backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
     cmds = []

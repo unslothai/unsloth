@@ -25839,6 +25839,8 @@ class LlamaCppBackend:
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
                 _mtp_slots_asked: Optional[int] = None
+                # Target-only context at that count, what a drafterless retry relaunches at.
+                _mtp_slots_target_ctx: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -27136,13 +27138,13 @@ class LlamaCppBackend:
                                     break
                         # Fewer slots before no drafter. The walk takes the first subset holding the
                         # drafter, so it must keep its target-only ctx (less the trim at one slot).
-                        # An extras / env --parallel wins at launch, so it is kept.
+                        # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
                         if (
                             _target_fits_somewhere
                             and not _both_fit_somewhere
                             and n_parallel > 1
                             and intent.n_parallel_from_default
-                            and _extra_args_n_parallel(extra_args) is None
+                            and _extra_args_n_parallel(extra_args, env = {}) is None
                         ):
 
                             def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
@@ -27205,6 +27207,7 @@ class LlamaCppBackend:
                                         continue
                                     if _c >= _ctx_c * _keep:
                                         _mtp_slots, _mtp_slots_ctx = _s, _c
+                                        _mtp_slots_target_ctx = None if explicit_ctx else _ctx_c
                                     break
                                 if _mtp_slots:
                                     break
@@ -28761,7 +28764,7 @@ class LlamaCppBackend:
                     # Nor are the slots Auto cut for a drafter this plan no longer proves.
                     if _mtp_slots_asked is not None:
                         n_parallel = _mtp_slots_asked
-                        _mtp_slots_asked = None
+                        _mtp_slots_asked = _mtp_slots_target_ctx = None
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
                         if mtp_overhead_fn is not None:
@@ -33017,7 +33020,13 @@ class LlamaCppBackend:
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
-                        (fallback_cmd, n_parallel, _auto_ctx_checkpoints, _auto_ckpt_emitted)
+                        (
+                            fallback_cmd,
+                            n_parallel,
+                            effective_ctx,
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        )
                         if _mtp_slots_asked is not None
                         else None
                     )
@@ -33029,6 +33038,10 @@ class LlamaCppBackend:
                             n_batch = n_batch,
                             supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
                         )
+                        # The cut may have bought context too; the restored count was priced at this.
+                        if _mtp_slots_target_ctx and "-c" in fallback_cmd:
+                            effective_ctx = _mtp_slots_target_ctx
+                            fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
                         # The checkpoint cap is per slot; same re-decide as the single-seq rung.
                         if _auto_ckpt_emitted:
                             fallback_cmd = self._without_flag_pairs(
@@ -33051,7 +33064,13 @@ class LlamaCppBackend:
                             _fb_cut[1],
                         )
                         self._kill_process()
-                        fallback_cmd, _fb_slots, _auto_ctx_checkpoints, _auto_ckpt_emitted = _fb_cut
+                        (
+                            fallback_cmd,
+                            _fb_slots,
+                            effective_ctx,
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        ) = _fb_cut
                         n_parallel = (
                             _fb_slots  # allow-slot-clamp: the restored count failed to start
                         )
