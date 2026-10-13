@@ -152,7 +152,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
   </tr>
   <tr>
     <td><b>Windows ARM64</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.811-beta/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
