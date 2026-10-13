@@ -1396,6 +1396,19 @@ def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optiona
     return physical_card_name(ordinal)
 
 
+def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
+    """``DDDD:BB:DD`` of the torch-visible card at *ordinal* (no function digit: torch does not report it)."""
+    if ordinal is None:
+        return None
+    try:
+        import torch
+
+        props = torch.cuda.get_device_properties(int(ordinal))
+        return f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}"
+    except Exception:  # noqa: BLE001 - unknown means every amdgpu card is a candidate
+        return None
+
+
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     """``(size, mtime_ns)`` of an sd.cpp binary, or None when it cannot be read.
 
@@ -2701,6 +2714,10 @@ _NATIVE_CRASH_NEEDLES = (
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
     """A user-facing reason for a failed generation, built only from fixed text."""
     try:
+        from .video_minimax_h3 import H3NativeMemoryRefusal
+
+        if isinstance(exc, H3NativeMemoryRefusal):
+            return f"{VIDEO_GENERATION_FAILED_MSG} {exc}"
         native_memory = _native_memory_failure(exc)
         if native_memory:
             return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
@@ -3746,6 +3763,7 @@ class VideoBackend:
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_graph_cut_options,
+            sd_cpp_listed_device,
             sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -4078,6 +4096,12 @@ class VideoBackend:
                 if native_device != "cpu" and listed_accelerator is not None
                 else None
             )
+            # What the executable itself renders on: an unowned build (SD_CLI_PATH) has no install record.
+            native_listed_class, native_listed_description = (
+                sd_cpp_listed_device(binary, native_device_name, probe = False)
+                if native_device != "cpu"
+                else (None, None)
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -4144,13 +4168,20 @@ class VideoBackend:
             not in ("", "0")
         )
         # Before the pin, so a text encoder moved to the CPU is pinned there. A load that cannot fit is refused here,
-        # not left to die mid-render on a lost device.
+        # not left to die mid-render on a lost device. Auto commits nothing yet: a render may still go resident.
         native_fit_note: Optional[str] = None
+        native_fit_flags: Optional[tuple[str, ...]] = None
+        native_fit_refusal: Optional[str] = None
         if native_device != "cpu":
+            from utils.host_memory import cgroup_swap_allowance_bytes
+
             from .video_minimax_h3 import (
-                amdgpu_gtt_limit_bytes,
+                amdgpu_gtt_free_bytes,
                 h3_host_capacity_bytes,
                 h3_native_memory_fit,
+                h3_native_render_flags,
+                h3_native_resident_bytes,
+                vulkan_device_is_amd,
             )
 
             def _size(path: Any) -> int:
@@ -4162,31 +4193,67 @@ class VideoBackend:
             try:
                 import psutil
 
-                # Swap counts: only the pinned half cannot page out, and the GTT check covers that one.
-                host_available = h3_host_capacity_bytes() + int(psutil.swap_memory().free)
+                # Swap counts, as far as this cgroup may use it: only the pinned half cannot page out.
+                host_available = h3_host_capacity_bytes() + cgroup_swap_allowance_bytes(
+                    int(psutil.swap_memory().free)
+                )
             except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
                 host_available = None
+            # The build's own listing first: the install record names only builds Studio installed.
+            fit_accelerator = (
+                native_listed_class
+                or (decided_accelerator if isinstance(decided_accelerator, str) else None)
+                or accelerator
+            )
+            gtt_free = None
+            if fit_accelerator == "vulkan" and vulkan_device_is_amd(native_listed_description):
+                gtt_free = amdgpu_gtt_free_bytes(_torch_pci_slot(native_ordinal))
             fit = h3_native_memory_fit(
                 native_offload,
-                accelerator = decided_accelerator
-                if isinstance(decided_accelerator, str)
-                else accelerator,
+                accelerator = fit_accelerator,
                 memory_mode = requested_mode,
                 dit_bytes = _size(resolved[0]),
                 te_bytes = _size(resolved[1]),
                 vae_bytes = _size(resolved[2]) + _size(resolved[3]),
-                pinned_limit_bytes = amdgpu_gtt_limit_bytes(),
+                pinned_free_bytes = gtt_free,
                 host_available_bytes = host_available,
             )
-            if fit.refusal:
-                raise RuntimeError(fit.refusal)
-            if fit.note:
-                logger.warning("video.h3_native_memory_fit: %s", fit.note)
-            native_offload = tuple(fit.flags)
-            native_fit_note = fit.note
+            if requested_mode == "auto" and (fit.refusal or fit.note):
+                # Auto renders resident whenever live free VRAM covers it, which needs neither the GTT pool nor the
+                # host copy: decide at render time, and refuse here only when even the smallest clip cannot go
+                # resident.
+                fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
+                small_w, small_h = (
+                    min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)
+                )
+                small_frames = fam.min_num_frames or fam.default_num_frames or 1
+                resident_need = h3_native_resident_bytes(
+                    sum(_size(p) for p in resolved[:4]), small_w, small_h, small_frames
+                )
+                _flags, could_be_resident = h3_native_render_flags(
+                    native_offload,
+                    memory_mode = requested_mode,
+                    free_bytes = _h3_card_free_bytes(native_device, native_ordinal),
+                    need_bytes = resident_need,
+                )
+                if fit.refusal and not could_be_resident:
+                    raise RuntimeError(fit.refusal)
+                native_fit_refusal = fit.refusal
+                if fit.note:
+                    native_fit_flags = tuple(fit.flags)
+                    native_fit_note = f"{fit.note} (applied when a render is offloaded)"
+            else:
+                if fit.refusal:
+                    raise RuntimeError(fit.refusal)
+                native_offload = tuple(fit.flags)
+                native_fit_note = fit.note
+            if native_fit_note:
+                logger.warning("video.h3_native_memory_fit: %s", native_fit_note)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
+        if native_fit_flags is not None:
+            native_fit_flags += tuple(device_backend_flags(native_device_name, list(native_fit_flags)))
         from .video_minimax_h3 import (
             H3NativeServerSlot,
             MiniMaxH3NativeRuntime,
@@ -4209,6 +4276,8 @@ class VideoBackend:
             selected_card = selected_card,
             files = native_files,
             offload_flags = native_offload,
+            offloaded_flags = native_fit_flags,
+            offload_refusal = native_fit_refusal,
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (
@@ -10834,6 +10903,7 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
+            h3_native_offloaded_render_flags,
             h3_native_render_flags,
             h3_native_resident_bytes,
             inspect_video,
@@ -10881,6 +10951,13 @@ class VideoBackend:
                 free_bytes = free,
                 need_bytes = need,
             )
+        # The GTT fit the load prepared for an offloaded Auto render; a resident one never needed it.
+        render_flags = h3_native_offloaded_render_flags(
+            render_flags,
+            render_resident = render_resident,
+            offloaded_flags = getattr(runtime, "offloaded_flags", None),
+            offload_refusal = getattr(runtime, "offload_refusal", None),
+        )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()

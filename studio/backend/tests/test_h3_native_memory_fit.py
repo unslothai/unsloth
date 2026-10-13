@@ -11,9 +11,13 @@ from core.inference import sd_cpp_backend
 from core.inference.video import video_failure_detail
 from core.inference.video_minimax_h3 import (
     H3_NATIVE_FIT_ENV,
-    amdgpu_gtt_limit_bytes,
+    H3NativeMemoryRefusal,
+    amdgpu_gtt_free_bytes,
     h3_native_memory_fit,
+    h3_native_offloaded_render_flags,
+    vulkan_device_is_amd,
 )
+from utils.host_memory import cgroup_swap_allowance_bytes
 
 GIB = 1024**3
 # The published unsloth/MiniMax-H3-GGUF sizes: Q4_K denoiser, Q4_K_M encoder, video + audio VAE.
@@ -45,7 +49,7 @@ def _fit(
         flags,
         accelerator = accelerator,
         memory_mode = mode,
-        pinned_limit_bytes = gtt,
+        pinned_free_bytes = gtt,
         host_available_bytes = host,
         env = env or {},
         **sizes,
@@ -105,13 +109,143 @@ def test_the_kill_switch_restores_the_old_flags():
     assert fit.flags == AUTO and fit.refusal is None
 
 
-def test_the_gtt_reading_takes_the_smallest_amdgpu_pool(tmp_path):
-    for card, value in (("card0", "25769803776"), ("card1", "8589934592"), ("card2", "junk")):
-        dev = tmp_path / "class" / "drm" / card / "device"
-        dev.mkdir(parents = True)
-        (dev / "mem_info_gtt_total").write_text(value + "\n", encoding = "utf-8")
-    assert amdgpu_gtt_limit_bytes(str(tmp_path)) == 8 * GIB
-    assert amdgpu_gtt_limit_bytes(str(tmp_path / "none")) is None
+def _card(root, card, slot, *, total, used = None, vendor = "0x1002"):
+    dev = root / "class" / "drm" / card / "device"
+    dev.mkdir(parents = True)
+    (dev / "vendor").write_text(vendor + "\n", encoding = "utf-8")
+    (dev / "uevent").write_text(f"DRIVER=amdgpu\nPCI_SLOT_NAME={slot}\n", encoding = "utf-8")
+    (dev / "mem_info_gtt_total").write_text(f"{total}\n", encoding = "utf-8")
+    if used is not None:
+        (dev / "mem_info_gtt_used").write_text(f"{used}\n", encoding = "utf-8")
+
+
+def test_the_gtt_reading_subtracts_what_is_already_used(tmp_path):
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 5 * GIB)
+    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path)) == 19 * GIB
+
+
+def test_the_gtt_reading_follows_the_selected_card(tmp_path):
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 1 * GIB)
+    _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 20 * GIB)  # the APU
+    assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 23 * GIB
+    assert amdgpu_gtt_free_bytes("0000:03:00.0", sysfs_root = str(tmp_path)) == 23 * GIB
+    # Unknown slot: the tightest card, since TTM's limit is shared.
+    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path)) == 4 * GIB
+    # A slot that is no amdgpu card (an NVIDIA or Intel device) has no pool.
+    assert amdgpu_gtt_free_bytes("0000:81:00", sysfs_root = str(tmp_path)) is None
+
+
+def test_a_non_amd_drm_card_is_never_read(tmp_path):
+    _card(tmp_path, "card0", "0000:00:02.0", total = 8 * GIB, vendor = "0x8086")
+    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path)) is None
+    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path / "none")) is None
+
+
+@pytest.mark.parametrize(
+    "description, amd",
+    [
+        ("AMD Radeon RX 7800 XT (RADV NAVI32)", True),
+        ("AMD Radeon(TM) Graphics (RADV GFX1151)", True),
+        ("Radeon RX 6800", True),
+        ("Intel(R) Arc(tm) A770 Graphics (DG2)", False),
+        ("NVIDIA GeForce RTX 4070 Ti", False),
+        ("llvmpipe (LLVM 17.0.6, 256 bits)", False),
+        (None, False),
+    ],
+)
+def test_only_an_amd_vulkan_device_is_bound_by_gtt(description, amd):
+    assert vulkan_device_is_amd(description) is amd
+
+
+OFFLOADED_FIT = AUTO + ("--clip-on-cpu", "--backend", "diffusion=Vulkan0,te=cpu,vae=Vulkan0")
+
+
+def test_a_resident_auto_render_drops_nothing_and_adds_no_encoder_move():
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    assert h3_native_offloaded_render_flags(
+        resident, render_resident = True, offloaded_flags = OFFLOADED_FIT, offload_refusal = "no"
+    ) == resident
+
+
+def test_an_offloaded_auto_render_takes_the_fitted_flags():
+    assert h3_native_offloaded_render_flags(
+        list(AUTO), render_resident = False, offloaded_flags = OFFLOADED_FIT, offload_refusal = None
+    ) == list(OFFLOADED_FIT)
+    assert h3_native_offloaded_render_flags(
+        list(AUTO), render_resident = False, offloaded_flags = None, offload_refusal = None
+    ) == list(AUTO)
+
+
+def test_an_offloaded_auto_render_that_cannot_fit_is_refused_with_its_reason():
+    with pytest.raises(H3NativeMemoryRefusal) as caught:
+        h3_native_offloaded_render_flags(
+            list(AUTO), render_resident = False, offloaded_flags = None, offload_refusal = "too big for GTT"
+        )
+    detail = video_failure_detail(caught.value)
+    assert detail.endswith("too big for GTT")
+
+
+def _cgroup(tmp_path, files, proc = "0::/user.slice/app.scope\n"):
+    root = tmp_path / "cg"
+    for rel, value in files.items():
+        path = root / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(value + "\n", encoding = "utf-8")
+    root.mkdir(exist_ok = True)
+    (tmp_path / "self").write_text(proc, encoding = "utf-8")
+    return dict(cgroup_root = str(root), proc_self_cgroup = str(tmp_path / "self"))
+
+
+def test_swap_is_bounded_by_the_cgroup_swap_allowance(tmp_path):
+    paths = _cgroup(
+        tmp_path,
+        {
+            "user.slice/app.scope/memory.max": str(48 * GIB),
+            "user.slice/app.scope/memory.swap.max": str(4 * GIB),
+            "user.slice/app.scope/memory.swap.current": str(1 * GIB),
+        },
+    )
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 3 * GIB
+
+
+def test_swap_max_zero_admits_no_swap(tmp_path):
+    paths = _cgroup(
+        tmp_path,
+        {
+            "user.slice/app.scope/memory.max": str(48 * GIB),
+            "user.slice/app.scope/memory.swap.max": "0",
+            "user.slice/app.scope/memory.swap.current": "0",
+        },
+    )
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 0
+
+
+def test_an_unlimited_cgroup_keeps_host_free_swap(tmp_path):
+    paths = _cgroup(
+        tmp_path,
+        {"user.slice/app.scope/memory.max": "max", "user.slice/app.scope/memory.swap.max": "max"},
+    )
+    assert cgroup_swap_allowance_bytes(8 * GIB, **paths) == 8 * GIB
+
+
+def test_a_ram_limit_without_swap_accounting_admits_no_swap(tmp_path):
+    paths = _cgroup(tmp_path, {"user.slice/memory.max": str(48 * GIB)})
+    assert cgroup_swap_allowance_bytes(8 * GIB, **paths) == 0
+
+
+def test_cgroup_v1_memsw_headroom_bounds_swap(tmp_path):
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/docker/x/memory.limit_in_bytes": str(32 * GIB),
+            "memory/docker/x/memory.usage_in_bytes": str(10 * GIB),
+            "memory/docker/x/memory.memsw.limit_in_bytes": str(40 * GIB),
+            "memory/docker/x/memory.memsw.usage_in_bytes": str(12 * GIB),
+        },
+        proc = "4:memory:/docker/x\n",
+    )
+    # RAM+swap room 28 GiB minus RAM room 22 GiB.
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 6 * GIB
 
 
 _RADV_TAIL = (
@@ -164,6 +298,34 @@ def test_the_fallback_reason_names_the_missing_rocm_libraries(monkeypatch):
     assert "diffusion-accelerator-fallback" in sd_cpp_backend.ACCELERATOR_FALLBACK_CLEAR_HINT
 
 
+def test_an_unaskable_rocm_runtime_is_not_read_as_loading(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_missing_sonames", lambda: None)
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
+    reason = sd_cpp_backend.accelerator_fallback_reason("rocm")
+    assert "could not be checked" in reason and "/dev/kfd" not in reason
+
+
+def test_the_windows_fallback_reason_names_the_hip_dlls(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "nt")
+    reason = sd_cpp_backend.accelerator_fallback_reason("rocm")
+    assert "amdhip64_7.dll" in reason and "0xC0000135" in reason and "/dev/kfd" not in reason
+
+
+def test_rocm_runtime_check_is_unknown_on_windows(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "nt")
+    assert sd_cpp_backend.rocm_runtime_missing_sonames() is None
+
+
+def test_the_listed_device_names_an_unowned_build(monkeypatch):
+    listing = "CPU\tAMD Ryzen 9\nVulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\nVulkan1\tIntel(R) UHD\n"
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: listing)
+    assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli") == ("vulkan", "AMD Radeon RX 7800 XT (RADV NAVI32)")
+    assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli", "Vulkan1") == ("vulkan", "Intel(R) UHD")
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: "CPU\tAMD Ryzen 9\n")
+    assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli") == (None, None)
+
+
 def test_the_fallback_reason_without_missing_libraries_points_at_the_card(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
     monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_missing_sonames", lambda: [])
     assert "gfx target" in sd_cpp_backend.accelerator_fallback_reason("rocm")

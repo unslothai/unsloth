@@ -1370,17 +1370,77 @@ H3_NATIVE_FIT_ENV = "UNSLOTH_H3_NATIVE_FIT_CHECK"
 H3_NATIVE_Q2_PAIR_BYTES = (int(6.26 * 1024**3), int(12.2 * 1024**3))
 
 
-def amdgpu_gtt_limit_bytes(sysfs_root: str = "/sys") -> Optional[int]:
-    """The smallest GTT pool any amdgpu card reports (``mem_info_gtt_total``), or None without one."""
+def _sysfs_int(path: Path) -> Optional[int]:
+    try:
+        return int(path.read_text(encoding = "utf-8").strip(), 0)
+    except (OSError, ValueError):
+        return None
+
+
+def _sysfs_pci_slot(device_dir: Path) -> Optional[str]:
+    """``DDDD:BB:DD.F`` of a DRM card's PCI device, lower-cased, or None."""
+    try:
+        for line in (device_dir / "uevent").read_text(encoding = "utf-8").splitlines():
+            if line.startswith("PCI_SLOT_NAME="):
+                return line.split("=", 1)[1].strip().lower() or None
+    except OSError:
+        pass
+    try:
+        name = Path(os.path.realpath(device_dir)).name.lower()
+    except OSError:
+        return None
+    return name if name.count(":") == 2 else None
+
+
+def amdgpu_gtt_free_bytes(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> Optional[int]:
+    """Free GTT (``mem_info_gtt_total - mem_info_gtt_used``) of the amdgpu card at ``pci_slot``
+    (``DDDD:BB:DD.F``, or ``DDDD:BB:DD`` for any function), or the least free of every amdgpu card when the slot is unknown (TTM's limit is shared, so
+    the tightest is the safe reading). None when no amdgpu card, or none at that slot, reports one."""
+    want = pci_slot.lower() if pci_slot else None
     best: Optional[int] = None
-    for path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
-        try:
-            value = int(path.read_text(encoding = "utf-8").strip())
-        except (OSError, ValueError):
+    for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
+        device = total_path.parent
+        if _sysfs_int(device / "vendor") != 0x1002:
             continue
-        if value > 0 and (best is None or value < best):
-            best = value
+        slot = _sysfs_pci_slot(device) if want is not None else None
+        if want is not None and slot != want and not (slot or "").startswith(want + "."):
+            continue
+        total = _sysfs_int(total_path)
+        if not total or total <= 0:
+            continue
+        used = _sysfs_int(device / "mem_info_gtt_used") or 0
+        free = max(total - max(used, 0), 0)
+        if best is None or free < best:
+            best = free
     return best
+
+
+def vulkan_device_is_amd(description: Optional[str]) -> bool:
+    """Whether a ggml Vulkan device description names an AMD GPU (RADV, AMDVLK, or the Radeon marketing name)."""
+    text = (description or "").lower()
+    return any(token in text for token in ("radv", "amd", "radeon"))
+
+
+class H3NativeMemoryRefusal(RuntimeError):
+    """A render refused because it cannot fit; its message is built only from fixed text and sizes."""
+
+
+def h3_native_offloaded_render_flags(
+    render_flags: "list[str]",
+    *,
+    render_resident: bool,
+    offloaded_flags: Optional["tuple[str, ...]"],
+    offload_refusal: Optional[str],
+) -> list[str]:
+    """The flags a render runs with once Auto has chosen between resident and offloaded: a resident render keeps
+    its own, an offloaded one takes the GTT-fitted set the load prepared, or is refused when none fits."""
+    if render_resident or "--offload-to-cpu" not in render_flags:
+        return list(render_flags)
+    if offload_refusal:
+        raise H3NativeMemoryRefusal(offload_refusal)
+    return list(offloaded_flags) if offloaded_flags else list(render_flags)
 
 
 @dataclass(frozen = True)
@@ -1404,12 +1464,13 @@ def h3_native_memory_fit(
     dit_bytes: int,
     te_bytes: int,
     vae_bytes: int,
-    pinned_limit_bytes: Optional[int],
+    pinned_free_bytes: Optional[int],
     host_available_bytes: Optional[int],
     env: Optional[dict] = None,
 ) -> H3NativeFit:
     """Fit the committed sd-cli offload flags to the host before any render. Only the offloaded path is judged (its
-    weights all live in host memory); ``pinned_limit_bytes`` applies to a Vulkan build only. Memory ``auto`` moves
+    weights all live in host memory); ``pinned_free_bytes`` (free GTT of the selected AMD card) applies to a Vulkan
+    build only, and None skips it. Memory ``auto`` moves
     the text encoder to the CPU when that alone makes the pinned set fit; anything else that cannot fit is refused
     with the setting that would."""
     flags = tuple(flags)
@@ -1441,17 +1502,17 @@ def h3_native_memory_fit(
                 f"applications or load a smaller quant.{smaller}"
             ),
         )
-    if (accelerator or "").strip().lower() != "vulkan" or not pinned_limit_bytes:
+    if (accelerator or "").strip().lower() != "vulkan" or pinned_free_bytes is None:
         return H3NativeFit(flags)
     te_on_cpu = "--clip-on-cpu" in flags
-    budget = int(pinned_limit_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES
+    budget = int(pinned_free_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES
     if pinned(te_on_cpu) <= budget:
         return H3NativeFit(flags)
-    limit = _gib(int(pinned_limit_bytes))
+    limit = _gib(int(pinned_free_bytes))
     if not te_on_cpu and pinned(True) <= budget:
         note = (
             f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
-            f"(GTT), {_gib(pinned(False))} here against a {limit} limit"
+            f"(GTT), {_gib(pinned(False))} here against {limit} free"
         )
         if mode == "auto":
             return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
@@ -1459,8 +1520,8 @@ def h3_native_memory_fit(
             flags,
             refusal = (
                 f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
-                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and this system "
-                f"allows {limit}. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
+                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
+                f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
                 f"({_gib(pinned(True))})."
             ),
         )
@@ -1474,8 +1535,8 @@ def h3_native_memory_fit(
         flags,
         refusal = (
             f"MiniMax-H3 GGUF does not fit this system on the Vulkan build: even with the text encoder on the CPU it "
-            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and this system allows "
-            f"{limit} (half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
+            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and {limit} of it is free "
+            f"(the pool is half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
         ),
     )
 
@@ -1508,6 +1569,9 @@ class MiniMaxH3NativeRuntime:
     cudnn: Any = None
     # H3NativeServerSlot, or None for one-shot sd-cli only.
     server_slot: Any = None
+    # Auto only: the GTT-fitted flags an OFFLOADED render runs with, and the refusal when none fits.
+    offloaded_flags: Optional[tuple[str, ...]] = None
+    offload_refusal: Optional[str] = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.

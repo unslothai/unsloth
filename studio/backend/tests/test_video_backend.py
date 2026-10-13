@@ -4250,40 +4250,108 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
     assert "--stream-layers" not in offload
 
 
-def _tiny_gtt(monkeypatch, *, encoder_fits: bool):
+_AMD_VULKAN = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
+
+
+def _tiny_gtt(monkeypatch, *, encoder_fits: bool, free_vram = 1):
     """A GTT pool sized against the harness's one-byte files: denoiser 1 + VAEs 2 + encoder 1 bytes past the
-    1 GiB margin. ``encoder_fits=False`` holds everything but the encoder."""
+    1 GiB margin. ``encoder_fits=False`` holds everything but the encoder. ``free_vram`` is what the card reports,
+    1 byte by default so Auto can never render resident."""
+    from core.inference import video as video_mod
     from core.inference import video_minimax_h3
 
     limit = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + (4 if encoder_fits else 3)
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_limit_bytes", lambda *a, **k: limit)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: limit)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
 
 
-def test_h3_native_auto_moves_the_encoder_off_a_vulkan_gtt_pool_it_overflows(monkeypatch, tmp_path):
+def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(monkeypatch, tmp_path):
     """radv keeps every GPU-run module of an offloaded H3 in GTT (31.35 GiB at Q4, measured), past half of a 48 GB
-    host: the render dies on "Not enough memory for command submission". Auto runs the encoder on the CPU."""
+    host: the render dies on "Not enough memory for command submission". Auto runs the encoder on the CPU, but
+    only for a render that is offloaded: the committed flags stay the ones a resident render is derived from."""
     _tiny_gtt(monkeypatch, encoder_fits = False)
     state, offload = _load_h3_native_offload(
         monkeypatch,
         tmp_path,
         help_text = _GRAPH_CUT_HELP,
-        devices = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n",
+        devices = _AMD_VULKAN,
         installed_accelerator = "vulkan",
     )
-    assert "--offload-to-cpu" in offload and "--clip-on-cpu" in offload
+    assert "--offload-to-cpu" in offload and "--clip-on-cpu" not in offload
+    fitted = list(state.pipe.offloaded_flags)
+    assert "--clip-on-cpu" in fitted and "te=Vulkan0" not in " ".join(fitted)
+    assert state.pipe.offload_refusal is None
     assert "GTT" in state.resolved["memory_mode"]["reason"]
+
+
+def test_h3_native_detects_an_unowned_vulkan_build_from_its_device_listing(monkeypatch, tmp_path):
+    """SD_CLI_PATH at a user Vulkan build: no install record, and the request was not vulkan."""
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, devices = _AMD_VULKAN
+    )
+    assert "--clip-on-cpu" in state.pipe.offloaded_flags
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        "Vulkan0\tIntel(R) Arc(tm) A770 Graphics (DG2)\n",
+        "Vulkan0\tNVIDIA GeForce RTX 4070 Ti\n",
+    ],
+)
+def test_h3_native_gtt_pool_binds_only_an_amd_vulkan_device(monkeypatch, tmp_path, devices):
+    """An unrelated AMD iGPU's GTT says nothing about an Intel or NVIDIA Vulkan device."""
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, devices = devices
+    )
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
 
 
 def test_h3_native_leaves_a_vulkan_gtt_pool_that_fits_alone(monkeypatch, tmp_path):
     _tiny_gtt(monkeypatch, encoder_fits = True)
-    _state, offload = _load_h3_native_offload(
+    state, offload = _load_h3_native_offload(
         monkeypatch,
         tmp_path,
         help_text = _GRAPH_CUT_HELP,
-        devices = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n",
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
+
+
+def _no_gtt_room(monkeypatch, free_vram):
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+
+
+def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(monkeypatch, tmp_path):
+    _no_gtt_room(monkeypatch, free_vram = 1)
+    with pytest.raises(RuntimeError, match = "GTT"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_VULKAN,
+            installed_accelerator = "vulkan",
+        )
+
+
+def test_h3_native_auto_defers_the_gtt_refusal_when_a_resident_render_fits(monkeypatch, tmp_path):
+    _no_gtt_room(monkeypatch, free_vram = 1 << 50)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
         installed_accelerator = "vulkan",
     )
     assert "--clip-on-cpu" not in offload
+    assert "GTT" in state.pipe.offload_refusal
 
 
 def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatch, tmp_path):
@@ -4294,15 +4362,15 @@ def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatc
             tmp_path,
             help_text = _GRAPH_CUT_HELP,
             memory_mode = "balanced",
-            devices = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n",
+            devices = _AMD_VULKAN,
             installed_accelerator = "vulkan",
         )
 
 
 def test_h3_native_gtt_pool_is_not_a_cuda_build_concern(monkeypatch, tmp_path):
     _tiny_gtt(monkeypatch, encoder_fits = False)
-    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
-    assert "--clip-on-cpu" not in offload
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
 
 
 _SAGE_HELP = _GRAPH_CUT_HELP + "  --sage-attn           use native CUDA SageAttention\n"

@@ -122,6 +122,72 @@ def cgroup_memory_budgets(
     return budgets
 
 
+def cgroup_swap_allowance_bytes(
+    free_swap: int,
+    cgroup_root: Optional[str] = None,
+    proc_self_cgroup: Optional[str] = None,
+) -> int:
+    """How much of the host's ``free_swap`` this process may still use: bounded by every enforcing cgroup swap
+    limit (v2 ``memory.swap.max`` minus ``memory.swap.current``; v1 ``memsw`` headroom minus memory headroom) on
+    this cgroup and its ancestors. 0 when a memory limit is enforced but its swap allowance cannot be read."""
+    free_swap = max(int(free_swap or 0), 0)
+    cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
+    proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
+    try:
+        with open(proc_self_cgroup, "r", encoding = "utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    allowance = free_swap
+    v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
+    if v2_relative is not None:
+        for directory in _directories(cgroup_root, v2_relative):
+            raw = _first_line(os.path.join(directory, "memory.swap.max"))
+            if raw is None:
+                # No swap accounting here: a RAM limit at this level makes the swap it leaves unknowable.
+                if _integer(_first_line(os.path.join(directory, "memory.max")), limit = True) is not None:
+                    return 0
+                continue
+            limit = _integer(raw, limit = True)
+            if limit is None:
+                if raw != "max":
+                    return 0
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.swap.current")))
+            if used is None:
+                return 0
+            allowance = min(allowance, max(limit - used, 0))
+    v1_relative = None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and "memory" in parts[1].split(","):
+            v1_relative = parts[2]
+            break
+    if v1_relative is not None:
+        v1_root = os.path.join(cgroup_root, "memory")
+        for directory in _directories(v1_root, v1_relative):
+            mem_limit = _integer(
+                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
+            )
+            if mem_limit is None:
+                continue
+            raw_memsw = _first_line(os.path.join(directory, "memory.memsw.limit_in_bytes"))
+            if raw_memsw is None:
+                return 0  # a RAM limit without swap accounting: the swap it leaves is unknown
+            memsw_limit = _integer(raw_memsw, limit = True)
+            if memsw_limit is None:
+                continue  # RAM+swap unlimited at this level
+            mem_used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            memsw_used = _integer(
+                _first_line(os.path.join(directory, "memory.memsw.usage_in_bytes"))
+            )
+            if mem_used is None or memsw_used is None:
+                return 0
+            swap_room = (memsw_limit - memsw_used) - (mem_limit - mem_used)
+            allowance = min(allowance, max(swap_room, 0))
+    return allowance
+
+
 def cgroup_headroom_mib(budgets: Optional[list[tuple[int, int]]] = None) -> Optional[int]:
     """What an enforcing cgroup still lets this process charge (the tightest remainder), else None."""
     budgets = cgroup_memory_budgets() if budgets is None else budgets
