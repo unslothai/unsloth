@@ -1868,8 +1868,11 @@ const PendingCompactionRule: FC = () => {
   const pending = useCompactRequestStore((s) =>
     threadId === null ? false : s.requested[threadId] === true,
   );
-  const isLast = useAuiState(({ message }) => message.isLast);
-  if (!pending || !isLast) return null;
+  // A reply, not the prompt about to compact: that one gets the divider the server reports.
+  const endsWithReply = useAuiState(
+    ({ message }) => message.isLast && message.role === "assistant",
+  );
+  if (!pending || !endsWithReply) return null;
   return <CompactionDivider pending={true} className="mt-6" />;
 };
 
