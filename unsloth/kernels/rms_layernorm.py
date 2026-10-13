@@ -612,8 +612,11 @@ def _sm_count(device):
 
 def _dw_launch(units, device):
     # units = rows (one-row kernel) or row blocks (multirow); returns (programs, units per program).
-    per_program = triton.cdiv(units, max(1, min(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)))
-    return triton.cdiv(units, per_program), per_program
+    # Empty input: one program, no rows, a zero partial.
+    per_program = max(
+        1, triton.cdiv(units, max(1, min(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)))
+    )
+    return max(1, triton.cdiv(units, per_program)), per_program
 
 
 def _rms_backward(

@@ -116,3 +116,14 @@ def test_rmsnorm_frozen_weight_stays_gradless():
     w = torch.rand(64, device = "cuda")
     Fast_RMS_Layernorm.apply(x, w, 1e-6, False).sum().backward()
     assert x.grad is not None and w.grad is None
+
+
+@pytest.mark.parametrize("cols", [128, 384])
+def test_rmsnorm_trainable_weight_empty_input(cols):
+    from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
+
+    x = torch.randn(0, cols, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    w = torch.rand(cols, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    Fast_RMS_Layernorm.apply(x, w, 1e-6, False).sum().backward()
+    assert x.grad.shape == (0, cols)
+    assert torch.equal(w.grad, torch.zeros_like(w))
