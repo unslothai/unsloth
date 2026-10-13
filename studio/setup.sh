@@ -152,6 +152,8 @@ _frontend_can_build_in_background() {
     local _cpus _mb
     _cpus=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || return 1
     [ "$_cpus" -ge 4 ] 2>/dev/null || return 1
+    # Without MemAvailable the helper falls back to installed RAM, not headroom.
+    [ ! -r /proc/meminfo ] || grep -q '^MemAvailable:' /proc/meminfo || return 1
     _mb=$(_usable_ram_mb)
     [ "${_mb:-0}" -ge 12288 ] 2>/dev/null || return 1
     # A rerun waits for a build still being stopped by the identity in its marker.
@@ -177,12 +179,13 @@ _frontend_proc_id() {
 # A build marks the tree before it touches node_modules or dist and clears the mark only once
 # it succeeded, so a build that died at any point is redone instead of trusted (the freshness
 # check reads it). A build whose setup was just interrupted is still being stopped for up to
-# ~6 s: wait for it, then undo what it hid, so two builds never share the tree.
+# ~6 s: wait for it and any child left in its group, then undo what it hid, so two builds
+# never share the tree.
 _frontend_build_begin() {
     local _owner="" _n=0 _self
-    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(cat "$_FRONTEND_BUILD_MARK" 2>/dev/null)
+    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)
     while [ -n "$_owner" ] && [ "$_n" -lt 30 ] &&
-        [ "$(_frontend_proc_id "${_owner%% *}")" = "$_owner" ]; do
+        { [ "$(_frontend_proc_id "${_owner%% *}")" = "$_owner" ] || { [ "${_owner%% *}" -gt 1 ] 2>/dev/null && kill -0 -- "-${_owner%% *}" 2>/dev/null; }; }; do
         sleep 1
         _n=$((_n + 1))
     done
@@ -5965,6 +5968,7 @@ else
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            _frontend_bg_join
             substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
             # The source build overwrites whisper-server in the managed dir but
             # knows nothing about the prebuilt marker; a stale marker would make
