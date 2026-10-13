@@ -770,12 +770,12 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
 
 def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     """Reason a DiT family cannot train on this host at all, else None. Never raises. nf4 is not a
-    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, whose
-    validate_environment raises "No GPU found. A GPU is needed for quantization." unless CUDA,
-    XPU or MPS is present. Without this gate a GPU-less host accepts the default nf4 start,
-    evicts the resident Images pipeline, downloads the text encoders, and only then dies in the
-    child. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too, since it loads its
-    denoiser through the same quantizer."""
+    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, which needs
+    the model on CUDA or XPU. Without this gate such a host accepts the default nf4 start, evicts
+    the resident Images pipeline, downloads the text encoders, and only then dies in the child.
+    Apple MPS is not enough: resolve_train_device trains there on the CPU, and the quantizer
+    refuses a CPU device_map. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too,
+    since it loads its denoiser through the same quantizer."""
     if (resolved_family or "").strip().lower() not in _FLOW_TRAIN_FAMILIES:
         return None
     try:
@@ -789,18 +789,14 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
             except Exception:  # noqa: BLE001
                 return False
 
-        if (
-            probe(torch.cuda)
-            # torch.backends.mps has carried is_available() since torch 1.12.
-            or probe(getattr(torch, "xpu", None))
-            or probe(getattr(torch.backends, "mps", None))
-        ):
+        if probe(torch.cuda) or probe(getattr(torch, "xpu", None)):
             return None
     except Exception:  # noqa: BLE001 -- probe failure must not block a start
         return None
     return (
-        "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
-        "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
+        "Training the DiT families needs an NVIDIA, AMD or Intel GPU: even the 4-bit (nf4) base "
+        "load requires CUDA, ROCm or XPU, and this host has none (Apple Silicon included). Train "
+        "SDXL here, or use a GPU machine."
     )
 
 
