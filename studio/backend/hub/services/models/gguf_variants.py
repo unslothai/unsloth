@@ -44,6 +44,7 @@ from hub.utils.gguf import (
     list_gguf_variants,
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
+    default_gguf_scope,
     pick_best_gguf,
     merge_sibling_snapshot_variants,
     select_gguf_cache_snapshot,
@@ -488,6 +489,26 @@ def variant_remaining_bytes_from_state(
         plan_from_expected_files(variant, manifest.expected_files),
         repo_cache_dir,
     )
+
+
+def _audio_cpp_remaining_bytes(
+    repo_id: str, key: str, missing_files: list, missing_companion_bytes: Optional[int]
+) -> Optional[int]:
+    """What resuming an audio.cpp row still fetches. Its whole manifest, not the generic plan, which keeps
+    one GGUF per quant and so drops a package's other components; without a manifest, the missing files."""
+    try:
+        manifest = download_manifest.read_manifest("model", repo_id, key)
+        files = manifest.expected_files if manifest is not None else ()
+        if files:
+            have = download_registry.existing_blob_bytes(
+                "model", repo_id, frozenset(f.sha256 for f in files if f.sha256)
+            )
+            return max(0, sum(max(0, int(f.size or 0)) for f in files) - have)
+    except Exception as e:
+        logger.warning(f"Manifest pricing failed for {repo_id} [{key}]: {e}")
+    if missing_companion_bytes is None:
+        return None
+    return sum(size for _path, size in missing_files) + missing_companion_bytes
 
 
 def _partial_transport_for_variant(
@@ -1049,18 +1070,12 @@ class VariantsAnswer(NamedTuple):
     variant_context_sources: Optional[dict[str, str]] = None
 
 
-def _default_variant_candidates(variants) -> list[str]:
-    """The filenames the automatic default may be picked from: ROOT rows when there are any.
+def _default_variant_candidates(variants, repo_id: Optional[str] = None) -> list[str]:
+    """Filenames the automatic default may be picked from: ``default_gguf_scope`` of the rows.
 
-    ``pick_best_gguf`` keeps whichever filename it met first among equals, so a repo with
-    ``model-Q6_K.gguf`` beside ``distilled/model-Q6_K.gguf`` could make the qualified sibling the
-    default -- and then a bare repo id would mean one checkpoint here and another to
-    ``_match_variant(None, ...)`` and ``local_model_resolver``, which both define it as the root.
-    Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
-    depends on which one served the request. Nothing at the root falls back to the whole set.
+    Every branch here must apply it: ``pick_best_gguf`` is order-sensitive among equal siblings.
     """
-    root_rows = [v.filename for v in variants if "/" not in v.quant]
-    return root_rows or [v.filename for v in variants]
+    return [v.filename for v in default_gguf_scope(variants, repo_id, key = lambda v: v.quant)]
 
 
 async def _audio_cpp_variants_answer(
@@ -1106,12 +1121,65 @@ async def _audio_cpp_variants_answer(
             c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
         )
         companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
+        # An unresolved companion (offline, nothing cached) has an unknown size: no remainder then.
+        missing_companion_bytes = (
+            None
+            if any(c is None for c in companions)
+            else sum(
+                c.variant.size_bytes for c in companions if audio_cpp_files.cached_files(c) is None
+            )
+        )
+        try:
+            incomplete = download_registry.incomplete_blob_hashes(
+                "model", model.repo_id, active_only = True
+            )
+        except Exception as e:
+            logger.warning(f"Partial check failed for {model.id}: {e}")
+            incomplete = set()
+        # A file every row lists (a package's configs, a voice folder) says nothing about one row.
+        counts: dict[str, int] = {}
+        for variant in model.variants:
+            for path in {f.path for f in variant.files}:
+                counts[path] = counts.get(path, 0) + 1
         rows = []
         for variant in model.variants:
-            downloaded = (
-                companions_cached
-                and audio_cpp_files.cached_files(model.with_variant(variant)) is not None
-            )
+            row_model = model.with_variant(variant)
+            downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
+            partial = False
+            remaining = None
+            key = variant.key if model.is_package else gguf_variant_key(variant.primary)
+            if not downloaded:
+                missing_files = audio_cpp_files.missing_files(row_model)
+                missing = {path for path, _size in missing_files}
+                own_cached = any(
+                    f.path not in missing and counts.get(f.path, 0) == 1 for f in variant.files
+                )
+                try:
+                    partial = own_cached or hf_cache_scan.is_variant_partial(
+                        model.repo_id,
+                        key,
+                        incomplete_blob_hashes = incomplete,
+                        variant_blob_hashes = gguf_variant_blob_hashes(
+                            model.repo_id,
+                            key,
+                            hf_token,
+                            include_companions = False,
+                            allow_remote = False,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Partial check failed for {model.id} [{variant.key}]: {e}")
+                    partial = own_cached
+                if partial:
+                    remaining = (
+                        None
+                        if model.is_package
+                        else variant_remaining_bytes_from_state(model.repo_id, key, None)
+                    )
+                    if remaining is None:
+                        remaining = _audio_cpp_remaining_bytes(
+                            model.repo_id, key, missing_files, missing_companion_bytes
+                        )
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
@@ -1119,7 +1187,14 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    download_remaining_bytes = remaining,
                     downloaded = downloaded,
+                    partial = partial,
+                    partial_transport = (
+                        _partial_transport_for_variant(model.repo_id, key) if partial else None
+                    ),
+                    partial_resumable = partial
+                    and _partial_resumable_for_variant(model.repo_id, key),
                 )
             )
         return rows
@@ -1280,7 +1355,10 @@ async def get_gguf_variants_answer(
                 account_access.require_model_access, local_path, **access_options
             )
     hf_token = account_access.account_hf_token(hf_token)
-    if not local_path:
+    from core.inference.audio_cpp_models import is_umbrella_id
+
+    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path.
+    if not local_path or is_umbrella_id(repo_id):
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
         if audio_cpp_answer is not None:
             return audio_cpp_answer
@@ -1358,7 +1436,7 @@ async def get_gguf_variants_answer(
 
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
-            best = pick_best_gguf(_default_variant_candidates(ready or variants))
+            best = pick_best_gguf(_default_variant_candidates(ready or variants, repo_id))
             default_variant = gguf_variant_key(best) if best else None
 
             return GgufVariantsResponse(
@@ -1390,7 +1468,7 @@ async def get_gguf_variants_answer(
         def _partial_local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
-            best = pick_best_gguf(_default_variant_candidates(variants))
+            best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
             default_variant = gguf_variant_key(best) if best else None
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -1549,7 +1627,7 @@ async def get_gguf_variants_answer(
                 return response
             variants.extend(extra)
             ready = [v for v in variants if v.downloaded and not v.partial]
-            best = pick_best_gguf(_default_variant_candidates(ready or variants))
+            best = pick_best_gguf(_default_variant_candidates(ready or variants, repo_id))
             default_variant = gguf_variant_key(best) if best else None
             return response.model_copy(
                 update = {
@@ -1822,7 +1900,7 @@ async def get_gguf_variants_answer(
             if fallback is not None:
                 return fallback
 
-        best = pick_best_gguf(_default_variant_candidates(variants))
+        best = pick_best_gguf(_default_variant_candidates(variants, repo_id))
         default_variant = gguf_variant_key(best) if best else None
 
         # Per-snapshot accounting: split GGUFs need every shard together, sizes are max across snapshots
@@ -2374,13 +2452,12 @@ async def get_gguf_variants_answer(
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
-            # Merging changes which rows are root-level, and _default_variant_candidates picks
-            # among root rows, so a default chosen from the active cache alone can name the
-            # wrong checkpoint once a remembered folder contributes a root row. A partial row
-            # is not a load the picker may recommend while a ready row exists, so prefer ready.
+            # Merging changes the scope, so re-pick the default; prefer ready rows over partial ones.
             if sources or not response.default_variant:
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
-                best = pick_best_gguf(_default_variant_candidates(ready or response.variants))
+                best = pick_best_gguf(
+                    _default_variant_candidates(ready or response.variants, repo_id)
+                )
                 response.default_variant = gguf_variant_key(best) if best else None
         if response.dependencies_resolved and locally_proven[0] is not None:
             rows = frozenset(

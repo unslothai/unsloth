@@ -341,6 +341,7 @@ class CachedGgufRepo(CachedRepoBase):
             "watching for on-disk change need this to notice it."
         ),
     )
+    umbrella_folder: bool = False
 
 
 class CachedGgufResponse(BaseModel):

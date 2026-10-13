@@ -12,6 +12,7 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { notifyModelDeleted } from "@/lib/model-lifecycle-events";
 import {
   discardDeletedInventoryHints,
   discardDeletedModelInventoryHints,
@@ -62,6 +63,8 @@ export interface CachedGgufRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   tags?: string[];
   library_name?: string | null;
 }
@@ -429,6 +432,7 @@ export async function deleteCachedModel(
     await throwIfNotOk(response);
     discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
+    notifyModelDeleted(repoId);
   } finally {
     invalidateGgufVariantsCache(repoId);
   }

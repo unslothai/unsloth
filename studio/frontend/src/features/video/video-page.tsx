@@ -190,8 +190,8 @@ import {
   referenceImageDataUrls,
   stageReferenceImage,
   type StagedReferenceImage,
-} from "./reference-image-crop";
-import { ReferenceImageEditor } from "./reference-image-editor";
+} from "@/lib/image-crop";
+import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   defaultReferenceVideoTrim,
@@ -4045,6 +4045,8 @@ function VideoGenerator({
                       }
                       label="Add"
                       className="h-24"
+                      // MiniMax-H3 references take up to 8192px and have their own crop and fit.
+                      maxSide={null}
                     />
                   </div>
                 )}

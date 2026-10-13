@@ -352,6 +352,7 @@ function WebPage({
       html={page.html}
       url={page.url}
       base={page.base}
+      ownBase={page.ownBase === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

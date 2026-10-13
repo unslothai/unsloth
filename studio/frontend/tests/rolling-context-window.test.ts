@@ -219,6 +219,8 @@ test("the compaction notice renders from persisted metadata, not from a message"
   // Read off metadata.custom so it can never become part of the conversation.
   assert.match(DERIVED, /\.custom\.contextTruncation/);
   assert.match(THREAD, /<CompactionDivider truncation=\{truncation\} \/>/);
+  assert.match(THREAD, /compactionToolCallDividers\(thread\.messages\)/);
+  assert.match(THREAD, /ToolGroup: ToolGroupThenCompaction,/);
   assert.match(COMPACTION_DIVIDER, /Context compacted/);
 });
 
@@ -268,7 +270,7 @@ test("a boundary that goes BACKWARDS does not re-announce", () => {
 test("the context meter counts exactly the compaction notices the thread renders", () => {
   assert.match(
     RUNTIME_PROVIDER,
-    /compactionNoticeMessageIds\(thread\.messages\)\.size/,
+    /compactionDividerCount\(thread\.messages\)/,
   );
   assert.match(RUNTIME_PROVIDER, /<CompactionCountRegistrar onCountChange=/);
   // Project views show the meter for a chat started on the landing page too.

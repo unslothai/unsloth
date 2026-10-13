@@ -102,6 +102,20 @@ SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+# model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
+_VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+
+
+def _vllm_unsupported_model_types(model_types):
+    unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+    for model_type, symbol in _VLLM_NEEDS_ZOO_SYMBOL.items():
+        if model_type in model_types:
+            import unsloth_zoo.empty_model as zoo_empty_model
+            if not hasattr(zoo_empty_model, symbol):
+                unsupported.append(model_type)
+    return unsupported
+
+
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
@@ -958,6 +972,28 @@ def _vllm_unavailable_error():
     )
 
 
+# load_vllm-only kwargs; transformers' from_pretrained rejects them.
+_VLLM_ENGINE_KWARGS = (
+    "max_loras",
+    "use_async",
+    "use_engine",
+    "enforce_eager",
+    "enable_prefix_caching",
+    "compilation_config",
+    "conservativeness",
+    "max_logprobs",
+    "max_num_seqs",
+    "return_args",
+    "training",
+)
+
+
+def _drop_vllm_engine_kwargs(kwargs):
+    dropped = [k for k in _VLLM_ENGINE_KWARGS if kwargs.pop(k, None) is not None]
+    if dropped:
+        print(f"Unsloth: Ignoring vLLM-only arguments {dropped} since vLLM is not used.")
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @tokenizers_v1_on_return
@@ -1092,6 +1128,7 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -1103,6 +1140,7 @@ class FastLanguageModel(FastLlamaModel):
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False
+                        _drop_vllm_engine_kwargs(kwargs)
                         break
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
@@ -2020,6 +2058,7 @@ class FastModel(FastBaseModel):
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()
@@ -2031,6 +2070,7 @@ class FastModel(FastBaseModel):
                             "Defaulting to native Unsloth inference."
                         )
                         fast_inference = False
+                        _drop_vllm_engine_kwargs(kwargs)
                         break
         raise_if_fast_inference_under_fsdp2(fast_inference)
 
@@ -2286,13 +2326,14 @@ class FastModel(FastBaseModel):
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
         _raise_if_modeling_ignores_config(model_config, model_types)
-        _vllm_unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+        _vllm_unsupported = _vllm_unsupported_model_types(model_types) if fast_inference else []
         if fast_inference and _vllm_unsupported:
             # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
             print(
                 f"Unsloth: fast_inference (vLLM) does not support {_vllm_unsupported[0]} yet - will switch to Unsloth inference!"
             )
             fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.

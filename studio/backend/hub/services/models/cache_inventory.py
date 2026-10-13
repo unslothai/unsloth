@@ -745,7 +745,71 @@ def _scan_cached_gguf(
             and row["task"] in CHAT_GGUF_TASKS
         ):
             row["load_id"] = row["repo_id"]
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    rows = list(seen_lower.values())
+    umbrella = next((row for row in rows if is_audio_cpp_repo_id(row["repo_id"])), None)
+    if umbrella is not None:
+        rows.extend(_umbrella_folder_rows(umbrella, cache_scans, active_hub_cache))
+    return sorted(rows, key = lambda c: c["repo_id"])
+
+
+def _umbrella_folder_rows(umbrella: dict, cache_scans, active_hub_cache) -> list[dict]:
+    """One row per downloaded folder of the audio.cpp umbrella repo, so an Audio page can list its own
+    models On Device. Flagged ``umbrella_folder``: the Model Hub keeps managing the repo as one row."""
+    try:
+        from core.inference import audio_cpp_models as acm
+
+        active = Path(active_hub_cache).resolve(strict = False)
+        repo_info = next(
+            (
+                repo
+                for scan in cache_scans
+                for repo in scan.repos
+                if str(repo.repo_type) == "model"
+                and is_audio_cpp_repo_id(repo.repo_id)
+                and Path(repo.repo_path).parent.resolve(strict = False) == active
+            ),
+            None,
+        )
+        if repo_info is None:
+            return []
+        sizes: dict[str, int] = {}
+        seen_blobs: set[str] = set()
+        for rev in repo_info.revisions:
+            for f in rev.files:
+                try:
+                    folder = Path(f.file_path).relative_to(rev.snapshot_path).parts[0]
+                except (ValueError, IndexError):
+                    continue
+                blob = str(getattr(f, "blob_path", "") or f.file_path)
+                if blob in seen_blobs:
+                    continue
+                seen_blobs.add(blob)
+                sizes[folder.lower()] = sizes.get(folder.lower(), 0) + (f.size_on_disk or 0)
+        rows: dict[str, dict] = {}
+        for model in acm.downloaded_models():
+            # A companion with no page of its own (the forced aligner) stays under the repo row.
+            if not acm.is_umbrella_id(model.id) or not model.workflows or model.id.lower() in rows:
+                continue
+            row = {
+                **umbrella,
+                "repo_id": model.id,
+                "load_id": model.id,
+                "inventory_id": _local_inventory_id("cache", "gguf", model.id),
+                "cache_path": str(repo_info.repo_path),
+                "size_bytes": sizes.get(model.folder.lower(), 0),
+                "task": model.hub_task,
+                "audio_type": model.audio_type,
+                "audio_workflows": list(model.workflows),
+                "partial": False,
+                "has_variant_state": False,
+                "capabilities": {**umbrella["capabilities"], "can_chat": False},
+                "umbrella_folder": True,
+            }
+            rows[model.id.lower()] = row
+        return list(rows.values())
+    except Exception as e:  # noqa: BLE001 - never hide the umbrella row itself
+        logger.warning("Could not list audio.cpp folder rows: %s", scrub_paths(e))
+        return []
 
 
 class _CacheSourceChanged(RuntimeError):
@@ -1019,6 +1083,22 @@ def _is_whisper_model_config(config: object) -> bool:
     )
 
 
+def _is_mlx_stt_model_config(config: object) -> bool:
+    try:
+        from core.inference.stt_mlx import is_mlx_stt_config
+        return is_mlx_stt_config(config)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
+
+
+def _ships_custom_code(snapshot: Path) -> bool:
+    try:
+        from core.inference.stt_mlx import ships_custom_code
+        return ships_custom_code(snapshot)
+    except Exception:  # noqa: BLE001 -- unreadable: dictation refuses it at load anyway
+        return True
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -1052,6 +1132,9 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     config = _read_json_object(snapshot / "config.json")
     if _is_whisper_model_config(config):
         result["_hidden_stt"] = True
+    elif _is_mlx_stt_model_config(config) and not _ships_custom_code(snapshot):
+        result["_hidden_stt"] = True
+        result["_mlx_stt"] = True
     tts_audio_type = detect_local_tts_audio_type(snapshot)
     if tts_audio_type is not None:
         result["_tts_audio_type"] = tts_audio_type
@@ -1145,6 +1228,7 @@ def _scan_cached_models(
                     else _cached_model_local_metadata(repo_path, load_snapshot)
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
+                is_mlx_stt = local_metadata.pop("_mlx_stt", False)
                 tts_audio_type = local_metadata.pop("_tts_audio_type", None)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
@@ -1185,7 +1269,11 @@ def _scan_cached_models(
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
-                if is_whisper_stt:
+                if is_mlx_stt:
+                    # The Transcribe picker admits non-Whisper speech rows by this name, on a Mac only.
+                    local_metadata["pipeline_tag"] = "automatic-speech-recognition"
+                    local_metadata["library_name"] = "mlx-audio"
+                elif is_whisper_stt:
                     local_metadata["pipeline_tag"] = "automatic-speech-recognition"
                     local_metadata["library_name"] = "transformers"
                     tags = list(local_metadata.get("tags", []))

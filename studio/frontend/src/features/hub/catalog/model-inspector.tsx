@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -512,6 +512,7 @@ export const ModelInspector = memo(function ModelInspector({
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -521,9 +522,11 @@ export const ModelInspector = memo(function ModelInspector({
       deviceType,
       quantMethod: supportQuantMethod,
       vllmAvailable,
+      vllmPlatform,
     });
   }, [
     vllmAvailable,
+    vllmPlatform,
     deviceType,
     supportLibraryName,
     supportModelId,
