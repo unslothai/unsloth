@@ -1375,15 +1375,11 @@ class ToolLoopController:
         # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
         # profile at hand, against every family's markup.
         specs = neutralize_tool_descriptions([s for s in specs if isinstance(s, Mapping)]) or []
-        loaded = []
         for spec in specs:
             name = _tool_name_from_schema(spec)
             if name and name not in self._allowed_tool_names:
                 self._tools.append(copy.deepcopy(dict(spec)))
                 self._allowed_tool_names.add(name)
-            if name:
-                loaded.append(name)
-        self._remember_mcp_tools(loaded)
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:

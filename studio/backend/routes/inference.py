@@ -31586,7 +31586,10 @@ async def produce_openai_chat_completions(
             from core.inference.tools import set_mcp_listing_context_tokens
 
             set_mcp_listing_context_tokens(
-                getattr(llama_backend, "context_length", None), payload.thread_id, payload.messages
+                getattr(llama_backend, "context_length", None),
+                payload.thread_id,
+                payload.messages,
+                payload.tool_choice,
             )
             tools_to_use = await _select_request_tools(
                 payload,
@@ -33753,7 +33756,7 @@ async def produce_openai_chat_completions(
         from core.inference.tools import set_mcp_listing_context_tokens
 
         set_mcp_listing_context_tokens(
-            _monitor_context_length(), payload.thread_id, payload.messages
+            _monitor_context_length(), payload.thread_id, payload.messages, payload.tool_choice
         )
         _sf_tools_to_use = await _select_request_tools(
             payload,
@@ -40918,7 +40921,10 @@ async def _mlx_count_chat_tokens(
             from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
             set_mcp_listing_context_tokens(
-                _monitor_context_length(), getattr(payload, "thread_id", None), payload.messages
+                _monitor_context_length(),
+                getattr(payload, "thread_id", None),
+                payload.messages,
+                getattr(payload, "tool_choice", None),
             )
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
@@ -41319,6 +41325,7 @@ async def chat_count_tokens(
             getattr(llama_backend, "context_length", None),
             getattr(payload, "thread_id", None),
             payload.messages,
+            getattr(payload, "tool_choice", None),
         )
         from core.inference.mcp_client import mcp_server_snapshot_guard
 

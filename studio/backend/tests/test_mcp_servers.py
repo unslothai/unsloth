@@ -2406,6 +2406,18 @@ def test_mcp_listing_lists_the_tools_the_user_message_asks_for(tmp_path, monkeyp
     assert listing_for(ask) == ["mcp_tool_search"]
 
 
+def test_mcp_tool_search_exact_name_loads_it_on_every_server(tmp_path, monkeypatch):
+    from core.inference import mcp_client, tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [{"name": "search", "description": "Search A."}])
+    mcp_servers_db.create_server(id = "srv2", display_name = "B", url = "https://b.example/mcp")
+    mcp_client.cache_tools("srv2", [{"name": "search", "description": "Search B."}])
+    assert _names(tools_mod.mcp_tool_search_specs({"query": "search"})) == [
+        "mcp__srv1__search",
+        "mcp__srv2__search",
+    ]
+
+
 def test_mcp_tool_search_never_finds_an_app_only_tool(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
@@ -2467,10 +2479,57 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
     assert named.action == "execute" and named.arguments == {"n": 3}
     assert "mcp__srv1__ping" in _names(controller.active_tools())
 
-    # Later turns of the thread list what it loaded after the search tool; other threads do not.
-    loaded = _names(listing_for("thread-1"))
-    assert loaded == ["mcp_tool_search", "mcp__srv1__move-pages", "mcp__srv1__ping"]
+    # Later turns of the thread list the tools it ran, newest first; a tool only loaded is not relisted.
+    assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+    controller.record_result(named, "pong")
+    moved = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
+    )
+    controller.record_result(moved, "moved")
+    assert _names(listing_for("thread-1")) == [
+        "mcp_tool_search",
+        "mcp__srv1__move-pages",
+        "mcp__srv1__ping",
+    ]
     assert _names(listing_for("thread-2")) == ["mcp_tool_search"]
+    # Relisted tools share the preload room, so a small window drops them rather than overflow.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
+    assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+
+
+def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
+    _cache_server_tools(tmp_path, monkeypatch, big)
+    cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: int(2.5 * cost / 0.25))
+    found = tools_mod.mcp_tool_search_specs({"query": "query rows"})
+    assert len(found) == 2
+    # The best match loads even when it alone is over the room.
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: 10)
+    assert len(tools_mod.mcp_tool_search_specs({"query": "query rows"})) == 1
+    assert len(tools_mod.mcp_tool_search_specs({"query": "query-1 query-2"})) == 2
+
+
+def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    ctx = contextvars.copy_context()
+    forced = {"type": "function", "function": {"name": "mcp__srv1__get-users"}}
+    ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, None, forced)
+    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
+        "mcp_tool_search",
+        "mcp__srv1__get-users",
+    ]
+
+    monkeypatch.setattr(
+        tools_mod, "image_mapping", lambda server, tool: tool and tool.get("name") == "ping"
+    )
+    assert _names(tools_mod.cached_mcp_tools()[0]) == ["mcp_tool_search", "mcp__srv1__ping"]
 
 
 def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monkeypatch):

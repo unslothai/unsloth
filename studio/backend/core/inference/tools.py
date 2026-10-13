@@ -13589,6 +13589,7 @@ MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
 _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = None)
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
+_MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 # (account, thread) -> MCP tools the thread loaded through mcp_tool_search, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
@@ -13601,16 +13602,19 @@ def set_mcp_listing_context_tokens(
     context_tokens,
     thread_id = None,
     messages = None,
+    tool_choice = None,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
-    ``thread_id`` keeps the tools a chat loaded listed; ``messages`` ranks the deferred ones listed up front."""
-    from core.inference.chat_template_helpers import last_user_text  # noqa: PLC0415
+    ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
+    ``tool_choice`` forcing a tool keeps that one listed."""
+    from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
     _MCP_LISTING_CONTEXT_TOKENS.set(context_tokens if valid else None)
     _MCP_LISTING_THREAD.set(thread_id if isinstance(thread_id, str) and thread_id else None)
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
+    _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
 
 
 def _mcp_tool_search_spec(catalog: list[tuple[str, list[str]]]) -> dict:
@@ -13799,23 +13803,33 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     # Every tool is deferred, as Claude Code and Codex do: a small tool left listed beside the search tool was called
     # in place of the right, deferred one (Qwen3-4B on Notion, #10997).
     by_name = {spec["function"]["name"]: spec for spec in specs}
-    loaded = [name for name in _mcp_loaded_names() if name in by_name]
+    # Always listed: a forced tool_choice names its tool, and an attached image is refused unless the catalog
+    # lists the tool mapped to take it.
+    pinned = [_MCP_LISTING_FORCED.get()]
     catalog = []
-    for server, _, server_specs in listed:
+    for server, payload, server_specs in listed:
         names = [_mcp_raw_tool_name(spec["function"]["name"]) for spec in server_specs]
         if names:
             catalog.append((server.get("display_name") or server["id"], names))
-    # Search tool first and the chat's loaded tools next, so the prompt prefix holds from turn to turn.
-    listing = [_mcp_tool_search_spec(catalog)] + [by_name[name] for name in loaded]
+        tools = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
+        pinned += [
+            spec["function"]["name"]
+            for spec, raw in zip(server_specs, names)
+            if image_mapping(server, tools.get(raw))
+        ]
+    listing = [_mcp_tool_search_spec(catalog)]
+    listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
     )
     tokens_per_char = listing_tokens / max(len(text), 1)
-    for index in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0][:_MCP_TOOL_PRELOAD]:
-        spec = specs[index]
-        cost = len(json.dumps(spec, separators = (",", ":"))) * tokens_per_char
-        if spec["function"]["name"] not in loaded and cost <= room:
-            listing.append(spec)
+    # Then the tools this chat ran, newest first, and the ones its message asks for, within the preload share.
+    ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
+    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
+    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
+        cost = len(json.dumps(by_name[name], separators = (",", ":"))) * tokens_per_char
+        if by_name[name] not in listing and cost <= room:
+            listing.append(by_name[name])
             room -= cost
     return listing
 
@@ -13890,23 +13904,34 @@ def _mcp_search_limit(limit) -> int:
     return max(1, min(_MCP_TOOL_SEARCH_MAX_LIMIT, int(limit)))
 
 
+_MCP_SEARCH_QUERY_CHARS = 2000
+# Ids and numbers ("page 195de922-...", "issue 55"); short names like ec2, s3 and v2 stay.
+_MCP_SEARCH_ID_RE = re.compile(r"\b(?:\d+|(?=[0-9a-f]*\d)[0-9a-f]{4,})\b", re.IGNORECASE)
+
+
 def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
     """Indexes into ``specs`` for ``query`` and how many lead as exact names (openai/codex#21503), then names and
     descriptions ranked by BM25 and fused as the knowledge-base search fuses its legs."""
     if not isinstance(query, str) or not query.strip() or not specs:
         return [], 0
     words = [w.casefold() for w in re.split(r"[\s,]+", query) if w]
-    by_name: dict[str, int] = {}
+    by_name: dict[str, list[int]] = {}
     for i, spec in enumerate(specs):
-        by_name.setdefault(spec["function"]["name"].casefold(), i)
-        by_name.setdefault(_mcp_raw_tool_name(spec["function"]["name"]).casefold(), i)
-    exact = list(dict.fromkeys(by_name[w] for w in words if w in by_name))
-    if exact and len(exact) == len(set(words)):
+        name = spec["function"]["name"]
+        for key in dict.fromkeys((name.casefold(), _mcp_raw_tool_name(name).casefold())):
+            by_name.setdefault(key, []).append(i)
+    # A raw name two servers share ("search") is both of their tools.
+    exact = list(dict.fromkeys(i for w in words for i in by_name.get(w, ())))
+    if exact and all(w in by_name for w in words):
         return exact, len(exact)
     from core.rag import config as rag_config, retrieval  # noqa: PLC0415 -- RAG ranking, imported lazily
     from core.rag.store import conversation_match_queries  # noqa: PLC0415
 
-    expressions = conversation_match_queries(query)
+    # Ids match nothing a tool is named or described by, and a long paste would OR thousands of terms (seconds).
+    query = query[:_MCP_SEARCH_QUERY_CHARS]
+    expressions = conversation_match_queries(
+        _MCP_SEARCH_ID_RE.sub(" ", query)
+    ) or conversation_match_queries(query)
     rankings: list[list] = []
     if expressions:
         with _MCP_SEARCH_LOCK:
@@ -13923,11 +13948,23 @@ def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
 
 
 def mcp_tool_search_specs(arguments) -> list[dict]:
-    """The cached MCP tools a mcp_tool_search call loads; exact names always, past the limit too."""
+    """The cached MCP tools a mcp_tool_search call loads: exact names and the best match always, the rest while
+    they fit the preload share of the window (five Notion query tools are more schema than a 32K window)."""
     arguments = arguments if isinstance(arguments, dict) else {}
     specs = _cached_mcp_catalog()
     order, exact = _mcp_ranked(specs, arguments.get("query"))
-    return [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
+    picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
+    ctx = _MCP_LISTING_CONTEXT_TOKENS.get() or _window_context_tokens()
+    if not ctx:
+        return picked
+    room = ctx * _MCP_TOOL_PRELOAD_SHARE
+    found = []
+    for position, spec in enumerate(picked):
+        cost = _text_token_cost(json.dumps(spec, separators = (",", ":")), ctx)
+        if position < max(exact, 1) or cost <= room:
+            found.append(spec)
+            room -= cost
+    return found
 
 
 def _mcp_tool_search(arguments) -> str:
