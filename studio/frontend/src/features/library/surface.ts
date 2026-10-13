@@ -16,7 +16,7 @@ export const OVERLAY_CONTROL =
 
 // Preview cards only: outlined (white on white vanished), solid (blur smeared the picture).
 const CONTROL_EDGE =
-  "shadow-[0_2px_10px_-2px_rgba(0,0,0,0.24)] ring-1 ring-black/[0.035] dark:shadow-none";
+  "shadow-[0_2px_10px_-2px_rgba(0,0,0,0.24)] ring-1 ring-neutral-100 dark:shadow-none";
 
 export const GLASS_SURFACE = `bg-white text-neutral-900 ${CONTROL_EDGE} dark:bg-neutral-700 dark:text-white dark:ring-0`;
 

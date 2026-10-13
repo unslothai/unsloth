@@ -174,7 +174,7 @@ function CardFrame({
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
             // The hover outline is lost on a dimmed selected card, so a checked one draws it darker.
-            glass && "data-checked:ring-black/[0.12]",
+            glass && "data-checked:ring-neutral-300",
             selected && "opacity-100",
           )}
         />
