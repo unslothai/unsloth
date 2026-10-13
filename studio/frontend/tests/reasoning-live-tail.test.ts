@@ -13,7 +13,7 @@ registerBundlerResolver();
 const { DISPLAY_VISIBILITIES } = await import(
   "../src/features/chat/utils/display-visibility.ts"
 );
-const { reasoningTailCapped, resolveReasoningOpen } = await import(
+const { reasoningTailCapped, reasoningTailFlexBox, resolveReasoningOpen } = await import(
   "../src/features/chat/utils/reasoning-visibility.ts"
 );
 
@@ -30,6 +30,37 @@ test("only the auto setting bounds a block, whether the stream or a hand opened 
   }
 });
 
+// Mirrors useTailFlexBox: the first state is `capped`, then each render feeds the last result back.
+function flexBoxTrace(steps: readonly { capped: boolean; streaming: boolean }[]): boolean[] {
+  let previous = steps[0]?.capped ?? false;
+  return steps.map((step) => {
+    previous = reasoningTailFlexBox({ ...step, previous });
+    return previous;
+  });
+}
+
+test("the flex box survives Expand/Collapse once finished and never flips when a stream ends", () => {
+  const capped = { capped: true, streaming: false };
+  const expanded = { capped: false, streaming: false };
+  const live = { capped: true, streaming: true };
+  const liveExpanded = { capped: false, streaming: true };
+
+  // Hand-opened finished trace: flex the whole way, so neither toggle restyles the trace.
+  assert.deepEqual(flexBoxTrace([capped, expanded, capped, expanded]), [true, true, true, true]);
+  // Expanded while streaming drops it (block, as before), the stream ending keeps block, and only
+  // the next Collapse restores it; after that the toggles are free again.
+  assert.deepEqual(
+    flexBoxTrace([live, liveExpanded, expanded, capped, expanded]),
+    [true, false, false, true, true],
+  );
+  // A live tail that is never expanded stays flex through the end of the stream.
+  assert.deepEqual(flexBoxTrace([live, capped, expanded]), [true, true, true]);
+  // A block that first renders already expanded and finished starts without the flex box.
+  assert.deepEqual(flexBoxTrace([expanded, expanded]), [false, false]);
+  // A new round re-caps, which restores it even after a live Expand.
+  assert.deepEqual(flexBoxTrace([live, liveExpanded, live]), [true, false, true]);
+});
+
 test("the box clips at the top instead of scrolling, and Expand toggles without a permanent open", () => {
   const tail = reasoning.slice(
     reasoning.indexOf("function ReasoningTail("),
@@ -39,7 +70,10 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
   // Expand/Collapse on a finished box must not toggle the flex box or the child rule: either
   // restyles every row of the trace.
   assert.match(tail, /cappable && "\[&>\*\]:shrink-0"/);
-  assert.match(reasoning, /const next = capped \|\| \(!streaming && flexBox\);/);
+  assert.match(
+    reasoning,
+    /const next = reasoningTailFlexBox\(\{ capped, streaming, previous: flexBox \}\);/,
+  );
   assert.match(tail, /cappable && flexBox && "flex flex-col"/);
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(

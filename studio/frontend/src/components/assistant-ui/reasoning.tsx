@@ -32,6 +32,7 @@ import {
   clearReasoningRound,
   foldIsActive,
   reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -523,11 +524,9 @@ function ReasoningBody({
   );
 }
 
-// Toggling the flex box restyles the whole trace, so it only drops for a live Expand and is
-// only restored by the next cap, never by the stream ending.
 function useTailFlexBox(capped: boolean, streaming: boolean): boolean {
   const [flexBox, setFlexBox] = useState(capped);
-  const next = capped || (!streaming && flexBox);
+  const next = reasoningTailFlexBox({ capped, streaming, previous: flexBox });
   if (next !== flexBox) {
     setFlexBox(next);
   }
