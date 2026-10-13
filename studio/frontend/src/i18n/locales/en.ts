@@ -638,6 +638,10 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    compact: "Compact conversation",
+    compactQueued: "Compaction requested for the next message",
+    compactEmpty: "Nothing to compact yet",
+    compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {

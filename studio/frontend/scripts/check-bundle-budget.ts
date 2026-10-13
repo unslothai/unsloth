@@ -86,8 +86,11 @@ export const BUDGET = {
   // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
   // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
   // and build), which took main over; raised by that.
-  transferBytes: 2_026_610,
-  rawBytes: 6_743_236,
+  // The chat menu's Compact conversation item adds 1.5 KB raw / 0.3 KB transfer to the eager chat chunk
+  // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812, one machine
+  // and build), raised by that.
+  transferBytes: 2_026_949,
+  rawBytes: 6_744_810,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
