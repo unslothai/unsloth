@@ -244,3 +244,49 @@ def test_mlx_worker_hands_patience_to_zoo_only_when_it_can_take_it():
     assert 'mlx_config_kwargs["early_stopping_patience"] = patience' in block
     assert 'mlx_config_kwargs["load_best_model_at_end"] = True' in block
     assert source.index("mlx_config_kwargs = dict(") < gate < source.index("trainer = MLXTrainer(")
+
+
+def test_mlx_manual_stop_turns_off_the_best_adapter_restore():
+    # Zoo restores the best adapters before the stop checkpoint is written; a manual stop must keep the current ones.
+    import queue
+    import time
+    import types
+
+    from core.training import worker
+
+    stop_queue = queue.Queue()
+    _, _, trainer_ref, _, stop_thread = worker._start_mlx_stop_poller(stop_queue)
+    trainer = types.SimpleNamespace(
+        stop_requested = False, args = types.SimpleNamespace(load_best_model_at_end = True)
+    )
+    trainer_ref[0] = trainer
+    stop_queue.put({"type": "stop", "save": True})
+    deadline = time.time() + 5
+    while not trainer.stop_requested and time.time() < deadline:
+        time.sleep(0.05)
+    assert trainer.stop_requested and trainer.args.load_best_model_at_end is False
+    stop_queue.put({"type": "stop", "save": False})
+    stop_thread.join(timeout = 5)
+
+
+def test_status_reports_an_early_stop_even_without_a_restore(tmp_path, monkeypatch):
+    import types
+
+    from core.training.trainer import UnslothTrainer
+
+    monkeypatch.setattr(es, "MAX_BEST_WEIGHTS_BYTES", 0)
+    trainer = _trainer(tmp_path)
+    callback = attach_early_stopping(trainer, 2)
+    trainer.train()
+    summary = UnslothTrainer._early_stopping_summary(
+        types.SimpleNamespace(_early_stopping = callback)
+    )
+    assert summary == "Stopped early at step 3. "
+    assert callback._best_weights is None
+
+
+def test_the_best_weight_copy_is_released_when_not_needed(tmp_path):
+    trainer = _trainer(tmp_path, eval_target = 1.0, max_steps = 4)
+    callback = attach_early_stopping(trainer, 2)
+    trainer.train()
+    assert not callback.restored and callback._best_weights is None

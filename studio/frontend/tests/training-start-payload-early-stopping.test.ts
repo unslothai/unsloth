@@ -9,12 +9,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 import type { TrainingConfigState } from "../src/features/training/types/config.ts";
 
 registerBundlerResolver();
-const { buildTrainingStartPayload } = await import(
-  "../src/features/training/api/mappers.ts"
-);
-const { initialTrainingConfigState } = await import(
-  "../src/features/training/stores/training-config-policy.ts"
-);
+const { buildTrainingStartPayload } =
+  await import("../src/features/training/api/mappers.ts");
+const { initialTrainingConfigState } =
+  await import("../src/features/training/stores/training-config-policy.ts");
 
 function payloadFor(patch: Partial<TrainingConfigState>) {
   const config: TrainingConfigState = {
@@ -56,10 +54,18 @@ test("a fractional, negative or huge field becomes a whole number the backend ac
   assert.equal(sent(50000), 1000);
 });
 
-test("decision models never send it", () => {
+test("decision and embedding models never send it", () => {
   assert.equal(
     payloadFor({
       modelType: "decision",
+      evalSteps: 0.1,
+      earlyStoppingPatience: 3,
+    }).early_stopping_patience,
+    0,
+  );
+  assert.equal(
+    payloadFor({
+      modelType: "embeddings",
       evalSteps: 0.1,
       earlyStoppingPatience: 3,
     }).early_stopping_patience,

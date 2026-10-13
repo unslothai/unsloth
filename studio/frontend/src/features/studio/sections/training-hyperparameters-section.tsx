@@ -85,6 +85,7 @@ export function TrainingHyperparametersSection({
     useShallow((state) => ({
       epochs: state.epochs,
       isDecision: state.modelType === "decision",
+      isEmbedding: state.isEmbeddingModel || state.modelType === "embeddings",
       optimizerType: state.optimizerType,
       lrSchedulerType: state.lrSchedulerType,
       batchSize: state.batchSize,
@@ -380,7 +381,7 @@ export function TrainingHyperparametersSection({
                 className="w-28 font-mono"
               />
             </ParamsRow>
-            {!store.isDecision && (
+            {!store.isDecision && !store.isEmbedding && (
               <ParamsRow
                 label={t("studio.params.earlyStoppingPatience")}
                 tooltip={t("studio.params.earlyStoppingPatienceTooltip")}

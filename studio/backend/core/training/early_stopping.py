@@ -89,24 +89,28 @@ def create_early_stopping_callback(patience: int):
             # bad_evals == 0 means the last evaluation was the best, so the final weights already are. A run that
             # ends on its own after worse evaluations restores too, as MLX's load_best_model_at_end does. A user
             # stop does not: stop-and-save writes a resume checkpoint, whose optimizer state is the current step's.
+            best, self._best_weights = self._best_weights, None
             finished = self.stopped_at is not None or state.global_step >= state.max_steps
-            if not finished or self.bad_evals == 0 or self._best_weights is None or model is None:
+            if not finished or self.bad_evals == 0 or best is None or model is None:
                 return
             try:
                 import torch
 
+                # Convert every tensor before touching the model, so a failure leaves the final weights whole.
+                pairs = [
+                    (param, best[name].to(device = param.device, dtype = param.dtype))
+                    for name, param in model.named_parameters()
+                    if name in best
+                ]
                 with torch.no_grad():
-                    for name, param in model.named_parameters():
-                        saved = self._best_weights.get(name)
-                        if saved is not None:
-                            param.copy_(saved.to(device = param.device, dtype = param.dtype))
+                    for param, saved in pairs:
+                        param.copy_(saved)
                 self.restored = True
                 logger.info(
                     f"Restored the weights from step {self.best_step} (eval loss {self.best_loss:.4f})\n"
                 )
             except Exception as exc:
                 logger.warning(f"Could not restore the best weights, keeping the final ones: {exc}")
-            self._best_weights = None
 
         def _keep_best_weights(self, model):
             if model is None or self._too_large:

@@ -268,7 +268,7 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     early_stopping_patience:
-      config.evalSteps > 0 && !isDecision
+      config.evalSteps > 0 && !isDecision && !isEmbedding
         ? normalizeEarlyStoppingPatience(config.earlyStoppingPatience)
         : 0,
     weight_decay: config.weightDecay,

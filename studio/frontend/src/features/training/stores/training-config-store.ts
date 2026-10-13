@@ -1665,7 +1665,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...hyperparameters,
             ...selections,
             earlyStoppingPatience:
-              Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0,
+              Number.isFinite(patience) && patience > 0
+                ? Math.floor(patience)
+                : 0,
           });
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {

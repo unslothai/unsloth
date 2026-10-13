@@ -2485,6 +2485,11 @@ def _start_mlx_stop_poller(stop_queue):
         trainer = trainer_ref[0]
         if trainer is not None:
             trainer.stop_requested = True
+            # Early stopping set load_best_model_at_end; a manual stop keeps the current adapters instead, since the
+            # stop checkpoint stores this step's optimizer state next to them.
+            args = getattr(trainer, "args", None)
+            if getattr(args, "load_best_model_at_end", False):
+                args.load_best_model_at_end = False
 
     stop_thread = _start_worker_stop_poller(
         stop_queue,

@@ -983,10 +983,12 @@ class UnslothTrainer:
 
     def _early_stopping_summary(self) -> str:
         es = self._early_stopping
-        if es is None or not es.restored:
+        if es is None:
             return ""
-        lead = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
-        return f"{lead}Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        summary = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
+        if es.restored:
+            summary += f"Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        return summary
 
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
