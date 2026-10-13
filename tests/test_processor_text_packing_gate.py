@@ -202,6 +202,19 @@ def test_verified_families_are_unblocked(model_type):
     assert not _blocked(model = _Model(_Cfg(model_type = model_type)))
 
 
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_processor_on_text_is_unblocked_despite_mrope(model_type):
+    """Qwen3.5 text models take 2D position_ids as the text row, so packed text rows stay per document."""
+    cfg = _Cfg(
+        model_type = model_type,
+        text_config = {"rope_parameters": {"mrope_section": [11, 11, 10], "mrope_interleaved": True}},
+    )
+    assert _uses_multimodal_rope(cfg)
+    assert not _blocked(model = _Model(cfg))
+    img = datasets.Dataset.from_dict({"text": ["a"], "images": [[0]]})
+    assert _blocked(model = _Model(cfg), train_dataset = img)
+
+
 @pytest.mark.parametrize("value", ["false", "OFF", "no"])
 def test_kill_switch_spellings(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_PROCESSOR_TEXT_PACKING", value)

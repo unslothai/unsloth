@@ -482,8 +482,15 @@ def _uses_multimodal_rope(model_config) -> bool:
     return False
 
 
-_PROCESSOR_TEXT_PACKING_MODELS = frozenset(
-    {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+# mRoPE families whose text model expands 2D position_ids into the text row (transformers 5.2+),
+# so packed text rows get the per-document mask, exactly as with processing_class=processor.tokenizer.
+_PROCESSOR_TEXT_PACKING_MROPE_MODELS = frozenset({"qwen3_5", "qwen3_5_moe"})
+
+_PROCESSOR_TEXT_PACKING_MODELS = (
+    frozenset(
+        {"gemma3", "gemma3_text", "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text"}
+    )
+    | _PROCESSOR_TEXT_PACKING_MROPE_MODELS
 )
 
 
@@ -501,7 +508,9 @@ def _processor_text_only(
         return False
     if data_collator is not None:
         return False
-    if _uses_multimodal_rope(model_config):
+    if getattr(
+        model_config, "model_type", None
+    ) not in _PROCESSOR_TEXT_PACKING_MROPE_MODELS and _uses_multimodal_rope(model_config):
         return False
     if getattr(processing_class, "tokenizer", None) is None:
         return False
