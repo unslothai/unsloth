@@ -294,6 +294,9 @@ def _fit_context(messages, **kwargs):
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
+    # /compact: only a checkpoint reset can honour it, since only its turns are archived.
+    force_reset = bool(kwargs.pop("force_reset", False))
+    sticky_manual = bool(kwargs.pop("sticky_manual", False))
     try:
         from core.inference import checkpoint
 
@@ -313,7 +316,11 @@ def _fit_context(messages, **kwargs):
             # header's tool sentence swapped for one that promises no lookup this request
             # cannot perform. If the replay cannot fit, fall through to rolling BELOW.
             fitted, truncation = checkpoint.fit_checkpoint_context(
-                messages, can_reset = False, searchable = False, **kwargs
+                messages,
+                can_reset = False,
+                searchable = False,
+                sticky_manual = sticky_manual,
+                **kwargs,
             )
             if truncation is not None and truncation.get("fits"):
                 return fitted, truncation
@@ -354,6 +361,8 @@ def _fit_context(messages, **kwargs):
                 messages,
                 can_reset = lambda: not _is_degraded(),
                 searchable = lambda: recall_offered and not _is_degraded(),
+                force_reset = force_reset,
+                sticky_manual = sticky_manual,
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1922,7 +1931,25 @@ def _sticky_compaction_state(
     can_reset: bool = True,
     compaction_headroom_ratio: Optional[float] = None,
 ) -> tuple[int, bool]:
-    """How many leading messages this thread last compacted away, and who compacted them.
+    """`_sticky_compaction_details` without the manual flag."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[:2]
+
+
+def _sticky_compaction_details(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> tuple[int, bool, bool]:
+    """How many leading messages this thread last compacted away, who compacted them, and
+    whether the user asked for it (/compact), which replays even while the prompt fits.
 
     The provenance decides which fitter may consume the count. A rolling boundary handed
     to `fit_checkpoint_context` reads as an epoch already in force, so the fit returns
@@ -1941,7 +1968,7 @@ def _sticky_compaction_state(
     a non-persisting API client, or a storage error all mean "no boundary".
     """
     if not thread_id:
-        return 0, False
+        return 0, False, False
     requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
         from storage import studio_db
@@ -1949,24 +1976,25 @@ def _sticky_compaction_state(
         stored = list(studio_db.list_chat_messages(thread_id) or [])
         states = _compaction_branch_states(stored, branch_messages)
         if not states:
-            return 0, False
+            return 0, False, False
 
         boundaries = []
         origins = []
+        manual = []
         branch_wire = _archive_as_wire(branch_messages)
         for state in states:
             truncation = state.truncation
             recorded = state.recorded
             if truncation is None:
-                return 0, False
+                return 0, False, False
             # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
-                return 0, False
+                return 0, False, False
             # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
             # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
             # original turns without retaining their summary.
             if truncation.get("summarized") is True:
-                return 0, False
+                return 0, False, False
             # A boundary is valid only under the fit that will consume it, and the two
             # directions fail differently.
             #
@@ -1987,9 +2015,9 @@ def _sticky_compaction_state(
             recorded_checkpoint = bool(truncation.get("checkpoint"))
             effective_checkpoint = _request_uses_checkpoint(context_policy)
             if recorded_checkpoint and not effective_checkpoint:
-                return 0, False
+                return 0, False, False
             if not recorded_checkpoint and effective_checkpoint and can_reset:
-                return 0, False
+                return 0, False, False
             # Changing the extra trim has to change something. Phase one of
             # `fit_rolling_context` re-applies this count before anything else and stops
             # once the result fits, so a boundary cut under a DIFFERENT ratio never reaches
@@ -2005,9 +2033,9 @@ def _sticky_compaction_state(
                         recorded_ratio is not None
                         and abs(float(recorded_ratio) - requested_ratio) > 1e-9
                     ):
-                        return 0, False
+                        return 0, False, False
                 except (TypeError, ValueError):
-                    return 0, False
+                    return 0, False, False
             # A count is only valid against the transcript it was counted on. Deleting an
             # already-evicted turn shortens the front, and replaying the count then evicts
             # that many LIVE messages instead. Re-derive it from the anchor's position on
@@ -2021,11 +2049,29 @@ def _sticky_compaction_state(
                         break
             boundaries.append(recorded)
             origins.append(recorded_checkpoint)
+            manual.append(recorded_checkpoint and truncation.get("manual") is True)
         if not boundaries:
-            return 0, False
-        return min(boundaries), all(origins)
+            return 0, False, False
+        return min(boundaries), all(origins), all(manual)
     except Exception:
-        return 0, False
+        return 0, False, False
+
+
+def _sticky_compaction_manual(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> bool:
+    """Whether the epoch `_sticky_compaction_state` replays was started by /compact."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[2]
 
 
 def _sticky_compaction_boundary(
@@ -37539,6 +37585,7 @@ class LlamaCppBackend:
         tools_withheld: bool = False,
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
+        compact_context: bool = False,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -37618,7 +37665,7 @@ class LlamaCppBackend:
                     _backend_supports_tools(self),
                     tools_withheld = tools_withheld,
                 )
-                _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
+                _sticky, _sticky_is_checkpoint, _sticky_manual = _sticky_compaction_details(
                     thread_id,
                     _before_fit,
                     context_policy = context_policy,
@@ -37644,6 +37691,8 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
+                    sticky_manual = _sticky_manual,
+                    force_reset = compact_context,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
                     recall_offered = False,
@@ -37769,6 +37818,7 @@ class LlamaCppBackend:
                 # tools as the first attempt was.
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
+                compact_context = compact_context,
                 _allow_respawn_retry = False,
             )
 
@@ -38000,6 +38050,7 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
+        compact_context: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -38631,10 +38682,12 @@ class LlamaCppBackend:
                         _backend_supports_tools(self),
                         tools_withheld = _memory_tool_withheld(thread_id, tools),
                     )
-                    _iteration_sticky, _iteration_sticky_is_checkpoint = (
-                        (0, True)
+                    # The saved boundary and /compact both apply once, to the loop's first fit.
+                    _iteration_force_reset = compact_context and not _sticky_boundary_applied
+                    _iteration_sticky, _iteration_sticky_is_checkpoint, _iteration_sticky_manual = (
+                        (0, True, False)
                         if _sticky_boundary_applied
-                        else _sticky_compaction_state(
+                        else _sticky_compaction_details(
                             thread_id,
                             _request_branch,
                             context_policy = context_policy,
@@ -38670,6 +38723,8 @@ class LlamaCppBackend:
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
+                        sticky_manual = _iteration_sticky_manual,
+                        force_reset = _iteration_force_reset,
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Accounted for in this request now, whatever the fit decided.
