@@ -1536,6 +1536,53 @@ def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeyp
     assert not message.get("reasoning_content")
 
 
+def _mlx_format_call(monkeypatch, backend, **fields):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_reject_unhonorable_response_format", lambda payload: None)
+    backend.models["sf-model"]["is_mlx"] = True
+    return _call(_request(tools = [LOOKUP_TOOL], **fields), monkeypatch, backend)
+
+
+@pytest.mark.parametrize("response_format", [_RF_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize("tool_choice", [None, "auto"])
+def test_a_response_format_does_not_lock_out_callable_tools(
+    monkeypatch, response_format, tool_choice
+):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        tool_choice = tool_choice,
+        response_format = response_format,
+        stream = False,
+    )
+    choice = _json_body(reply)["choices"][0]
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["response_format"] is None
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_streamed_response_format_does_not_lock_out_callable_tools(monkeypatch):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    reply = _mlx_format_call(monkeypatch, backend, response_format = _RF_FORMAT, stream = True)
+    finishes = [
+        c.get("finish_reason") for o in _sse_objects(_collect_sse(reply)) for c in o["choices"]
+    ]
+    assert backend.calls[0]["response_format"] is None
+    assert "tool_calls" in finishes
+
+
+def test_a_response_format_still_applies_when_tools_cannot_be_called(monkeypatch):
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    reply = _mlx_format_call(
+        monkeypatch, backend, tool_choice = "none", response_format = _RF_FORMAT, stream = False
+    )
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert _json_body(reply)["choices"][0]["message"]["content"] == '{"city":"Paris"}'
+
+
 class _FittedToolLoopBackend(_ToolLoopBackend):
     def __init__(self, responder, **kwargs):
         super().__init__(responder, **kwargs)

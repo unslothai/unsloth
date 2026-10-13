@@ -34479,6 +34479,15 @@ async def produce_openai_chat_completions(
         and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
+    if (
+        _sf_client_tools
+        and payload.tools
+        and payload.tool_choice != "none"
+        and _response_format_constrains_decoding(payload)
+    ):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        gen_kwargs["response_format"] = None
+        _sf_single_block = False
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
     # markup never reached the prompt. Gating the healer on the caller's list instead would
     # promote a dropped tool with a clean NAME out of text-form output, handing the client a
@@ -34530,7 +34539,7 @@ async def produce_openai_chat_completions(
             payload.auto_heal_tool_calls,
             _sf_healing_tools,
             payload.tool_choice,
-            response_format = _extract_response_format(payload),
+            response_format = gen_kwargs["response_format"],
         )
         if _sf_client_tools
         else None
@@ -35159,7 +35168,7 @@ async def produce_openai_chat_completions(
                         _finish = "tool_calls"
                     elif nudge_enabled(
                         payload.nudge_tool_calls,
-                        response_format = _extract_response_format(payload),
+                        response_format = gen_kwargs["response_format"],
                     ):
                         _data = {
                             "choices": [
