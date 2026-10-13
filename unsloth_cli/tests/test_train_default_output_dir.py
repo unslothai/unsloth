@@ -112,3 +112,22 @@ def test_runs_started_in_the_same_second_get_separate_folders(tmp_path, monkeypa
     first, second = trainer.output_dirs
     assert first != second
     assert first.name.endswith("_1000") and second.name.endswith("_1001")
+
+
+def test_ranks_of_one_launch_share_the_launcher_folder(tmp_path, monkeypatch):
+    import psutil
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    # Each rank finishes its model load at a different second; the launcher started once.
+    clock = iter([1000, 1048])
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: next(clock)))
+    monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(create_time = lambda: 900.5))
+    trainer = _SavingTrainer()
+
+    assert _train(monkeypatch, trainer).exit_code == 0
+    assert _train(monkeypatch, trainer).exit_code == 0
+
+    first, second = trainer.output_dirs
+    assert first == second
+    assert first.name.endswith("_900")

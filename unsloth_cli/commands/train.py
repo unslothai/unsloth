@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -80,6 +81,16 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
+def _launcher_start_time() -> int:
+    # Ranks reach this after their own model load, seconds apart, so their clocks disagree; the
+    # launcher (torchrun, mlx.launch, mpirun) that spawned every rank on this node does not.
+    try:
+        import psutil
+        return int(psutil.Process(os.getppid()).create_time())
+    except Exception:  # noqa: BLE001 -- no launcher to ask: fall back to this rank's clock
+        return int(time.time())
+
+
 def _default_output_dir(model_name: str) -> str:
     ensure_studio_backend_path()
     from utils.paths import default_run_dir_name, ensure_dir, resolve_output_dir
@@ -87,11 +98,12 @@ def _default_output_dir(model_name: str) -> str:
     with studio_backend_imports("unsloth train"):
         from studio.backend.core.training.dataset_bounds import world_size_from_env
 
-    stamp = int(time.time())
+    distributed = world_size_from_env() > 1
+    stamp = _launcher_start_time() if distributed else int(time.time())
     while True:
         path = resolve_output_dir(f"{default_run_dir_name(model_name)}_{stamp}")
         # Ranks of one launch must agree on the folder, so only a single process reserves one.
-        if world_size_from_env() > 1:
+        if distributed:
             return str(path)
         ensure_dir(path.parent)
         try:
