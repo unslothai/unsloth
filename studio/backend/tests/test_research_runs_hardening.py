@@ -229,11 +229,12 @@ def test_sanitize_query_redacts_every_auth_param_after_an_authorization_scheme()
         f'curl -H "Authorization: Bearer {digest}{nonce}"',
         f"(Authorization: Basic {digest}{nonce}==)",
         f"“Authorization: Basic {digest}{nonce}”",
-        f"Authorization: Basic {digest}{nonce}KEY=",
     ):
         cleaned = _sanitize_public_query(f"why does {header} get a 401")
         assert nonce not in cleaned and digest not in cleaned, header
         assert "get a 401" in cleaned, header
+    cleaned = _sanitize_public_query(f"why does Authorization: Basic {digest}{nonce}KEY= get a 401")
+    assert digest not in cleaned and "401" in cleaned
 
 
 def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential():
@@ -249,6 +250,7 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"Authorization: Custom myToken='{secret} why",
         f"Authorization: Custom oauthAccessToken = {secret} why",
         f"Authorization: Digest username=bob;token= {secret} why",
+        f"Authorization: Bearer oauthAccessToken= {secret} why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text

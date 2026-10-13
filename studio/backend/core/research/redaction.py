@@ -43,12 +43,15 @@ _AUTH_NOT_A_LABEL = r"""(?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-
     |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)"""
 # A token68 cannot be a scheme word or the start of a spaced assignment.
 _AUTH_TOKEN68 = rf"""(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*{_AUTH_END}(?![ \t]*=)"""
+# Base64 can end in "key=" too; when it reads like a label, its value goes with it.
+_AUTH_LABEL_VALUE = r"""(?:(?:(?<=key=)|(?<=token=)|(?<=secret=)|(?<=password=)|(?<=authorization=))
+    [ \t]+[^\s,;"'`)\]}>”’]+)?"""
 _AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
 # Any input it declines falls through to the credential passes below, as before.
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*
     (?:(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+{_AUTH_NOT_A_LABEL}
-    (?:{_AUTH_PARAMS}|{_AUTH_TOKEN68})
+    (?:{_AUTH_PARAMS}|{_AUTH_TOKEN68}{_AUTH_LABEL_VALUE})
     |[A-Za-z]{_AUTH_TOKEN}?[ \t]+{_AUTH_NOT_A_LABEL}
     (?:{_AUTH_PARAMS}|(?=[^\s,;]*[\d+/=]|[\w.~+/-]{{20}}){_AUTH_TOKEN68}
     (?<!key=)(?<!token=)(?<!secret=)(?<!password=)(?<!authorization=)))"""
