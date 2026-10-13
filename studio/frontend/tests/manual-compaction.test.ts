@@ -180,6 +180,9 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   // Taken whatever model sends next, so a switch to an API model cannot leave it armed for later.
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
+  // A request the server declined is reported, not dropped.
+  assert.match(adapter, /marker\.truncation\.manual === true/);
+  assert.match(adapter, /"This chat was not compacted"/);
 });
 
 test("a fit that recalled anchors before the recall it already emitted", () => {

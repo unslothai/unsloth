@@ -8855,6 +8855,17 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        // The server may still decline (rolling policy, archive unavailable): say so rather than drop it quietly.
+        if (
+          compactNow &&
+          incompleteReason == null &&
+          !compactionMarkers?.some((marker) => marker.truncation.manual === true)
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
