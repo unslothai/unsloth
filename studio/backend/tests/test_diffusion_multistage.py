@@ -44,7 +44,9 @@ def test_encode_once_shares_the_first_encode_and_isolates_in_place_edits():
         other = pipe.encode_prompt(prompt = "q", device = "cpu")
         tensor_arg = pipe.encode_prompt(prompt = "p", prompt_embeds = torch.zeros(1))
     assert pipe.encodes == 3 and torch.equal(b[0], torch.ones(1, 2)) and c is b
-    assert torch.equal(other[0], torch.full((1, 2), 2.0)) and torch.equal(tensor_arg[0], torch.full((1, 2), 3.0))
+    assert torch.equal(other[0], torch.full((1, 2), 2.0)) and torch.equal(
+        tensor_arg[0], torch.full((1, 2), 3.0)
+    )
     assert "encode_prompt" not in pipe.__dict__
     # an instance attribute (a remote encoder, a cache wrapper) comes back as it was
     own = lambda **kw: (torch.zeros(1), None)  # noqa: E731

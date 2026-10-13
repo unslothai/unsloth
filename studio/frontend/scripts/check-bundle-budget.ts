@@ -54,11 +54,14 @@ export const BUDGET = {
   // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
   // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
   // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
-  // The image info stamp setting (#13444) adds its Library settings row and strings to the eager
-  // settings and locale chunks: 6,525.0 -> 6,525.3 KB raw, 1,960.0 -> 1,960.2 KB transfer against
-  // 318ab67, one machine and build. The stamp and metadata code itself loads with the Images page.
-  transferBytes: 2_007_400,
-  rawBytes: 6_688_200,
+  // Then 19 small Studio merges took main over again with no single import doing it: 6,518.8 ->
+  // 6,533.6 KB raw, 1,958.0 -> 1,963.7 KB transfer from 5f38afbc2d to 33176a75e9 (one machine and
+  // build). The largest step is Regenerate title in the Library menu (#13491, +5.2 KB raw / +2.2 KB
+  // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
+  // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
+  // so main's margin stays where it was.
+  transferBytes: 2_013_000,
+  rawBytes: 6_703_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
