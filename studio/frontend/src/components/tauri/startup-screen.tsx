@@ -20,7 +20,7 @@ import {
 } from "@/lib/windows-long-paths";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -89,13 +89,21 @@ function NotInstalledContent({
 }: {
   onInstall: (options?: InstallOptions) => void;
 }) {
-  const [phase, setPhase] = useState<"idle" | "checking" | "explain" | "elevating">(
-    "idle",
-  );
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "explain" | "elevating"
+  >("idle");
+
+  // Synchronous: a double click lands before the re-render that disables the buttons.
+  const busy = useRef(false);
 
   async function getStarted() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
     setPhase("checking");
     if (await windowsLongPathsNeedPrompt()) {
+      busy.current = false;
       setPhase("explain");
     } else {
       onInstall();
@@ -103,10 +111,22 @@ function NotInstalledContent({
   }
 
   async function allowLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
     setPhase("elevating");
     const outcome = await enableWindowsLongPaths();
     // "failed" leaves setup.ps1 to retry with its own UAC; the user has been told about it.
     onInstall({ skipLongPaths: outcome === "declined" });
+  }
+
+  function skipLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    onInstall({ skipLongPaths: true });
   }
 
   if (phase === "explain" || phase === "elevating") {
@@ -114,7 +134,7 @@ function NotInstalledContent({
       <LongPathsExplainer
         waiting={phase === "elevating"}
         onContinue={allowLongPaths}
-        onSkip={() => onInstall({ skipLongPaths: true })}
+        onSkip={skipLongPaths}
       />
     );
   }
@@ -131,7 +151,11 @@ function NotInstalledContent({
         >
           To install Unsloth, click Get Started.
         </p>
-        <Button size="hero" onClick={getStarted} disabled={phase === "checking"}>
+        <Button
+          size="hero"
+          onClick={getStarted}
+          disabled={phase === "checking"}
+        >
           Get Started
         </Button>
       </div>
@@ -156,18 +180,21 @@ function LongPathsExplainer({
           Windows will ask for permission
         </p>
         <p className="text-xs text-muted-foreground">
-          Unsloth needs Windows long file paths turned on. Compiled PyTorch kernels
-          (torch.compile and Triton) and some dependencies use paths longer than the
-          260 character limit Windows has by default.
+          Unsloth needs Windows long file paths turned on. Compiled PyTorch
+          kernels (torch.compile and Triton) and some dependencies use paths
+          longer than the 260 character limit Windows has by default.
         </p>
         <p className="text-xs text-muted-foreground">
           After you click Continue, Windows shows a prompt for{" "}
-          <span className="font-medium text-foreground">Registry Console Tool</span>{" "}
-          from Microsoft Windows. Click Yes to allow it. This is a one-time,
-          system-wide setting.
+          <span className="font-medium text-foreground">
+            Registry Console Tool
+          </span>{" "}
+          from Microsoft Windows. Approve it (Yes, or an administrator&apos;s
+          password). This is a one-time, system-wide setting.
         </p>
         <p className="text-xs text-muted-foreground">
-          If you skip, Unsloth still installs, but some compiled kernels may fail.
+          If you skip, Unsloth still installs, but some compiled kernels may
+          fail.
         </p>
         {waiting ? (
           <div className="mt-4 flex items-center gap-2">

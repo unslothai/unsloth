@@ -5059,7 +5059,8 @@ if ($LongPathsEnabled) {
     Write-StudioLine "   Windows will show a 'Registry Console Tool' prompt (reg.exe, verified publisher Microsoft Windows)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        $proc = Start-Process -FilePath "reg.exe" `
+        # The system directory itself, not a PATH lookup: this is the binary the prompt names.
+        $proc = Start-Process -FilePath "$([Environment]::SystemDirectory)\reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
