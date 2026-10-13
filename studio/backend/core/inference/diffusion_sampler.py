@@ -7,6 +7,7 @@ scheduler overview table. No torch/diffusers imports at module level."""
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Optional
 
 DEFAULT_SAMPLER = "default"
@@ -64,28 +65,39 @@ def _schedule_types_for(cls: type) -> list[str]:
     return [sid for sid, (_label, flag) in SCHEDULE_TYPES.items() if flag is None or flag in params]
 
 
-def sampler_options(scheduler: Any) -> list[dict[str, Any]]:
-    """Samplers the resident scheduler can be swapped for, each with the schedule types it takes.
-
-    Empty when the scheduler lists no compatible classes (every flow-matching model), so the
-    control is absent there rather than offering choices that cannot run."""
-    if scheduler is None:
-        return []
+@lru_cache(maxsize = 32)
+def _options_for(scheduler_cls: type) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     compatible = {
         c if isinstance(c, str) else getattr(c, "__name__", "")
-        for c in (getattr(type(scheduler), "_compatibles", None) or ())
+        for c in (getattr(scheduler_cls, "_compatibles", None) or ())
     }
     if not compatible:
-        return []
+        return ()
+    import diffusers
+
     options = []
     for sid, (label, cls_name, _overrides) in SAMPLERS.items():
         if cls_name is not None and cls_name not in compatible:
             continue
-        cls = _class_for(sid, scheduler)
+        cls = scheduler_cls if cls_name is None else getattr(diffusers, cls_name, None)
         if cls is None:
             continue
-        options.append({"id": sid, "label": label, "schedule_types": _schedule_types_for(cls)})
-    return options if len(options) > 1 else []
+        options.append((sid, label, tuple(_schedule_types_for(cls))))
+    return tuple(options) if len(options) > 1 else ()
+
+
+def sampler_options(scheduler: Any) -> list[dict[str, Any]]:
+    """Samplers the resident scheduler can be swapped for, each with the schedule types it takes.
+
+    Empty when the scheduler lists no compatible classes (every flow-matching model), so the
+    control is absent there rather than offering choices that cannot run. Read on every status poll,
+    hence cached per class."""
+    if scheduler is None:
+        return []
+    return [
+        {"id": sid, "label": label, "schedule_types": list(types)}
+        for sid, label, types in _options_for(type(scheduler))
+    ]
 
 
 def resolve_schedule(
