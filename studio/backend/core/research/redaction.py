@@ -42,11 +42,13 @@ _QUERY_AUTHORIZATION = re.compile(
 )
 # Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
 _QUERY_AUTHORIZATION_ARRAY = re.compile(
-    r"""(?i)(?<![A-Za-z0-9])authorization\\?["'”’]\s*[:=]\s*\[(?P<members>[^\[\]]*)\]"""
+    r"""(?i)(?<![A-Za-z0-9])authorization\\?["'”’]\]?\s*[:=]\s*\[(?P<members>[^\[\]]*)\]"""
 )
 _ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”""")
 _AUTH_PARAM_PAIR = re.compile(
-    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
+    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)""".replace(
+        r"[ \t]", _HSPACE
+    )
 )
 # Digest parameters that describe the challenge rather than prove identity.
 _PUBLIC_AUTH_PARAMS = frozenset(

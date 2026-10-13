@@ -298,6 +298,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         '{"Authorization":["Basic abcdefghijklmnop=="]} why',
         '{"Authorization":["Basic qrstuvwxyzabcdef==","Basic abcdefghijklmnop=="]} why',
         "Authorization:\u00a0Basic\u2009abcdefghijklmnop why",
+        "Authorization: Digest response\u00a0=\u00a0abcdefghijklmnop why",
+        'headers["Authorization"] = ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
         '{"Authorization": [\n    "Basic abcdefghijklmnop=="\n  ]} why',
         "Authorization: SharedKeyLite myaccount:abcdefghijklmnop== why",
         'Authorization: Custom token="abcdefghijkl\\/mnop" received="abcdefghijkl\\/mnop" why',
