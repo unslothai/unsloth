@@ -253,6 +253,7 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"Authorization: Bearer oauthAccessToken= {secret} why",
         f"Authorization: Bearer oauthAccessToken=`{secret}` why",
         f"Authorization: Digest username=bob;bearer {secret} why",
+        f"Authorization: Digest username=bob;api key: {secret} why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text
@@ -267,6 +268,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     )
     assert "X1234567" not in _sanitize_public_query("Authorization: Custom. Passport X1234567 why")
     assert "X1234567" not in _sanitize_public_query("Authorization: Basic passport X1234567 why")
+    assert "1111" not in _sanitize_public_query("Authorization: Basic 4111 1111 1111 1111 why")
 
 
 def test_shield_untrusted_neutralizes_delimiters():

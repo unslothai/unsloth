@@ -11,6 +11,7 @@ source URL cannot close its own citation to inject a link.
 
 from __future__ import annotations
 
+import difflib
 import ipaddress
 import re
 
@@ -28,34 +29,10 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-_AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
-# Closing quotes and brackets end a credential too: `curl -H "Authorization: Bearer ..."`.
-_AUTH_END = r"""(?=[\s,;"'`)\]}>”’]|$)"""
-_AUTH_QUOTED = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’)"""
-# ";" stays inside a value (AWS SignedHeaders=host;x-amz-date) unless it starts another assignment.
-_AUTH_BARE = r"""[^\s,"`:;=()<>\[\]{}]+(?:;(?!(?:basic|bearer|digest|token)[ \t])[^\s,"`:;=()<>\[\]{}]+(?![ \t]*=))*=*"""
-# Spaces around "=" only before a quoted value, so padded token68 cannot read as a parameter.
-_AUTH_PARAM = (
-    rf"{_AUTH_TOKEN}(?:=(?:{_AUTH_QUOTED}|{_AUTH_BARE}{_AUTH_END})|[ \t]*=[ \t]*{_AUTH_QUOTED})"
-)
-_AUTH_NOT_A_LABEL = r"""(?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
-    |client[\s_-]?secret|private[\s_-]?key|refresh[\s_-]?token|session[\s_-]?token
-    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:
-    |(?:passport|driver(?:'s)?[\s_-]?licen[cs]e|national[\s_-]?id|tax[\s_-]?id|account[\s_-]?(?:number|no))\b)"""
-# A token68 cannot be a scheme word or the start of a spaced assignment.
-_AUTH_TOKEN68 = rf"""(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*{_AUTH_END}(?![ \t]*=)"""
-# Base64 can end in "key=" too; when it reads like a label, its value goes with it.
-_AUTH_LABEL_VALUE = r"""(?:(?:(?<=key=)|(?<=token=)|(?<=secret=)|(?<=password=)|(?<=authorization=))
-    (?:`[^`\n]*`|[ \t]+[^\s,;"'`)\]}>”’]+))?"""
-_AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
-# Any input it declines falls through to the credential passes below, as before.
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,"`()<>\[\]{}”’]+)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*
-    (?:(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+{_AUTH_NOT_A_LABEL}
-    (?:{_AUTH_PARAMS}|{_AUTH_TOKEN68}{_AUTH_LABEL_VALUE})
-    |[A-Za-z]{_AUTH_TOKEN}?[ \t]+{_AUTH_NOT_A_LABEL}
-    (?:{_AUTH_PARAMS}|(?=[^\s,;]*[\d+/=]|[\w.~+/-]{{20}}){_AUTH_TOKEN68}
-    (?<!key=)(?<!token=)(?<!secret=)(?<!password=)(?<!authorization=)))"""
+    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[A-Za-z][\w!#$%&'*+.^`|~-]*[ \t]+
+    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
 )
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
@@ -175,6 +152,25 @@ def _shield_untrusted(text: str) -> str:
 
 
 def _sanitize_public_query(query: str) -> str:
+    # The Authorization pass may eat a label a later pass needs, so keep only tokens that also
+    # survive without it: it can remove more than the plain passes, never less.
+    plain = _redact_public_query(query, authorization = False)
+    with_authorization = _redact_public_query(query, authorization = True)
+    tokens = plain
+    if with_authorization != plain:
+        # 600 tokens cover the 500-character output; the matcher is quadratic past that.
+        plain, with_authorization = plain[:600], with_authorization[:600]
+        matcher = difflib.SequenceMatcher(None, plain, with_authorization, autojunk = False)
+        tokens = [
+            token for a, _, size in matcher.get_matching_blocks() for token in plain[a : a + size]
+        ]
+    query = " ".join(tokens).strip(" ,;:-")[:500]
+    if not any(character.isalnum() for character in query):
+        raise ValueError("Research query contained only private or credential-like data")
+    return query
+
+
+def _redact_public_query(query: str, *, authorization: bool) -> list[str]:
     def redact_named_assignment(match: re.Match) -> str:
         label = re.sub(r"[^a-z0-9]", "", match.group("label").lower())
         if label.endswith(_QUERY_CREDENTIAL_SUFFIXES) and not label.endswith(
@@ -183,7 +179,8 @@ def _sanitize_public_query(query: str) -> str:
             return " "
         return match.group(0)
 
-    query = _QUERY_AUTHORIZATION.sub(" ", query)
+    if authorization:
+        query = _QUERY_AUTHORIZATION.sub(" ", query)
     query = _QUERY_CREDENTIAL.sub(" ", query)
     query = _QUERY_NAMED_ASSIGNMENT.sub(redact_named_assignment, query)
     query = _QUERY_BEARER.sub(" ", query)
@@ -198,7 +195,4 @@ def _sanitize_public_query(query: str) -> str:
         lambda match: " " if _luhn_valid(match.group(0)) else match.group(0),
         query,
     )
-    query = " ".join(query.split()).strip(" ,;:-")[:500]
-    if not any(character.isalnum() for character in query):
-        raise ValueError("Research query contained only private or credential-like data")
-    return query
+    return query.split()
