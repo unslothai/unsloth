@@ -47,8 +47,41 @@ export const BUDGET = {
   // message action bar rework (#12735) 2.9 KB raw, and the other merges in that range the rest,
   // all in the eager chat, index and settings chunks. Headroom ran out, so the same margin is put
   // back.
-  transferBytes: 1_991_000,
-  rawBytes: 6_646_000,
+  // The long-chat render work (#13255: deferred fences and reasoning rows) adds 33.3 KB raw / 13.1 KB
+  // transfer to the eager chat chunk (6,477.1 -> 6,510.4 KB raw, 1,942.6 -> 1,955.7 KB transfer at
+  // 160cb41fe, one machine and build); raised by that so main's margin stays where it was.
+  // Project sources follow-ups (#13224: queued drops, retry on failed sources, folder drops) add
+  // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
+  // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
+  // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
+  // Then 19 small Studio merges took main over again with no single import doing it: 6,518.8 ->
+  // 6,533.6 KB raw, 1,958.0 -> 1,963.7 KB transfer from 5f38afbc2d to 33176a75e9 (one machine and
+  // build). The largest step is Regenerate title in the Library menu (#13491, +5.2 KB raw / +2.2 KB
+  // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
+  // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
+  // so main's margin stays where it was.
+  // Twelve more Studio merges added 7.1 KB raw / 2.3 KB transfer (6,534.6 -> 6,541.7 KB raw,
+  // 1,963.9 -> 1,966.2 KB transfer from f68585e2e9 to a7dc8a0640, one machine and build), again with
+  // no single import doing it. The largest step is per-chat file history and /rewind (#13522, +4.3 KB
+  // raw / +1.3 KB transfer in the eager chat chunk); the rest are 0.1 to 0.6 KB each. Raised by that
+  // growth so main's margin stays where it was.
+  // Sidebar server paging adds 17.4 KB raw / 5.6 KB transfer to the first screen (6,544.5 -> 6,561.9
+  // KB raw, 1,967.1 -> 1,972.7 KB transfer against b73110c6f, one machine and build), raised by that.
+  // /compact and the in-loop compaction divider add 3.6 KB raw / 1.4 KB transfer to the eager startup
+  // JS (6,563.4 -> 6,567.0 KB raw, 1,973.0 -> 1,974.4 KB transfer against 280c45695, one machine
+  // and build), raised by that.
+  // Five merges since then add 2.1 KB raw / 0.8 KB transfer (6,567.3 -> 6,569.4 KB raw, 1,974.5 ->
+  // 1,975.3 KB transfer from a062c04d51 to c35052e42f, one machine and build). The step that crossed
+  // is the token activity Chart view (#13558, +0.7 KB raw / +0.3 KB transfer): its persisted store
+  // pulls zustand/middleware into the startup set as a 99th chunk. Raised by that growth so main's
+  // margin stays where it was.
+  // Six merges since add 2.9 KB raw / 1.4 KB transfer (6,570.7 -> 6,573.6 KB raw, 1,975.5 -> 1,976.9 KB
+  // transfer from b8d76e1696 to 8af12324b0, one machine and build), with the chunk count unchanged and
+  // no single import doing it. The largest step is the audio model selector fix (#13517, +2.9 KB raw /
+  // +0.9 KB transfer); thinking traces (#13545), MLX precision folders (#13565) and vLLM thinking
+  // effort (#13571) add the rest. Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_025_000,
+  rawBytes: 6_737_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
@@ -360,6 +393,36 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
+/**
+ * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
+ * them are only ever fetched when a preview opens, so either string in a startup chunk means that
+ * code was pulled onto the startup path: a static import where a lazy one was meant.
+ */
+export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
+
+/** Every (chunk, needle) pair where an eager chunk contains a needle. A chunk that cannot be read is skipped. */
+export function eagerChunksContaining(
+  distDir: string,
+  chunks: string[],
+  needles: string[],
+): { chunk: string; needle: string }[] {
+  const found: { chunk: string; needle: string }[] = [];
+  for (const chunk of chunks) {
+    let text: string;
+    try {
+      text = readFileSync(join(distDir, chunk), "utf8");
+    } catch {
+      continue; // measure() reports a missing chunk; this only looks inside the ones that exist.
+    }
+    for (const needle of needles) {
+      if (text.includes(needle)) {
+        found.push({ chunk, needle });
+      }
+    }
+  }
+  return found;
+}
+
 type Measured = { name: string; raw: number; transfer: number };
 
 /**
@@ -454,6 +517,18 @@ function main(): number {
     console.log(
       `  ${kb(c.raw).padStart(10)} raw  ${kb(c.transfer).padStart(9)} transfer  ${c.name}`,
     );
+  }
+
+  const lazyOnly = eagerChunksContaining(DIST, names, LAZY_ONLY_NEEDLES);
+  if (lazyOnly.length > 0) {
+    console.error("\nReact-preview runtime code is on the startup path:");
+    for (const { chunk, needle } of lazyOnly) {
+      console.error(`  ${chunk} contains ${needle}`);
+    }
+    console.error(
+      "It belongs only in chunks reached through import(). Find the static import that pulled it in.",
+    );
+    return 1;
   }
 
   const over: string[] = [];

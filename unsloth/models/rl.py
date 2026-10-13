@@ -28,6 +28,7 @@ import os
 import re
 import sys
 import warnings
+import weakref
 from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
@@ -284,7 +285,9 @@ def PatchRL(FastLanguageModel):
         # for_inference restores use_cache, and transformers drops its packed-sequence mask once a cache
         # exists (masking_utils._preprocess_mask_arguments), so packed rows would attend across (#3470).
         if "packed_seq_lengths" in inputs and "use_cache" not in inputs:
-            inputs = {**inputs, "use_cache": False}
+            from unsloth.models._utils import _forward_takes_use_cache
+            if _forward_takes_use_cache(model):
+                inputs = {**inputs, "use_cache": False}
         if ignore_keys is None:
             if hasattr(self.model, "config"):
                 ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
@@ -2356,6 +2359,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 v = re.escape("\n")
             if v is EMPTY:
                 arguments.append(k)
+            elif type(v) is str and v != re.escape("\n") and ("\n" in v or "'" in v):
+                # A newline or quote ends the bare '...' literal early (SDFT's teacher_prompt_template).
+                arguments.append(f"{k} = {v!r}")
             elif type(v) is str:
                 arguments.append(f"{k} = '{v}'")
             elif type(v) in types:
@@ -2504,14 +2510,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
 
     if "model" in call_args:
-        logits_check = (
-            "_output_logits = False\n"
-            "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"
-            "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"
-            "if _output_logits:\n"
-            "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
-        )
-        extra_args += logits_check
+        # No UNSLOTH_RETURN_LOGITS=1 for compute_metrics here: prediction_step forces it per eval call; here it leaked into training (#3071).
         warnings_issued_check = (
             "if model is not None:\n"
             "    _warnings_issued = getattr(model, 'warnings_issued', None)\n"
@@ -3082,6 +3081,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_steps"] = 0.1
     else:
         replacements["warmup_ratio"] = 0.1
+    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group.
+    if trainer_file == "gold_trainer":
+        replacements.pop("num_generations")
+    # SDFT needs the eval batch divisible by num_generations (8).
+    if trainer_file == "sdft_trainer":
+        replacements.pop("per_device_eval_batch_size")
 
     for k, v in replacements.items():
         x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
@@ -3294,7 +3299,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
+    # GOLD: TRL already checks generation_batch_size * num_generations == batch * grad accum.
+    elif (
+        "per_device_train_batch_size" in call_args
+        and "num_generations" in call_args
+        and trainer_file != "gold_trainer"
+    ):
         if "steps_per_generation" not in call_args:
             print(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
         if "generation_batch_size" not in call_args:
@@ -3607,6 +3617,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
 
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
+    # The generated module has no package: make function-level relative imports (ServerDistillationTrainer.__init__) absolute.
+    _source_package = getattr(inspect.getmodule(RLTrainer), "__package__", None)
+    if _source_package:
+        RLTrainer_source = re.sub(
+            r"^([ \t]*from[ \t]+)(\.+[\w.]*)([ \t]+import[ \t])",
+            lambda m: m.group(1)
+            + importlib.util.resolve_name(m.group(2), _source_package)
+            + m.group(3),
+            RLTrainer_source,
+            flags = re.MULTILINE,
+        )
 
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
@@ -4055,15 +4077,19 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
 
 # TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+# Not async_distillation: it loads the student from a model name, so an Unsloth model never reaches it.
 _TRL_EXPERIMENTAL_TRAINERS = (
     "bco",
     "cpo",
     "gkd",
+    "gold",
     "nash_md",
     "online_dpo",
     "orpo",
     "ppo",
     "prm",
+    "sdft",
+    "server_distillation",
     "xpo",
 )
 
@@ -4259,36 +4285,306 @@ def _is_unsloth_fast_backbone(backbone):
     return getattr(type(backbone), "forward", None) is LlamaModel_fast_forward
 
 
+def _text_prepended_position_ids(position_ids):
+    # Multimodal-RoPE text models (Qwen2.5-VL) build the packed mask only from [4, B, T] ids whose first plane is
+    # the text positions; text-only rows use the same positions on every plane.
+    if position_ids is None or position_ids.dim() != 2:
+        return position_ids
+    return position_ids[None].expand(4, *position_ids.shape)
+
+
+@torch.no_grad()
+def _packing_honored(backbone, position_transform = None):
+    # Runs the backbone the way the fused head does: a second packed sequence must match itself run alone far more
+    # closely than when it can see the first one. Numeric, so it covers every attention and mixer implementation.
+    params = next(backbone.parameters(), None)
+    if params is None:
+        return False
+    device = params.device
+    config = getattr(backbone, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    vocab = int(getattr(text_config, "vocab_size", 0) or 0)
+    if vocab < 20:
+        return False
+    generator = torch.Generator().manual_seed(3407)
+    first, second = 24, 20
+    ids = torch.randint(10, min(vocab, 32000), (1, first + second), generator = generator).to(device)
+    transform = position_transform or (lambda p: p)
+    dtype = getattr(config, "torch_dtype", None) or params.dtype
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16 if params.dtype == torch.float32 else params.dtype
+    training = [(module, module.training) for module in backbone.modules()]
+    # Training mode, as in the trainer: some models (gpt-oss) take a different attention path when training.
+    # Dropout off so the comparison is deterministic.
+    backbone.train()
+    for module in backbone.modules():
+        if isinstance(module, torch.nn.modules.dropout._DropoutNd):
+            module.training = False
+
+    def hidden(input_ids, position_ids):
+        with torch.autocast(device.type, dtype = dtype, enabled = device.type in ("cuda", "xpu")):
+            out = backbone(
+                input_ids = input_ids, position_ids = transform(position_ids), use_cache = False
+            )
+        return out.last_hidden_state.float()
+
+    try:
+        arange = lambda n: torch.arange(n, device = device)[None]
+        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1))[0, first:]
+        alone = hidden(ids[:, first:], arange(second))[0]
+        crossed = hidden(ids, arange(first + second))[0, first:]
+    finally:
+        for module, mode in training:
+            module.training = mode
+    leak = (packed - alone).abs().mean()
+    control = (crossed - alone).abs().mean()
+    return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
+
+
 def _unsloth_async_grpo_lm_head(original, flag):
     # TRL >= 1.15 `add_fused_lm_head` (active when `flag` is passed), TRL 1.13-1.14 `patch_chunked_lm_head` (always).
     def patch_lm_head(model, *args, **kwargs):
         # The head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
         target = model.get_base_model() if hasattr(model, "get_base_model") else model
         original(target, *args, **kwargs)
-        if not _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            attn = getattr(target.config, "_attn_implementation", None) or ""
-            if "flash" not in str(attn):
-                raise ValueError(
-                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row and separates them only by "
-                    f"position_ids resets, which `{attn}` attention ignores, so sequences would attend to each other. "
-                    "Load the model with FastLanguageModel, or with a flash attention implementation."
-                )
-            return
         head_forward = target.forward
+        if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
+            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
+            def packed_kwargs(f_kwargs):
+                if f_kwargs.get("packed_seq_lengths") is None:
+                    lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
+                    if lengths is not None:
+                        f_kwargs["packed_seq_lengths"] = lengths
+        else:
+            # Compiled / vision / MoE backbones: transformers builds the packed mask from position_ids resets.
+            # Use the first position_ids form this backbone honors, else refuse.
+            config = target.config
+            is_vlm = getattr(config, "get_text_config", lambda: config)() is not config
+            # Same backbone TRL's fused head calls.
+            backbone = (
+                getattr(target, "model", None)
+                if (is_vlm and Version(importlib_version("transformers")) < Version("5.0.0"))
+                else getattr(target, "base_model", None)
+            )
+            transforms = [None, _text_prepended_position_ids] if is_vlm else [None]
+            attn = str(getattr(config, "_attn_implementation", None) or "")
+            if "flash" in attn and not is_vlm:
+                # Varlen flash attention reads sequence boundaries from position_ids, as TRL expects; TRL builds
+                # these models on CPU, where the kernel cannot run the self-test.
+                return
+            try:
+                transform = next(
+                    (
+                        t
+                        for t in transforms
+                        if backbone is not None and _packing_honored(backbone, t)
+                    ),
+                    False,
+                )
+            except Exception as error:
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row, and checking that "
+                    f"`{type(backbone).__name__}` keeps them apart failed ({type(error).__name__}: {error}). Load "
+                    "the model with a flash attention implementation, or train it with GRPOTrainer instead."
+                ) from error
+            if transform is False:
+                raise ValueError(
+                    "Unsloth: AsyncGRPOTrainer packs several sequences into one row, separated only by "
+                    f"position_ids resets, and `{type(backbone).__name__}` lets them attend to each other. Load "
+                    "the model with a flash attention implementation, or train it with GRPOTrainer instead."
+                )
+            if transform is None:
+                return
+
+            def packed_kwargs(f_kwargs):
+                f_kwargs["position_ids"] = transform(f_kwargs.get("position_ids"))
 
         @functools.wraps(head_forward)
         def forward(*f_args, **f_kwargs):
-            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
-            if (flag is None or f_kwargs.get(flag)) and f_kwargs.get("packed_seq_lengths") is None:
-                lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
-                if lengths is not None:
-                    f_kwargs["packed_seq_lengths"] = lengths
+            if flag is None or f_kwargs.get(flag):
+                packed_kwargs(f_kwargs)
             return head_forward(*f_args, **f_kwargs)
 
         target.forward = forward
 
     patch_lm_head._unsloth_async_grpo_patched = True
     return patch_lm_head
+
+
+def _fast_inference_engine(model):
+    for candidate in (model, getattr(model, "get_base_model", lambda: None)()):
+        engine = getattr(candidate, "vllm_engine", None)
+        if engine is not None:
+            return engine
+    return None
+
+
+def _async_grpo_uses_fast_inference(model, config, kwargs):
+    if isinstance(model, str) or _fast_inference_engine(model) is None:
+        return False
+    if kwargs.get("weight_transfer") is not None or kwargs.get("rollout_worker") is not None:
+        return False
+    url = getattr(config, "vllm_server_base_url", None)
+    if url not in (None, "http://localhost:8000"):
+        logger.info(
+            f"Unsloth: AsyncGRPOTrainer uses the vLLM server at {url}, not the model's fast_inference engine."
+        )
+        return False
+    return True
+
+
+def _dataset_has_images(dataset):
+    # Index, never iterate: a stateful iterable dataset would lose its first row.
+    try:
+        row = dataset[0] if hasattr(dataset, "__getitem__") and len(dataset) > 0 else None
+    except Exception:
+        return False
+    if not isinstance(row, dict):
+        return False
+    if any(row.get(key) is not None for key in ("image", "images")):
+        return True
+    prompt = row.get("prompt")
+    if isinstance(prompt, list):
+        for message in prompt:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") in ("image", "image_url")
+                for part in content
+            ):
+                return True
+    return False
+
+
+def _start_async_grpo_vllm_server(model):
+    from ._async_grpo_vllm import UnslothAsyncVLLMServer
+    return UnslothAsyncVLLMServer(model)
+
+
+def _check_async_grpo_fast_inference(async_module, model, train_dataset):
+    if not hasattr(async_module, "select_adapter_sync"):
+        raise ValueError(
+            "Unsloth: AsyncGRPOTrainer with fast_inference=True syncs a LoRA adapter, which needs TRL >= 1.14. "
+            "Upgrade TRL, or load with fast_inference=False and run a separate vLLM server."
+        )
+    if not hasattr(model, "peft_config") or getattr(model, "load_lora", None) is None:
+        raise ValueError(
+            "Unsloth: with fast_inference=True, vLLM generates from the same base weights the trainer holds, so "
+            "AsyncGRPOTrainer can only train a LoRA adapter on top of them. Call FastLanguageModel.get_peft_model "
+            "(or FastVisionModel.get_peft_model) first; for full fine-tuning load with fast_inference=False and "
+            "run a separate vLLM server."
+        )
+    if _dataset_has_images(train_dataset):
+        raise ValueError(
+            "Unsloth: TRL's AsyncGRPOTrainer sends token ids only to vLLM, so image prompts are not supported. "
+            "Use GRPOTrainer for image prompts."
+        )
+
+
+def _align_vlm_text_config(model):
+    # TRL finds a VLM's text model by `module.config is model.config.get_text_config()`; Unsloth's loaders keep
+    # separate config copies per level, so answer with the language model's own config while TRL's init runs.
+    from transformers import PreTrainedModel
+
+    config = getattr(model, "config", None)
+    if config is None or not hasattr(config, "get_text_config"):
+        return lambda: None
+    text_config = config.get_text_config()
+    if text_config is config:
+        return lambda: None
+    modules = [
+        m
+        for m in model.modules()
+        if isinstance(m, PreTrainedModel) and getattr(m, "config", None) is not config
+    ]
+    if any(m.config is text_config for m in modules):
+        return lambda: None
+    matches = {id(m.config): m.config for m in modules if isinstance(m.config, type(text_config))}
+    if len(matches) != 1:
+        return lambda: None
+    (target,) = matches.values()
+    had = "get_text_config" in vars(config)
+    previous = vars(config).get("get_text_config")
+    config.get_text_config = lambda *args, **kwargs: target
+
+    def restore():
+        if had:
+            config.get_text_config = previous
+        else:
+            vars(config).pop("get_text_config", None)
+
+    return restore
+
+
+def _hold_peft_requires_grad(model):
+    # TRL's VLM branch calls requires_grad_ on the model, its text model and LM head: under LoRA that would train
+    # the base (and raises on 4-bit weights), so make those calls no-ops while TRL's init runs.
+    from transformers import PreTrainedModel
+
+    if not hasattr(model, "peft_config"):
+        return lambda: None
+    targets = {id(model): model}
+    for module in model.modules():
+        if isinstance(module, PreTrainedModel):
+            targets[id(module)] = module
+    try:
+        head = model.get_output_embeddings()
+        if isinstance(head, torch.nn.Module):
+            targets[id(head)] = head
+    except Exception:
+        pass
+    held = [m for m in targets.values() if "requires_grad_" not in vars(m)]
+    for module in held:
+        module.requires_grad_ = functools.partial(lambda m, *args, **kwargs: m, module)
+
+    def restore():
+        for module in held:
+            vars(module).pop("requires_grad_", None)
+
+    return restore
+
+
+def _allow_moe_parameter_lora(async_module, model):
+    # TRL refuses target_parameters (fused-MoE LoRA) because a stock vLLM server needs is_3d_lora_weight declared;
+    # the in-process server loads adapters through Unsloth's load_lora, which remaps and validates MoE LoRA itself.
+    original = getattr(async_module, "validate_lora_for_vllm_sync", None)
+    peft_configs = getattr(model, "peft_config", None)
+    if original is None or not isinstance(peft_configs, dict):
+        return lambda: None
+
+    @functools.wraps(original)
+    def validate_lora_for_vllm_sync(peft_model):
+        saved = {
+            name: config.target_parameters
+            for name, config in peft_configs.items()
+            if getattr(config, "target_parameters", None)
+        }
+        for name in saved:
+            peft_configs[name].target_parameters = None
+        try:
+            return original(peft_model)
+        finally:
+            for name, value in saved.items():
+                peft_configs[name].target_parameters = value
+
+    async_module.validate_lora_for_vllm_sync = validate_lora_for_vllm_sync
+
+    def restore():
+        async_module.validate_lora_for_vllm_sync = original
+
+    return restore
+
+
+def _check_async_grpo_adapter_servable(model):
+    # Raise vLLM's refusals (e.g. LoRA on MoE experts) at construction instead of at the first weight sync.
+    import os
+    import tempfile
+
+    # load_lora reads the "default" adapter; TRL syncs the active one, so other layouts are left to the sync.
+    if set(getattr(model, "peft_config", None) or ()) != {"default"}:
+        return
+    with tempfile.TemporaryDirectory() as directory:
+        # A path that does not exist yet: older load_lora writes the adapter config only into a new directory.
+        model.load_lora(os.path.join(directory, "adapter"), load_tensors = True)
 
 
 def patch_trl_async_grpo():
@@ -4330,6 +4626,7 @@ def patch_trl_async_grpo():
 
     trainer_class = async_module.AsyncGRPOTrainer
     original_init = trainer_class.__init__
+    original_train = getattr(trainer_class, "train", None)
 
     @functools.wraps(original_init)
     def __init__(self, model, *args, **kwargs):
@@ -4341,9 +4638,75 @@ def patch_trl_async_grpo():
                 args = (args[0], config, *args[2:])
             else:
                 kwargs["args"] = config
-        original_init(self, model, *args, **kwargs)
+        server = None
+        if _async_grpo_uses_fast_inference(model, config, kwargs):
+            train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
+            _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            _check_async_grpo_adapter_servable(model)
+            server = _start_async_grpo_vllm_server(model)
+            saved_config = (config.vllm_server_base_url, config.max_inflight_tasks)
+            config.vllm_server_base_url = server.url
+            if getattr(config, "max_inflight_tasks", 0) < 0:
+                # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
+                # nearly idle; let the engine batch as many as it can schedule.
+                config.max_inflight_tasks = server.max_num_seqs
+        # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        trainable = (
+            {id(p) for p in model.parameters() if p.requires_grad}
+            if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
+            else None
+        )
+        is_module = isinstance(model, torch.nn.Module)
+        restore_text_config = _align_vlm_text_config(model) if is_module else (lambda: None)
+        restore_requires_grad = _hold_peft_requires_grad(model) if is_module else (lambda: None)
+        restore_validate = (
+            _allow_moe_parameter_lora(async_module, model) if server is not None else (lambda: None)
+        )
+        try:
+            try:
+                original_init(self, model, *args, **kwargs)
+            finally:
+                if server is not None:
+                    # TRL read the URL during init; a reused config must not point at this trainer's server.
+                    config.vllm_server_base_url = saved_config[0]
+                restore_validate()
+                restore_requires_grad()
+                restore_text_config()
+            if trainable is not None:
+                for p in model.parameters():
+                    if p.requires_grad and id(p) not in trainable:
+                        p.requires_grad_(False)
+            if server is not None:
+                if not getattr(self, "_lora_sync", False):
+                    raise ValueError(
+                        "Unsloth: with fast_inference=True, vLLM and the trainer share the base weights, so "
+                        "AsyncGRPOTrainer can only sync a plain LoRA adapter. Drop modules_to_save, DoRA and "
+                        "bias training, or load with fast_inference=False and run a separate vLLM server."
+                    )
+        except BaseException:
+            if server is not None:
+                server.stop()
+                config.max_inflight_tasks = saved_config[1]
+            raise
+        if server is not None:
+            self._unsloth_vllm_server = server
+            weakref.finalize(self, server.stop)
 
     trainer_class.__init__ = __init__
+    if original_train is not None:
+
+        @functools.wraps(original_train)
+        def train(self, *args, **kwargs):
+            try:
+                return original_train(self, *args, **kwargs)
+            finally:
+                server = getattr(self, "_unsloth_vllm_server", None)
+                if server is not None:
+                    # The rollout process is gone; drop the requests it left in flight.
+                    server.abort_all()
+
+        trainer_class.train = train
 
     if hasattr(async_module, "AsyncRolloutWorker"):
 
@@ -4351,9 +4714,23 @@ def patch_trl_async_grpo():
             # Its arguments are pickled into a spawned process, which only needs the tokenizer to tokenize.
             def __init__(self, *args, **kwargs):
                 if "processing_class" in kwargs:
-                    kwargs["processing_class"] = _without_instance_bound_methods(
-                        kwargs["processing_class"]
-                    )
+                    processing_class = _without_instance_bound_methods(kwargs["processing_class"])
+                    # That process imports TRL without Unsloth, so it matches chat templates by exact string.
+                    try:
+                        from ._trl_tool_templates import (
+                            with_response_parser,
+                            with_trl_known_chat_template,
+                        )
+                        processing_class = with_trl_known_chat_template(processing_class)
+                        processing_class = with_response_parser(
+                            processing_class,
+                            bool(kwargs.get("tools") or kwargs.get("environment_factory")),
+                        )
+                    except Exception as e:
+                        logger.info(
+                            f"Unsloth: Could not map the chat template for the rollout process: {e}"
+                        )
+                    kwargs["processing_class"] = processing_class
                 super().__init__(*args, **kwargs)
 
         async_module.AsyncRolloutWorker = AsyncRolloutWorker

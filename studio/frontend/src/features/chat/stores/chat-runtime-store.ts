@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
@@ -54,16 +55,19 @@ import {
   type ExternalReasoningCapabilities,
   externalReasoningTakesEffort,
   getExternalMaxOutputTokens,
+  kimiSearchExcludesThinking,
   resolveExternalReasoningEffort,
 } from "../provider-capabilities";
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   REMEMBERED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_MAX_TOKENS_MAX,
   type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedChanges,
   pickRememberedParams,
+  recordMaxTokensAsMax,
   setInferenceParam,
 } from "../lib/per-model-params";
 import {
@@ -1121,7 +1125,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   // Same for deep research, which apply() also holds back, or toggling any other pill erases
-  // the stored true. Unless the user just cleared it by enabling Search, Code or Images.
+  // the stored true. Unless the user just cleared it by enabling Search, Tools or Images.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
@@ -1238,7 +1242,10 @@ export function replayUnconfirmedThreadSettings(): void {
       body: JSON.stringify(body),
       signal: timeout.signal,
     })
-      .finally(() => clearTimeout(timer))
+      .finally(() => {
+        clearTimeout(timer);
+        forgetThreadReads([threadId]);
+      })
       // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
       // missing-row case this exists for is exactly the one that 404s.
       .then((res) => {
@@ -1316,7 +1323,9 @@ function sendThreadScopedSettingsBeacon(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     keepalive: true,
-  }).catch(() => undefined);
+  })
+    .finally(() => forgetThreadReads([threadId]))
+    .catch(() => undefined);
 }
 
 // One chain per thread: the write REPLACES settings_json, so two unordered writes pick a
@@ -1898,7 +1907,7 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+/** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
@@ -3102,7 +3111,13 @@ function getParamsByModelAfterEdit(
       changedParams,
       // Same filter as the outgoing snapshot: an edit to a key the memory keeps but the chat does
       // not still records the WHOLE snapshot, riding the chat's sampling into the entry.
-      pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+      recordMaxTokensAsMax(
+        pickRememberedParams(withoutActiveThreadParams(state, nextParams)),
+        rememberedWindow(nextParams.checkpoint),
+        changedParams.maxTokens === undefined
+          ? (outgoing ?? state.paramsByModel)[nextParams.checkpoint]?.maxTokens
+          : undefined,
+      ),
     ),
     nextParams.checkpoint,
   );
@@ -3117,8 +3132,13 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(
+  const picked = pickRememberedParams(
     withoutActiveThreadParams(state, outgoing),
+  );
+  const snapshot = recordMaxTokensAsMax(
+    picked,
+    rememberedWindow(outgoing.checkpoint),
+    state.paramsByModel[outgoing.checkpoint]?.maxTokens,
   );
   // Only to seed a model with no entry: later changes are written key by key, and a full
   // snapshot would put this browser's copy of untouched keys over another tab's.
@@ -3154,7 +3174,10 @@ function persistParamEdit(
   }
   // Only what moved: the server merges per key, so sending the rest would overwrite another
   // tab's copy of every other key.
-  const rememberedChanges = pickRememberedChanges(changedParams);
+  const rememberedChanges = recordMaxTokensAsMax(
+    pickRememberedChanges(changedParams),
+    modelId ? rememberedWindow(modelId) : null,
+  );
   saveSettingsPatch({
     inferenceParams: changedParams,
     ...(paramsByModel && modelId && hasKeys(rememberedChanges)
@@ -3242,6 +3265,13 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
+/** The window a memory entry's "Max" is measured against. Keyed by checkpoint, never
+ *  loadedContextLength: a switch records the outgoing model after the incoming one may have
+ *  published its own. An external model's cap is the provider's, not a window. */
+function rememberedWindow(checkpoint: string): number | null {
+  return isExternalModelId(checkpoint) ? null : loadedContextFor(checkpoint);
+}
+
 function capParamsToLoadedContext(
   state: ChatRuntimeStore,
   params: InferenceParams,
@@ -3250,6 +3280,10 @@ function capParamsToLoadedContext(
     ? null
     : state.loadedContextLength;
   const cap = loadedContextFor(params.checkpoint) ?? residentContextCap;
+  // A migrated row can carry the Max marker; on screen it is this load's window.
+  if (params.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    return { ...params, maxTokens: cap ?? state.params.maxTokens };
+  }
   return cap !== null && params.maxTokens > cap
     ? { ...params, maxTokens: cap }
     : params;
@@ -3303,11 +3337,12 @@ function externalCheckpointRefusesDeepResearch(
 function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
   const parsed = parseExternalModelId(checkpoint);
   if (!parsed) return false;
-  return (
+  return kimiSearchExcludesThinking(
     useExternalProvidersStore
       .getState()
       .providers.find((candidate) => candidate.id === parsed.providerId)
-      ?.providerType === "kimi"
+      ?.providerType,
+    parsed.modelId,
   );
 }
 
@@ -3382,7 +3417,10 @@ function getHydratedSettingsState(
     // The entry arriving for this model predates the fenced edit, so lay the edit over it or the
     // next defaults update replays the stale one.
     if (checkpoint) {
-      const edited = pickLocallyEditedParams(params, versions);
+      const edited = recordMaxTokensAsMax(
+        pickLocallyEditedParams(params, versions),
+        rememberedWindow(checkpoint),
+      );
       if (hasKeys(edited)) {
         hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
       }
@@ -3391,7 +3429,10 @@ function getHydratedSettingsState(
   } else if (checkpoint) {
     // No map in the response: an install upgraded from before this feature. With no entry the
     // next defaults update puts the recommendation back over the fenced edit.
-    const edited = pickLocallyEditedParams(params, versions);
+    const edited = recordMaxTokensAsMax(
+      pickLocallyEditedParams(params, versions),
+      rememberedWindow(checkpoint),
+    );
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
         ...state.paramsByModel,
@@ -3418,7 +3459,10 @@ function getHydratedSettingsState(
       }
     }
     if (hasKeys(inherited)) {
-      nextState.paramsByModel = { ...byModel, [left]: inherited };
+      nextState.paramsByModel = {
+        ...byModel,
+        [left]: recordMaxTokensAsMax(inherited, rememberedWindow(left)),
+      };
     }
   }
   // Same fence as the scalar loop: a click made while this response was out is the newer
@@ -3512,6 +3556,15 @@ function getHydratedSettingsState(
       ) {
         setInferenceParam(replayed, key, value);
       }
+    }
+    // "Max" is the window this model is on; with none known, what is on screen stands.
+    if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+      replayed.maxTokens =
+        rememberedWindow(params.checkpoint) ??
+        (isExternalModelId(params.checkpoint)
+          ? null
+          : state.loadedContextLength) ??
+        params.maxTokens;
     }
     // The same cap the load and status replays apply.
     nextState.params = replayed;
@@ -3882,7 +3935,10 @@ function adoptMigratedFieldsAfterLocalEdit(
     return {
       // As the normal application path does: applying a thread pin advances no
       // mutation version, so nothing above would have noticed it.
-      params: restoreThreadScopedParams(nextParams),
+      params: capParamsToLoadedContext(
+        state,
+        restoreThreadScopedParams(nextParams),
+      ),
       ...(storedRow
         ? {
             paramsByModel: {
@@ -4839,7 +4895,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged && options?.persist !== false
           ? rememberOutgoingModel(state, state.params)
           : null;
-      const baseParams = getReplayedParams(
+      // A compare pane's load reaches the store only here.
+      const previousWindow = rememberedWindow(modelId);
+      noteLoadedContext(modelId, options?.maxTokensCap);
+      let baseParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         state.params,
@@ -4847,6 +4906,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpointChanged,
         options?.maxTokensCap,
       );
+      // The same model reloaded at a new context replays nothing, so Max has to follow the window here.
+      if (
+        !checkpointChanged &&
+        options?.maxTokensCap !== undefined &&
+        ((previousWindow !== null && state.params.maxTokens >= previousWindow) ||
+          (state.rememberParamsPerModel &&
+            state.paramsByModel[modelId]?.maxTokens ===
+              REMEMBERED_MAX_TOKENS_MAX))
+      ) {
+        baseParams = { ...baseParams, maxTokens: options.maxTokensCap };
+      }
       // Clamp maxTokens to the new model's cap when switching into an external model, so a value
       // carried over from a local session cannot exceed the slider's max.
       let nextMaxTokens = baseParams.maxTokens;
@@ -5695,14 +5765,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const snapshot = pickRememberedParams(
         withoutActiveThreadParams(state, state.params),
       );
+      // The global set keeps the number; only the model's entry records "Max".
+      const remembered = recordMaxTokensAsMax(
+        snapshot,
+        rememberedWindow(state.params.checkpoint),
+        state.paramsByModel[state.params.checkpoint]?.maxTokens,
+      );
       const paramsByModel = trackParamsByModel(
         state,
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,
           state.params.checkpoint,
-          snapshot,
-          snapshot,
+          remembered,
+          remembered,
         ),
         state.params.checkpoint,
       );

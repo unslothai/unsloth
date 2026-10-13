@@ -408,6 +408,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
+        "max_image_side": model_info.get("max_image_side"),
     }
 
 
@@ -2492,6 +2493,7 @@ class InferenceOrchestrator:
                     "tensor_parallel": len(gpu_ids or [0]) > 1
                     and (options or {}).get("parallelism", "tensor") == "tensor",
                     "supports_tools": bool((options or {}).get("tool_parser")),
+                    "reasoning_flags": (options or {}).get("reasoning_flags"),
                 }
                 self.active_model_name = model
                 self.load_generation += 1
@@ -2703,7 +2705,14 @@ class InferenceOrchestrator:
         nowhere."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
-            return managed.count_tokens(messages, system_prompt, tools = tools)
+            return managed.count_tokens(
+                messages,
+                system_prompt,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
         if not self._gen_lock.acquire(blocking = False):
             raise RuntimeError("Cannot count tokens while a generation is in progress")
         with self._mailbox_lock:
@@ -2779,8 +2788,9 @@ class InferenceOrchestrator:
         recall_done: bool = False,
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
+        force_reset: bool = False,
     ) -> dict:
-        """Fit one MLX prompt into the served window under the policy GGUF uses.
+        """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
         A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
         one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
@@ -2798,7 +2808,7 @@ class InferenceOrchestrator:
         context_length = int(model_info.get("context_length") or 0)
         if (
             context_overflow != "truncate_oldest"
-            or not model_info.get("is_mlx")
+            or not (model_info.get("is_mlx") or model_info.get("engine") in ("vllm", "sglang"))
             or context_length <= 1
         ):
             return unchanged
@@ -2824,6 +2834,7 @@ class InferenceOrchestrator:
                 _keeps_compaction_boundary,
                 _memory_tool_withheld,
                 _records_boundary,
+                _sticky_compaction_manual,
                 _sticky_compaction_state,
             )
 
@@ -2874,6 +2885,17 @@ class InferenceOrchestrator:
                 if replay_boundary
                 else (0, False)
             )
+            sticky_manual = (
+                sticky > 0
+                and sticky_is_checkpoint
+                and _sticky_compaction_manual(
+                    thread_id,
+                    request_branch,
+                    context_policy = context_policy,
+                    can_reset = can_reset,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
+                )
+            )
             fitted, truncation = _fit_with_instruction_pins(
                 conversation,
                 context_length = context_length,
@@ -2886,6 +2908,8 @@ class InferenceOrchestrator:
                 reserve_tokens = _conversation_recall_reserve(thread_id),
                 sticky_dropped = sticky,
                 sticky_is_checkpoint = sticky_is_checkpoint,
+                sticky_manual = sticky_manual,
+                force_reset = force_reset,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             if not truncation:
@@ -2926,7 +2950,7 @@ class InferenceOrchestrator:
                 "boundary_applied": True,
             }
         except Exception as exc:
-            logger.warning("Could not preflight the MLX context window: %s", exc)
+            logger.warning("Could not preflight the context window: %s", exc)
             return unchanged
 
     def generate_chat_response(
@@ -3102,6 +3126,7 @@ class InferenceOrchestrator:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
+        compact_context: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3253,6 +3278,7 @@ class InferenceOrchestrator:
                 tool_loop = True,
                 anchor_ids = pinned,
                 replay_boundary = not _sticky_boundary_applied,
+                force_reset = compact_context and not _sticky_boundary_applied,
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,
@@ -4024,6 +4050,8 @@ class InferenceOrchestrator:
         """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
+        entry = self.models.get(self.active_model_name) or {}
+        max_size = max(max_size, entry.get("max_image_side") or 0)
         if img.size[0] > max_size or img.size[1] > max_size:
             from PIL import Image
 

@@ -822,6 +822,68 @@ def _current_cached_snapshot(
         return None
 
 
+def _read_raw_config_json(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Optional[dict]:
+    """config.json as a dict, read without executing any repo code; None when the repo publishes none.
+    Raises on read errors: callers decide what an unreadable config means."""
+    current = (
+        None
+        if revision is not None
+        else _current_cached_snapshot(model_name, hf_token, local_files_only)
+    )
+    if is_local_path(model_name):
+        config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+    elif current is not None and (current[0] / "config.json").is_file():
+        # The current commit's own copy: skips the absence probe and the freshness check.
+        config_path = current[0] / "config.json"
+    elif current is not None and "config.json" not in current[1]:
+        # The document just said the repo publishes none; the probe below re-asks.
+        logger.debug("'%s' has no config.json on the Hub", model_name)
+        return None
+    else:
+        from huggingface_hub import hf_hub_download
+        from utils.hf_probe import hf_file_definitely_absent
+
+        # Avoid caching the expected 404 for GGUF repos without config.json.
+        if not local_files_only and hf_file_definitely_absent(
+            model_name,
+            "config.json",
+            revision = revision,
+            token = hf_token,
+        ):
+            logger.debug("'%s' has no config.json on the Hub", model_name)
+            return None
+        download_kwargs = {
+            "repo_id": model_name,
+            "filename": "config.json",
+            "token": hf_token,
+            "local_files_only": local_files_only,
+            "cache_dir": active_hf_hub_cache(),
+        }
+        if revision is not None:
+            download_kwargs["revision"] = revision
+        # Measured: hf_hub_download falls back to the cache even with
+        # local_files_only=False, never consulting the credential, so a planted entry
+        # plus a dead endpoint returns a private config.json to a token that cannot read it.
+        if cached_read_refused(
+            hf_token,
+            repo_id = model_name,
+            is_cached = lambda: _config_json_already_cached(model_name, revision),
+        ):
+            return None
+        config_path = Path(
+            call_with_anonymous_retry(
+                lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
+                hf_token,
+            )
+        )
+    return json.loads(config_path.read_text(encoding = "utf-8-sig"))
+
+
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -829,58 +891,9 @@ def _raw_config_has_vision_config(
     revision: Optional[str] = None,
 ) -> Optional[bool]:
     try:
-        current = (
-            None
-            if revision is not None
-            else _current_cached_snapshot(model_name, hf_token, local_files_only)
-        )
-        if is_local_path(model_name):
-            config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
-        elif current is not None and (current[0] / "config.json").is_file():
-            # The current commit's own copy: skips the absence probe and the freshness check.
-            config_path = current[0] / "config.json"
-        elif current is not None and "config.json" not in current[1]:
-            # The document just said the repo publishes none; the probe below re-asks.
-            logger.debug("'%s' has no config.json on the Hub", model_name)
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision)
+        if config is None:
             return None
-        else:
-            from huggingface_hub import hf_hub_download
-            from utils.hf_probe import hf_file_definitely_absent
-
-            # Avoid caching the expected 404 for GGUF repos without config.json.
-            if not local_files_only and hf_file_definitely_absent(
-                model_name,
-                "config.json",
-                revision = revision,
-                token = hf_token,
-            ):
-                logger.debug("'%s' has no config.json on the Hub", model_name)
-                return None
-            download_kwargs = {
-                "repo_id": model_name,
-                "filename": "config.json",
-                "token": hf_token,
-                "local_files_only": local_files_only,
-                "cache_dir": active_hf_hub_cache(),
-            }
-            if revision is not None:
-                download_kwargs["revision"] = revision
-            # Measured: hf_hub_download falls back to the cache even with
-            # local_files_only=False, never consulting the credential, so a planted entry
-            # plus a dead endpoint returns a private config.json to a token that cannot read it.
-            if cached_read_refused(
-                hf_token,
-                repo_id = model_name,
-                is_cached = lambda: _config_json_already_cached(model_name, revision),
-            ):
-                return None
-            config_path = Path(
-                call_with_anonymous_retry(
-                    lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
-                    hf_token,
-                )
-            )
-        config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
         explicit_vision = (
@@ -1901,7 +1914,8 @@ _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 def _is_mtp_drafter(path: str) -> bool:
     """True for a separate-file drafter, a companion to the main model rather
     than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
-    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash) or the
+    copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the
+    ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) or the
     ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
@@ -1910,18 +1924,20 @@ def _is_mtp_drafter(path: str) -> bool:
     resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
     or to ``dspark/dspark-...-Q8_0.gguf``.
 
-    Prefix, or an exact directory for ``_DRAFTER_DIR_KINDS``; never a substring,
-    since the kind names double as family names
-    (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything in a
-    user's ``dflash/`` folder).
+    Prefix, an exact directory for ``_DRAFTER_DIR_KINDS``, or
+    ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names
+    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
+    as is anything in a user's ``dflash/`` folder).
     """
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
@@ -2769,7 +2785,7 @@ def _extract_quant_label(filename: str) -> str:
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
-        r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"  # Standard/Packed: Q8_0, PQ2_0, Q2_0_g64
+        r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"  # Standard/Packed/Grouped: Q8_0, PQ2_0, Q2_0_g64, Q2_g64
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
         # Optional bits-per-weight modifier so repos shipping several files at one base quant
@@ -2801,9 +2817,14 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+# Mirrors hub.utils.gguf._DSPARK_BEFORE_QUANT_RE, for _is_mtp_drafter.
+_DSPARK_BEFORE_QUANT_RE = re.compile(
+    rf"-dspark-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
     re.IGNORECASE,
 )
 
@@ -3444,12 +3465,13 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    # A cached Transformers, diffusers or adapter checkpoint can still load from that cache.
-    if any(
-        (snap / name).is_file()
-        for snap in _iter_hf_cache_snapshots(repo_id)
-        for name in ("config.json", "model_index.json", "adapter_config.json")
-    ):
+    from hub.utils.mlx_variants import is_precision_folder
+
+    # A cached Transformers, diffusers, adapter or MLX precision-folder checkpoint can still load.
+    names = ["config.json", "model_index.json", "adapter_config.json"]
+    if is_precision_folder(gguf_variant):
+        names.append(f"{gguf_variant.strip()}/config.json")
+    if any((snap / name).is_file() for snap in _iter_hf_cache_snapshots(repo_id) for name in names):
         return False
     return bool(gguf_variant) or bool(
         _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
@@ -3562,11 +3584,15 @@ def _refused_repo_cached_gguf(
     # Auto: preferred variant first, falling through incomplete ones, across every snapshot.
     remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
     while remaining:
-        # Repo-root checkpoint first, as the healthy-Hub pick does.
-        root_rows = [
-            f for f in remaining if "/" not in _qualified_variant_name(f, _extract_quant_label(f))
-        ]
-        best = _pick_best_gguf(root_rows or remaining)
+        from hub.utils.gguf import default_gguf_scope
+
+        best = _pick_best_gguf(
+            default_gguf_scope(
+                remaining,
+                repo_id,
+                key = lambda f: _qualified_variant_name(f, _extract_quant_label(f)),
+            )
+        )
         if not best:
             return None
         label = _extract_quant_label(best)
@@ -4798,17 +4824,17 @@ class ModelConfig:
                                 f"Available variants: {available}"
                             )
                 if not variant:  # auto-select best quant
-                    # ROOT rows when there are any. _pick_best_gguf keeps whichever filename it
-                    # met first among equals, so an LTX-style listing that puts distilled/...-Q6_K
-                    # before the root ...-Q6_K made a bare repo id load the distilled checkpoint --
-                    # while local_model_resolver, the auto-download map and /gguf-variants all
-                    # define a bare id as the root. This is the LOAD path, so it has to agree.
-                    root_rows = [
+                    # _pick_best_gguf is order-sensitive: use the scope every resolver uses.
+                    from hub.utils.gguf import default_gguf_scope
+
+                    variant_filenames = [
                         v.filename
-                        for v in variants
-                        if "/" not in _qualified_variant_name(v.filename, v.quant)
+                        for v in default_gguf_scope(
+                            variants,
+                            identifier,
+                            key = lambda v: _qualified_variant_name(v.filename, v.quant),
+                        )
                     ]
-                    variant_filenames = root_rows or [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
                     if best:
                         # The SAME identity the lister advertised for that file. Converting the
@@ -4932,6 +4958,14 @@ class ModelConfig:
         else:
             check_model = identifier
 
+        precision_folder = None
+        if gguf_variant and not is_local and not is_lora:
+            from hub.utils.mlx_variants import precision_folder_config_dir
+            folder_config = precision_folder_config_dir(identifier, gguf_variant.strip(), hf_token)
+            if folder_config is not None:
+                precision_folder = gguf_variant.strip()
+                check_model = str(folder_config)
+
         with _offline_while_reading(check_model):
             vision = is_vision_model(check_model, hf_token = hf_token)
             audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
@@ -4940,6 +4974,7 @@ class ModelConfig:
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
         return cls(
+            gguf_variant = precision_folder,
             identifier = identifier,
             display_name = display_name,
             path = path,

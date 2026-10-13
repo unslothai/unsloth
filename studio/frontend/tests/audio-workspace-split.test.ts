@@ -57,8 +57,29 @@ test("?workflow= names the page ahead of ?task=, and both go through the workflo
   // Task-only links take the same gate as ?workflow=, so a Speak/Music switch never skips the busy check.
   assert.match(
     handoff,
-    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;[\s\S]{0,120}?if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /const urlWorkflow = audioRouteIntent\(routeSearch\);[\s\S]*?const action = audioWorkflowUrlAction\(\{\s*urlWorkflow,/,
   );
+  // A successful switch keeps only the page in the URL, so a reload reopens it.
+  assert.match(
+    handoff,
+    /if \(action\.kind === "intent"\) \{[\s\S]{0,120}?if \(!transitionWorkflow\(action\.workflow\)\) return;\s*lastSyncedWorkflow\.current = action\.workflow;[\s\S]{0,120}?void navigateSelf\(\{\s*to: "\/audio",\s*search: \{ workflow: action\.workflow \},\s*replace: true,\s*\}\);/,
+  );
+  // The committed page is written back with replace only, and only while Audio is the route.
+  assert.match(
+    handoff,
+    /useEffect\(\(\) => \{\s*if \(!active\) \{\s*lastSyncedWorkflow\.current = null;\s*pendingWrite\.current = null;\s*return;\s*\}/,
+  );
+  assert.match(
+    handoff,
+    /lastSyncedWorkflow\.current = action\.workflow;\s*pendingWrite\.current = \{ from: urlWorkflow \};\s*void navigateSelf\(\{\s*to: "\/audio",\s*search: \(prev\) => \(\{ \.\.\.prev, workflow: action\.workflow \}\),\s*replace: true,\s*\}\);/,
+  );
+  // A write still in flight is not read back as a request for the page it left.
+  assert.match(
+    handoff,
+    /if \(urlWorkflow === pendingWrite\.current\.from\) return;/,
+  );
+  assert.doesNotMatch(handoff, /search: \{\}/);
+  assert.doesNotMatch(handoff, /replace: false/);
   assert.doesNotMatch(handoff, /commitWorkflow\(/);
   // A Library clip asks for its page through ?workflow=, so a busy page retries it later.
   assert.match(

@@ -394,6 +394,95 @@ def test_mask_builder_signature_exposed_from_wrapper_closure():
     assert list(inspect.signature(wrapper).parameters)[:2] == ["config", "inputs_embeds"]
 
 
+_REMOTE_CONFIG = """
+from transformers import PretrainedConfig
+
+
+class TinyRemoteConfig(PretrainedConfig):
+    model_type = "tiny_remote_diffusion"
+"""
+
+_REMOTE_MODELING = """
+import torch
+from transformers import PreTrainedModel
+from .configuration_tiny_remote import TinyRemoteConfig
+
+
+class TinyRemoteModel(PreTrainedModel):
+    config_class = TinyRemoteConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.proj = torch.nn.Linear(4, 4, bias = False)
+        self.post_init()
+
+    def _init_weights(self, module):
+        # 4.x-era hub init writes in place, blind to which weights the checkpoint already filled.
+        if isinstance(module, torch.nn.Linear):
+            module.weight.data.normal_(0.0, 1.0)
+
+    def forward(self, x):
+        return self.proj(x)
+"""
+
+
+def test_remote_class_keeps_checkpoint_weights(tmp_path):
+    import json
+
+    from safetensors.torch import save_file
+    from transformers import AutoConfig
+
+    from unsloth.models.diffusion_masked import MaskedDiffusionProfile
+
+    (tmp_path / "configuration_tiny_remote.py").write_text(_REMOTE_CONFIG)
+    (tmp_path / "modeling_tiny_remote.py").write_text(_REMOTE_MODELING)
+    auto_map = {
+        "AutoConfig": "configuration_tiny_remote.TinyRemoteConfig",
+        "AutoModelForCausalLM": "modeling_tiny_remote.TinyRemoteModel",
+    }
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "tiny_remote_diffusion", "auto_map": auto_map})
+    )
+    weight = torch.arange(16, dtype = torch.float32).reshape(4, 4)
+    save_file(
+        {"proj.weight": weight}, str(tmp_path / "model.safetensors"), metadata = {"format": "pt"}
+    )
+
+    config = AutoConfig.from_pretrained(str(tmp_path), trust_remote_code = True)
+    profile = MaskedDiffusionProfile(name = "tiny_remote_test", requires_remote_code = True)
+    cls = profile.model_class(config, True)
+    model = cls.from_pretrained(str(tmp_path), config = config, trust_remote_code = True)
+    assert torch.equal(model.proj.weight.detach(), weight)
+    assert cls.is_remote_code()
+
+
+def test_converted_config_keeps_token_fields(monkeypatch, tmp_path):
+    from transformers import TrainingArguments
+    from trl import SFTConfig
+    from unsloth.models.diffusion_trainer import DiffusionConfig, DiffusionTrainer
+
+    seen = {}
+    monkeypatch.setattr(
+        DiffusionTrainer.__bases__[0],
+        "__init__",
+        lambda self, model, args, *a, **k: seen.update(args = args),
+    )
+    for args in (
+        SFTConfig(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+        TrainingArguments(output_dir = str(tmp_path), report_to = "none", hub_token = "hf_x"),
+    ):
+        DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+        assert isinstance(seen["args"], DiffusionConfig)
+        assert seen["args"].eos_token is None and seen["args"].pad_token is None
+        assert seen["args"].hub_token == "hf_x"
+
+    ParallelismConfig = pytest.importorskip("accelerate.parallelism_config").ParallelismConfig
+    parallelism = ParallelismConfig()
+    args = SFTConfig(output_dir = str(tmp_path), report_to = "none", parallelism_config = parallelism)
+    DiffusionTrainer(model = None, args = args, diffusion_profile = _profile("dream"))
+    assert seen["args"].parallelism_config is parallelism
+
+
 _TINY_TRAIN = r"""
 import math, os, sys, torch
 import unsloth
@@ -404,6 +493,18 @@ path, out = sys.argv[1], sys.argv[2]
 device = os.environ.get("TINY_DEVICE", "cpu")
 model, processor = FastModel.from_pretrained(path, trust_remote_code = True, dtype = torch.float32, device_map = {"": device})
 assert getattr(model, "_unsloth_slow_diffusion", False), type(model)
+import glob
+from safetensors import safe_open
+state, matched = model.state_dict(), 0
+for shard in glob.glob(os.path.join(path, "*.safetensors")):
+    with safe_open(shard, "pt") as f:
+        for key in f.keys():
+            # A GPU load defaults to 4-bit: packed linear weights cannot equal the checkpoint, the rest must.
+            if key not in state or tuple(state[key].shape) != tuple(f.get_slice(key).get_shape()):
+                continue
+            assert torch.equal(f.get_tensor(key).to(state[key].dtype), state[key].detach().cpu()), key
+            matched += 1
+assert matched, "no checkpoint tensor matched the model's names"
 tokenizer = getattr(processor, "tokenizer", processor)
 for module in model.modules():
     if hasattr(module, "rope_init_fn") and isinstance(getattr(module, "inv_freq", None), torch.Tensor):
@@ -424,7 +525,7 @@ def fixed_noise_ce():
     # Per-step losses are too noisy over 20 steps (1 / t weight, fresh noise); score one batch under one draw.
     torch.manual_seed(0)
     with torch.no_grad():
-        return trainer.diffusion_profile.compute_loss(model, fixed, args)[2]["masked_ce"]
+        return float(trainer.diffusion_profile.compute_loss(model, fixed, args)[2]["masked_ce"])
 
 
 first = fixed_noise_ce()
@@ -473,3 +574,48 @@ def test_tiny_remote_checkpoint_trains_and_reloads(name, tmp_path):
     )
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-3000:]
     assert "TINY_OK" in out.stdout
+
+
+class _WithHead(_Bidirectional):
+    def get_output_embeddings(self):
+        return self.head
+
+
+@pytest.mark.parametrize("name", ["llada", "dream", "nemotron_labs_diffusion"])
+def test_hidden_state_loss_matches_dense_logits(name):
+    # The fused path swaps the head for its input and projects per chunk; it must equal the logits path.
+    inputs, _ = _batch()
+    fused, dense = _WithHead(), _Bidirectional()
+    dense.load_state_dict(fused.state_dict())
+    fused_loss, _ = _ours(name, fused, inputs, 3)
+    dense_loss, _ = _ours(name, dense, inputs, 3)
+    assert fused.__dict__["_unsloth_diffusion_fused_head"] == (fused.head, fused.head)
+    assert "forward" not in vars(fused.head)  # the swap is undone
+    torch.testing.assert_close(fused_loss, dense_loss, rtol = 1e-6, atol = 1e-6)
+    fused_loss.backward()
+    dense_loss.backward()
+    for (n, a), b in zip(fused.named_parameters(), dense.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol = 1e-5, atol = 1e-6, msg = n)
+
+
+def test_dream_zero_noise_level_is_finite(monkeypatch):
+    # Dream draws t ~ U(0, 1) with no floor and weights by 1 / t: t = 0 masks nothing and must not give inf * 0.
+    inputs, _ = _batch()
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda *a, **k: torch.zeros(*a, **{x: y for x, y in k.items() if x != "generator"}),
+    )
+    loss, metrics = _ours("dream", _Bidirectional(), inputs, 0)
+    assert torch.isfinite(loss) and float(loss) == 0.0 and loss.requires_grad
+    assert float(metrics["masked_fraction"]) == 0.0
+
+
+def test_fused_head_rechecked_after_head_is_replaced():
+    # A head wrapped after the first loss call (e.g. PEFT modules_to_save) must not reuse the cached decision.
+    from unsloth.models.diffusion_loss import fusable_head
+
+    model = _WithHead()
+    assert fusable_head(model, model) is model.head
+    model.head = torch.nn.Sequential(model.head)
+    assert fusable_head(model, model) is None

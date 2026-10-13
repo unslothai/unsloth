@@ -290,12 +290,13 @@ class TestStepThirteenWiring:
             assert calls[:2] == ["_progress", "_torch_step_label"]
         # str() coerces the probe label and does not represent a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # repairs refresh torchao and flash-attn for final torch (#13244), then evict incompatible xFormers (#11545).
+        # repairs refresh torchao and flash-attn for final torch (#13244), then causal-conv1d and
+        # mamba-ssm (#13396), then evict incompatible xFormers (#11545).
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
-            + ["_ensure_flash_attn"]
+            + ["_ensure_flash_attn", "_ensure_ssm_kernels"]
             + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
@@ -329,13 +330,14 @@ class TestStepTotals:
         # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
         # no-torch case also gets the runtime-deps slot an update announces separately. Both also
         # carry the diffusers main slot (11c), which is spent on every path including opting out.
-        assert _base_total(IS_WINDOWS = True) == 18
+        # With torch, the causal-conv1d + mamba-ssm slot (#13396) sits under flash-attn's gate.
+        assert _base_total(IS_WINDOWS = True) == 19
         assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 18),  # Linux, torch
+            ({}, 19),  # Linux, torch (incl. the causal-conv1d + mamba-ssm slot)
             ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
             # Two MLX slots: the install step and the post-core-phase re-resolve. Plus the MLX
             # grammar engine (11d), which every Apple Silicon run spends, with torch or without.

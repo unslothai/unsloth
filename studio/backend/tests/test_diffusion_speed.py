@@ -590,6 +590,57 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
     assert torch.backends.cudnn.benchmark is False
 
 
+@pytest.mark.parametrize("speed_mode", [SPEED_OFF, SPEED_DEFAULT])
+@pytest.mark.parametrize(
+    "hip, version",
+    [("7.13.0", "2.11.0+rocm7.13.0"), (None, "2.9.1+rocmsdk20251116")],
+    ids = ["version_hip", "rocm_tag_only"],
+)
+def test_rocm_load_turns_on_miopen_immediate(monkeypatch, hip, version, speed_mode):
+    # #9130: torch's MIOpen Find trial-launches kernels; one faulting there aborted the server.
+    monkeypatch.delenv("MIOPEN_FIND_MODE", raising = False)
+    monkeypatch.delenv("MIOPEN_FIND_ENFORCE", raising = False)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    flags = snapshot_backend_flags()
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = speed_mode
+    )
+    assert torch.backends.miopen.immediate is True
+    restore_backend_flags(flags)
+    assert torch.backends.miopen.immediate is True
+
+
+@pytest.mark.parametrize(
+    "hip, version, env",
+    [
+        (None, "2.11.0+cu130", {}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_MODE": "NORMAL"}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_ENFORCE": "SEARCH"}),
+    ],
+    ids = ["cuda_torch", "explicit_find_mode", "explicit_find_enforce"],
+)
+def test_miopen_immediate_left_alone(monkeypatch, hip, version, env):
+    for name in ("MIOPEN_FIND_MODE", "MIOPEN_FIND_ENFORCE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert torch.backends.miopen.immediate is False
+
+
 def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
     torch = _stub_torch(monkeypatch)
     family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = False)
@@ -1859,10 +1910,32 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
-    assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
-    assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
-    assert ds_mod.vae_decode_compile_allowed is not None
+    # Both compile-cache begins (load, and the deferred 3rd-image profile) key through the one resolver ...
+    assert src.count("autoopt.compile_cache_kwargs(") == 2
+    assert "deferred = True" in src
+    # ... which keys vae_decode on the same decision the speed pass makes for that tier.
+    from core.inference.diffusion_autoopt.plan import compile_cache_kwargs
+
+    seen = []
+    orig = ds_mod.vae_decode_compile_allowed
+    try:
+        ds_mod.vae_decode_compile_allowed = lambda pipe, mode: seen.append(mode) or mode == "max"
+        pipe = types.SimpleNamespace(transformer = None)
+        assert (
+            compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
+                "vae_decode"
+            ]
+            is True
+        )
+        assert (
+            compile_cache_kwargs(
+                pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
+            )["vae_decode"]
+            is False
+        )
+    finally:
+        ds_mod.vae_decode_compile_allowed = orig
+    assert seen == ["max", "default"]
 
 
 def test_stream_merging_dit_compiles_dynamic_once_inductor_proves_the_split(monkeypatch):

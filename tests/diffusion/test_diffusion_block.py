@@ -161,6 +161,17 @@ def test_left_padding_rejected():
         llada2.build_batch(_LM(), inputs, SimpleNamespace())
 
 
+def test_left_padding_rejected_after_an_unpadded_first_batch():
+    # An unpadded first batch proves nothing about the padding side, so the check must keep running.
+    llada2, _ = _profiles()
+    model = _LM()
+    llada2.build_batch(model, _batch([2], [12], 12), SimpleNamespace())
+    inputs = _batch([2], [10], 12)
+    inputs["attention_mask"] = inputs["attention_mask"].flip(1)
+    with pytest.raises(ValueError, match = "right padding"):
+        llada2.build_batch(model, inputs, SimpleNamespace())
+
+
 def _naive_loss(profile, model, clean, noisy, masked, maskable, p, valid, block):
     from unsloth.models.diffusion_block import block_diffusion_attention_mask
 
@@ -202,7 +213,7 @@ def test_loss_matches_naive_full_forward(which):
 
 def test_noisy_block_never_sees_its_own_or_later_clean_tokens():
     llada2, _ = _profiles()
-    model, args = _LM(), SimpleNamespace(diffusion_block_size = 4)
+    model = _LM()
     clean = torch.randint(0, 29, (1, 12))
     noisy = clean.clone()
     noisy[:, 4:] = MASK_ID
@@ -265,6 +276,18 @@ def test_sdar_import_shim_is_scoped():
     assert "flash_attn" not in sys.modules
 
 
+def test_sdar_import_shim_provides_sliding_window_cache(monkeypatch):
+    import transformers.cache_utils as cache_utils
+    from unsloth.models.diffusion_block import _sdar_remote_code_imports
+
+    monkeypatch.delattr(cache_utils, "SlidingWindowCache", raising = False)
+    with _sdar_remote_code_imports():
+        from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache
+        assert issubclass(SlidingWindowCache, Cache)
+        assert not isinstance(DynamicCache(), SlidingWindowCache)
+    assert not hasattr(cache_utils, "SlidingWindowCache")
+
+
 def test_restore_rotary_buffers_refills_zeroed_inv_freq():
     from unsloth.models.diffusion_profiles import restore_rotary_buffers
 
@@ -300,3 +323,27 @@ def test_unknown_time_weighting_is_rejected():
     inputs = _batch([3], [20], 20)
     with pytest.raises(ValueError, match = "diffusion_time_weighting"):
         llada2.compute_loss(_LM(), inputs, SimpleNamespace(diffusion_time_weighting = "inverse-t"))
+
+
+def test_inverse_t_with_zero_noise_floor_stays_finite():
+    # diffusion_eps = 0 can draw p = 0 for a row with nothing masked: no 0 / 0 in its weights.
+    llada2, sdar = _profiles()
+    for profile in (llada2, sdar):
+        model = _LM()
+        inputs = _batch([2, 3], [12, 10], 12)
+        clean, maskable, valid = profile.build_batch(model, inputs, SimpleNamespace())
+        p = torch.tensor([0.0, 0.5])
+        masked = torch.zeros_like(maskable)
+        masked[1, 4] = True
+        noisy = torch.where(masked, 0, clean)
+        loss = profile.loss_from_noise(
+            model,
+            clean,
+            noisy,
+            masked,
+            maskable,
+            p,
+            valid,
+            SimpleNamespace(diffusion_time_weighting = "inverse_t"),
+        )
+        assert torch.isfinite(loss), profile.name
