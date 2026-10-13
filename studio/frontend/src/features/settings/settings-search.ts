@@ -137,6 +137,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.agentSettings.title",
     "browser.agentSettings.enable",
     "browser.agentSettings.history",
+    "browser.agentSettings.scripts",
     "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",
@@ -420,4 +421,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
   // match protocol and agent names omitted from the title.
   "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
+  // the intro names only some agents; every listed one has to find this page.
+  "settings.agents.agent": "settings.agents.agentKeywords",
 };

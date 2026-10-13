@@ -111,6 +111,8 @@ const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   sinq: "SINQ quantization",
   torchao: "torchao quantization",
   quanto: "optimum-quanto quantization",
+  // transformers writes "auto-round"; the other spellings are older AutoRound exports.
+  "auto-round": "AutoRound quantization",
   auto_round: "AutoRound quantization",
   autoround: "AutoRound quantization",
   metal: "Metal-kernel quantization",
@@ -131,7 +133,10 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "compressed-tensors",
   "awq",
   "gptq",
+  "auto-round",
 ]);
+// Not offered on ROCm vLLM, matching /validate: AutoRound is unmeasured there.
+const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set(["auto-round"]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
 const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
@@ -219,6 +224,7 @@ export function classifyUnslothSupport({
   deviceType,
   quantMethod,
   vllmAvailable = false,
+  vllmPlatform,
 }: {
   modelId?: string | null;
   pipelineTag?: string | null;
@@ -227,6 +233,7 @@ export function classifyUnslothSupport({
   deviceType?: string | null;
   quantMethod?: string | null;
   vllmAvailable?: boolean;
+  vllmPlatform?: string | null;
 }): UnslothSupport {
   const pipeline = pipelineTag?.toLowerCase().trim() || null;
   const lowerTags = new Set(
@@ -247,7 +254,11 @@ export function classifyUnslothSupport({
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
       const reason = `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`;
       // vLLM excuses only the quantization; any other rejection keeps the old answer.
-      if (vllmRuns && VLLM_QUANT_METHODS.has(normalizedQuant)) {
+      if (
+        vllmRuns &&
+        VLLM_QUANT_METHODS.has(normalizedQuant) &&
+        !(vllmPlatform === "rocm" && VLLM_ROCM_REFUSED_QUANT_METHODS.has(normalizedQuant))
+      ) {
         const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
         if (rest.status === "supported" || rest.supportedIn === "vllm") {
           return { status: "unsupported", reason, supportedIn: "vllm" };

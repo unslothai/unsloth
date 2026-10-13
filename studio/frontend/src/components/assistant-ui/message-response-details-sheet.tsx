@@ -94,7 +94,7 @@ function formatDate(value: Date | number | string | undefined): string | null {
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
   search: "Search",
   fetch: "Fetch",
-  code: "Code",
+  code: "Tools",
   images: "Images",
   mcp: "MCP",
   docs: "Docs",

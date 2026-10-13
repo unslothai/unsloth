@@ -2909,24 +2909,12 @@ export function AppSidebar() {
   }
 
   type RenameTarget =
-    // `inline` is the row's own pill, and a chord has no row under the cursor
-    // and may have none on screen at all, so it opens the dialog instead.
-    // `rowScope` is the list the pill belongs to. A pinned project chat is two rows at once, and
-    // both mounted an autofocused input: the second stole focus and the first's blur cancelled the
-    // rename. The row that opened the menu owns the pill.
-    | {
-        kind: "chat";
-        item: SidebarItem;
-        current: string;
-        inline: boolean;
-        rowScope?: string;
-      }
+    | { kind: "chat"; item: SidebarItem; current: string }
     | { kind: "run"; run: TrainingRunSummary; current: string };
   const [renamingTarget, setRenamingTarget] = useState<RenameTarget | null>(
     null,
   );
   const [renameDraft, setRenameDraft] = useState("");
-  const skipRenameBlurRef = useRef(false);
   const renameImeRef = useRef(newInputImeState());
   // Optimistic title until the debounced sidebar refresh catches up.
   const [pendingRename, setPendingRename] = useState<{
@@ -2966,15 +2954,9 @@ export function AppSidebar() {
         ? renameTrimmed !== renamingTarget.current
         : renamingTarget.run.display_name != null);
 
-  function openRenameChat(item: SidebarItem, inline = true, rowScope?: string) {
+  function openRenameChat(item: SidebarItem) {
     setRenameDraft(item.title);
-    setRenamingTarget({
-      kind: "chat",
-      item,
-      current: item.title,
-      inline,
-      rowScope,
-    });
+    setRenamingTarget({ kind: "chat", item, current: item.title });
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = getTrainingRunDisplayTitle(run);
@@ -3005,32 +2987,6 @@ export function AppSidebar() {
         description: err instanceof Error ? err.message : undefined,
       });
     }
-  }
-
-  function handleInlineRenameKeyDown(
-    event: React.KeyboardEvent<HTMLInputElement>,
-  ) {
-    // IME Enter/Escape must not finish the rename; check before preventDefault.
-    if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
-    if (event.key === "Enter") {
-      event.preventDefault();
-      skipRenameBlurRef.current = true;
-      if (renameDirty) void commitRename();
-      else setRenamingTarget(null);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      skipRenameBlurRef.current = true;
-      setRenamingTarget(null);
-    }
-  }
-
-  function handleInlineRenameBlur() {
-    if (skipRenameBlurRef.current) {
-      skipRenameBlurRef.current = false;
-      return;
-    }
-    if (renameDirty) void commitRename();
-    else setRenamingTarget(null);
   }
 
   type DeleteTarget =
@@ -3421,7 +3377,7 @@ export function AppSidebar() {
   // the chord would look dead and leave a rename waiting to appear when the row came back.
   useShortcut("renameChat", () => {
     if (sidebarCovered()) return;
-    withActiveChat((item) => openRenameChat(item, false));
+    withActiveChat((item) => openRenameChat(item));
   });
   // Clipboard writes from behind a dialog cannot be undone by closing it.
   useShortcut("copyChatAsMarkdown", () => {
@@ -3465,7 +3421,7 @@ export function AppSidebar() {
           ? { id: item.projectId, name: project?.name ?? "" }
           : null,
         section: section ? { id: section.id, name: section.name } : null,
-        rename: () => openRenameChat(item, false),
+        rename: () => openRenameChat(item),
         togglePin: () => togglePinnedChat(item.id),
         toggleUnread: () =>
           unread
@@ -4303,11 +4259,13 @@ export function AppSidebar() {
     );
   }
 
-  function renderChatContextMenu(item: SidebarItem, list: ChatListContext) {
+  /** A chat row's right-click menu, on the same terms as a folder's: the row's own menu for
+   *  one row, the bulk actions for a selection of several. */
+  function renderChatContextMenu(item: SidebarItem) {
     if (selectionCount <= 1) {
       return (
         <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu sidebar-menu menu-flat-destructive w-52">
-          {renderChatRowMenuItems(item, list, CONTEXT_ROW_MENU)}
+          {renderChatRowMenuItems(item, CONTEXT_ROW_MENU)}
         </ContextMenuContent>
       );
     }
@@ -4355,12 +4313,9 @@ export function AppSidebar() {
     );
   }
 
-  /** Rendered into both the 3-dot dropdown and the right-click menu, so they never drift. */
-  function renderChatRowMenuItems(
-    item: SidebarItem,
-    list: ChatListContext,
-    P: RowMenuParts,
-  ) {
+  /** Every action a chat row offers. Rendered into the 3-dot dropdown and, unchanged, into
+   *  the row's right-click menu, so the two never drift apart. */
+  function renderChatRowMenuItems(item: SidebarItem, P: RowMenuParts) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
     const moveProjects = recentProjects
@@ -4382,7 +4337,7 @@ export function AppSidebar() {
     return (
       <>
             <P.Item
-              onSelect={() => openRenameChat(item, true, list?.scope)}
+              onSelect={() => openRenameChat(item)}
             >
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
@@ -4587,41 +4542,6 @@ export function AppSidebar() {
         : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16",
     );
 
-    const isRenamingThis =
-      renamingTarget?.kind === "chat" &&
-      renamingTarget.inline &&
-      renamingTarget.item.id === item.id &&
-      // The same chat can be on screen twice; only the row the menu was opened from edits.
-      renamingTarget.rowScope === list?.scope;
-
-    if (isRenamingThis) {
-      return (
-        <SidebarMenuItem key={item.id} className={itemClass}>
-          <input
-            autoFocus
-            value={renameDraft}
-            onChange={(event) => setRenameDraft(event.target.value)}
-            onKeyDown={handleInlineRenameKeyDown}
-            {...inputImeHandlers(renameImeRef.current)}
-            onBlur={() => {
-              resetInputIme(renameImeRef.current);
-              handleInlineRenameBlur();
-            }}
-            onFocus={(event) => {
-              resetInputIme(renameImeRef.current);
-              event.currentTarget.select();
-            }}
-            maxLength={120}
-            aria-label={translate("shell.dialog.renameChat.placeholder")}
-            className={cn(
-              "text-foreground h-[calc(30px*var(--ui-space-scale,1))] w-full border-0 bg-transparent py-0 pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
-              variant === "project" ? "pl-[calc(39px*var(--ui-space-scale,1))]" : "pl-3",
-            )}
-          />
-        </SidebarMenuItem>
-      );
-    }
-
     return (
       <ContextMenu key={item.id}>
         <ContextMenuTrigger asChild>
@@ -4666,10 +4586,11 @@ export function AppSidebar() {
                 if (list && handleSelectionClick(event, item, list)) return;
                 openChatItem(item);
               }}
+              // The chat opens on the first click and the rename dialog on the second.
               onDoubleClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                openRenameChat(item, true, list?.scope);
+                openRenameChat(item);
               }}
             >
               {isPinned && variant !== "project" && (
@@ -4773,11 +4694,11 @@ export function AppSidebar() {
                 </button>
               )}
             >
-              {renderChatRowMenuItems(item, list, DROPDOWN_ROW_MENU)}
+              {renderChatRowMenuItems(item, DROPDOWN_ROW_MENU)}
             </NonModalDropdownMenu>
           </SidebarMenuItem>
         </ContextMenuTrigger>
-        {renderChatContextMenu(item, list)}
+        {renderChatContextMenu(item)}
       </ContextMenu>
     );
   }
@@ -6048,10 +5969,7 @@ export function AppSidebar() {
       </DialogContent>
     </Dialog>
     <Dialog
-      open={
-        renamingTarget !== null &&
-        (renamingTarget.kind !== "chat" || !renamingTarget.inline)
-      }
+      open={renamingTarget !== null}
       onOpenChange={(open) => {
         if (!open) setRenamingTarget(null);
       }}
@@ -6074,6 +5992,11 @@ export function AppSidebar() {
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
           {...inputImeHandlers(renameImeRef.current)}
+          // Selected on open, so typing replaces the title; still ends any lost composition (#5546).
+          onFocus={(event) => {
+            resetInputIme(renameImeRef.current);
+            event.currentTarget.select();
+          }}
           onKeyDown={(event) => {
             if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
             if (event.key === "Enter") {

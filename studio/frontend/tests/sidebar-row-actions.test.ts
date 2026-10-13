@@ -94,10 +94,11 @@ test("a chat row reserves one gutter, whatever its state", () => {
   );
 });
 
-test("double-clicking a chat title renames it in place", () => {
+// Renaming from the menu is two clicks and a read; a double-click on the title is one gesture.
+test("double-clicking a chat title opens the Rename chat dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item, true, list\?\.scope\);\n\s*\}\}/,
+    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item\);\n\s*\}\}/,
   );
 });
 

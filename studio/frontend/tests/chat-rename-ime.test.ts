@@ -36,12 +36,6 @@ function handler(
         node.parent.parent.parent.getText(source).includes("commitRename()")
       )
         matches.push(node.initializer.expression);
-    } else if (inline) {
-      if (
-        ts.isFunctionDeclaration(node) &&
-        node.name?.text === "handleInlineRenameKeyDown"
-      )
-        matches.push(node);
     } else if (
       ts.isJsxAttribute(node) &&
       node.name.getText(source) === "onKeyDown" &&
@@ -112,7 +106,6 @@ function fixture(file: string, inline: boolean, dirty = true) {
 }
 
 for (const [name, file, inline] of [
-  ["sidebar inline", "components/app-sidebar.tsx", true],
   ["sidebar dialog", "components/app-sidebar.tsx", false],
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
 ] as const) {
@@ -136,21 +129,7 @@ for (const [name, file, inline] of [
   }
 }
 
-for (const dirty of [true, false]) {
-  test(`sidebar inline: candidate Escape preserves editing (dirty=${dirty})`, () => {
-    const f = fixture("components/app-sidebar.tsx", true, dirty);
-    f.key("Escape", true);
-    f.key("Escape", false, 229);
-    assert.deepEqual(f.effects, []);
-    assert.equal(f.skipRenameBlurRef.current, false);
-    f.key("Escape");
-    assert.deepEqual(f.effects, ["prevent", "close"]);
-    assert.equal(f.skipRenameBlurRef.current, true);
-  });
-}
-
 for (const [name, file, inline] of [
-  ["sidebar inline", "components/app-sidebar.tsx", true],
   ["sidebar dialog", "components/app-sidebar.tsx", false],
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
 ] as const) {
@@ -167,15 +146,6 @@ for (const [name, file, inline] of [
     assert.deepEqual(f.effects, []);
   });
 }
-
-test("sidebar inline: a separate idle Pinyin Enter closes an unchanged input", () => {
-  const f = fixture("components/app-sidebar.tsx", true, false);
-  f.compose(true);
-  f.key("Enter", true);
-  f.compose(false);
-  f.key("Enter", false, 229);
-  assert.deepEqual(f.effects, ["prevent", "close"]);
-});
 
 for (const [name, file] of [
   ["sidebar dialog", "components/app-sidebar.tsx"],

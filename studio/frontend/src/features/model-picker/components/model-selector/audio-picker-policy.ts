@@ -234,7 +234,23 @@ export function audioPickIsRoutable({
   });
 }
 
-/** macOS TTS runs only via llama.cpp GGUF; curated rows may resolve to a GGUF sibling. */
+/** The backend names on-device speech checkpoints it runs through mlx-audio by that library, Mac only. */
+export function macMlxSttRowIsRunnable({
+  isMac,
+  isStt,
+  isGguf,
+  libraryName,
+}: {
+  isMac: boolean;
+  isStt: boolean;
+  isGguf: boolean;
+  libraryName?: string | null;
+}): boolean {
+  return isMac && isStt && !isGguf && libraryName?.toLowerCase() === "mlx-audio";
+}
+
+/** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated families may
+ *  expose a non-GGUF canonical row because Audio resolves it to a published GGUF sibling. */
 export function macTtsHubRowIsRunnable({
   isMac,
   isTts,

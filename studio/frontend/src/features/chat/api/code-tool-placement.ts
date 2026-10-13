@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** `code_execution` runs in the provider's sandbox; `python`/`terminal` run on this machine.
- *  A connection with its own sandbox keeps it and never falls back to local execution. */
+/** Which side of the connection the Tools pill runs code on. `code_execution` runs in the
+ *  provider's own sandbox and is billed by them; `python` / `terminal` are Unsloth's tools and
+ *  run on the machine Unsloth is installed on. They are two different trust boundaries, so which
+ *  one a stored toggle means must not change underneath the user. Until Unsloth's tool loop
+ *  reached the general external providers, only openai_codex carried studio_tools, so the pill on
+ *  an OpenAI or Anthropic connection always resolved to the provider's sandbox; now the same
+ *  persisted `true` would resolve to local execution. The rule: a connection with its own sandbox
+ *  keeps it, and a model there that cannot use it runs nothing rather than falling back to the
+ *  user's machine. Unsloth's local tools are for connections with no sandbox at all. */
 
 export interface CodeToolPlacementInput {
+  /** The composer's Tools pill (persisted as unsloth_chat_code_tools_enabled). */
   codeToolsEnabled: boolean;
   /** This provider AND this model expose the provider's own code sandbox. */
   hostedCodeExecutionForThisTurn: boolean;
@@ -27,7 +35,11 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
   return { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] };
 }
 
-/** Derived from the placement so the pill is never offered where it would run nothing. */
+/** Whether the Tools pill can do anything on this connection, so the composer can offer it and a
+ *  stored preference can be restored. Read out of the placement itself rather than restated,
+ *  because the two must not drift: a pill offered where the placement runs nothing is a toggle
+ *  the user turns on to no effect. That is the case for a model on a sandbox-owning provider
+ *  that cannot use it. */
 export function codeToolCanRun(input: {
   hostedCodeExecutionForThisTurn: boolean;
   providerHostsCodeExecution: boolean;

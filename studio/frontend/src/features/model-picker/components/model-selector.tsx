@@ -186,8 +186,9 @@ function ModelSelectorTrigger({
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
             "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+          // Header rows: same corners and hover wash as the icon buttons beside it.
           variant === "ghost" &&
-            "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // Height stays pinned to --studio-chat-control-height.

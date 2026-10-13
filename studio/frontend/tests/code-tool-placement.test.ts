@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A connection with its own sandbox keeps it; local python/terminal only for those without one,
-// since the persisted toggle would otherwise move execution onto the user's machine.
+// Where the Tools pill runs code.
+//
+// Before Unsloth's tool loop reached the general external providers, only
+// openai_codex carried studio_tools, so `codeToolsEnabled` on an OpenAI,
+// Anthropic or Gemini connection fell through to the hosted branch and sent
+// `code_execution` -- the model's code ran in the PROVIDER's sandbox. Now that
+// those providers take the Unsloth branch, the same stored pill would send
+// ["python", "terminal"] and run the model's code on the USER's machine. The
+// toggle is persisted (unsloth_chat_code_tools_enabled), so nobody re-consents:
+// the trust boundary moves during an update, with nothing in the composer or
+// the stream saying so.
+//
+// The rule this file pins: a connection that has its own sandbox keeps it.
+// Unsloth's local python/terminal are for connections that have none.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -70,6 +82,8 @@ test("a provider with no sandbox uses Unsloth's own tools", () => {
 });
 
 test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
+  // It must not creep into the hosted branch just because the Tools pill is
+  // what turns it on.
   for (const hosted of [true, false]) {
     const names = selectCodeToolNames({
       codeToolsEnabled: true,
@@ -108,7 +122,7 @@ test("the Unsloth branch never hardcodes local code tools", () => {
   assert.doesNotMatch(
     branch,
     /codeToolsEnabled \? \["python", "terminal"\]/,
-    "the Code pill must not send local execution regardless of provider",
+    "the Tools pill must not send local execution regardless of provider",
   );
   assert.match(branch, /\.\.\.studioLocalCodeTools/);
   assert.match(branch, /\.\.\.hostedCodeToolsForThisTurn/);
@@ -139,6 +153,14 @@ test("response details record Code from the placement, local or hosted", () => {
     /\(supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.length > 0\)/,
   );
 });
+
+// ── Whether the pill is offered at all ─────────────────────────────
+
+// Until Unsloth's loop reached the general external providers, the composer
+// keyed the Tools pill on the hosted flag alone, so a model without the hosted
+// sandbox simply did not offer it. Keying it on the Unsloth-tools flag instead
+// offered it everywhere, including where the rule above deliberately runs
+// nothing, and the user got a lit toggle that sent enable_tools: false.
 
 test("a model with its provider's sandbox can run code", () => {
   assert.equal(

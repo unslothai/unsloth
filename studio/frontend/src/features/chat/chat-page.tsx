@@ -233,6 +233,7 @@ import {
 } from "@/features/settings";
 import {
   ChatActiveContext,
+  ChatComposerFocusableContext,
   ChatRuntimeProvider,
   useChatActive,
 } from "./runtime-provider";
@@ -2710,8 +2711,12 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
+  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
+  // take focus and dismiss them.
+  const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
+      setHandoffOwnsPicker(true);
       setSettingsOpen(false);
       setModelSelectorLocked(false);
       setModelSelectorOpen(true);
@@ -2719,6 +2724,8 @@ export function ChatPage({
     },
     [setSettingsOpen],
   );
+  // During render, so the composer is focusable again in the commit that closes the picker.
+  if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Fallback for compare opened from a path that does not set viewBeforeCompareRef.
   const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
@@ -4489,6 +4496,10 @@ export function ChatPage({
 
   return (
     <ChatActiveContext.Provider value={active}>
+    {/* Before adoption sets handoffOwnsPicker, the pending request is what holds the picker open. */}
+    <ChatComposerFocusableContext.Provider
+      value={modelConfigRequest === null && !handoffOwnsPicker}
+    >
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -4884,6 +4895,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
+    </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );
 }

@@ -16,10 +16,13 @@ export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([
   "browser_snapshot",
   "browser_find",
   "browser_click",
+  "browser_move_mouse",
+  "browser_drag",
   "browser_type",
   "browser_select",
   "browser_scroll",
   "browser_press_key",
+  "browser_evaluate",
   "browser_screenshot",
   "browser_history",
 ]);

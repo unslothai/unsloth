@@ -1031,30 +1031,26 @@ test("the model picker chord opens without the tour's pin", async () => {
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// The rename pill needs its row on screen, which a chord cannot guarantee.
-test("the rename chord does not land in a surface only a row can show", async () => {
+// The chord, the row menus and a double-click all open the Rename chat dialog; there is no in-row editor.
+test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
+    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item\)\);/,
   );
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
     APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+    /onDoubleClick=\{\(event\) => \{[\s\S]*?openRenameChat\(item\);/,
   );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-
-  assert.match(
-    APP_SIDEBAR,
-    /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
-  );
+  assert.match(APP_SIDEBAR, /function openRenameChat\(item: SidebarItem\) \{/);
+  assert.match(APP_SIDEBAR, /open=\{renamingTarget !== null\}/);
+  assert.doesNotMatch(APP_SIDEBAR, /isRenamingThis|handleInlineRename|renamingTarget\.inline/);
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
+  // The title opens selected, and focus still resets the IME state.
+  assert.match(
+    APP_SIDEBAR,
+    /onFocus=\{\(event\) => \{\s*resetInputIme\(renameImeRef\.current\);\s*event\.currentTarget\.select\(\);/,
+  );
 });
 
 // The sidebar answers bare Escape without consuming it, so one press could also deny a tool call.

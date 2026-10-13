@@ -613,6 +613,8 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /** The user message that started this turn; keys the turn's file checkpoints for /rewind. */
+  user_message_id?: string;
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;
@@ -626,6 +628,9 @@ export interface OpenAIChatCompletionsRequest {
   enable_prompt_caching?: boolean | string | null;
   /** OpenAI cloud and gpt-5.5 family only; unset means a fresh container. */
   openai_code_exec_container_id?: string | null;
+  /** Anthropic code_execution container id from the prior response in this thread. When set and the
+   *  Tools pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
+   *  state persists; unset is auto-created. */
   anthropic_code_exec_container_id?: string | null;
   /** Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;

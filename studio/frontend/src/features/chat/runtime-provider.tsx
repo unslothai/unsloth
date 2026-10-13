@@ -949,7 +949,7 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     }
     // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
     if (text === null && !pythonToolOpensAttachments()) {
-      const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
+      const error = `${attachment.name} has no text to read. Turn on Tools so the python tool can open it.`;
       toast.error(error);
       throw new Error(error);
     }
@@ -1199,7 +1199,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
     const refusal = !pythonToolRunsInStudio()
-      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      ? `Turn on Tools with a model that runs the python tool to attach ${file.name}.`
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
@@ -3956,6 +3956,10 @@ function ThreadBackendAutosave({
 
 // False while the chat tab is hidden: runtime stays mounted, views unmount.
 export const ChatActiveContext = createContext(true);
+
+// False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
+// cannot take focus from it.
+export const ChatComposerFocusableContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);

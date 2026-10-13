@@ -172,6 +172,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   localAudioRowIsUndecodableGguf,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -4049,7 +4050,7 @@ export function HubModelPicker({
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               ((c.task === "automatic-speech-recognition" ||
                 c.task === "text-to-speech") &&
-                communityAudioRowIsRunnable({
+                (communityAudioRowIsRunnable({
                   isStt: c.task === "automatic-speech-recognition",
                   isTts: c.task === "text-to-speech",
                   isGguf: false,
@@ -4057,7 +4058,13 @@ export function HubModelPicker({
                   tags: c.tags,
                   libraryName: c.library_name,
                   audioType: c.audio_type,
-                }) &&
+                }) ||
+                  macMlxSttRowIsRunnable({
+                    isMac,
+                    isStt: c.task === "automatic-speech-recognition",
+                    isGguf: false,
+                    libraryName: c.library_name,
+                  })) &&
                 macTtsHubRowIsRunnable({
                   isMac,
                   isTts: c.task === "text-to-speech",
@@ -4336,6 +4343,12 @@ export function HubModelPicker({
               meta.source === "exported" ||
               meta.source === "local",
             ...(hubEvidenceById.get(id) ?? {}),
+          }) &&
+          !macMlxSttRowIsRunnable({
+            isMac,
+            isStt: pickedTask === "automatic-speech-recognition",
+            isGguf: Boolean(meta.isGguf || meta.ggufFilename),
+            libraryName: cachedModels.find((c) => c.repo_id === id)?.library_name,
           })
         ) {
           // Loading here would evict the chat model for a repo neither surface can run.
@@ -4359,7 +4372,7 @@ export function HubModelPicker({
       }
       onSelectProp(id, meta);
     },
-    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
+    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp, isMac, cachedModels],
   );
 
   const fineTunedRows = useMemo(() => {
