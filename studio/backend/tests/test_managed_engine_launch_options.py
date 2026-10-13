@@ -246,3 +246,23 @@ def test_a_default_kv_cache_never_probes_the_gpu(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_engine, "profile", lambda engine: {"platform": "cuda"})
     monkeypatch.setattr(managed_engine.subprocess, "run", refuse)
     managed_engine.validate_model(_config(tmp_path), kv_cache_dtype = "auto")
+
+
+@pytest.mark.parametrize("engine,refused", [("sglang", True), ("vllm", False)])
+def test_sglang_refuses_an_fp8_kv_cache_on_mla_models(tmp_path, monkeypatch, engine, refused):
+    # Studio pins SGLang's Triton attention backend, whose MLA path has no FP8 KV cache.
+    from core.inference.managed_engine import validate_model
+
+    _compute_cap(monkeypatch, "9.0")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"num_attention_heads": 8, "kv_lora_rank": 512})
+    )
+    config = SimpleNamespace(is_local = True, path = str(tmp_path))
+    if refused:
+        with pytest.raises(ValueError, match = "MLA|attention"):
+            validate_model(config, engine = engine, kv_cache_dtype = "fp8")
+    else:
+        assert (
+            validate_model(config, engine = engine, kv_cache_dtype = "fp8")["kv_cache_dtype"] == "fp8"
+        )
+    assert "kv_cache_dtype" not in validate_model(config, engine = engine)

@@ -506,7 +506,7 @@ export const sv = {
     kvCache: "KV-cache",
     kvCacheFp8: "FP8 (halva minnet)",
     kvCacheHelp:
-      "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne.",
+      "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne. Utan kalibrerade skalor i checkpointen kan svaren bli något mindre exakta.",
     gpuMemory: "GPU-minnesgräns",
     gpuMemoryAuto: "Automatisk",
     gpuMemoryHelp:

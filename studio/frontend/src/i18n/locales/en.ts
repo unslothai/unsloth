@@ -472,7 +472,7 @@ export const en = {
     precisionHelp: "Model default preserves stored precision. Other options convert unquantized weights when loading.",
     kvCache: "KV cache",
     kvCacheFp8: "FP8 (half the memory)",
-    kvCacheHelp: "FP8 stores the context cache in 8 bits, fitting about twice the context in the same memory.",
+    kvCacheHelp: "FP8 stores the context cache in 8 bits, fitting about twice the context in the same memory. Without calibrated scales in the checkpoint, answers can be slightly less accurate.",
     gpuMemory: "GPU memory limit",
     gpuMemoryAuto: "Automatic",
     gpuMemoryHelp: "The most of each selected GPU the engine may use. Automatic uses what is free; lower it to leave room for other programs.",

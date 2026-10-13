@@ -276,6 +276,12 @@ def validate_model(
                 "Choose Model default for KV cache on this GPU."
             )
     metadata = metadata.get("text_config") or metadata
+    if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
+        # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
+        raise ValueError(
+            "SGLang cannot use an FP8 KV cache with this model's attention. "
+            "Choose Model default for KV cache, or use vLLM."
+        )
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
         for field in ("num_attention_heads", "hidden_size", "intermediate_size"):
