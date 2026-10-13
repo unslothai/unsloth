@@ -129,11 +129,13 @@ _P_CLOSING_TAGS = frozenset(
         "aside",
         "blockquote",
         "center",
+        "dd",
         "details",
         "dialog",
         "dir",
         "div",
         "dl",
+        "dt",
         "fieldset",
         "figcaption",
         "figure",
@@ -148,13 +150,14 @@ _P_CLOSING_TAGS = frozenset(
         "header",
         "hgroup",
         "hr",
+        "li",
+        "listing",
         "main",
         "menu",
         "nav",
         "ol",
         "p",
         "pre",
-        "listing",
         "search",
         "section",
         "summary",
@@ -260,7 +263,7 @@ _SKIP_RECOVERY_END_TAGS = (
     )
     | _HEADING_TAGS
 )
-_GENERIC_END_SKIP_TAGS = frozenset({"datalist", "dialog", "footer", "nav"})
+_GENERIC_END_SKIP_TAGS = frozenset({"datalist"})
 _SPECIAL_HTML_TAGS = _SKIP_RECOVERY_END_TAGS | frozenset(
     {
         "body",
@@ -294,6 +297,7 @@ _TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "
 _TABLE_CONTEXT_END_TAGS = _TABLE_END_TAGS - {"table"}
 _TABLE_ONLY_START_TAGS = _TABLE_CONTEXT_END_TAGS | {"col", "colgroup"}
 _TABLE_CELL_TAGS = frozenset({"td", "th"})
+_TABLE_NESTING_TAGS = _TABLE_CELL_TAGS | {"caption"}
 _TABLE_SECTION_TAGS = frozenset({"tbody", "tfoot", "thead"})
 _TABLE_SECTION_START_TAGS = _TABLE_SECTION_TAGS | {"caption", "col", "colgroup"}
 _FOREIGN_ROOT_TAGS = frozenset({"math", "svg"})
@@ -745,6 +749,7 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_namespaces: list[str] = []
         self._skip_html_at: list[int] = []
         self._skip_html_integration: list[bool] = []
+        self._form_pointer: bool = False
 
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
@@ -1472,7 +1477,7 @@ class _MarkdownRenderer(HTMLParser):
         target = tables[-1] if tables else -1
         if target < 0:
             return True
-        if self._latest_indexed_open_tag(_TABLE_CELL_TAGS, target):
+        if self._latest_indexed_open_tag(_TABLE_NESTING_TAGS, target):
             return False
         if not self._open_target_in_scope("table", target):
             return True
@@ -1520,6 +1525,11 @@ class _MarkdownRenderer(HTMLParser):
             if tag not in _VOID_TAGS:
                 attr_dict = dict(attrs)
                 namespace = self._skipped_tag_namespace(tag)
+                template = self._last_skip_position("template", "html")
+                if tag == "form" and namespace == "html" and template < 0:
+                    if self._form_pointer:
+                        return
+                    self._form_pointer = True
                 position = len(self._skip_tags)
                 self._skip_at.setdefault(tag, []).append(position)
                 self._skip_ns_at.setdefault((namespace, tag), []).append(position)
@@ -1530,6 +1540,9 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_html_integration.append(
                     self._is_html_integration_point(tag, namespace, attr_dict)
                 )
+            return
+
+        if tag == "form" and self._form_pointer:
             return
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
@@ -1550,6 +1563,8 @@ class _MarkdownRenderer(HTMLParser):
             return
 
         attr_dict = dict(attrs)
+        if tag == "form":
+            self._form_pointer = True
         if not self._enter_tag(tag, attr_dict):
             return
 
@@ -1683,6 +1698,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_tags:
             at = self._skip_at.get(tag)
             template = self._last_skip_position("template", "html")
+            if tag == "form" and template < 0 and self._skip_namespaces[-1] == "html":
+                self._form_pointer = False
             # template is a scope boundary, so end tags outside it are ignored
             if at and (template < 0 or at[-1] >= template):
                 i = at[-1]
@@ -1712,6 +1729,9 @@ class _MarkdownRenderer(HTMLParser):
         # kept title buttons close through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
+
+        if tag == "form":
+            self._form_pointer = False
 
         if recovered_target >= 0:
             self._close_open_target(recovered_target)
