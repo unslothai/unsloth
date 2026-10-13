@@ -14,7 +14,6 @@ import functools
 import inspect
 import logging
 import os
-import random
 
 import torch
 
@@ -406,7 +405,8 @@ def _probe_error(impl, cases, activate, restore):
 def maybe_activate_flash_attention_impl(model = None, mean_document_length = None):
     """Returns the active impl or None. Never call while a backward is pending.
 
-    mean_document_length: mean tokens per packed document in the training data, None when unknown."""
+    mean_document_length: mean tokens per packed document in the training data (or a callable returning it, only
+    called under auto on sm100), None when unknown."""
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
@@ -437,6 +437,8 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
             )
             deactivate_flash_attention_impl()
             return None
+    if requested == "auto" and major == 10 and callable(mean_document_length):
+        mean_document_length = mean_document_length()
     if (
         requested == "auto"
         and major == 10
@@ -498,37 +500,16 @@ def deactivate_flash_attention_impl():
             pass
 
 
-@contextlib.contextmanager
-def _rng_preserved():
-    state = random.getstate()
-    try:
-        import numpy
-
-        numpy_state = numpy.random.get_state()
-    except Exception:
-        numpy, numpy_state = None, None
-    devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
-    try:
-        with torch.random.fork_rng(devices = devices):
-            yield
-    finally:
-        random.setstate(state)
-        if numpy_state is not None:
-            numpy.random.set_state(numpy_state)
-
-
 def _sampled_rows(dataset, indices, key):
-    """Backing values, so no transform runs; a column only a custom transform makes is read through the
-    transform with every RNG restored afterwards, so training sees the same random draws."""
-    raw = dataset.with_format(None)
-    columns = set(raw.column_names)
-    wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
-    if wanted:
-        return list(raw.select_columns(wanted).select(indices))
-    if (getattr(dataset, "format", None) or {}).get("type") != "custom":
+    """Stored values; a dataset with a custom transform is unknown: its rows can differ from what is stored,
+    and running the transform early would advance its random state."""
+    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
         return None
-    with _rng_preserved():
-        return [dataset[i] for i in indices]
+    columns = set(dataset.column_names)
+    wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
+    if not wanted:
+        return None
+    return list(dataset.with_format(None).select_columns(wanted).select(indices))
 
 
 def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
@@ -573,7 +554,7 @@ def scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key = "
         try:
             activated = maybe_activate_flash_attention_impl(
                 getattr(trainer, "model", None) or model,
-                mean_document_length = _mean_document_length(
+                mean_document_length = lambda: _mean_document_length(
                     getattr(trainer, "train_dataset", None), key = sequence_lengths_key
                 ),
             )

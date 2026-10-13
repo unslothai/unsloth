@@ -464,40 +464,43 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     assert fi._mean_document_length(streamed) is None
 
 
-def test_mean_document_length_with_dataset_transforms():
+def test_mean_document_length_with_dataset_transforms_is_unknown():
     datasets = pytest.importorskip("datasets")
-    import random
-
     calls = [0]
 
-    def augment(batch):
-        # Stochastic, over an existing input_ids column: never needed for the lengths.
+    def truncate(batch):
         calls[0] += 1
-        random.random()
-        return {"input_ids": [ids[: random.randint(1, len(ids))] for ids in batch["input_ids"]]}
+        return {"input_ids": [ids[:10] for ids in batch["input_ids"]]}
 
-    tokenized = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300]}).with_transform(augment)
-    random.seed(0)
-    expected = random.random()
-    random.seed(0)
-    assert fi._mean_document_length(tokenized) == 200
-    assert calls[0] == 0 and random.random() == expected
+    stored = datasets.Dataset.from_dict({"input_ids": [[1] * 4096, [1] * 4096]}).with_transform(truncate)
+    assert fi._mean_document_length(stored) is None
 
     def tokenize(batch):
-        # input_ids only exist through the transform: read it, then restore every RNG.
-        random.random()
-        torch.rand(1)
+        calls[0] += 1
         return {"input_ids": [[1] * len(text) for text in batch["text"]]}
 
-    raw = datasets.Dataset.from_dict({"text": ["a" * 100, "a" * 300]}).with_transform(tokenize)
-    random.seed(0)
-    torch.manual_seed(0)
-    expected = (random.random(), torch.rand(1))
-    random.seed(0)
-    torch.manual_seed(0)
-    assert fi._mean_document_length(raw) == 200
-    after = (random.random(), torch.rand(1))
-    assert after[0] == expected[0] and torch.equal(after[1], expected[1])
+    raw = datasets.Dataset.from_dict({"text": ["a" * 100]}).with_transform(tokenize)
+    assert fi._mean_document_length(raw) is None
+    assert calls[0] == 0
+
+
+def test_document_length_only_read_under_auto_on_sm100(fake, monkeypatch):
+    calls = []
+
+    def length():
+        calls.append(1)
+        return 100
+
+    for requested, majors in (("fa4", {10}), ("auto", {9}), ("off", {10})):
+        monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", requested)
+        monkeypatch.setattr(fi, "_device_majors", lambda majors = majors: majors)
+        fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length)
+        fi.deactivate_flash_attention_impl()
+    assert calls == []
+    monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length) is None
+    assert calls == [1]
 
 
 def test_scope_to_train_reads_the_train_dataset_document_length(fake):
