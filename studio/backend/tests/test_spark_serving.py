@@ -18,6 +18,9 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from core.inference import spark_serving as ss
+
+# DGX Spark is Linux: these assert POSIX paths and accounts, which a Windows runner does not have.
+_POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason = "DGX Spark serving is POSIX-only")
 from core.inference.spark_router import CONVERSATION_FIELD
 from .spark_fake_llama import FakeLlama
 
@@ -231,6 +234,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
+@_POSIX_ONLY
 def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch):
     import getpass
 
@@ -3180,6 +3184,7 @@ def test_windows_picks_the_exe_and_refuses_a_file_it_cannot_run(monkeypatch, tmp
     assert ss.rpc_server_binary() == real
 
 
+@_POSIX_ONLY
 def test_posix_still_answers_on_the_bit_and_the_bare_name(monkeypatch, tmp_path):
     assert ss.os.name != "nt", "this test describes the POSIX side"
     assert ss.executable_suffixes() == ("",)
@@ -3219,6 +3224,7 @@ def test_the_replica_never_inherits_an_env_var_the_primary_refuses():
     assert not leaked, f"the replica would launch with denied settings: {leaked}"
 
 
+@_POSIX_ONLY
 def test_the_replica_gets_sidecar_paths_the_peer_can_actually_open(tmp_path):
     """The preflight resolves sidecars against this process's cwd; the peer resolves a bare name
     against its own login directory."""
@@ -3280,6 +3286,7 @@ def test_a_projector_that_arrives_only_through_the_environment_still_costs_the_g
     assert ss.extra_args_refuse_pipeline_groups([]) is None
 
 
+@_POSIX_ONLY
 def test_the_env_route_absolutises_the_same_sidecar_paths_the_argv_route_does():
     """The peer resolves a bare name against its own login directory whichever route carried it, so
     fixing only replica_argv fixed only the callers that happened to use argv."""
@@ -3657,6 +3664,7 @@ def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkey
     assert checks and str(template) in checks[0]
 
 
+@_POSIX_ONLY
 def test_the_inline_form_of_the_template_flag_is_absolutised_too(tmp_path):
     # `--flag=value` is the form the env-vs-argv sweep keeps finding on the wrong side of a guard,
     # so it is pinned rather than assumed.
