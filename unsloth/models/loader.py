@@ -18,7 +18,6 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
-    hf_token_for_load,
     # `_utils.py` owns this value; re-exporting preserves imports here and avoids a loader-to-`_utils` cycle.
     DISABLE_SDPA_MODEL_NAMES,
 )
@@ -962,7 +961,6 @@ class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @tokenizers_v1_on_return
     @_offline_aware_load
-    @hf_token_for_load
     @mistral_format_redirect
     @track_explicit_4bit_request
     def from_pretrained(
@@ -1162,7 +1160,11 @@ class FastLanguageModel(FastLlamaModel):
                 )
                 # Still the caller's repo here, so their ref is the one to quantize from.
                 model_name = _offline_quantize_to_fp8(
-                    model_name, fp8_mode, text_only = text_only, revision = revision
+                    model_name,
+                    fp8_mode,
+                    text_only = text_only,
+                    revision = revision,
+                    token = token,
                 )
             else:
                 assert new_model_name is not None
@@ -1357,8 +1359,17 @@ class FastLanguageModel(FastLlamaModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        _model_type_config = peft_config if peft_config is not None else model_config
+        if peft_config is not None and isinstance(token, str) and token:
+            _model_type_config = AutoConfig.from_pretrained(
+                peft_config.base_model_name_or_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config,
+            _model_type_config,
             trust_remote_code = trust_remote_code,
         )
         _raise_if_modeling_ignores_config(model_config, model_types)
@@ -1458,6 +1469,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
             _raise_if_modeling_ignores_config(model_config, model_types)
 
@@ -1842,7 +1854,6 @@ class FastModel(FastBaseModel):
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
-    @hf_token_for_load
     @mistral_format_redirect
     @track_explicit_4bit_request
     def from_pretrained(
@@ -2044,7 +2055,11 @@ class FastModel(FastBaseModel):
                 )
                 # Still the caller's repo here, so their ref is the one to quantize from.
                 model_name = _offline_quantize_to_fp8(
-                    model_name, fp8_mode, text_only = text_only, revision = revision
+                    model_name,
+                    fp8_mode,
+                    text_only = text_only,
+                    revision = revision,
+                    token = token,
                 )
             else:
                 assert new_model_name is not None
@@ -2254,8 +2269,17 @@ class FastModel(FastBaseModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        _model_type_config = peft_config if peft_config is not None else model_config
+        if peft_config is not None and isinstance(token, str) and token:
+            _model_type_config = AutoConfig.from_pretrained(
+                peft_config.base_model_name_or_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         model_types = get_transformers_model_type(
-            peft_config if peft_config is not None else model_config,
+            _model_type_config,
             trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","

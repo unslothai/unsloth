@@ -2728,7 +2728,6 @@ class FastLlamaModel:
         return
 
     @staticmethod
-    @hf_token_for_load
     def from_pretrained(
         model_name = "unsloth/llama-3-8b-bnb-4bit",
         max_seq_length = None,
@@ -3484,8 +3483,23 @@ class FastLlamaModel:
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
+                _vllm_model_name = resolve_vllm_model_path(
+                    model_name,
+                    token,
+                    revision = revision,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = kwargs.get("local_files_only", False),
+                    force_download = kwargs.get("force_download", False),
+                    use_safetensors = kwargs.get("use_safetensors"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
+                    subfolder = kwargs.get("subfolder"),
+                    weights_at_root = True,
+                    variant = kwargs.get("variant"),
+                    gguf_file = kwargs.get("gguf_file"),
+                )
                 load_vllm_kwargs = dict(
-                    model_name = model_name,
+                    model_name = _vllm_model_name,
                     config = model_config,
                     gpu_memory_utilization = gpu_memory_utilization,
                     max_seq_length = max_seq_length,
