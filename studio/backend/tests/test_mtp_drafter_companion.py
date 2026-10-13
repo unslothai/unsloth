@@ -2903,6 +2903,10 @@ def _dflash_fetch_during_auto_load(
     mtp_draft_path = None,
     mtp_loads = True,
     mtp_token = "draft-mtp",
+    model_file = "/cache/snap/model-Q4_K_M.gguf",
+    dflash_file = "/cache/snap/dflash-kquant.gguf",
+    mmproj_file = None,
+    disable_vision = False,
 ):
     """Suppression sits inline in load_model's download phase, so only the real load path can pin it."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -2936,9 +2940,8 @@ def _dflash_fetch_during_auto_load(
     monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
-    monkeypatch.setattr(
-        backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
-    )
+    monkeypatch.setattr(backend, "_download_gguf", lambda **_kwargs: model_file)
+    monkeypatch.setattr(backend, "_resolve_launch_mmproj_path", lambda **_kwargs: mmproj_file)
     monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: mtp_draft_path)
     monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _path: mtp_loads)
     # Exactly what _download_dspark does for a cached sidecar on a binary that
@@ -2947,7 +2950,7 @@ def _dflash_fetch_during_auto_load(
 
     def _fetch_dflash(**_kwargs):
         seen["dflash_fetched"] = True
-        return "/cache/snap/dflash-kquant.gguf"
+        return dflash_file
 
     monkeypatch.setattr(backend, "_download_dflash", _fetch_dflash)
     seen["log"] = []
@@ -2958,6 +2961,14 @@ def _dflash_fetch_during_auto_load(
         return _real_info(msg, *args, **kwargs)
 
     monkeypatch.setattr(llama_cpp_module.logger, "info", _info)
+    seen["warnings"] = []
+    _real_warning = llama_cpp_module.logger.warning
+
+    def _warning(msg, *args, **kwargs):
+        seen["warnings"].append(str(msg))
+        return _real_warning(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", _warning)
 
     def _stop(*_args, **_kwargs):
         raise _StopAfterDownloads
@@ -2978,6 +2989,7 @@ def _dflash_fetch_during_auto_load(
                 extra_args = tuple(extra_args) if extra_args is not None else None,
                 dflash_draft_path = dflash_draft_path,
                 mtp_draft_path = mtp_draft_path if gguf_path else None,
+                disable_vision = disable_vision,
             )
         )
     seen["dflash_promoted"] = any("using draft-dflash" in m for m in seen["log"])
@@ -4091,3 +4103,163 @@ def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
         arch = "qwen4exp",
     )
     assert _mtp_drafter_loads_standalone(str(drafter))
+
+
+# #13511: a NeoX DFlash drafter cannot follow an M-RoPE image, so Auto keeps vision without it.
+
+
+def _gguf_header(path, arch, kv):
+    import struct
+
+    entries = [("general.architecture", arch), *kv.items()]
+    out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+    for key, val in entries:
+        out.append(struct.pack("<Q", len(key)) + key.encode())
+        if isinstance(val, str):
+            out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+        elif isinstance(val, bool):
+            out.append(struct.pack("<I?", 7, val))
+        elif isinstance(val, list):
+            out.append(struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val))
+        else:
+            out.append(struct.pack("<II", 4, val))
+    path.write_bytes(b"".join(out))
+    return str(path)
+
+
+@pytest.fixture
+def vision_files(tmp_path):
+    return {
+        "mrope_model": _gguf_header(
+            tmp_path / "Qwen3.8-27B-Q4_K_M.gguf",
+            "qwen35",
+            {"qwen35.rope.dimension_sections": [11, 11, 10, 0], "qwen35.block_count": 64},
+        ),
+        "neox_model": _gguf_header(
+            tmp_path / "Muse-30B-Q4_K_M.gguf", "llama", {"llama.block_count": 2}
+        ),
+        "neox_dflash": _gguf_header(
+            tmp_path / "dflash-Qwen3.8-27B-BF16.gguf",
+            "dflash",
+            {"dflash.rope.freq_base_u": 1, "tokenizer.ggml.pre": "qwen35"},
+        ),
+        "mrope_dflash": _gguf_header(
+            tmp_path / "dflash-mrope.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [11, 11, 10, 0]},
+        ),
+        "zero_dflash": _gguf_header(
+            tmp_path / "dflash-zero.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [0, 0, 0, 0]},
+        ),
+        "image_mmproj": _gguf_header(
+            tmp_path / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}
+        ),
+        "audio_mmproj": _gguf_header(
+            tmp_path / "mmproj-audio.gguf",
+            "clip",
+            {"clip.has_vision_encoder": False, "clip.has_audio_encoder": True},
+        ),
+    }
+
+
+def test_mrope_sections_reader(vision_files, tmp_path):
+    from utils.models.gguf_metadata import gguf_has_mrope_sections
+
+    assert gguf_has_mrope_sections(vision_files["mrope_model"]) is True
+    assert gguf_has_mrope_sections(vision_files["mrope_dflash"]) is True
+    assert gguf_has_mrope_sections(vision_files["neox_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["zero_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["neox_model"]) is False
+    # Another namespace's sections are not this architecture's.
+    other = _gguf_header(
+        tmp_path / "other.gguf", "dflash", {"qwen35.rope.dimension_sections": [1, 1, 1, 0]}
+    )
+    assert gguf_has_mrope_sections(other) is False
+    garbage = tmp_path / "garbage.gguf"
+    garbage.write_bytes(b"not a gguf at all")
+    assert gguf_has_mrope_sections(str(garbage)) is None
+    truncated = tmp_path / "truncated.gguf"
+    truncated.write_bytes(Path(vision_files["mrope_model"]).read_bytes()[:40])
+    assert gguf_has_mrope_sections(str(truncated)) is None
+    assert gguf_has_mrope_sections(str(tmp_path / "missing.gguf")) is None
+
+
+@pytest.mark.parametrize(
+    "model, dflash, mmproj, expected",
+    [
+        ("mrope_model", "neox_dflash", "image_mmproj", True),
+        ("mrope_model", "zero_dflash", "image_mmproj", True),
+        ("mrope_model", "mrope_dflash", "image_mmproj", False),
+        ("neox_model", "neox_dflash", "image_mmproj", False),
+        ("mrope_model", "neox_dflash", "audio_mmproj", False),
+        ("mrope_model", "neox_dflash", None, False),
+        ("mrope_model", "missing", "image_mmproj", False),
+    ],
+)
+def test_dflash_drafter_breaks_on_images(vision_files, tmp_path, model, dflash, mmproj, expected):
+    from core.inference.llama_cpp import _dflash_drafter_breaks_on_images
+    files = {**vision_files, "missing": str(tmp_path / "missing.gguf")}
+    assert (
+        _dflash_drafter_breaks_on_images(
+            files[model], files[dflash], files[mmproj] if mmproj else None
+        )
+        is expected
+    )
+
+
+def test_auto_skips_neox_dflash_on_an_mrope_vision_load(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is False
+    assert any("no M-RoPE sections" in m for m in seen["log"])
+
+
+@pytest.mark.parametrize(
+    "dflash, mmproj, model, disable_vision",
+    [
+        ("mrope_dflash", "image_mmproj", "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "neox_model", False),
+        ("neox_dflash", "audio_mmproj", "mrope_model", False),
+        ("neox_dflash", None, "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "mrope_model", True),
+    ],
+)
+def test_auto_keeps_dflash_when_images_cannot_break_it(
+    monkeypatch, vision_files, dflash, mmproj, model, disable_vision
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files[model],
+        dflash_file = vision_files[dflash],
+        mmproj_file = vision_files[mmproj] if mmproj else None,
+        disable_vision = disable_vision,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert any("DFlash forced" in m for m in seen["warnings"])

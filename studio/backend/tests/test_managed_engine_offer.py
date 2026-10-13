@@ -59,7 +59,7 @@ def offer(
 @pytest.fixture(autouse = True)
 def _no_awq_or_gptq_packages():
     real = importlib.util.find_spec
-    missing = {"gptqmodel", "awq", "auto_gptq"}
+    missing = {"gptqmodel", "awq", "auto_gptq", "auto_round"}
     with patch.object(
         importlib.util,
         "find_spec",
@@ -88,6 +88,26 @@ def test_awq_and_gptq_stay_on_the_default_engine_once_it_can_run_them():
         assert offer({"quantization_config": {"quant_method": "gptq"}}) is None
         assert offer({"quantization_config": {"quant_method": "awq"}}) is None
         assert offer(NVFP4) is not None
+
+
+AUTOROUND = {
+    "quantization_config": {"quant_method": "auto-round", "packing_format": "auto_round:auto_gptq"}
+}
+
+
+def test_autoround_is_not_refused_for_an_explicit_vllm_load_on_amd():
+    # Only the offer skips ROCm (unmeasured there); a user who picks vLLM still gets to try.
+    from core.inference.engine_install import rocm_loads_quantization
+    assert rocm_loads_quantization(AUTOROUND["quantization_config"]) is True
+
+
+def test_autoround_is_offered_vllm_only():
+    # #7997: vLLM maps auto-round onto its inc method; SGLang has not been run on it.
+    assert offer(AUTOROUND) == {"quantization": "auto-round", "engines": ["vllm"]}
+    assert offer({"text_config": AUTOROUND})["engines"] == ["vllm"]
+    assert offer(AUTOROUND, supported = lambda name, method: name == "sglang") is None
+    with patch.object(importlib.util, "find_spec", return_value = object()):
+        assert offer(AUTOROUND) is None
 
 
 @pytest.mark.parametrize(
@@ -268,11 +288,11 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
         patch.object(
             route,
             "_MANAGED_ENGINE_QUANTIZATIONS",
-            {"compressed-tensors": (), "awq": (), "gptq": ()},
+            {"compressed-tensors": (), "awq": (), "gptq": (), "auto-round": ()},
         ),
     ):
         # NVIDIA keeps every offer.
-        for metadata in (w8a8, fp8, nvfp4, gptq):
+        for metadata in (w8a8, fp8, nvfp4, gptq, AUTOROUND):
             assert engines(metadata), metadata
         amd = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."}
         with (
@@ -280,5 +300,5 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
             patch("core.inference.engine_install.support_reason", side_effect = amd.get),
         ):
             assert engines(w8a8) == engines(w4a16) == engines(awq) == ["vllm"]
-            for metadata in (fp8, nvfp4, NVFP4, gptq):
+            for metadata in (fp8, nvfp4, NVFP4, gptq, AUTOROUND):
                 assert engines(metadata) is None, metadata

@@ -155,6 +155,8 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
     assert flags["reasoning_style"] == "enable_thinking"
 
 
+# Tool guards shipped templates actually write, each read as "no tools" by the older
+# exact-substring scan. A false greys out the Search and Tools pills, so the user cannot correct it.
 @pytest.mark.parametrize(
     "label, guard",
     [

@@ -115,6 +115,10 @@ def test_resolve_base_precision_explicit_int8_gates_on_torchao(monkeypatch):
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
 
+    # The gate is int8-specific: explicit bf16/fp8 pass through regardless of torchao (fp8 on an sm89 GPU).
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 9))
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
     assert dit._resolve_base_precision(_cfg(base_precision = "bf16"), spec, "cuda") == "bf16"
     assert dit._resolve_base_precision(_cfg(base_precision = "fp8"), spec, "cuda") == "fp8"
@@ -524,6 +528,329 @@ def test_fp8_module_filter():
     assert dit._fp8_module_filter(nn.LayerNorm(64), "transformer_blocks.0.norm") is False
 
 
+def _real_cuda():
+    import torch
+
+    # Other suites in a worker can leave torch.cuda.is_available() spoofed True; the C call asks the driver.
+    return torch.cuda.is_available() and getattr(torch._C, "_cuda_getDeviceCount", lambda: 0)() > 0
+
+
+def _block_model(bias = False):
+    import torch
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = nn.Linear(64, 64, bias = bias)
+            self.norm1 = nn.Module()
+            self.norm1.linear = nn.Linear(64, 64 * 6, bias = True)  # AdaLN: M = batch rows
+
+    class Model(nn.Module):
+        _repeated_blocks = ["Block"]
+
+        def __init__(self):
+            super().__init__()
+            self.time_mod_proj = nn.Linear(64, 64 * 6, bias = False)
+            self.blocks = nn.ModuleList([Block(), Block()])
+            self.final_layer = nn.Module()
+            self.final_layer.linear = nn.Linear(64, 64)
+
+    return Model().to(torch.bfloat16)
+
+
+def test_float8_filters_stay_inside_the_repeated_blocks():
+    m = _block_model()
+    for base in (dit._fp8_module_filter, dit._mx_module_filter):
+        f = dit._in_repeated_blocks(m, base)
+        assert f(m.blocks[1].ff, "blocks.1.ff") is True
+        assert f(m.time_mod_proj, "time_mod_proj") is False
+        assert f(m.blocks[0].ff, "blocks.0.ff.lora_A.default") is False
+    assert (
+        dit._in_repeated_blocks(nn.Linear(64, 64), dit._fp8_module_filter) is dit._fp8_module_filter
+    )
+
+
+@pytest.mark.parametrize(
+    "family, fqn, kept",
+    [
+        ("flux.1", "transformer_blocks.0.attn.to_q", True),
+        ("flux.1", "transformer_blocks.0.ff.net.0.proj", True),
+        ("flux.1", "transformer_blocks.0.norm1.linear", False),
+        ("flux.1", "transformer_blocks.0.norm1_context.linear", False),
+        ("flux.1", "single_transformer_blocks.0.norm.linear", False),
+        ("flux.1", "single_transformer_blocks.0.proj_mlp", True),
+        ("flux.2-klein", "single_transformer_blocks.0.attn.to_qkv_mlp_proj", True),
+        ("flux.2-klein", "double_stream_modulation_img.linear", False),
+        ("z-image", "layers.0.feed_forward.w1", True),
+        ("z-image", "layers.0.adaLN_modulation.0", False),
+        ("z-image", "noise_refiner.0.adaLN_modulation.0", False),
+        ("krea-2", "transformer_blocks.0.ff.gate", True),
+        ("krea-2", "time_mod_proj", False),
+        ("krea-2", "final_layer.linear", False),
+        ("ltx-2", "transformer_blocks.0.attn1.to_q", True),
+        ("ltx-2", "transformer_blocks.0.audio_attn1.to_q", False),
+        ("ltx-2", "transformer_blocks.0.audio_ff.net.0.proj", False),
+        ("ltx-2", "transformer_blocks.0.video_to_audio_attn.to_k", False),
+    ],
+)
+def test_lowp_filters_skip_small_m_linears(family, fqn, kept):
+    import torch
+
+    lin = nn.Linear(3072, 3072, bias = True).to(torch.bfloat16)
+    tokens = dit._lowp_exclude_tokens(family)
+    assert dit._fp8_module_filter(lin, fqn, tokens) is kept
+    assert dit._mx_module_filter(lin, fqn, tokens) is kept
+
+
+def test_lowp_exclusions_extend_the_int8_small_m_list():
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    for family in (None, "flux.1", "ltx-2", "krea-2"):
+        tokens = dit._lowp_exclude_tokens(family)
+        assert set(exclude_tokens_for_scheme("int8", family)) <= set(tokens)
+        assert "final_layer" in tokens
+    assert "audio" in dit._lowp_exclude_tokens("ltx-2")
+    assert "audio" not in dit._lowp_exclude_tokens("flux.1")
+
+
+def test_mx_input_hook_mirrors_autocast():
+    import torch
+
+    x = torch.ones(2, 4)
+    assert dit._autocast_mx_input(None, (x,)) is None  # CPU / no autocast: untouched
+    if not _real_cuda():
+        pytest.skip("needs CUDA autocast")
+    xc = x.cuda()
+    assert dit._autocast_mx_input(None, (xc,)) is None
+    with torch.autocast("cuda", dtype = torch.bfloat16):
+        (out,) = dit._autocast_mx_input(None, (xc,))
+        assert out.dtype == torch.bfloat16
+        assert dit._autocast_mx_input(None, (xc.bfloat16(),)) is None
+
+
+@pytest.mark.parametrize("mode", ["mxfp8"])
+def test_lowp_apply_without_torchao_is_a_noop_with_warning(monkeypatch, mode):
+    import sys
+
+    for name in (
+        "torchao",
+        "torchao.float8",
+        "torchao.quantization",
+        "torchao.prototype.mx_formats",
+        "torchao.prototype.moe_training.config",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+    m = _block_model()
+    before = [type(x) for x in m.modules()]
+    events = []
+    apply = dit._apply_fp8_training if mode == "fp8" else dit._apply_mxfp8_training
+    assert apply(m, events.append, "flux.1") is False
+    assert [type(x) for x in m.modules()] == before
+    assert [e["type"] for e in events] == ["warning"] and mode in events[0]["message"]
+
+
+def _fake_mx_backend(monkeypatch, *, with_linear_cls = True):
+    """A torchao 0.18-shaped MX API without the GPU: records the swaps."""
+    import sys
+    from types import SimpleNamespace
+
+    class _Op:
+        wgrad_with_hp = True
+        kernel_preference = "auto"
+        scale_calculation_mode = "rceil"
+
+    class _Recipe:
+        MXFP8_RCEIL_WGRAD_WITH_HP = "hp"
+
+    class MXFP8Linear(nn.Linear):
+        pass
+
+    quantized = []
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
+    cfg_mod = SimpleNamespace(
+        MXFP8TrainingOpConfig = SimpleNamespace(from_recipe = lambda r: _Op()),
+        MXFP8TrainingRecipe = _Recipe,
+    )
+    monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", cfg_mod)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchao.prototype.moe_training.mxfp8_linear",
+        SimpleNamespace(MXFP8Linear = MXFP8Linear) if with_linear_cls else None,
+    )
+
+    def quantize_(model, config, filter_fn):
+        for fqn, mod in model.named_modules():
+            if filter_fn(mod, fqn):
+                quantized.append(fqn)
+
+    monkeypatch.setitem(sys.modules, "torchao.quantization", SimpleNamespace(quantize_ = quantize_))
+    return MXFP8Linear, quantized
+
+
+def test_mxfp8_swaps_biased_and_unbiased_block_linears_once(monkeypatch):
+    linear_cls, quantized = _fake_mx_backend(monkeypatch)
+    m = _block_model(bias = True)
+    params = [id(p) for p in m.parameters()]
+    assert dit._apply_mxfp8_training(m, None, "flux.1") is True
+    swapped = sorted(n for n, x in m.named_modules() if type(x) is linear_cls)
+    # Biased block linears included; AdaLN (norm1.linear), top-level and final_layer stay bf16.
+    assert swapped == ["blocks.0.ff", "blocks.1.ff"]
+    assert m.blocks[0].ff.wgrad_with_hp is True and quantized == []
+    assert [id(p) for p in m.parameters()] == params  # the Parameters stay
+    hooks = len(m.blocks[0].ff._forward_pre_hooks)
+    assert dit._apply_mxfp8_training(m, None, "flux.1") is True
+    assert len(m.blocks[0].ff._forward_pre_hooks) == hooks == 1
+
+
+def test_mxfp8_torchao_0_17_keeps_biased_linears_dense(monkeypatch):
+    # Without MXFP8Linear the quantize_ weight wrapper is the only path, and it drops F.linear's bias (pytorch/ao#4846).
+    _, quantized = _fake_mx_backend(monkeypatch, with_linear_cls = False)
+    m = _block_model(bias = True)
+    events = []
+    assert dit._apply_mxfp8_training(m, events.append, "flux.1") is False
+    assert quantized == [] and "no eligible linear layers" in events[0]["message"]
+    m2 = _block_model(bias = False)
+    assert dit._apply_mxfp8_training(m2, None, "flux.1") is True
+    assert quantized == ["blocks.0.ff", "blocks.1.ff"]
+
+
+def test_fp8_quantizes_each_frozen_base_weight_once():
+    import torch
+
+    from core.training.diffusion_frozen_fp8 import FrozenFp8Linear
+
+    m = _block_model(bias = True).requires_grad_(False)
+    ref = {
+        fqn: mod.weight.float().clone()
+        for fqn, mod in m.named_modules()
+        if isinstance(mod, nn.Linear)
+    }
+    assert dit._convert_fp8(m, "flux.1") is True
+    swapped = {fqn: mod for fqn, mod in m.named_modules() if isinstance(mod, FrozenFp8Linear)}
+    # Only the repeated blocks' big linears; the AdaLN rows stay bf16 like the int8 / MX paths.
+    assert sorted(swapped) == ["blocks.0.ff", "blocks.1.ff"]
+    for fqn, mod in swapped.items():
+        assert mod.weight.dtype == torch.float8_e4m3fn and not isinstance(mod.weight, nn.Parameter)
+        assert mod._studio_lowp == "fp8" and mod.bias is not None and not mod.bias.requires_grad
+        deq = mod.weight.float() * mod.weight_scale.t()
+        assert ((deq - ref[fqn]).norm() / ref[fqn].norm()).item() < 0.04
+    # The bf16 weight is gone: no frozen base Parameter left on a converted path, so its memory is freed.
+    assert not any(n.endswith("ff.weight") for n, _ in m.named_parameters())
+
+
+def test_fp8_layer_that_fails_stays_bf16_and_the_rest_convert(monkeypatch):
+    import core.training.diffusion_frozen_fp8 as ff
+
+    real = ff._quantize_weight
+    calls = []
+
+    def flaky(w, rows = 2048):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("CUDA out of memory")
+        return real(w, rows)
+
+    monkeypatch.setattr(ff, "_quantize_weight", flaky)
+    m = _block_model().requires_grad_(False)
+    events = []
+    assert dit._apply_fp8_training(m, events.append, "flux.1") is True
+    kinds = sorted(type(b.ff).__name__ for b in m.blocks)
+    assert kinds == ["FrozenFp8Linear", "Linear"]
+    assert any("1 layer(s)" in e.get("message", "") for e in events)
+
+
+def test_fp8_chunked_quantization_matches_one_shot():
+    import torch
+
+    from core.training.diffusion_frozen_fp8 import _quantize_weight, _rowwise_quant
+
+    w = (
+        torch.randn(300, 64, dtype = torch.bfloat16)
+        * torch.logspace(-3, 3, 300).unsqueeze(1).bfloat16()
+    )
+    q1, s1 = _rowwise_quant(w)
+    q2, s2 = _quantize_weight(w, rows = 64)
+    assert torch.equal(q1.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(s1, s2)
+
+
+def test_fp8_conversion_needs_no_torchao(monkeypatch):
+    import sys
+
+    for name in ("torchao", "torchao.float8", "torchao.quantization"):
+        monkeypatch.setitem(sys.modules, name, None)
+    m = _block_model().requires_grad_(False)
+    assert dit._apply_fp8_training(m, lambda e: None, "flux.1") is True
+
+
+def _lowp_gpu_ready(mode):
+    import torch
+
+    if not _real_cuda():
+        return False
+    need = (8, 9) if mode == "fp8" else (10, 0)
+    return torch.cuda.get_device_capability() >= need
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_lowp_backward_on_odd_token_counts(mode, compiled):
+    """Token counts not divisible by 16 / 32 (LTX-2 192x320 = 60) raised in the frozen grad_weight GEMM."""
+    import torch
+
+    if not _lowp_gpu_ready(mode):
+        pytest.skip(f"{mode} needs a capable CUDA GPU")
+    pytest.importorskip("torchao")
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = nn.Linear(256, 512, bias = True)
+
+        def forward(self, x):
+            return self.ff(x)
+
+    class Model(nn.Module):
+        _repeated_blocks = ["Block"]
+
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList([Block()])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    torch.manual_seed(0)
+    ref = Model().to("cuda", torch.bfloat16).requires_grad_(False)
+    m = Model().to("cuda", torch.bfloat16).requires_grad_(False)
+    m.load_state_dict(ref.state_dict())
+    apply = dit._apply_fp8_training if mode == "fp8" else dit._apply_mxfp8_training
+    events = []
+    applied = apply(m, events.append, "flux.1")
+    # torchao 0.17 on torch 2.11 (the installer's pairing) refuses MX training on any GPU; the fallback is the test.
+    if not applied and mode == "mxfp8" and any("unavailable" in str(e) for e in events):
+        pytest.skip(f"this torch / torchao cannot run mxfp8 training: {events}")
+    assert applied is True, events
+    assert type(m.blocks[0].ff) is not nn.Linear
+    run = torch.compile(m, fullgraph = True, dynamic = True) if compiled else m
+    for tokens in (60, 240, 1008, 1024):
+        x = torch.randn(1, tokens, 256, device = "cuda", requires_grad = True)
+        xr = x.detach().clone().requires_grad_(True)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            y = run(x)
+            yr = ref(xr)
+        g = torch.randn_like(yr)
+        y.backward(g)
+        yr.backward(g)
+        rel = lambda a, b: float((a.float() - b.float()).norm() / b.float().norm())  # noqa: E731
+        assert rel(y, yr) < 0.1 and rel(x.grad, xr.grad) < 0.1, (
+            tokens,
+            rel(y, yr),
+            rel(x.grad, xr.grad),
+        )
+        assert m.blocks[0].ff.weight.grad is None
+
+
+# ── _should_compile fp8 branch ────────────────────────────────────────────────
 def test_should_compile_fp8_branch():
     cfg = _cfg(compile_transformer = "auto")
     assert dit._should_compile(cfg, False, "cuda", "fp8") is True
@@ -538,6 +865,8 @@ def test_train_precision_modes_no_cuda(monkeypatch):
 
 
 def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
+    # int8/mxfp8 are only advertised when torchao is FUNCTIONAL: their explicit paths import it with no fallback.
+    # fp8 runs on torch's own _scaled_mm, so only the GPU decides.
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -546,13 +875,12 @@ def test_train_precision_modes_gates_int8_fp8_on_torchao(monkeypatch):
 
     monkeypatch.setattr(common, "has_functional_torchao", lambda: False)
     modes, recommended = train_precision_modes()
-    assert modes == ["nf4", "bf16", "auto"]
-    assert "int8" not in modes and "fp8" not in modes
+    assert modes == ["nf4", "bf16", "fp8", "auto"]
     assert recommended == "auto"
 
     monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
     modes2, _ = train_precision_modes()
-    assert "int8" in modes2 and "fp8" in modes2
+    assert modes2 == ["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"]
 
 
 def test_train_precision_modes_gates_dense_on_bf16_support(monkeypatch):
@@ -682,3 +1010,42 @@ def test_dit_accelerator_gate_survives_a_torch_without_every_probe(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert dit_accelerator_missing_reason("flux.1") is None
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_probe_failure_falls_back_before_touching_the_model(monkeypatch, mode):
+    # An arch whose float8 / MX GEMM fails (unverified sm89 / sm120 paths) must fall back to bf16 at load, not mid-run.
+    def broken_probe(convert, transformer):
+        raise RuntimeError("CUBLAS_STATUS_NOT_SUPPORTED")
+
+    monkeypatch.setattr(dit, "_probe_lowp", broken_probe)
+    m = _block_model()
+    before = [type(x) for x in m.modules()]
+    events = []
+    apply = dit._apply_fp8_training if mode == "fp8" else dit._apply_mxfp8_training
+    assert apply(m, events.append, "flux.1") is False
+    assert [type(x) for x in m.modules()] == before
+    assert not any(getattr(x, "_studio_lowp", None) for x in m.modules())
+    assert "CUBLAS_STATUS_NOT_SUPPORTED" in events[0]["message"] and mode in events[0]["message"]
+
+
+def test_lowp_probe_skips_off_cuda_and_raises_on_a_failing_gemm():
+    import torch
+
+    calls = []
+    dit._probe_lowp(lambda probe: calls.append(probe), _block_model())  # CPU model: no probe
+    assert calls == []
+    if not _real_cuda():
+        pytest.skip("needs CUDA")
+
+    def failing_convert(probe):
+        probe.ff.forward = lambda x: (_ for _ in ()).throw(RuntimeError("scaled_mm unsupported"))
+
+    with pytest.raises(RuntimeError, match = "scaled_mm unsupported"):
+        dit._probe_lowp(failing_convert, _block_model().cuda())
+    model = _block_model().cuda()
+    cpu_state, cuda_state = torch.get_rng_state(), torch.cuda.get_rng_state()
+    dit._probe_lowp(lambda probe: None, model)  # a working GEMM passes
+    # The seed is set before conversion: the probe must not move the training draws.
+    assert torch.equal(torch.get_rng_state(), cpu_state)
+    assert torch.equal(torch.cuda.get_rng_state(), cuda_state)

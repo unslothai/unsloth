@@ -193,6 +193,11 @@ FACTORIES = {
         {"messageId": FORK_MESSAGE_ID, "newThreadId": FORK_NEW_THREAD_ID, "createdAt": 2000},
         fragment = CHAT_SENTINEL,
     ),
+    "routes.chat_history:POST:/threads/{thread_id}/rewind": Factory(
+        "chat-fork-source",
+        {"turn_ids": [FORK_MESSAGE_ID], "dry_run": True},
+        fragment = '"has_changes":false',
+    ),
     "routes.chat_history:GET:/threads/{thread_id}/forks": Factory(
         "chat-fork-tree",
         fragment = f'"{FORK_MESSAGE_ID}":1',

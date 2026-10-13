@@ -366,6 +366,28 @@ def _tokenizer_is_empty(tokenizer) -> bool:
         return False
 
 
+LOFTQ_SKIPPED_ON_QUANTIZED = (
+    "LoftQ needs 16-bit weights and this model is loaded quantized, so it trains without LoftQ. "
+    "Choose LoRA (16-bit) to use LoftQ."
+)
+
+
+def _has_quantized_weights(model) -> bool:
+    try:
+        from unsloth.models._utils import _has_quantized_linears
+    except ImportError:
+        return False
+    # routed_ok mirrors Unsloth's own LoftQ check: its loader densifies routed NVFP4 / FP8 weights.
+    return _has_quantized_linears(model, routed_ok = True)
+
+
+def _loftq_peft_kwargs(use_loftq) -> dict:
+    # PEFT ignores loftq_config unless init_lora_weights is "loftq", so the toggle alone trained plain LoRA.
+    if not use_loftq:
+        return {"loftq_config": None}
+    return {"init_lora_weights": "loftq", "loftq_config": {"loftq_bits": 4, "loftq_iter": 1}}
+
+
 def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
     """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
     to the base it names, as Unsloth's own adapter loader does (#13140)."""
@@ -1534,6 +1556,12 @@ class UnslothTrainer:
                 )
                 return True
 
+            if use_loftq and _has_quantized_weights(self.model):
+                # Unsloth refuses LoftQ on quantized weights; train as before rather than fail a QLoRA run or its resume.
+                logger.warning(LOFTQ_SKIPPED_ON_QUANTIZED)
+                self._update_progress(status_message = LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
+
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:
@@ -1595,7 +1623,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     **self._offload_peft_kwargs(),
                 )
                 if self.is_audio_vlm:
@@ -1626,7 +1654,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     task_type = None,
                 )
 
@@ -1646,7 +1674,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                 )
 
             elif self.is_vlm:
@@ -1671,7 +1699,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
                 )
@@ -1692,7 +1720,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
                 )

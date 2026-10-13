@@ -119,6 +119,67 @@ def test_an_xpu_without_a_usable_bf16_probe_is_refused(host, probe):
     assert native_bf16_supported_xpu() is False
 
 
+def _xpu_without_ocloc(**props):
+    """has_bfloat16_conversions is False on every device when libocloc is missing (real driver)."""
+    return _fake_xpu(
+        is_available = lambda: True,
+        is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+        get_device_properties = lambda *a: types.SimpleNamespace(**props),
+    )
+
+
+@pytest.mark.parametrize(
+    "device_id",
+    [0x56A0, 0x56C0, 0xE20B, 0xE211, 0x0BD5, 0x64A0, 0xB080],
+    ids = ["A770", "Flex170", "B580", "B60", "Max1550", "LNL", "PTL"],
+)
+def test_an_arc_or_data_center_xpu_is_native_without_libocloc(host, device_id):
+    from core.training.diffusion_train_common import bf16_unsupported_reason
+
+    host(cuda = False, xpu = _xpu_without_ocloc(device_id = device_id, name = "Intel(R) Graphics"))
+    assert native_bf16_supported_xpu() is True
+    assert bf16_unsupported_reason("krea-2") is None
+
+
+@pytest.mark.parametrize(
+    "device_id",
+    [0x4905, 0x7DD5, 0x9A49],
+    ids = ["DG1", "MTL-non-Arc", "TGL"],
+)
+def test_a_non_arc_xpu_without_libocloc_is_still_refused(host, device_id):
+    host(cuda = False, xpu = _xpu_without_ocloc(device_id = device_id, name = "Intel(R) Arc(TM) A770"))
+    assert native_bf16_supported_xpu() is False
+
+
+@pytest.mark.parametrize(
+    ("name", "native"),
+    [
+        ("Intel(R) Arc(TM) B580 Graphics", True),
+        ("Intel(R) Data Center GPU Max 1550", True),
+        ("Intel(R) Iris(R) Xe Graphics", False),
+        ("Intel(R) Graphics [0xe20b]", False),
+    ],
+)
+def test_a_torch_without_device_id_falls_back_to_the_name(host, name, native):
+    host(cuda = False, xpu = _xpu_without_ocloc(name = name))
+    assert native_bf16_supported_xpu() is native
+
+
+def test_unreadable_device_properties_keep_the_strict_answer(host):
+    def _raise(*a):
+        raise RuntimeError("no device")
+
+    host(
+        cuda = False,
+        xpu = _fake_xpu(
+            is_available = lambda: True,
+            is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
+            get_device_properties = _raise,
+        ),
+    )
+    assert native_bf16_supported_xpu() is False
+
+
 def _dit_cfg():
     return DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",

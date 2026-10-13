@@ -45,7 +45,10 @@ from core.training.diffusion_train_common import (  # noqa: F401
     StopCb,
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    TrainingPeakMemory,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     native_bf16_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
@@ -425,18 +428,27 @@ def run_diffusion_lora_training(
             )
         )
         if cfg.gradient_checkpointing:
-            unet.enable_gradient_checkpointing()
+            enable_diffusion_gradient_checkpointing(unet)
+        # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        from core.training.diffusion_dit_trainer import _maybe_compile_transformer
+        # Regionally torch.compile the U-Net repeated blocks via the DiT trainer's never-fatal wrapper (failure
+        # falls back to eager).
+        from core.training.diffusion_dit_trainer import (
+            _compile_engagement_warning,
+            _dynamo_compile_counters,
+            _maybe_compile_transformer,
+        )
 
         compiled = _maybe_compile_transformer(
             unet, cfg, False, device, on_event, base_precision = "bf16"
         )
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
-        optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        optimizer = _make_lora_optimizer(
+            lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+        )
         # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
         scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
         # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
@@ -694,6 +706,8 @@ def run_diffusion_lora_training(
             if resumed < cfg.train_steps:
                 _sample(resumed)
 
+        train_peak = TrainingPeakMemory(device)
+        compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
                 stopped = True
@@ -793,10 +807,14 @@ def run_diffusion_lora_training(
             if ran_here == 1:
                 # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate starts after it.
                 t_steady = now
+            if compile_watch is not None:
+                reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+                if reason:
+                    _emit(on_event, "warning", message = reason)
+                    compile_watch = None
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
-                if device == "cuda":
-                    peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                peak_gb = train_peak.gb()
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
                 if t_steady is not None and ran_here > 1:
                     samples_per_second = round(
@@ -819,7 +837,9 @@ def run_diffusion_lora_training(
 
             stop_now = _check_stop()
             if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+                train_peak.pause()
                 _sample(done)
+                train_peak.resume()
                 stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
@@ -884,25 +904,12 @@ def run_diffusion_lora_training(
         _restore_perf_flags(snap)
 
 
-def _make_lora_optimizer(params: list, lr: float) -> Any:
-    """UNSLOTH_DIFFUSION_FP32_OPTIM forces plain non-fused AdamW, as the accuracy guard requires."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Check before construction: on XPU the 8-bit optimizer only fails at the first step().
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class = None,
+) -> Any:
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:

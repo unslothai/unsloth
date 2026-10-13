@@ -3277,7 +3277,10 @@ class VideoBackend:
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs).
             kwargs["_base_local_dir"] = None if ltx23 else base_local
-            self.load_pipeline(**kwargs)
+            from .safetensors_pread import pread_safetensors
+
+            with pread_safetensors():
+                self.load_pipeline(**kwargs)
             with self._lock:
                 if self._load_token == token:
                     self._loading = None

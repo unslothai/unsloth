@@ -37,6 +37,14 @@ CATALOG = [
         "max_context_window": 131072,
     },
     {
+        "id": "qwen3.8-mtp-27b-FLM",
+        "checkpoint": "qwen3.8-mtp:27b",
+        "labels": ["vision", "reasoning", "tool-calling", "chat"],
+        "size": 18.1,
+        # config.json's max_position_embeddings; FastFlowLM's engine stops at 8192.
+        "max_context_window": 262144,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],

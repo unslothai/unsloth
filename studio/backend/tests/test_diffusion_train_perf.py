@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+from unittest.mock import patch
 
 from pathlib import Path
 
@@ -195,8 +196,13 @@ def test_config_validates_new_fields():
 def test_should_compile_policy():
     assert _should_compile(_cfg(compile_transformer = "off"), False, "cuda") is False
     assert _should_compile(_cfg(compile_transformer = "on"), False, "cuda") is True
-    # auto stays off over a bitsandbytes base (graph breaks in the dequant path).
-    assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is False
+    # auto over an nf4 base follows the torch / bitsandbytes version gate.
+    import core.training.diffusion_dit_trainer as dit
+
+    for supported in (True, False):
+        with patch.object(dit, "_nf4_compile_supported", lambda s = supported: s):
+            assert _should_compile(_cfg(compile_transformer = "auto"), True, "cuda") is supported
+    # auto turns on for the dense bf16 base precision on cuda.
     assert (
         _should_compile(_cfg(compile_transformer = "auto"), False, "cuda", base_precision = "bf16")
         is True

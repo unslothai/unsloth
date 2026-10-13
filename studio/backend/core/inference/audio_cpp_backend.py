@@ -973,7 +973,7 @@ class AudioCppBackend:
             raise RuntimeError(str(exc)) from exc
         server = self._server_for_batch(model, batch, cancel_event)
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
-            model.family, seconds, variations, server.backend == "cpu"
+            model.family, seconds, variations, server.backend
         )
         outputs: list[tuple[str, bytes, Optional[int]]] = []
         try:

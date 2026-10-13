@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
 
 import {
@@ -459,6 +459,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   onSelect: (id: string) => void;
 }) {
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -471,8 +472,9 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
             deviceType,
             quantMethod: row.result.quantMethod,
             vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType, vllmAvailable],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
@@ -592,6 +594,7 @@ export const InventoryRow = memo(function InventoryRow({
       : (row.repoId ?? row.baseModelHubId ?? row.baseModel ?? row.loadId);
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unsupported = useMemo(() => {
     if (isDataset) return false;
     const classified = classifyUnslothSupport({
@@ -602,6 +605,7 @@ export const InventoryRow = memo(function InventoryRow({
       quantMethod: row.quantMethod,
       deviceType,
       vllmAvailable,
+      vllmPlatform,
     });
     // Images/Video run these, so they are not unsupported to a user.
     return classified.status === "unsupported" && !classified.supportedIn;
@@ -614,6 +618,7 @@ export const InventoryRow = memo(function InventoryRow({
     row.quantMethod,
     deviceType,
     vllmAvailable,
+    vllmPlatform,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const title = row.kind === "cache" ? row.repo : row.title;

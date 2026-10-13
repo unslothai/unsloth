@@ -1477,7 +1477,20 @@ def _join_clauses(items: list[str]) -> str:
 
 
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
-    """Runs before teardown and refuses only the provably impossible: 8-bit moments with no bitsandbytes."""
+    """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
+
+    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
+    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
+    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
+    to terminate without training.
+
+    Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
+    bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
+    tell an installed-and-broken wheel (which the trainer catches and falls back from) from a
+    working one. So only the case that cannot be wrong is refused here: 8-bit moments with no
+    bitsandbytes to load them, or with the fp32 override forcing torch AdamW. The other direction
+    stays with the child, where the real optimizer object exists.
+    """
     saved = manifest.get("optimizer_class")
     if not isinstance(saved, str) or "bitsandbytes" not in saved:
         return

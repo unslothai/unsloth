@@ -1178,7 +1178,7 @@ def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
-@pytest.mark.parametrize("mask", ["", " ", "-1"])
+@pytest.mark.parametrize("mask", [" ", "-1"])
 def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
     import sys
 
@@ -1192,6 +1192,22 @@ def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
     assert hw.classify_torch_build() is None
 
     monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+@pytest.mark.parametrize("mask", ["", "default"])
+def test_an_empty_or_default_xpu_mask_hides_nothing(monkeypatch, mask):
+    """Level Zero reads "" and "default" as no mask (isAffinityMaskSet): every Intel GPU stays visible."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"available": True, "devices": [{"vendor": "intel"}]},
+    )
+    monkeypatch.setenv("ZE_AFFINITY_MASK", mask)
+    assert hw._vendors_masked_off() == set()
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
@@ -1447,11 +1463,17 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
 
 
 def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
-    """ZE_AFFINITY_MASK hides only the Arc card and must not cancel an unmasked NVIDIA classification."""
+    """A hybrid NVIDIA + Arc host with ZE_AFFINITY_MASK="-1".
+
+    The mask hides the Arc and nothing else, but it was cancelling the whole
+    classification, so a CPU-only wheel went unreported for the NVIDIA card the user
+    never masked. The Arc still has to drop out of the mismatch inventory: it is
+    hidden on purpose, and counting it would offer a repair for a chosen configuration.
+    """
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setenv("ZE_AFFINITY_MASK", "")
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "-1")
     hybrid = [
         {"vendor": "nvidia", "name": "NVIDIA RTX A4000"},
         {"vendor": "intel", "name": "Intel(R) Arc(TM) A770"},

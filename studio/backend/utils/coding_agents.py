@@ -23,17 +23,23 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
     b"@deepseek-ai+dsh",
 )
 
-# Keep in sync with `unsloth start <agent>` in unsloth_cli/commands/start.py.
+# Keep in sync with the `unsloth start <agent>` subcommands defined in
+# unsloth_cli/commands/start.py, in the order the Settings pickers list them. Each
+# entry is the executable that subcommand needs on PATH (see _EXECUTABLES).
 CODING_AGENTS: tuple[str, ...] = (
     "claude",
     "codex",
-    "openclaw",
+    "vscode",
+    "dsh",
     "opencode",
     "hermes",
+    "openclaw",
     "pi",
-    "dsh",
     "vibe",
 )
+
+# `unsloth start vscode` edits VS Code's settings; `code` is the launcher an install puts on PATH.
+_EXECUTABLES = {"vscode": "code"}
 
 
 def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:
@@ -88,7 +94,7 @@ def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str
 
 def _is_on_path(agent: str) -> bool:
     try:
-        executable = shutil.which(agent)
+        executable = shutil.which(_EXECUTABLES.get(agent, agent))
         if executable is None:
             return False
         if agent == "dsh":

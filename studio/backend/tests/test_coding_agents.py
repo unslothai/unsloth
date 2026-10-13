@@ -20,13 +20,22 @@ def test_matches_unsloth_start_subcommands():
     assert CODING_AGENTS == (
         "claude",
         "codex",
-        "openclaw",
+        "vscode",
+        "dsh",
         "opencode",
         "hermes",
+        "openclaw",
         "pi",
-        "dsh",
         "vibe",
     )
+
+
+def test_detects_vscode_by_its_code_launcher():
+    with patch(
+        "utils.coding_agents.shutil.which",
+        side_effect = lambda name: "/usr/local/bin/code" if name == "code" else None,
+    ):
+        assert detect_installed_coding_agents() == ["vscode"]
 
 
 def test_detects_only_agents_present_on_path():

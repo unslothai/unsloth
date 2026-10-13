@@ -145,7 +145,9 @@ def test_unsupported_npu_is_refused_before_any_download(tmp_path, monkeypatch):
 def test_catalog_keeps_flm_chat_models_only(npu):
     npu.enable()
     ids = [model.id for model in npu.catalog()]
-    assert ids == sorted(["gemma3-4b-FLM", "qwen3-0.6b-FLM", "qwen3-it-4b-FLM"])
+    assert ids == sorted(
+        ["gemma3-4b-FLM", "qwen3-0.6b-FLM", "qwen3-it-4b-FLM", "qwen3.8-mtp-27b-FLM"]
+    )
     by_id = {model.id: model for model in npu.catalog()}
     assert by_id["gemma3-4b-FLM"].vision and not by_id["gemma3-4b-FLM"].tools
     assert by_id["qwen3-it-4b-FLM"].tools
@@ -300,6 +302,29 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert upstream.public_model == "lemonade:qwen3-0.6b-FLM"
     assert upstream.base_url.startswith("http://127.0.0.1:")
     assert upstream.api_key
+
+
+def test_qwen38_is_held_to_its_engine_limit_not_its_checkpoint_metadata(npu, monkeypatch):
+    # Above 8192 FastFlowLM fails to load Qwen3.8, yet lemond reports ready and the first reply fails.
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3.8-mtp-27b-FLM"]')
+    npu.enable()
+    by_id = {model.id: model for model in npu.catalog()}
+    assert by_id["qwen3.8-mtp-27b-FLM"].max_context_length == 8192
+    assert by_id["qwen3-0.6b-FLM"].max_context_length == 40960
+
+    npu.load("qwen3.8-mtp-27b-FLM", 16384)
+    load = [r["body"] for r in _requests(npu) if r["path"] == "/v1/load"][-1]
+    assert load["ctx_size"] == 8192
+    assert npu.loaded_context_length == 8192
+    assert npu.resident().requested_context_length == 16384
+
+
+@pytest.mark.parametrize(
+    "reported, expected", [(262144, 8192), (4096, 4096), (None, 8192), (0, 8192)]
+)
+def test_a_runtime_limit_caps_whatever_lemond_reports(reported, expected):
+    assert nb._max_context_length("qwen3.8-mtp:27b", reported) == expected
+    assert nb._max_context_length("qwen3:0.6b", reported) == (reported or None)
 
 
 def test_the_resident_reports_what_its_load_asked_for(npu):

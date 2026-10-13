@@ -81,6 +81,9 @@ def retire_account_roots(account: AccountContext):
     from storage.studio_db import close_wal_keeper_for
 
     close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "studio.db")
+    from core.inference import file_history
+
+    file_history.close_store(run_as(account, storage_roots.account_path, "file_history"))
     roots = {root.absolute() for root in run_as(account, storage_roots.managed_account_roots)}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     moved: list[tuple[Path, Path]] = []

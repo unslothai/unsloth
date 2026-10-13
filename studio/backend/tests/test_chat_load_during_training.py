@@ -1698,6 +1698,73 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
 
+    def test_auto_drops_a_neox_dflash_charge_on_an_mrope_vision_load(self):
+        """#13511: Auto launches no DFlash drafter that an image would break, so none is charged."""
+        import struct
+        import tempfile
+
+        def _header(path, arch, kv, size):
+            entries = [("general.architecture", arch), *kv.items()]
+            out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+            for key, val in entries:
+                out.append(struct.pack("<Q", len(key)) + key.encode())
+                if isinstance(val, str):
+                    out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+                elif isinstance(val, bool):
+                    out.append(struct.pack("<I?", 7, val))
+                else:
+                    out.append(
+                        struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val)
+                    )
+            blob = b"".join(out)
+            path.write_bytes(blob + b"\0" * (size - len(blob)))
+            return str(path)
+
+        sections = [11, 11, 10, 0]
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = _header(
+                p / "model.gguf", "qwen35", {"qwen35.rope.dimension_sections": sections}, 2000
+            )
+            neox = _header(p / "dflash-neox.gguf", "dflash", {}, 3000)
+            mrope = _header(
+                p / "dflash-mrope.gguf",
+                "dflash",
+                {"dflash.rope.dimension_sections": sections},
+                3000,
+            )
+            mmproj = _header(p / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}, 7000)
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _estimate(dflash, **kw):
+                cfg = _gguf_cfg(
+                    gguf_file = target,
+                    gguf_dflash_file = dflash,
+                    gguf_mmproj_file = mmproj,
+                    gguf_hf_repo = None,
+                    gguf_variant = None,
+                )
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+                    patch.object(
+                        LlamaCppBackend,
+                        "probe_server_capabilities",
+                        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+                    ),
+                ):
+                    return self.route._estimate_gguf_required_gb(cfg, **kw)
+
+            auto_neox = _estimate(neox, speculative_type = "auto")
+            auto_mrope = _estimate(mrope, speculative_type = "auto")
+            auto_neox_vision_off = _estimate(neox, speculative_type = "auto", disable_vision = True)
+            forced_neox = _estimate(neox, speculative_type = "dflash")
+        self.assertAlmostEqual(auto_neox, 9000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_mrope, 12000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto_neox_vision_off, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(forced_neox, 12000 / (1024**3), places = 9)
+
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """A --model-draft naming the discovered sidecar is charged once, keyed by resolved path,
         not twice."""
