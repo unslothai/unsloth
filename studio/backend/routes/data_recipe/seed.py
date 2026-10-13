@@ -1108,6 +1108,8 @@ def inspect_seed_dataset(
             status_code = 400,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
+    # load_dataset also takes a local directory; a managed account may only name its own.
+    account_path(dataset_name, reference = True)
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)

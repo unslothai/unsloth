@@ -1443,6 +1443,52 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
 
 
+@pytest.mark.parametrize("outside", [True, False])
+def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch, tmp_path, outside):
+    from core.training import account_jobs
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    workspace = tmp_path / "accounts" / "alice"
+    owner_rows = tmp_path / "owner" / "uploads"
+    for folder in (workspace / "seeds", owner_rows):
+        folder.mkdir(parents = True)
+        (folder / "train.csv").write_text("secret\nowner-only\n")
+    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
+    monkeypatch.setattr(seed_route, "managed_account", lambda: True)
+    monkeypatch.setattr(account_jobs, "workspace_root", lambda: workspace)
+    monkeypatch.setattr(account_jobs, "project_workspaces_root", lambda: workspace / "projects")
+    monkeypatch.setattr(account_jobs, "tmp_root", lambda: workspace / "tmp")
+    monkeypatch.setattr(seed_route, "refuse_unauthorized_dataset_preview", lambda *a, **k: None)
+    monkeypatch.setattr(seed_route, "_list_hf_repo_files", lambda **kwargs: ["train.csv"])
+    monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: [])
+    read = []
+
+    def fake_preview(*, load_dataset_fn, load_kwargs, preview_size):
+        read.append(load_kwargs)
+        return [{"secret": "owner-only"}]
+
+    monkeypatch.setattr(seed_route, "_load_preview_rows", fake_preview)
+
+    def inspect(name):
+        return seed_route.inspect_seed_dataset(
+            SimpleNamespace(
+                dataset_name = name, split = "train", subset = None, hf_token = None, preview_size = 1
+            ),
+            allow_ambient_token = False,
+        )
+
+    if outside:
+        with pytest.raises(HTTPException) as refused:
+            inspect(str(owner_rows))
+        assert refused.value.status_code == 403
+        assert read == []
+    else:
+        # A Hub id and a folder in the account's own workspace still preview.
+        inspect("org/repo")
+        inspect(str(workspace / "seeds"))
+        assert len(read) == 2
+
+
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     configs = [
