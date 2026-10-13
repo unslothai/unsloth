@@ -19,12 +19,28 @@ GIB = 1024**3
 # The published unsloth/MiniMax-H3-GGUF sizes: Q4_K denoiser, Q4_K_M encoder, video + audio VAE.
 Q4 = dict(dit_bytes = int(10.64 * GIB), te_bytes = int(16.97 * GIB), vae_bytes = int(5.41 * GIB))
 AUTO = ("--offload-to-cpu", "--diffusion-fa", "--max-vram", "-1")
-LOW_VRAM = ("--offload-to-cpu", "--clip-on-cpu", "--diffusion-fa", "--vae-tiling", "--max-vram", "-1")
+LOW_VRAM = (
+    "--offload-to-cpu",
+    "--clip-on-cpu",
+    "--diffusion-fa",
+    "--vae-tiling",
+    "--max-vram",
+    "-1",
+)
 # A 48 GiB host: TTM's default pages_limit is half of RAM.
 GTT_48 = 24 * GIB
 
 
-def _fit(flags, mode, *, accelerator = "vulkan", gtt = GTT_48, host = 40 * GIB, sizes = Q4, env = None):
+def _fit(
+    flags,
+    mode,
+    *,
+    accelerator = "vulkan",
+    gtt = GTT_48,
+    host = 40 * GIB,
+    sizes = Q4,
+    env = None,
+):
     return h3_native_memory_fit(
         flags,
         accelerator = accelerator,
@@ -114,12 +130,16 @@ def test_the_radv_failure_reads_as_memory_with_the_settings_that_help():
 
 
 def test_a_bare_device_loss_is_explained_as_likely_memory():
-    detail = video_failure_detail(RuntimeError("sd-cli exited 1. Last output:\nggml_vulkan: device lost"))
+    detail = video_failure_detail(
+        RuntimeError("sd-cli exited 1. Last output:\nggml_vulkan: device lost")
+    )
     assert "reset the device" in detail and "Low VRAM" in detail
 
 
 def test_an_unrelated_native_crash_keeps_its_old_text():
-    detail = video_failure_detail(RuntimeError("sd-cli exited -11. Last output:\nSegmentation fault"))
+    detail = video_failure_detail(
+        RuntimeError("sd-cli exited -11. Last output:\nSegmentation fault")
+    )
     assert "renderer stopped unexpectedly" in detail
 
 
