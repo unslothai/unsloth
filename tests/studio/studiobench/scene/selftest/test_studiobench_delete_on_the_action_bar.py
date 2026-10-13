@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`delete_message` reaches Delete where the app puts it: the last item of the reply's More menu.
+"""`delete_message` reaches Delete where the app puts it: a button on the reply's action bar.
 
-#12735 took Delete off the assistant action bar and made it the More menu's last item. The scene
-still looked for a "Delete message" button on the bar, waited out `ACTION_BAR_WAIT_MS` for it, and
-reported `delete_message: NOT RUN -- no Delete button`, which fails the real-path session's
-liveness gate on every pull request.
+#12735 moved Delete off the assistant action bar into the More menu, and #13615 put it back on the
+bar as an inline button. Each move left the scene looking in the old place, waiting out its bound
+and reporting `delete_message: NOT RUN`, which fails the real-path session's liveness gate.
 
 Two checks. The first runs the shipped `DELETE_JS` and `dom.js` in node against a shim of the
-handful of DOM calls they make, so the menu walk is exercised rather than re-implemented. The
-second reads thread.tsx and requires every control name the scene asks for to still be rendered
-there, so the next move of a control fails here, with its name, instead of as a NOT RUN in a
-browser job.
+handful of DOM calls they make, so the lookup is exercised rather than re-implemented. The second
+reads thread.tsx and requires every control name the scene asks for to still be rendered there, so
+the next move of a control fails here, with its name, instead of as a NOT RUN in a browser job.
 """
 
 from __future__ import annotations
@@ -40,10 +38,8 @@ HARNESS_JS = r"""
 const fs = require("fs");
 const domSrc = fs.readFileSync(process.argv[2], "utf8");
 const deleteSrc = fs.readFileSync(process.argv[3], "utf8");
-const menuNames = JSON.parse(process.argv[4]);
+const barNames = JSON.parse(process.argv[4]);
 
-// A node matches a selector when the selector is in its `sel` list: dom.js reads the app through
-// a short fixed list of selectors, and a real matcher would only be a second thing to get wrong.
 const node = (sel, attrs, kids) => {
   const self = {
     sel: sel,
@@ -68,42 +64,27 @@ const node = (sel, attrs, kids) => {
   return self;
 };
 
-const state = { menuOpen: false, escapes: 0, menuLookups: 0 };
-// The portal mounting is a change to body's children, delivered to observers as the app's would be.
+const state = { escapes: 0 };
 const observers = [];
 class MutationObserver {
   constructor(cb) { this.cb = cb; }
   observe() { observers.push(this); }
   disconnect() { const i = observers.indexOf(this); if (i >= 0) observers.splice(i, 1); }
 }
-const setMenu = (open) => {
-  state.menuOpen = open;
-  for (const o of observers.slice()) o.cb();
-};
-// The menu mounts this many paints after the trigger is pressed, as a portal does a commit later.
-let paintsUntilMenu = 0;
 const user = node(['[data-role]', '[data-role="user"]'], {});
 let messages = [user];
-
-// Radix: the trigger opens on pointerdown, an item selects on click.
-const more = node(["button"], {
-  "aria-label": "More",
-  on: (ev) => { if (ev && ev.type === "pointerdown") paintsUntilMenu = 3; },
-});
-const bar = node([".aui-assistant-action-bar-root"], {}, [more]);
-const assistant = node(['[data-role]', '[data-role="assistant"]'], {}, [bar]);
-messages.push(assistant);
-
-const items = menuNames.map((name) => node([".aui-action-bar-more-item"], {
-  text: name,
+let assistant = null;
+const buttons = barNames.map((name) => node(["button"], {
+  "aria-label": name,
   click: () => {
     if (name !== "Delete") return;
-    setMenu(false);
     assistant.isConnected = false;
     messages = messages.filter((m) => m !== assistant);
   },
 }));
-const menu = node([".aui-action-bar-more-content"], {}, items);
+const bar = node([".aui-assistant-action-bar-root"], {}, buttons);
+assistant = node(['[data-role]', '[data-role="assistant"]'], {}, [bar]);
+messages.push(assistant);
 
 const document = {
   body: { sel: ["body"] },
@@ -111,14 +92,10 @@ const document = {
   querySelectorAll: (s) => {
     if (s === "[data-role]") return messages;
     if (s === '[data-role="assistant"]') return messages.filter((m) => m === assistant);
-    if (s === ".aui-action-bar-more-content") {
-      state.menuLookups += 1;
-      return state.menuOpen ? [menu] : [];
-    }
     return [];
   },
   dispatchEvent: (ev) => {
-    if (ev && ev.key === "Escape") { setMenu(false); state.escapes += 1; }
+    if (ev && ev.key === "Escape") state.escapes += 1;
     return true;
   },
 };
@@ -127,10 +104,7 @@ class PointerEvent { constructor(type, init) { this.type = type; Object.assign(t
 class KeyboardEvent { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } }
 
 const window = {};
-window.__sbNextPaint = () => new Promise((r) => setTimeout(() => {
-  if (paintsUntilMenu > 0 && --paintsUntilMenu === 0) setMenu(true);
-  r();
-}, 5));
+window.__sbNextPaint = () => new Promise((r) => setTimeout(r, 5));
 window.addEventListener = () => {};
 
 (new Function("window", "document", "PointerEvent", "MutationObserver", domSrc))(
@@ -142,16 +116,14 @@ const run = (new Function(
 ))(window, document, PointerEvent, KeyboardEvent, performance);
 
 run({ timeoutMs: 2000, waitForButtonMs: 300 }).then((out) => {
-  out.menuOpenAfter = state.menuOpen;
   out.escapes = state.escapes;
-  out.menuLookups = state.menuLookups;
   console.log(JSON.stringify(out));
   process.exit(0);
 }, (err) => { console.error(String((err && err.stack) || err)); process.exit(1); });
 """
 
 
-def _run(menu_names: list[str]) -> dict:
+def _run(bar_names: list[str]) -> dict:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
@@ -161,7 +133,7 @@ def _run(menu_names: list[str]) -> dict:
         delete_js = Path(tmp) / "delete.js"
         delete_js.write_text(DELETE_JS.strip(), encoding = "utf-8")
         done = subprocess.run(
-            [node, str(harness), str(DOM_JS), str(delete_js), json.dumps(menu_names)],
+            [node, str(harness), str(DOM_JS), str(delete_js), json.dumps(bar_names)],
             capture_output = True,
             text = True,
             timeout = 60,
@@ -170,23 +142,18 @@ def _run(menu_names: list[str]) -> dict:
     return json.loads(done.stdout.strip().splitlines()[-1])
 
 
-def test_delete_opens_the_more_menu_and_selects_its_delete_item():
-    out = _run(["Edit response", "Fork in new chat", "Delete"])
+def test_delete_clicks_the_bar_button_and_the_reply_leaves():
+    out = _run(["Copy", "Edit response", "Delete", "More"])
     assert out["ran"] is True, out
-    assert out["ms"] is not None, "the reply never left the document after Delete was selected"
+    assert out["ms"] is not None, "the reply never left the document after Delete was clicked"
     assert (out["before"], out["after"]) == (2, 1), out
-    # The menu mounts three paints late. The document-wide lookup for it runs on the first look
-    # and when body's children change, not once per paint while waiting.
-    assert out["menuLookups"] <= 2, out
+    assert out["escapes"] == 0, "nothing was opened, so nothing should be dismissed"
 
 
-def test_a_menu_without_delete_is_reported_and_closed():
-    out = _run(["Edit response", "Fork in new chat"])
+def test_a_bar_without_delete_is_reported_not_run():
+    out = _run(["Copy", "Edit response", "More"])
     assert out["ran"] is False
-    assert "no Delete item in the More menu" in out["reason"], out["reason"]
-    assert (
-        out["menuOpenAfter"] is False and out["escapes"] == 1
-    ), "a menu the action opened and could not use must be closed, or it covers the next action"
+    assert "no Delete button" in out["reason"], out["reason"]
 
 
 def _names_the_scene_asks_for() -> tuple[set[str], set[str]]:
@@ -232,9 +199,10 @@ def test_every_control_the_scene_asks_for_is_still_rendered():
     message's action bar renders in thread.tsx."""
     tsx = _assistant_bar_source(THREAD_TSX.read_text(encoding = "utf-8"))
     buttons, items = _names_the_scene_asks_for()
-    assert (
-        {"More", "Copy"} <= buttons and "Delete" in items
-    ), "parsed fewer control names than the scene uses; this check would pass on nothing"
+    assert {
+        "Copy",
+        "Delete",
+    } <= buttons, "parsed fewer control names than the scene uses; this check would pass on nothing"
     tooltips = set(re.findall(r"tooltip=\"([^\"]+)\"", tsx))
     # An item's label is its last line of text before the closing tag. Its attributes can hold
     # arrow functions, so the opening tag cannot be skipped with a `[^>]*` match.

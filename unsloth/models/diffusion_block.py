@@ -18,6 +18,12 @@ import types
 import torch
 import torch.nn.functional as F
 
+from .diffusion_loss import (
+    chunked_cross_entropy,
+    compile_loss,
+    is_distributed_wrapper,
+    is_plain_linear,
+)
 from .diffusion_profiles import (
     DiffusionProfile,
     register_diffusion_profile,
@@ -53,12 +59,7 @@ def block_diffusion_attention_mask(
 _unwrap = unwrap_diffusion_model
 
 
-def _is_distributed_wrapper(model):
-    return type(model).__name__ in (
-        "DistributedDataParallel",
-        "FullyShardedDataParallel",
-        "DeepSpeedEngine",
-    )
+_is_distributed_wrapper = is_distributed_wrapper
 
 
 class BlockDiffusionProfile(DiffusionProfile):
@@ -139,8 +140,16 @@ class BlockDiffusionProfile(DiffusionProfile):
         maskable = response_mask(inputs)
         if not self.defaults.get("eos_fill", False):
             return input_ids, maskable, valid
-        if (valid[:, 1:] & ~valid[:, :-1]).any():
-            raise ValueError("Unsloth: block-diffusion training expects right padding.")
+        base = _unwrap(model)
+        if not base.__dict__.get("_unsloth_right_padding_checked", False):
+            # Padding side is fixed per run: check until a padded batch is seen, then stop.
+            left_padded, padded = torch.stack(
+                [(valid[:, 1:] & ~valid[:, :-1]).any(), (~valid).any()]
+            ).tolist()
+            if left_padded:
+                raise ValueError("Unsloth: block-diffusion training expects right padding.")
+            if padded:
+                base.__dict__["_unsloth_right_padding_checked"] = True
         # Turns end with a terminator, not EOS, so stopping is learnt only from a supervised EOS tail (as the
         # reference's max-length EOS padding); pad to the next block past the longest row.
         block = self.block_size(model, args)
@@ -177,17 +186,19 @@ class BlockDiffusionProfile(DiffusionProfile):
         p = low + (high - low) * torch.rand(batch, device = clean.device)
         masked = (torch.rand(batch, length, device = clean.device) < p[:, None]) & maskable
         if self.defaults.get("ensure_masked", False):
+            # Rescue draw taken every step (fixed shape, no host sync); it only changes rows left empty.
             empty = maskable.any(dim = 1) & ~masked.any(dim = 1)
-            if empty.any():
-                scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
-                pick = F.one_hot(scores.argmax(dim = 1), length).bool()
-                masked = masked | (pick & empty[:, None])
+            scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
+            pick = F.one_hot(scores.argmax(dim = 1), length).bool()
+            masked = masked | (pick & empty[:, None])
         return torch.where(masked, mask_token_id, clean), masked, p
 
     def attention_mask(self, length, block_size, valid, dtype, device):
         mask = block_diffusion_attention_mask(length, block_size, device)[None, None]
         batch = valid.shape[0]
-        if self.defaults.get("key_padding", False) and not bool(valid.all()):
+        if self.defaults.get("key_padding", False):
+            # Unconditional: with no padding `keys` is all True and the diagonal is already allowed, so a
+            # padding-free batch gets the same mask without a host sync.
             keys = torch.cat([valid, valid], dim = 1)[:, None, None, :]
             # Padding is its own segment in the reference; a padding query keeps its diagonal so no row is empty.
             mask = (mask & keys) | torch.eye(2 * length, dtype = torch.bool, device = device)[
@@ -224,29 +235,49 @@ class BlockDiffusionProfile(DiffusionProfile):
         )
         return out[0][:, :length], head
 
-    def loss_from_noise(self, model, clean, noisy, masked, maskable, p, valid, args):
+    def loss_from_noise(
+        self,
+        model,
+        clean,
+        noisy,
+        masked,
+        maskable,
+        p,
+        valid,
+        args,
+        with_metrics = False,
+    ):
         block_size = self.block_size(model, args)
-        hidden, head = self.noisy_hidden_and_head(model, noisy, clean, valid, block_size)
-        if head is None:
-            logits = hidden[masked].float()
-        else:
-            # Project only the masked positions: the vocab-sized logits are the memory peak otherwise.
-            logits = head(hidden[masked]).float()
-        nll = F.cross_entropy(logits, clean[masked], reduction = "none")
         weighting = self.option(args, "diffusion_time_weighting", "none")
         if weighting not in ("inverse_t", "none"):
             raise ValueError(
                 f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
             )
+        hidden, head = self.noisy_hidden_and_head(model, noisy, clean, valid, block_size)
+        if head is not None and not is_plain_linear(head):
+            # A quantized / LoRA / offloaded / hooked head only runs through its own forward.
+            hidden, head = head(hidden), None
+        targets = torch.where(masked, clean, -100)
+        weights = masked.float()
         if weighting == "inverse_t":
-            nll = nll / p[:, None].expand_as(masked)[masked].float()
+            # Divide only where masked: an unmasked row with p = 0 (diffusion_eps = 0) would give 0 / 0.
+            weights = weights / torch.where(masked, p[:, None].float(), 1.0)
+        # Unmasked rows are ignored targets, so the shape is fixed whatever was masked.
+        weighted, ce_sum, count = chunked_cross_entropy(
+            hidden,
+            targets,
+            weights,
+            weight = None if head is None else head.weight,
+            bias = None if head is None else head.bias,
+            compiled = compile_loss(args, clean.device),
+        )
         if self.defaults.get("normalize", "masked") == "supervised":
             denominator = maskable.sum()
         else:
-            denominator = masked.sum()
-        loss = nll.sum() / denominator.clamp_min(1)
-        if not masked.any():
-            loss = loss + hidden.sum() * 0.0
+            denominator = count
+        loss = weighted / denominator.clamp_min(1)
+        if with_metrics:
+            return loss, ce_sum, count
         return loss
 
     def compute_loss(
@@ -259,10 +290,13 @@ class BlockDiffusionProfile(DiffusionProfile):
         clean, maskable, valid = self.build_batch(model, inputs, args)
         mask_token_id = self.mask_token_id(model, args)
         noisy, masked, p = self.sample_noise(clean, maskable, mask_token_id, args)
-        loss = self.loss_from_noise(model, clean, noisy, masked, maskable, p, valid, args)
+        loss, ce_sum, count = self.loss_from_noise(
+            model, clean, noisy, masked, maskable, p, valid, args, with_metrics = True
+        )
         metrics = {
-            "mask_ratio": (masked.sum() / maskable.sum().clamp_min(1)).item(),
-            "masked_tokens": masked.sum().item(),
+            "mask_ratio": (count / maskable.sum().clamp_min(1)).detach(),
+            "masked_tokens": count.detach(),
+            "masked_ce": (ce_sum / count.clamp_min(1)).detach(),
         }
         return loss, None, metrics
 
@@ -347,9 +381,9 @@ def _module(name, **attributes):
 
 @contextlib.contextmanager
 def _sdar_remote_code_imports():
-    """SDAR's modeling file imports flash-attn's RMSNorm and 4.x `LossKwargs` at module level. Provide
-    torch stand-ins only while it imports when flash-attn is absent; the module keeps its references."""
-    import importlib.util
+    """SDAR's modeling file imports flash-attn's RMSNorm, 4.x `LossKwargs` and `SlidingWindowCache` at
+    module level. Provide stand-ins only while it imports; the module keeps its references."""
+    import transformers.cache_utils as cache_utils
     import transformers.utils as transformers_utils
 
     if not hasattr(transformers_utils, "LossKwargs"):
@@ -358,6 +392,22 @@ def _sdar_remote_code_imports():
             num_items_in_batch: Optional[torch.Tensor]
 
         transformers_utils.LossKwargs = LossKwargs
+    # Missing from some transformers 5.x releases (5.5 has none); SDAR only isinstance-checks it, and nothing builds one.
+    added_sliding_cache = not hasattr(cache_utils, "SlidingWindowCache")
+    if added_sliding_cache:
+        cache_utils.SlidingWindowCache = type("SlidingWindowCache", (cache_utils.Cache,), {})
+    try:
+        with _sdar_flash_attn_stubs():
+            yield
+    finally:
+        if added_sliding_cache:
+            del cache_utils.SlidingWindowCache
+
+
+@contextlib.contextmanager
+def _sdar_flash_attn_stubs():
+    import importlib.util
+
     try:
         has_flash = importlib.util.find_spec("flash_attn") is not None
     except (ImportError, ValueError):

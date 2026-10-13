@@ -18170,13 +18170,9 @@ def _check_signal_escape_patterns(code: str):
             "warnings": [],
         }
 
-    # Whether a recognised egress call is possible AT ALL in this source. Every route to one -- an
-    # import, an alias of an import, a star import, or the module written out at the call -- spells
-    # the module's own name, so a source with none of these substrings has no candidate to resolve
-    # and the alias machinery below has nothing to say about it. One pass over the text, against
-    # three walks of the tree and a second visitor pass.
-    # Whether a recognised egress call is possible AT ALL in this tree. Read below.
-    network_possible = _network_candidates_possible(_tree_nodes(tree))
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
+    tree_nodes = _tree_nodes(tree)
+    network_possible = _network_candidates_possible(tree_nodes)
 
     signal_tampering = []
     exception_catching = []
@@ -19345,17 +19341,72 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
-    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
-    # module path leading to it.
+    def _is_local_database_target(target: str) -> bool:
+        if target.startswith(("md:", "motherduck:", "file:")):
+            return False
+        if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
+            return False
+        if (
+            len(target) >= 3
+            and target[0].isascii()
+            and target[0].isalpha()
+            and target[1] == ":"
+            and target[2] in "/\\"
+        ):
+            return True
+        return "://" not in target
+
+    def _local_database_names(nodes) -> frozenset:
+        """names that can only ever hold `sqlite3` / `duckdb`, judged over the whole source.
+
+        Deliberately scope-blind: any other binding of the name anywhere (parameter, assignment,
+        loop target, class attribute, `nonlocal` rebinding, ...) or any star import fails closed
+        to the host check, so no scope resolution can be fooled. `db = sqlite3` copies are kept,
+        resolved with a worklist so long copy chains stay linear.
+        """
+        imported: set[str] = set()
+        other: set[str] = set()
+        copies: dict[str, set[str]] = {}
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+                return frozenset()
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                copies.setdefault(node.targets[0].id, set()).add(node.value.id)
+            else:
+                other.update(_binding_names(node))
+        trusted = {name for name in imported - other if name not in copies}
+        remaining = {
+            name: set(sources) - trusted for name, sources in copies.items() if name not in other
+        }
+        waiting: dict[str, list[str]] = {}
+        for name, sources in remaining.items():
+            for source in sources:
+                waiting.setdefault(source, []).append(name)
+        queue = [name for name, sources in remaining.items() if not sources]
+        while queue:
+            name = queue.pop()
+            trusted.add(name)
+            for dependent in waiting.pop(name, ()):
+                remaining[dependent].discard(name)
+                if not remaining[dependent]:
+                    queue.append(dependent)
+        return frozenset(trusted)
+
+    # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
 
     def _scope_bodies(nodes, tree):
-        """`(scope id, statement list)` for the module and for every function, lambda and class body.
-
-        A shadow belongs to the scope whose body it sits directly in, so this is what says which
-        statements can shadow a name for which calls. The module is scope 0. A lambda has an
-        expression rather than a body, so it contributes no statements, only its parameters.
-        """
+        """yield statement scopes; module id is 0, while lambdas contribute only parameters."""
         yield 0, getattr(tree, "body", [])
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -19574,30 +19625,15 @@ def _check_signal_escape_patterns(code: str):
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
-            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
-            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
-            # no prefix and a hardcoded attacker host passed the screen untouched.
-            # Name -> every network module ever bound to it, because this map is not scope
-            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
-            # `import requests as r`, and the module-level `r.get(...)` after it would carry
-            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
-            # anywhere can add a way to recognise a call and never take one away.
+            # accumulate module aliases so nested imports cannot hide outer network calls
             self.module_aliases: dict[str, set[str]] = {}
-            # Name -> every network function ever bound to it, accumulated for the same reason:
-            # `from requests import get as fetch` followed by a nested, never-called
-            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
-            # and overwriting the entry resolved the call to the unrecognised socket function.
+            # accumulate function aliases for the same scope-insensitive rebinding case
             self.func_aliases: dict[str, set[str]] = {}
-            # Name -> every string literal it can hold, None when unreadable. `url =
-            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
-            # All three are read ONLY to answer a question about a recognised egress call, so
-            # when the source cannot name a network module none of them can change a verdict and
-            # none are built. That is the difference between walking this tree three more times
-            # and not touching it at all, and ordinary tool code takes the second path.
+            self.local_databases: "frozenset | None" = None
+            # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
             self.literal_names = _collect_literal_names(nodes) if network_possible else {}
-            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
-            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            # track names rebound away from `urllib.request.Request` for URL unwrapping
             self.rebound_anywhere = (
                 _names_bound_to_something_else(nodes) if network_possible else frozenset()
             )
@@ -19974,11 +20010,17 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(value)
 
         def _register_alias(self, name: str, node) -> None:
-            """Note where a network alias was bound to `name`, so a shadow older than this one no
-            longer applies. See `_is_shadowed`."""
+            """record network alias positions so newer imports supersede older shadows."""
             self.alias_lines.setdefault(name, []).append(
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
+
+        def _names_local_database(self, owner) -> bool:
+            if not isinstance(owner, ast.Name):
+                return False
+            if self.local_databases is None:
+                self.local_databases = _local_database_names(tree_nodes)
+            return owner.id in self.local_databases
 
         def _is_shadowed(
             self,
@@ -19986,19 +20028,7 @@ def _check_signal_escape_patterns(code: str):
             at,
             after_star: bool = False,
         ) -> bool:
-            """Whether a module-level rebinding of `name` has certainly happened by `at`.
-
-            Positions are `(lineno, col_offset)`, so a semicolon-separated
-            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
-            comparing lines alone made the rebinding invisible.
-
-            A call inside a function, lambda or class body is never shadowed: the body can be
-            invoked at any point, including before the rebinding. At module level the rebinding
-            counts only for what comes AFTER it, and only while no alias registration comes between
-            the two: the last `import`, `from ... import` or module-carrying assignment before the
-            call supersedes every shadow older than it. For a star-imported name the star import is
-            that registration, since it rebinds every exported name.
-            """
+            """whether a module binding shadows an alias until a later registration."""
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
             return any(
@@ -20714,7 +20744,11 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    if not (
+                        self._names_local_database(node.func.value)
+                        and _is_local_database_target(a0.value.lower())
+                    ):
+                        host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
