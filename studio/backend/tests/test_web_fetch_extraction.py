@@ -401,6 +401,15 @@ def test_dialog_skip_does_not_recover_through_implicitly_closed_paragraph(main_c
     assert "intro" in out and "After" in out
 
 
+@pytest.mark.parametrize("block", ["center", "dir", "listing", "search", "summary"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_block_start_closes_paragraph_before_skipped_form_chrome(block, main_content):
+    html = f"<p>intro<{block}><datalist>Hidden</p>Menu text</datalist></{block}><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
 @pytest.mark.parametrize("table_tag", ["caption", "tbody", "td", "tfoot", "th", "thead", "tr"])
 @pytest.mark.parametrize("main_content", [False, True])
 def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, main_content):
@@ -408,6 +417,36 @@ def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, 
     out = html_to_markdown(html, main_content = main_content)
     assert "Hidden" not in out and "Menu text" not in out
     assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_caption_start_closes_the_active_cell_before_skip_recovery(main_content):
+    html = "<table><tr><td><caption><nav>Hidden</td>Menu text</nav></caption></table><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_nested_button_start_replaces_outer_skipped_button(main_content):
+    html = "<button>Title<button>Inner</button><nav>Hidden</button>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("foreign", ["<svg><g>", "<math><mrow>"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_button_start_does_not_close_html_button(foreign, main_content):
+    closing = "</g></svg>" if foreign.startswith("<svg") else "</mrow></math>"
+    html = (
+        f"<button>Title{foreign}<button>Inner</button>{closing}"
+        "<nav>Hidden</button>Menu text</nav><p>After</p>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" not in out and "Inner" not in out and "Hidden" not in out
+    assert "Menu text" in out and "After" in out
 
 
 @pytest.mark.parametrize(

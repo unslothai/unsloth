@@ -128,8 +128,10 @@ _P_CLOSING_TAGS = frozenset(
         "article",
         "aside",
         "blockquote",
+        "center",
         "details",
         "dialog",
+        "dir",
         "div",
         "dl",
         "fieldset",
@@ -152,7 +154,10 @@ _P_CLOSING_TAGS = frozenset(
         "ol",
         "p",
         "pre",
+        "listing",
+        "search",
         "section",
+        "summary",
         "table",
         "ul",
     }
@@ -266,6 +271,10 @@ _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
 _TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"})
 _TABLE_CONTEXT_END_TAGS = _TABLE_END_TAGS - {"table"}
+_TABLE_ONLY_START_TAGS = _TABLE_CONTEXT_END_TAGS | {"col", "colgroup"}
+_TABLE_CELL_TAGS = frozenset({"td", "th"})
+_TABLE_SECTION_TAGS = frozenset({"tbody", "tfoot", "thead"})
+_TABLE_SECTION_START_TAGS = _TABLE_SECTION_TAGS | {"caption", "col", "colgroup"}
 _INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
 # repeated span cells use half the 16k fetch limit to leave room for text after the table
 _MAX_SPAN_CHARS = 8_000
@@ -1285,6 +1294,8 @@ class _MarkdownRenderer(HTMLParser):
         if not self._skip_namespaces:
             return self._html_start_namespace(tag)
         parent_namespace = self._skip_namespaces[-1]
+        if parent_namespace == "html":
+            return self._html_start_namespace(tag)
         if self._skip_html_integration[-1] and not (
             parent_namespace == "math" and tag in {"mglyph", "malignmark"}
         ):
@@ -1301,6 +1312,14 @@ class _MarkdownRenderer(HTMLParser):
             return True
         encoding = (attrs.get("encoding") or "").strip().lower()
         return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
+
+    def _truncate_skip_tags(self, index: int) -> None:
+        for position, name in enumerate(self._skip_tags[index:], start = index):
+            self._skip_at[name].pop()
+            self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
+        del self._skip_tags[index:]
+        del self._skip_namespaces[index:]
+        del self._skip_html_integration[index:]
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
@@ -1387,6 +1406,38 @@ class _MarkdownRenderer(HTMLParser):
                 self._scope_seg_start = None
         return not suppressed
 
+    def _latest_indexed_open_tag(
+        self,
+        names: frozenset[str],
+        after: int = -1,
+    ) -> tuple[int, str] | None:
+        candidates = (
+            (positions[-1], name)
+            for name in names
+            if (positions := self._open_at.get(name)) and positions[-1] > after
+        )
+        return max(candidates, default = None)
+
+    def _prepare_table_start(self, tag: str) -> None:
+        if not self._in_table or tag not in _TABLE_ONLY_START_TAGS:
+            return
+        tables = self._open_at.get("table")
+        table = tables[-1] if tables else -1
+        if caption := self._latest_indexed_open_tag(frozenset({"caption"}), table):
+            self._close_rendered_tag(caption[1])
+        if self._in_cell:
+            cell = self._latest_indexed_open_tag(_TABLE_CELL_TAGS, table)
+            if cell:
+                self._close_rendered_tag(cell[1])
+        if self._in_row and tag not in _TABLE_CELL_TAGS:
+            row = self._latest_indexed_open_tag(frozenset({"tr"}), table)
+            if row:
+                self._close_rendered_tag(row[1])
+        if tag in _TABLE_SECTION_START_TAGS:
+            section = self._latest_indexed_open_tag(_TABLE_SECTION_TAGS, table)
+            if section:
+                self._close_rendered_tag(section[1])
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         if self._title_scan is not None:
@@ -1394,7 +1445,11 @@ class _MarkdownRenderer(HTMLParser):
         title_button = (
             tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
-        if tag in _TABLE_CONTEXT_END_TAGS and not self._in_table:
+        if self._skip_tags and tag == "button" and self._skipped_tag_namespace(tag) == "html":
+            button = self._last_skip_position("button", "html")
+            if button >= 0 and self._skip_target_in_scope(tag, button):
+                self._truncate_skip_tags(button)
+        if tag in _TABLE_ONLY_START_TAGS and not self._in_table:
             return
 
         if self._skip_tags:
@@ -1413,6 +1468,7 @@ class _MarkdownRenderer(HTMLParser):
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
         self._close_implicit(tag)
+        self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
@@ -1565,12 +1621,7 @@ class _MarkdownRenderer(HTMLParser):
                 i = at[-1]
                 if not self._skip_target_in_scope(tag, i):
                     return
-                for position, name in enumerate(self._skip_tags[i:], start = i):
-                    self._skip_at[name].pop()
-                    self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
-                del self._skip_tags[i:]
-                del self._skip_namespaces[i:]
-                del self._skip_html_integration[i:]
+                self._truncate_skip_tags(i)
                 return
             # only scoped structural end tags pop skipped elements; form and inline end tags do not
             if tag not in _SKIP_RECOVERY_END_TAGS:
