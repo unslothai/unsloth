@@ -212,14 +212,13 @@ class BlockHead:
 
 
 def resolve_compile(compile, device):
-    """How the backbone runs on this device. "auto" / False / None, or anything off CUDA: plain eager. True /
-    "graphs": eager kernels replayed from CUDA Graphs (same numbers as eager; on LLaDA-8B only ~4% faster for
-    ~0.7 GB more reserved memory, so it is opt-in). Other strings pick torch.compile:
+    """How the backbone runs on this device. "auto" / True: eager kernels replayed from CUDA Graphs ("graphs",
+    same numbers as eager); False / None, or anything off CUDA: plain eager. Other strings pick torch.compile:
     "cudagraphs" (dynamo backend, eager numerics, re-traced per canvas length) or an inductor mode such as
     "default" / "reduce-overhead" (fused kernels, so greedy output can drift from eager)."""
-    if compile is None or compile is False or compile == "auto" or device.type != "cuda":
+    if compile is None or compile is False or device.type != "cuda":
         return None
-    if compile is True or compile == "graphs":
+    if compile is True or compile == "auto":
         return "graphs"
     return str(compile)
 

@@ -610,8 +610,7 @@ def generate_text(
     on_frame(frame) receives the canvas while it denoises: {"block", "step", "total", "tokens" (the generated
     region, `max_new_tokens` ids, unresolved slots = "mask_id"), "mask_id"}, at most once per
     `frame_interval_s` plus once per finished block, always on this thread and never after return.
-    `compile`: "auto" (each family's measured-fastest exact path), True / "graphs" (CUDA Graph replay of the
-    eager backbone), False, or a torch.compile mode such as "reduce-overhead" (fused kernels, may drift)."""
+    `compile`: "auto" (CUDA only), True, False, or a torch.compile mode such as "reduce-overhead"."""
     name = diffusion_profile_name(model)
     sampler = _SAMPLERS.get(name)
     if sampler is None:
