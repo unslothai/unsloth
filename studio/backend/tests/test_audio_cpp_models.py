@@ -2112,6 +2112,88 @@ def test_a_started_job_reports_its_row_without_touching_the_hub(hub, monkeypatch
     assert calls == []
 
 
+def _restarted_offline(monkeypatch):
+    """A new backend process: no in-memory records, no Hub, nothing of the folder cached."""
+
+    def refused(*_args, **_kw):
+        raise OSError("Hub unreachable")
+
+    monkeypatch.setattr(acm, "_job_rows", {})
+    monkeypatch.setattr(acm, "_hub_listing", refused)
+    monkeypatch.setattr(acm, "_listing_cache", {})
+    acm.forget()
+
+
+@pytest.mark.parametrize("folder", sorted(CROWDED_FOLDERS))
+def test_a_restarted_backend_still_names_a_crowded_folder_job_by_row(hub, monkeypatch, folder):
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    targets = {quant: acm.download_target(row, quant) for quant in _rows(row)}
+    _restarted_offline(monkeypatch)
+    for quant, target in targets.items():
+        assert acm.folder_row_for_download(*target) == (row, quant)
+
+
+def test_a_damaged_saved_record_falls_back_to_the_path(hub, monkeypatch):
+    folder = "Moonshine-Streaming-GGUF"
+    key = f"{folder}/moonshine-streaming-small-q8_0"
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    path = acm._job_rows_path(create = True)
+    for text in (
+        "{not json",
+        "[]",
+        json.dumps({key.lower(): "small/Q8_0"}),
+        json.dumps({key.lower(): [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "small/Q8_0"]}),
+    ):
+        path.write_text(text, encoding = "utf-8")
+        _restarted_offline(monkeypatch)
+        assert acm.folder_row_for_download(AUDIO_CPP_REPO, key) == (row, "Q8_0")
+
+
+def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
+    import logging
+
+    from core.inference import local_model_resolver
+    from hub.services import download_lifecycle
+
+    folder = "Moonshine-Streaming-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    small = acm.download_target(row, "small/Q8_0")
+    tiny = acm.download_target(row, "tiny/Q8_0")
+    assert set(acm._saved_job_rows()) == {small[1].lower(), tiny[1].lower()}
+    monkeypatch.setattr(local_model_resolver, "note_downloaded", lambda *a: None)
+    monkeypatch.setattr(local_model_resolver, "invalidate_index", lambda **k: None)
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(download_lifecycle.account_access, "record_model_grant", lambda *a: None)
+    monkeypatch.setattr(
+        download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
+    )
+    registry = SimpleNamespace(
+        cancel_requested = lambda key: True,
+        drop_process = lambda *a: True,
+        get_job_metadata = lambda key: None,
+        set_job = lambda *a: None,
+        update_job_transport = lambda *a: None,
+    )
+    download_lifecycle.finalize_worker_exit(
+        registry,
+        f"{AUDIO_CPP_REPO}::{small[1]}",
+        SimpleNamespace(stderr = io.BytesIO(), wait = lambda: 1),
+        hf_token = None,
+        label = AUDIO_CPP_REPO,
+        log_prefix = "Download",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+    )
+    assert set(acm._saved_job_rows()) == {tiny[1].lower()}
+    # This process keeps its own copy, and a restarted download records it again.
+    assert acm.folder_row_for_download(*small) == (row, "small/Q8_0")
+    acm.download_target(row, "small/Q8_0")
+    assert set(acm._saved_job_rows()) == {small[1].lower(), tiny[1].lower()}
+
+
 def test_folder_rows_without_crowding_keep_their_keys(hub, monkeypatch):
     _online(
         monkeypatch,

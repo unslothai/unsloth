@@ -596,6 +596,14 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
+    if repo_type == "model":
+        # The job is over: its audio.cpp row record need not outlive this process.
+        try:
+            from core.inference.audio_cpp_models import forget_job_row
+
+            forget_job_row(repo_id, download_registry.variant_from_key(key))
+        except Exception:
+            logger.debug("audio.cpp download row was not pruned", exc_info = True)
     if state == "complete":
         if repo_id and repo_type:
             account_access.record_model_grant(repo_id, repo_type)
