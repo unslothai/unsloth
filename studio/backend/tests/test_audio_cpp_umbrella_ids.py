@@ -407,10 +407,33 @@ def test_a_folder_delete_preview_counts_extras_its_variants_share(hub, monkeypat
     assert len(_left(hub)) == 3
 
 
-def test_a_variant_delete_keeps_voice_files_a_downloading_sibling_needs(hub, monkeypatch):
-    from hub.services.models import deletion
+@pytest.mark.parametrize(
+    "peer, kept",
+    [
+        # english BF16 is downloading: its voices landed first, its GGUF is not listed yet.
+        ("PocketTTS-GGUF/english/pocket-tts-english-bf16", True),
+        # Every umbrella folder downloads on the same repo; another folder needs nothing here.
+        ("Kokoro-82M-GGUF/kokoro-82m-q4_0", False),
+    ],
+)
+def test_a_variant_delete_keeps_voice_files_only_a_downloading_sibling_needs(
+    hub, monkeypatch, peer, kept
+):
+    from hub.services.models import companion_cleanup, deletion
+    from hub.utils import download_registry
 
     _idle(monkeypatch)
+    registry = download_registry.DownloadRegistry()
+    registry.claim(
+        f"{AUDIO_CPP_REPO}::{peer}",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+        variant = peer,
+        blob_hashes = frozenset({"peer"}),
+        progress_blob_hashes = frozenset({"peer"}),
+    )
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
     snap = hub / SNAPSHOT
     blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
     pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
@@ -422,13 +445,12 @@ def test_a_variant_delete_keeps_voice_files_a_downloading_sibling_needs(hub, mon
     path.parent.mkdir(parents = True, exist_ok = True)
     os.symlink(os.path.relpath(voice, path.parent), path)
     acm.forget()
-    # english BF16 is downloading: its voices landed first, its GGUF is not listed yet.
-    monkeypatch.setattr(
-        deletion.downloads.registry, "has_active_peer_variant", lambda *a, **k: True
-    )
+    gguf = (snap / rel).stat().st_size
+    impact = asyncio.run(companion_cleanup.delete_impact_response(pocket, "english/Q8_0"))
+    assert impact["reclaimed_bytes"] == gguf + (0 if kept else 900)
     asyncio.run(deletion.delete_cached_model_response(pocket, "english/Q8_0"))
     assert not (snap / rel).exists()
-    assert path.exists() and voice.exists()
+    assert path.exists() is kept and voice.exists() is kept
 
 
 @pytest.mark.parametrize("folder", ["C:", "C:Qwen3-TTS-GGUF"])

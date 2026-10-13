@@ -260,12 +260,7 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
-def _audio_cpp_package_scope(
-    target_repo,
-    variant: str,
-    *,
-    sibling_active: bool = False,
-) -> tuple[frozenset[str], frozenset[str]]:
+def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
     """``(own files, protected files)`` of an audio.cpp package mix being deleted.
 
     A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
@@ -280,28 +275,28 @@ def _audio_cpp_package_scope(
     names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
     packages = package_variant_files(names)
     if not packages:
-        return _umbrella_variant_scope(target_repo, variant, sibling_active = sibling_active)
+        return _umbrella_variant_scope(target_repo, variant)
     wanted = (variant or "").strip().lower()
     own = next((files for key, files in packages.items() if key.lower() == wanted), ())
     protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
     return frozenset(own), frozenset(protected)
 
 
-def _umbrella_variant_scope(
-    target_repo,
-    variant: str,
-    *,
-    sibling_active: bool = False,
-) -> tuple[frozenset[str], frozenset[str]]:
+def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
     """``(own files, protected files)`` of one umbrella folder variant (``<Folder>/<file>`` key): its
     voice embeddings and configs go with it, unless another cached variant of the folder lists them.
-    A sibling still downloading is not listed yet, so its extras stay, like the mmproj does."""
+    A sibling in the same directory still downloading is not listed yet, so its extras stay."""
     from core.inference.audio_cpp_models import folder_row_for_download, resolve
 
-    row = folder_row_for_download(str(getattr(target_repo, "repo_id", "")), variant)
+    repo_id = str(getattr(target_repo, "repo_id", ""))
+    row = folder_row_for_download(repo_id, variant)
     model = resolve(row[0], network = False) if row else None
     if model is None:
         return frozenset(), frozenset()
+    # Every umbrella folder downloads on the same repo, so only a peer under this directory counts.
+    sibling_active = downloads.registry.has_active_peer_variant(
+        repo_id, variant, prefix = variant.rsplit("/", 1)[0] + "/"
+    )
     own: set[str] = set()
     protected: set[str] = set()
     for candidate in model.variants:
@@ -331,9 +326,7 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        package_files, protected = _audio_cpp_package_scope(
-            target_repo, variant, sibling_active = sibling_active
-        )
+        package_files, protected = _audio_cpp_package_scope(target_repo, variant)
         matched = [
             match
             for match in _repo_file_matches(

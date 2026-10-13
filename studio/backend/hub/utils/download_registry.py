@@ -1791,17 +1791,30 @@ class DownloadRegistry:
             if not scopes:
                 self._deleting.pop(repo_id, None)
 
-    def has_active_peer_variant(self, repo_id: str, variant: Optional[str]) -> bool:
+    def has_active_peer_variant(
+        self,
+        repo_id: str,
+        variant: Optional[str],
+        *,
+        prefix: Optional[str] = None,
+    ) -> bool:
         """Whether a DIFFERENT quantization of *repo_id* is downloading while *variant* is being deleted. When one is, the delete reclaims only this variant's files and leaves the shared companion (mmproj) for the live sibling. Point-in-time, but safe: the finalized companion is held by deletion's reference-count walk and a sibling starting mid-delete re-fetches it, so protection never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
+        # *prefix* narrows peers to variant keys under one path (one audio.cpp umbrella folder).
+        scope = (prefix or "").strip().lower()
+
+        def is_peer(key: str) -> bool:
+            peer = self._active_job_variant_locked(key)
+            return peer != target and (not scope or (peer or "").startswith(scope))
+
         with self._lock:
             active_keys = self._repo_active.get(repo_id, set())
             for key in active_keys:
                 job = self._jobs.get(key)
                 if job is None or job.state not in _ACTIVE_STATES:
                     continue
-                if self._active_job_variant_locked(key) != target:
+                if is_peer(key):
                     return True
             # A retry peer between release_active_slot() and its reclaim is briefly absent from _repo_active while it still owns the shared companion, so mirror the released-but-active scan.
             for key, job in self._jobs.items():
@@ -1809,7 +1822,7 @@ class DownloadRegistry:
                     continue
                 if job.state not in _ACTIVE_STATES:
                     continue
-                if self._active_job_variant_locked(key) != target:
+                if is_peer(key):
                     return True
         return False
 
