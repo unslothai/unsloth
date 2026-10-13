@@ -70,7 +70,10 @@ def create_early_stopping_callback(patience: int, user_stopped = None):
                 self._keep_best_weights(model)
                 return
             self.bad_evals += 1
-            if self.bad_evals >= self.patience and self.stopped_at is None:
+            # At the last step the run ends anyway; calling that an early stop would misreport it.
+            max_steps = getattr(state, "max_steps", 0)
+            steps_left = not max_steps or state.global_step < max_steps
+            if self.bad_evals >= self.patience and self.stopped_at is None and steps_left:
                 self.stopped_at = state.global_step
                 control.should_training_stop = True
                 logger.info(

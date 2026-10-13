@@ -377,3 +377,16 @@ def test_a_finished_run_rolls_back_unevaluated_steps():
     _State.global_step = 5
     callback.on_train_end(None, _State(), None, model = model)
     assert callback.restored and model.w.item() == 0.0 and callback._best_weights is None
+
+
+def test_running_out_of_patience_on_the_last_step_is_not_an_early_stop(tmp_path):
+    trainer = _trainer(tmp_path, max_steps = 3)
+    callback = attach_early_stopping(trainer, 2)
+    trainer.train()
+
+    assert (
+        trainer.state.global_step == 3 and callback.bad_evals == 2 and callback.stopped_at is None
+    )
+    assert callback.restored and trainer.model.w.item() == pytest.approx(
+        _w_after_steps(tmp_path, 1)
+    )
