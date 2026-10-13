@@ -330,9 +330,9 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
 def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     """Load the transformer alone in the resolved ``base_precision``. nf4: a prequant (bnb-4bit)
     repo carries its quantization config and loads 4-bit as-is, while a dense base is quantized
-    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8
-    convert its frozen linears to float8 training compute AFTER the LoRA attaches; storage stays
-    bf16). int8: the dense transformer quantized in place to torchao weight-only int8 (the
+    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer, converted AFTER the LoRA
+    attaches (fp8 stores its frozen linears in e4m3, about half the bf16 weight memory; mxfp8 keeps bf16 storage).
+    int8: the dense transformer quantized in place to torchao weight-only int8 (the
     PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
 
@@ -350,14 +350,45 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
+    if base_precision == "fp8":
+        transformer = _load_fp8_prequant_transformer(transformer_cls, cfg, device)
+        if transformer is not None:
+            return transformer
+
     # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
-    # constructor rejects the torchao-0.16 config API.
+    # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     ).to(device)
+
+
+def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
+    """The family's hosted fp8 denoiser (the file Studio inference uses) as the fp8 base, skipping the bf16 transformer
+    download; None (load bf16 and quantize, as before) when none is mapped for this exact base or it fails to load."""
+    import logging
+
+    from core.training.diffusion_fp8_prequant import load_fp8_transformer, resolve_fp8_checkpoint
+
+    log = logging.getLogger(__name__)
+    path = resolve_fp8_checkpoint(
+        getattr(cfg, "resolved_family", None), cfg.base_model, cfg.hf_token, logger = log
+    )
+    if path is None:
+        return None
+    try:
+        transformer = load_fp8_transformer(
+            transformer_cls, cfg.base_model, path, device, hf_token = cfg.hf_token
+        )
+    except Exception as exc:  # noqa: BLE001 -- the dense path still works
+        log.warning("fp8 prequant: %s did not load (%s); loading bf16", path, exc)
+        gc.collect()
+        return None
+    transformer._studio_fp8_prequant_path = path
+    log.info("fp8 base loaded from the pre-quantized checkpoint %s", path)
+    return transformer
 
 
 def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
@@ -399,11 +430,22 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     apply_small_m_padding(transformer, "int8", family)
 
 
-def _fp8_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision, since PEFT has no float8 base support), the output projection, and
-    shapes float8 kernels reject (dims not divisible by 16), matching the diffusers FLUX2
-    reference filter."""
+# Small-M linears (conditioning vectors, LTX-2 one-token audio) stay bf16: the float8 / MX casts cost more than the GEMM.
+# final_layer is Krea 2's output projection.
+_LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
+
+
+def _lowp_exclude_tokens(family: Optional[str] = None) -> tuple[str, ...]:
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+    return tuple(exclude_tokens_for_scheme("int8", family)) + _LOWP_EXTRA_EXCLUDE_TOKENS
+
+
+def _lowp_module_filter(
+    mod,
+    fqn: str,
+    align: int,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
     import torch.nn as nn
 
     if not isinstance(mod, nn.Linear):
@@ -412,93 +454,245 @@ def _fp8_module_filter(mod, fqn: str) -> bool:
         return False
     if fqn.endswith("proj_out") or ".proj_out." in fqn:
         return False
-    return mod.in_features % 16 == 0 and mod.out_features % 16 == 0
+    name = fqn.lower()
+    if any(tok in name for tok in exclude_tokens):
+        return False
+    return mod.in_features % align == 0 and mod.out_features % align == 0
 
 
-def _fp8_training_config():
-    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships the
-    recipe, else the tensorwise default. The DiT families carry extreme activation outliers
-    (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row scaling in the
-    inference quant layer): one tensor-wide dynamic scale pushes normal values (~1-30) below fp8
-    resolution, so the frozen base's forward -- the signal the LoRA regresses against --
-    degrades. Per-row scaling confines each outlier to its own token/channel. The tensorwise
-    fallback keeps pad_inner_dim so a non-16-aligned inner dim never aborts the scaled_mm (the
-    rowwise recipe manages its own padding rules and rejects the knob, hence the split)."""
-    from torchao.float8 import Float8LinearConfig
+def _fp8_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """Dims divisible by 16 (the diffusers FLUX2 reference filter)."""
+    return _lowp_module_filter(mod, fqn, 16, exclude_tokens)
+
+
+def _in_repeated_blocks(transformer, module_filter):
+    """Restrict the filter to the regionally compiled ``_repeated_blocks`` (if any)."""
+    names = set(getattr(transformer, "_repeated_blocks", None) or ())
+    prefixes = tuple(
+        f"{fqn}." for fqn, mod in transformer.named_modules() if mod.__class__.__name__ in names
+    )
+    if not prefixes:
+        return module_filter
+    return lambda mod, fqn: fqn.startswith(prefixes) and module_filter(mod, fqn)
+
+
+def _lowp_targets(transformer, base_filter, family: Optional[str]) -> list:
+    tokens = _lowp_exclude_tokens(family)
+    keep = _in_repeated_blocks(transformer, lambda mod, fqn: base_filter(mod, fqn, tokens))
+    return [
+        (fqn, mod)
+        for fqn, mod in transformer.named_modules()
+        if not getattr(mod, "_studio_lowp", None) and keep(mod, fqn)
+    ]
+
+
+def _require_lowp_modules(transformer, mode: str) -> bool:
+    """Raises when nothing converted (FLUX.1 / LTX-2 on torchao 0.17, all biased), so bf16 is recorded."""
+    if not any(getattr(mod, "_studio_lowp", None) == mode for mod in transformer.modules()):
+        raise RuntimeError("no eligible linear layers")
+    return True
+
+
+def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
+    """Frozen base linears to weight-cached fp8 (``diffusion_frozen_fp8``): rowwise float scales, as DiT activation
+    outliers (Z-Image ~2.7e6) crush a tensorwise one."""
+    from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
+
+    _, failed = convert_frozen_fp8(
+        transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+    )
+    transformer._studio_fp8_failed = failed
+    return _require_lowp_modules(transformer, "fp8")
+
+
+def _probe_lowp(convert, transformer) -> None:
+    """Tiny converted Linear fwd + bwd so an unverified arch falls back to bf16 at load, not mid-run.
+    48 rows: not a multiple of 16 / 32."""
+    import torch
+    import torch.nn as nn
+
     try:
-        return Float8LinearConfig.from_recipe_name("rowwise")
-    except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
-        return Float8LinearConfig(pad_inner_dim = True)
+        device = next(transformer.parameters()).device
+    except StopIteration:
+        return
+    if device.type != "cuda":
+        return
+
+    class _Probe(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = nn.Linear(64, 64, bias = False)
+
+        def forward(self, x):
+            return self.ff(x)
+
+    # Forked RNG: the probe's init + randn run after the seed and would shift the noise / timestep draws vs bf16.
+    with torch.random.fork_rng(devices = [device]):
+        probe = _Probe().to(device = device, dtype = torch.bfloat16).requires_grad_(False)
+        convert(probe)
+        x = torch.randn(1, 48, 64, device = device, requires_grad = True)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            y = probe(x)
+        y.float().sum().backward()
+        torch.cuda.synchronize(device)
+    if not (torch.isfinite(y).all() and torch.isfinite(x.grad).all()):
+        raise RuntimeError("probe GEMM returned non-finite values")
 
 
-def _apply_fp8_training(transformer, on_event) -> bool:
-    """Convert the frozen base linears to torchao float8 training compute (dynamic scaling; weights
-    stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the LoRA modules.
-    Never fatal: on any failure the run continues in bf16 with a warning."""
+def _apply_fp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
+    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    from core.training.diffusion_fp8_prequant import dequantize_placeholders
     try:
-        from torchao.float8 import convert_to_float8_training
-        convert_to_float8_training(
-            transformer,
-            module_filter_fn = _fp8_module_filter,
-            config = _fp8_training_config(),
-        )
-        return True
+        _probe_lowp(_convert_fp8, transformer)
+        converted = _convert_fp8(transformer, family)
+        # A prequant base's fp8 layers the conversion did not take stay bf16, as on the dense path.
+        dequantize_placeholders(transformer)
+        failed = getattr(transformer, "_studio_fp8_failed", 0)
+        if failed:
+            _emit(
+                on_event,
+                "warning",
+                message = f"fp8: {failed} layer(s) could not be converted and stay bf16.",
+            )
+        import torch
+
+        device = next(transformer.parameters()).device.type
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
+        return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
+        dequantize_placeholders(transformer)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
-def _mx_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision), the output projection (same guard as fp8), and shapes the 32-wide MX
-    block scaling cannot tile (dims not divisible by 32)."""
-    import torch.nn as nn
-
-    if not isinstance(mod, nn.Linear):
-        return False
-    if "lora_" in fqn:
-        return False
-    if fqn.endswith("proj_out") or ".proj_out." in fqn:
-        return False
-    # Skip biased linears: the torchao 0.17 MX path swaps the weight for a wrapper that drops the bias, changing the
-    # output the LoRA regresses against.
-    if getattr(mod, "bias", None) is not None:
-        return False
-    return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
+def _mx_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """32-wide MX blocks and a bf16 weight (the MX casts assert it)."""
+    import torch
+    return _lowp_module_filter(mod, fqn, 32, exclude_tokens) and mod.weight.dtype == torch.bfloat16
 
 
 def _mxfp8_training_config():
-    """The torchao MX training config across the prototype API's revisions: torchao 0.16 ships
-    ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
-    ``MXFP8TrainingOpConfig`` recipe API shared with MoE training. Both feed ``quantize_``.
-    Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
+    """RCEIL MX config: torchao 0.14-0.16 ``MXLinearConfig``, else 0.17+ with hp wgrad: torchao computes grad_weight
+    even for a frozen weight, and its dim1 cast asserts tokens % 32 == 0 (the gradient is discarded anyway)."""
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
-        return MXLinearConfig.from_recipe_name("mxfp8_cublas")
+        return MXLinearConfig.from_recipe_name("mxfp8_cublas_rceil")
     except ImportError:
         from torchao.prototype.moe_training.config import (
             MXFP8TrainingOpConfig,
             MXFP8TrainingRecipe,
         )
-        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
+        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL_WGRAD_WITH_HP)
 
 
-def _apply_mxfp8_training(transformer, on_event) -> bool:
-    """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
-    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16 in
-    memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER add_adapter so
-    the filter can exclude the LoRA modules. Only competitive under torch.compile and only ahead
-    of compiled bf16 at large token counts (high resolution or batch), which is why it stays an
-    explicit opt-in rather than an "auto" pick. Never fatal: on any failure the run continues in
-    bf16 with a warning."""
+def _mx_linear_class():
     try:
-        from torchao.quantization import quantize_
-        quantize_(
-            transformer,
-            _mxfp8_training_config(),
-            filter_fn = _mx_module_filter,
+        from torchao.prototype.moe_training.mxfp8_linear import MXFP8Linear
+        return MXFP8Linear
+    except ImportError:
+        return None
+
+
+_ROW_PADDED_MX: dict = {}
+
+
+def _row_padded_mx_linear(base_cls):
+    """torchao <= 0.16 MXLinear has no hp wgrad and asserts tokens % 32 == 0: pad zero rows, slice off
+    (MX scales are per block along the feature dim, so real rows are unchanged)."""
+    cls = _ROW_PADDED_MX.get(base_cls)
+    if cls is None:
+        import torch.nn.functional as F
+        def forward(self, x):
+            shape = x.shape
+            rows = x.reshape(-1, shape[-1])
+            m = rows.shape[0]
+            y = base_cls.forward(self, F.pad(rows, (0, 0, 0, (-m) % 32)))[:m]
+            return y.reshape(*shape[:-1], y.shape[-1])
+
+        cls = _ROW_PADDED_MX[base_cls] = type(
+            f"RowPadded{base_cls.__name__}", (base_cls,), {"forward": forward}
         )
-        return True
+    return cls
+
+
+def _autocast_mx_input(module, args):
+    import torch
+
+    x = args[0] if args else None
+    if (
+        isinstance(x, torch.Tensor)
+        and x.dtype == torch.float32
+        and x.is_cuda
+        and torch.is_autocast_enabled("cuda")
+    ):
+        return (x.to(torch.get_autocast_dtype("cuda")), *args[1:])
+    return None
+
+
+def _convert_mxfp8(transformer, family: Optional[str] = None) -> bool:
+    import torch.nn as nn
+
+    config = _mxfp8_training_config()
+    targets = [
+        (fqn, mod)
+        for fqn, mod in _lowp_targets(transformer, _mx_module_filter, family)
+        if type(mod) is nn.Linear
+    ]
+    if not hasattr(config, "wgrad_with_hp"):
+        from torchao.quantization import quantize_
+
+        names = {fqn for fqn, _ in targets}
+        quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+        for _, mod in targets:
+            mod.__class__ = _row_padded_mx_linear(mod.__class__)
+    else:
+        linear_cls = _mx_linear_class()
+        if linear_cls is not None:
+            for _, mod in targets:
+                mod.__class__ = linear_cls
+                mod.kernel_preference = config.kernel_preference
+                mod.scale_calculation_mode = config.scale_calculation_mode
+                mod.wgrad_with_hp = config.wgrad_with_hp
+        else:
+            from torchao.quantization import quantize_
+
+            targets = [(fqn, mod) for fqn, mod in targets if mod.bias is None]
+            names = {fqn for fqn, _ in targets}
+            quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+        # The MX linear asserts bf16 input above autocast (fp32 LayerNorm output into FLUX.2 ff.linear_in raised).
+        for _, mod in targets:
+            mod.register_forward_pre_hook(_autocast_mx_input)
+    for _, mod in targets:
+        mod._studio_lowp = "mxfp8"
+    return _require_lowp_modules(transformer, "mxfp8")
+
+
+def _apply_mxfp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
+    """torchao mxfp8 compute for the frozen base (speed only), after add_adapter; never fatal.
+    0.18+ swaps the class to MXFP8Linear, not ``quantize_``: its wrapper drops the bias (pytorch/ao#4846),
+    so on torchao 0.17 biased linears stay bf16."""
+    try:
+        _probe_lowp(_convert_mxfp8, transformer)
+        return _convert_mxfp8(transformer, family)
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -516,8 +710,8 @@ def _pick_auto_precision(
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
     decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
-    B200); fp8 stays an explicit opt-in because torchao float8's dynamic-scaling overhead made it
-    SLOWER than compiled bf16 at LoRA-training shapes on the same hardware. int8 must still
+    B200); fp8 stays an explicit opt-in: it trades e4m3 rounding (~0.5% loss vs bf16) for ~half the base weight
+    memory and only ~7% speed at LoRA-training shapes. int8 must still
     materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
     its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
     band is steady-state headroom for activations and the latent cache, not load-time memory.
@@ -600,6 +794,18 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense load.
         # Re-check here to fail fast for a stale client.
+        # fp8 needs sm89+ (Ada / Hopper / Blackwell): below it the first float8 _scaled_mm raises inside the loop.
+        if mode == "fp8" and device == "cuda":
+            try:
+                import torch
+                fp8_ok = torch.cuda.get_device_capability() >= (8, 9)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                fp8_ok = False
+            if not fp8_ok:
+                raise ValueError(
+                    "base_precision='fp8' needs an Ada, Hopper or Blackwell (sm89+) GPU; this GPU is "
+                    "older. Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
         if mode == "mxfp8" and device == "cuda":
             try:
                 import torch
@@ -1971,11 +2177,46 @@ def _maybe_compile_transformer(
                 dynamo_cfg.suppress_errors = True
         # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False specialisation failed
         # with CUBLAS_STATUS_EXECUTION_FAILED.
+        try:
+            # torch 2.12 / 2.13 inductor CantSplit in the dynamic joint-stream cat backward (FLUX.1 fp8); probe-gated.
+            from core.inference.diffusion_inductor_backports import install as _install_backports
+            _install_backports()
+        except Exception:  # noqa: BLE001 -- the backport is best-effort
+            pass
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
         _emit(on_event, "warning", message = f"torch.compile disabled (eager fallback): {exc}")
         return False
+
+
+def _dynamo_compile_counters() -> Optional[tuple[int, int, int]]:
+    """(graph breaks, failed frames, unique graphs), or None."""
+    try:
+        from torch._dynamo.utils import counters
+        frames = counters["frames"]
+        return (
+            sum(counters["graph_break"].values()),
+            frames["total"] - frames["ok"],
+            counters["stats"]["unique_graphs"],
+        )
+    except Exception:  # noqa: BLE001 -- diagnostics only
+        return None
+
+
+def _compile_engagement_warning(before, after) -> Optional[str]:
+    """Why compiled blocks run eager since ``before`` (suppress_errors hides failures), else None."""
+    if before is None or after is None:
+        return None
+    breaks, failed, graphs = (a - b for a, b in zip(after, before))
+    if breaks > 0 or failed > 0:
+        return (
+            f"torch.compile did not fully engage ({breaks} graph break(s), {failed} frame(s) "
+            f"fell back to eager): training continues, slower than compiled."
+        )
+    if graphs <= 0:
+        return "torch.compile produced no graphs: the transformer blocks are running eager."
+    return None
 
 
 def run_dit_lora_training(
@@ -2280,9 +2521,13 @@ def _train_dit(
     # and stay high precision.
     if base_precision == "int8":
         _int8_quantize_base(transformer, cfg.resolved_family)
-    if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
+    if base_precision == "fp8" and not _apply_fp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
-    if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
+    if base_precision == "mxfp8" and not _apply_mxfp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
 
     # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after the precision
@@ -2508,6 +2753,7 @@ def _train_dit(
         _sample(resumed)
 
     train_peak = TrainingPeakMemory(device)
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
         if stop_latched:
             stopped = True
@@ -2595,6 +2841,11 @@ def _train_dit(
         if ran_here == 1:
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             peak_gb = train_peak.gb()
             per_step = batch_size * cfg.gradient_accumulation_steps
