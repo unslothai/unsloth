@@ -389,6 +389,32 @@ foreach ($case in @(@{ Flag = $true; Want = $true }, @{ Flag = $false; Want = $f
 }
 $script:NvidiaDriverLibraryOnly = $false
 
+# Below the CUDA 12.4 floor the selector's last pick on an NVIDIA host is the CPU bundle, so an
+# update must keep it rather than delete and refetch it every run (#13662).
+. ([scriptblock]::Create(@(Get-HelperSources $setupPs1 @("Test-CudaDriverNeedsUncompressedFatbin"))[0]))
+$HasNvidiaDriverEvidence = $true
+$script:DriverReads = 0
+function Get-LlamaDriverMaxCuda { $script:DriverReads++; return $script:FakeDriverMaxCuda }
+foreach ($case in @(
+        @{ Kind = "windows-cpu"; Driver = "10.1"; Want = $true },
+        @{ Kind = "windows-cpu"; Driver = "11.8"; Want = $true },
+        @{ Kind = "windows-cpu"; Driver = "12.2"; Want = $true },
+        @{ Kind = "windows-cpu"; Driver = "12.4"; Want = $false },
+        @{ Kind = "windows-cpu"; Driver = "13.0"; Want = $false },
+        @{ Kind = "windows-cpu"; Driver = $null; Want = $false })) {
+    $existingKind = $case.Kind
+    $script:FakeDriverMaxCuda = $case.Driver
+    Invoke-Expression $kindBlock
+    Check "the update's kind guard $(if ($case.Want) { 'keeps' } else { 'does not keep' }) a CPU bundle on an NVIDIA host with driver CUDA $(if ($case.Driver) { $case.Driver } else { 'unknown' })" (
+        ($expectedKinds -contains "windows-cpu") -eq $case.Want)
+}
+$script:DriverReads = 0
+$existingKind = "windows-cuda"
+$script:FakeDriverMaxCuda = "10.1"
+Invoke-Expression $kindBlock
+Check "the update's kind guard does not read the driver for a non-CPU install" ($script:DriverReads -eq 0)
+$existingKind = $null; $HasNvidiaDriverEvidence = $false
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed"
