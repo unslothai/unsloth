@@ -21,6 +21,8 @@ def settings_store(monkeypatch, tmp_path):
     store = {}
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    # macOS tmp_path sits under /private/var, which the system-folder guard refuses.
+    monkeypatch.setattr("hub.storage.scan_folders.is_denied_system_path", lambda _path: False)
     monkeypatch.setattr(
         "storage.studio_db.get_app_setting",
         lambda key, fallback = None: store.get(key, fallback),
