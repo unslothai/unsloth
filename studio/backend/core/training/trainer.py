@@ -411,6 +411,15 @@ def _tokenizer_is_empty(tokenizer) -> bool:
         return False
 
 
+def _has_quantized_weights(model) -> bool:
+    try:
+        from unsloth.models._utils import _has_quantized_linears
+    except ImportError:
+        return False
+    # routed_ok mirrors Unsloth's own LoftQ check: its loader densifies routed NVFP4 / FP8 weights.
+    return _has_quantized_linears(model, routed_ok = True)
+
+
 def _loftq_peft_kwargs(use_loftq) -> dict:
     # PEFT ignores loftq_config unless init_lora_weights is "loftq", so the toggle alone trained plain LoRA.
     if not use_loftq:
@@ -1627,6 +1636,16 @@ class UnslothTrainer:
                     "continuing training without creating a new adapter\n"
                 )
                 return True
+
+            if use_loftq and _has_quantized_weights(self.model):
+                # Unsloth refuses LoftQ on quantized weights; train as before rather than fail a QLoRA run or its resume.
+                message = (
+                    "LoftQ needs 16-bit weights and this model is loaded quantized, so it trains without "
+                    "LoftQ. Choose LoRA (16-bit) to use LoftQ."
+                )
+                logger.warning(message)
+                self._update_progress(status_message = message)
+                use_loftq = False
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:

@@ -203,6 +203,26 @@ def _untrainable_model_format_error(config: dict) -> str | None:
     return None
 
 
+def _lora_uses_loftq(config: dict) -> bool:
+    """A resume rebuilds its adapter before loading the checkpoint, so it reruns LoftQ only when the checkpoint was
+    trained with it: runs saved while Studio never applied LoftQ kept the original base weights."""
+    if not config.get("use_loftq"):
+        return False
+    resume = config.get("resume_from_checkpoint")
+    if not resume:
+        return True
+    import json
+
+    from core.training.resume import get_resume_checkpoint_path
+
+    checkpoint = Path(get_resume_checkpoint_path(resume) or resume)
+    try:
+        saved = json.loads((checkpoint / "adapter_config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get("init_lora_weights") == "loftq"
+
+
 def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
@@ -4804,7 +4824,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         elif use_lora:
@@ -4821,7 +4841,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         else:
