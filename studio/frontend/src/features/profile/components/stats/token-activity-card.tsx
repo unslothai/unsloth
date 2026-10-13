@@ -443,7 +443,7 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
         weeks: formatProfileCount(grid.length, "week", locale),
       })}
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {shaded ? null : (
             <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
               <button
