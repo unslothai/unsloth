@@ -63,8 +63,10 @@ test("a failed read cancels the send, and a textless tool-only type falls back t
   assert.doesNotMatch(adapter, /pending\.catch\(/);
   assert.match(
     adapter,
-    /\?\.name === "NoDocumentTextError" &&\s*\(isToolOnlyAttachmentName\(file\.name\) \|\| \/\\\.pdf\$\/i\.test\(file\.name\)\) &&\s*pythonToolOpensAttachments\(\)/,
+    /\?\.name === "NoDocumentTextError" &&\s*isToolOnlyAttachmentName\(file\.name\) &&\s*pythonToolOpensAttachments\(\)/,
   );
+  // An oversized scanned PDF is past the PDF originals cap, so it may not fall back to the python tool.
+  assert.doesNotMatch(adapter.slice(adapter.indexOf("private read(")), /\\\.pdf\$/);
   // Code can be turned off between attach and send; then the textless file is refused, not sent bare.
   assert.match(adapter, /if \(text === null && !pythonToolOpensAttachments\(\)\) \{[\s\S]*?throw new Error/);
   assert.match(adapter, /only the python tool can read this file/);
@@ -92,4 +94,17 @@ test("server documents are routed ahead of text and tool-only adapters", () => {
   for (const adapter of ["PDF", "Docx", "Office", "OpenDocument"]) {
     assert.ok(order(`largeFallback(new ${adapter}AttachmentAdapter())`) > 0);
   }
+});
+
+test("Desktop reads the same server-document types the composer does", () => {
+  const policy = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(policy
+      .match(/SERVER_DOCUMENT_ATTACHMENT_EXTS: &\[&str\] = &\[([^\]]+)\]/)?.[1]
+      .matchAll(/"([^"]+)"/g) ?? []),
+  ].map((match) => `.${match[1]}`);
+  assert.deepEqual(rust.sort(), split(SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS).sort());
 });

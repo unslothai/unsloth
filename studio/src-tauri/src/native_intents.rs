@@ -699,6 +699,10 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
         }
+        // The composer matches these by extension and reads them on the server.
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
+        }
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
             Some("application/octet-stream")
         }
@@ -784,7 +788,8 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
         MAX_NATIVE_IMAGE_BYTES
     } else if mime_type.starts_with("video/") {
         MAX_NATIVE_VIDEO_BYTES
-    } else if mime_type.starts_with("application/vnd.oasis.opendocument.")
+    } else if crate::native_path_policy::is_server_document_attachment(path)
+        || mime_type.starts_with("application/vnd.oasis.opendocument.")
         || mime_type.starts_with("application/vnd.openxmlformats-officedocument.")
         || matches!(
             mime_type,
@@ -1110,6 +1115,26 @@ mod tests {
             assert_eq!(BASE64.decode(payload.base64).unwrap(), b"open-document");
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn server_documents_read_inline_under_the_document_cap() {
+        for ext in ["doc", "xls", "ppt", "msg", "mht", "epub"] {
+            let path = temp_path("server-document").with_extension(ext);
+            fs::write(&path, b"document bytes").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry).unwrap();
+            assert_eq!(payload.mime_type, "application/octet-stream", "{ext}");
+            let _ = fs::remove_file(path);
+        }
+        let path = temp_path("server-document-cap").with_extension("doc");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_ok());
+        let _ = fs::remove_file(path);
     }
 
     #[test]

@@ -130,6 +130,9 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         // list the composer and the drop path already share.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
             "application/octet-stream"
         }
@@ -479,7 +482,10 @@ mod tests {
 
     #[test]
     fn clipboard_file_mime_types_cover_composer_documents() {
-        assert_eq!(clipboard_file_mime_type(Path::new("notes.rtf")), Some("application/rtf"));
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("notes.rtf")),
+            Some("application/rtf")
+        );
         assert_eq!(
             clipboard_file_mime_type(Path::new("archive.tar.gz")),
             Some("application/octet-stream")

@@ -8,6 +8,7 @@ import {
   RTF_ATTACHMENT_EXTENSIONS,
   isRtfAttachmentName,
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isServerDocumentAttachmentName,
   isToolOnlyAttachmentName,
 } from "../chat/open-document-accept.ts";
 import {
@@ -24,6 +25,7 @@ export function isComposerAttachmentName(path: string): boolean {
     DOC_EXTS.some((ext) => path.toLowerCase().endsWith(ext)) ||
     isOpenDocumentAttachmentName(path) ||
     isRtfAttachmentName(path) ||
+    isServerDocumentAttachmentName(path) ||
     isToolOnlyAttachmentName(path) ||
     isTextDropName(path)
   );

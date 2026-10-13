@@ -220,16 +220,16 @@ for (const [format, extensions, adapter, rustList] of [
   });
 }
 
-test("native chat accepts Office types with a composer adapter; native intake retains explicit RAG formats", () => {
+test("native chat drops every Office, Outlook and saved-page type into the composer", () => {
   const office =
     ".doc .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
       " ",
     );
   for (const extension of office) {
     const path = `/docs/Report${extension.toUpperCase()}`;
-    const supported = [".xlsx", ".xlsm", ".pptx"].includes(extension);
-    assert.equal(classifyDropPaths([path]).kind, supported ? "docs" : "unsupported", path);
-    assert.equal(isComposerAttachmentName(path), supported, path);
+    // Browser readers take .xlsx/.xlsm/.pptx; the server-document adapter reads the rest.
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.equal(isComposerAttachmentName(path), true, path);
   }
   // Types with a composer adapter keep going to the composer.
   for (const ext of [".odt", ".rtf", ".epub", ".eml", ".docm"]) {

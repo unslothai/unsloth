@@ -54,6 +54,17 @@ pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
     "doc", "xls", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pptx", "pptm", "ppsx", "ott", "ots",
     "otp", "msg", "mht", "mhtml", "xhtml", "xht",
 ];
+/// Read on the server by the composer; keep in sync with `SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS`.
+pub const SERVER_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &[
+    "doc", "docm", "dotx", "dotm", "xls", "xltx", "xltm", "ppt", "pptm", "potx", "potm", "ppsx",
+    "ppsm", "odp", "ott", "ots", "otp", "msg", "mht", "mhtml", "epub", "xhtml", "xht",
+];
+
+pub fn is_server_document_attachment(path: &Path) -> bool {
+    SERVER_DOCUMENT_ATTACHMENT_EXTS
+        .iter()
+        .any(|ext| has_extension(path, ext))
+}
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
