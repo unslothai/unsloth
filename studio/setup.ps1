@@ -10082,6 +10082,8 @@ if ($LocalLlamaCppLinked) {
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
+                # Opt-in ARM64 Vulkan (UNSLOTH_LLAMA_CPP_BACKEND=vulkan) can land on any ARM64 host.
+                if (Test-WinArm64Venv) { $expectedKinds += "windows-arm64-vulkan" }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

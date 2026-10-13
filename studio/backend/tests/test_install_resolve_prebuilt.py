@@ -2493,18 +2493,185 @@ def _windows_arm64_host(**overrides):
         ({}, "vulkan"),
     ],
 )
-def test_vulkan_opt_in_keeps_windows_arm64_host_for_strict_rejection(monkeypatch, env, flag):
-    # Windows arm64 has no compatible Vulkan bundle. Keep the real host shape so
-    # strict filtering rejects the CPU plan instead of routing through x64.
+def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
+    # Upstream and the fork can ship a Windows arm64 Vulkan bundle (Adreno, #11674), so an
+    # explicit request is honoured on the fork and its pin.
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    host = _windows_arm64_host()
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        _windows_arm64_host(), FORK, "pin", force_cpu = False, llama_backend = flag
+    )
+    assert routed.vulkan_routed is True
+    assert routed.is_arm64 is True
+    assert (repo, tag) == (FORK, "pin")
+    assert persist == "vulkan"
+
+
+@pytest.mark.parametrize("has_intel_gpu", [False, True])
+@pytest.mark.parametrize("flag", [None, "auto"])
+def test_windows_arm64_never_auto_routes_to_vulkan(monkeypatch, flag, has_intel_gpu):
+    # Detection alone keeps Windows arm64 on its CPU/CUDA bundles, even with a stale
+    # Intel adapter entry in the registry.
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    host = _windows_arm64_host(has_intel_gpu = has_intel_gpu)
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = flag
     )
     assert routed is host
-    assert (repo, tag) == (FORK, "pin")
-    assert persist is None
+    assert routed.vulkan_routed is False
+    assert (repo, tag, persist) == (FORK, "pin", None)
+
+
+_FORK_TAG = "b11541-mix-2500203"
+_ARM64_VULKAN = f"app-{_FORK_TAG}-windows-arm64-vulkan.zip"
+_X64_VULKAN = f"app-{_FORK_TAG}-windows-x64-vulkan.zip"
+_ARM64_CPU = f"app-{_FORK_TAG}-windows-arm64-cpu.zip"
+
+
+def _windows_arm64_release(*names):
+    # Manifest shape the fork publishes (install_kind, bundle_profile, rank, sha index kind).
+    kinds = {
+        _ARM64_VULKAN: ("windows-arm64-vulkan", "windows-vulkan-arm64", 60),
+        _X64_VULKAN: ("windows-vulkan", "windows-vulkan-x64", 60),
+        _ARM64_CPU: ("windows-arm64", "windows-cpu-arm64", 1000),
+    }
+    artifacts = [
+        ilp.PublishedLlamaArtifact(
+            asset_name = name,
+            install_kind = kinds[name][0],
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = kinds[name][1],
+            rank = kinds[name][2],
+        )
+        for name in names
+    ]
+    bundle = ilp.PublishedReleaseBundle(
+        repo = FORK,
+        release_tag = _FORK_TAG,
+        upstream_tag = "b11541",
+        assets = {name: f"https://example/{name}" for name in names},
+        artifacts = artifacts,
+    )
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = FORK,
+        release_tag = bundle.release_tag,
+        upstream_tag = bundle.upstream_tag,
+        artifacts = {
+            artifact.asset_name: ilp.ApprovedArtifactHash(
+                asset_name = artifact.asset_name,
+                sha256 = "a" * 64,
+                repo = FORK,
+                kind = f"{artifact.install_kind}-app",
+            )
+            for artifact in artifacts
+        },
+    )
+    return bundle, checksums
+
+
+def _forced_windows_arm64_host():
+    routed, _repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _windows_arm64_host(), FORK, "", force_cpu = False, llama_backend = "vulkan"
+    )
+    return routed
+
+
+def test_forced_vulkan_windows_arm64_picks_the_published_arm64_vulkan_bundle():
+    bundle, checksums = _windows_arm64_release(
+        _X64_VULKAN,
+        _ARM64_VULKAN,
+        _ARM64_CPU,
+    )
+    attempts = ilp.resolve_release_asset_choice(
+        _forced_windows_arm64_host(), bundle.upstream_tag, bundle, checksums
+    )
+    assert [(a.name, a.install_kind) for a in attempts] == [
+        (_ARM64_VULKAN, "windows-arm64-vulkan"),
+        (_ARM64_CPU, "windows-arm64"),
+    ]
+    # The strict Vulkan filter a named request applies keeps the arm64 Vulkan bundle.
+    assert [a.install_kind for a in ilp._backend_only_attempts(attempts, "vulkan")] == [
+        "windows-arm64-vulkan"
+    ]
+
+
+def test_forced_vulkan_windows_arm64_without_the_bundle_falls_back_to_cpu(capsys):
+    # Current fork releases ship no arm64 Vulkan archive; the x64 one must never be taken.
+    bundle, checksums = _windows_arm64_release(_X64_VULKAN, _ARM64_CPU)
+    attempts = ilp.resolve_release_asset_choice(
+        _forced_windows_arm64_host(), bundle.upstream_tag, bundle, checksums
+    )
+    assert [(a.name, a.install_kind) for a in attempts] == [(_ARM64_CPU, "windows-arm64")]
+    captured = capsys.readouterr()
+    assert "no published Windows ARM64 Vulkan bundle" in captured.out + captured.err
+
+
+@pytest.mark.parametrize("has_intel_gpu", [False, True])
+def test_unforced_windows_arm64_keeps_the_published_cpu_bundle(has_intel_gpu):
+    bundle, checksums = _windows_arm64_release(_ARM64_VULKAN, _ARM64_CPU)
+    attempts = ilp.resolve_release_asset_choice(
+        _windows_arm64_host(has_intel_gpu = has_intel_gpu), bundle.upstream_tag, bundle, checksums
+    )
+    assert [(a.name, a.install_kind) for a in attempts] == [(_ARM64_CPU, "windows-arm64")]
+
+
+_WIN_ARM64_UPSTREAM_ASSETS = [
+    "llama-b11400-bin-win-vulkan-x64.zip",
+    "llama-b11400-bin-win-vulkan-arm64.zip",
+    "llama-b11400-bin-win-cpu-arm64.zip",
+]
+
+
+def test_direct_upstream_forced_vulkan_windows_arm64_prefers_vulkan():
+    rel = _upstream_release("b11400", _WIN_ARM64_UPSTREAM_ASSETS)
+    plan = ilp.direct_upstream_release_plan(rel, _forced_windows_arm64_host(), UPSTREAM, "latest")
+    assert [(a.name, a.install_kind) for a in plan.attempts] == [
+        ("llama-b11400-bin-win-vulkan-arm64.zip", "windows-arm64-vulkan"),
+        ("llama-b11400-bin-win-cpu-arm64.zip", "windows-arm64"),
+    ]
+
+
+def test_direct_upstream_unforced_windows_arm64_stays_cpu():
+    rel = _upstream_release("b11400", _WIN_ARM64_UPSTREAM_ASSETS)
+    plan = ilp.direct_upstream_release_plan(
+        rel, _windows_arm64_host(has_intel_gpu = True), UPSTREAM, "latest"
+    )
+    assert [a.install_kind for a in plan.attempts] == ["windows-arm64"]
+
+
+def test_upstream_resolver_forced_vulkan_windows_arm64(monkeypatch):
+    assets = {name: f"https://example/{name}" for name in _WIN_ARM64_UPSTREAM_ASSETS}
+    monkeypatch.setattr(ilp, "github_release_assets", lambda repo, tag: dict(assets))
+    choice = ilp.resolve_upstream_asset_choice(_forced_windows_arm64_host(), "b11400")
+    assert (choice.name, choice.install_kind) == (
+        "llama-b11400-bin-win-vulkan-arm64.zip",
+        "windows-arm64-vulkan",
+    )
+    del assets["llama-b11400-bin-win-vulkan-arm64.zip"]
+    choice = ilp.resolve_upstream_asset_choice(_forced_windows_arm64_host(), "b11400")
+    assert choice.install_kind == "windows-arm64"
+    choice = ilp.resolve_upstream_asset_choice(_windows_arm64_host(has_intel_gpu = True), "b11400")
+    assert choice.install_kind == "windows-arm64"
+
+
+def test_windows_arm64_vulkan_kind_is_a_vulkan_bundle():
+    from utils.prebuilt.llama_backend import backend_for_install_kind, marker_backend
+
+    assert backend_for_install_kind("windows-arm64-vulkan") == "vulkan"
+    assert "windows-arm64-vulkan" in ilp.VULKAN_INSTALL_KINDS
+    assert "windows-arm64-vulkan" in ilp.install_kinds_for_backend("vulkan")
+    assert marker_backend({"install_kind": "windows-arm64-vulkan"}) == "vulkan"
+    choice = _choice("windows-arm64-vulkan", "llama-b11400-bin-win-vulkan-arm64.zip")
+    assert ilp.persisted_llama_backend("vulkan", choice) == "vulkan"
+    assert "*.dll" in ilp.runtime_patterns_for_choice(choice)
+    assert ["ggml-vulkan.dll"] in ilp.runtime_payload_health_groups(
+        "windows-arm64-vulkan", source_label = "upstream", tag = "b11400"
+    )
 
 
 def test_vulkan_opt_in_still_routes_on_windows_x64(monkeypatch):

@@ -162,8 +162,8 @@ UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
 )
 
 # install_kinds that really are a Vulkan bundle. A Vulkan request can still end on a CPU
-# bundle (no Vulkan archive on Windows arm64; x64 falls through when it is missing or fails
-# validation), so check against this to keep the marker honest (#7357).
+# bundle (it falls through when the Vulkan archive is missing or fails validation), so check
+# against this to keep the marker honest (#7357).
 # Derived from the shared vocabulary rather than spelled out again: a new Vulkan bundle
 # family added to INSTALL_KIND_BACKENDS must not be missed here.
 VULKAN_INSTALL_KINDS = frozenset(
@@ -423,6 +423,8 @@ class HostInfo:
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
+    # Set only by _vulkan_only_host. Windows arm64 takes Vulkan on request, never by detection.
+    vulkan_routed: bool = False
 
 
 @dataclass
@@ -1379,6 +1381,21 @@ def direct_upstream_release_plan(
                 )
             )
             attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
+        # Upstream ships win-vulkan-arm64 since b11396; CPU bundle still last.
+        if host.vulkan_routed:
+            vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-arm64.zip"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "windows-arm64-vulkan",
+                    )
+                )
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-win-cpu-arm64.zip
         # (visible in the b9334 release manifest). Without this branch the
         # selector returned 0 attempts and the installer fell back to a
@@ -4152,6 +4169,23 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if attempts:
                 return attempts[0]
             log("no compatible Windows ARM64 CUDA asset was found -- falling back to CPU")
+        if host.vulkan_routed:
+            vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-arm64.zip"
+            if vulkan_name in upstream_assets:
+                log(
+                    f"Vulkan requested on Windows ARM64 -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "windows-arm64-vulkan",
+                )
+            log(
+                "Vulkan requested on Windows ARM64 but no Vulkan prebuilt found -- falling back to CPU"
+            )
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-arm64.zip"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows ARM64 CPU asset was not found")
@@ -4305,6 +4339,25 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
+        if host.vulkan_routed:
+            vulkan_choice = published_asset_choice_for_kind(
+                release, "windows-arm64-vulkan", host = host
+            )
+            if vulkan_choice is None:
+                log(
+                    f"no published Windows ARM64 Vulkan bundle in {release.repo}@"
+                    f"{release.release_tag}; falling through to the ARM64 CPU bundle."
+                )
+            choices = [
+                choice
+                for choice in (
+                    vulkan_choice,
+                    published_asset_choice_for_kind(release, "windows-arm64"),
+                )
+                if choice is not None
+            ]
+            if choices:
+                return apply_approved_hashes(choices, checksums)
         # A host the fork's windows-arm64-cuda bundle does not cover takes its ARM64 CPU bundle.
         # The opt-out gates the WHOLE branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
@@ -4745,6 +4798,7 @@ def runtime_patterns_for_install_kind(
         "windows-arm64-cuda",
         "windows-hip",
         "windows-vulkan",
+        "windows-arm64-vulkan",
         "windows-rocm",
         "windows-arm64",
     }:
@@ -6601,6 +6655,7 @@ def validate_server(
             "windows-arm64-cuda",
             "windows-hip",
             "windows-vulkan",
+            "windows-arm64-vulkan",
             "windows-rocm",
             "macos-arm64",
         }
@@ -8183,7 +8238,7 @@ def runtime_payload_health_groups(
         # left the group satisfied by three libraries that cannot stand in for it.
         # Measured on app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip.
         return _windows_shared_groups(source_label, tag) + [["ggml-hip*.dll"]]
-    if install_kind == "windows-vulkan":
+    if install_kind in {"windows-vulkan", "windows-arm64-vulkan"}:
         groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
@@ -10606,15 +10661,6 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     return _amd_vulkan_icd_present()
 
 
-def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
-    """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
-
-    Upstream builds win-vulkan for x64 only; Windows arm64 gets CPU plus opencl-adreno, so
-    rewriting it to Vulkan-only would just swap the published bundle for the upstream CPU
-    one. macOS is handled separately (Metal)."""
-    return host.is_windows and host.is_arm64
-
-
 def _vulkan_only_host(host: HostInfo) -> HostInfo:
     """Rewrite ``host`` so the asset selectors take their Vulkan branch.
 
@@ -10631,6 +10677,7 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
         rocm_gfx_target = None,
         rocm_gfx_targets = [],
         has_intel_gpu = True,
+        vulkan_routed = True,
     )
 
 
@@ -10712,12 +10759,8 @@ def _route_to_vulkan_prebuilt(
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag, None
-    if _has_no_vulkan_prebuilt(host):
-        if forced:
-            log(
-                "Vulkan llama.cpp backend requested on Windows arm64, but no "
-                "compatible Vulkan bundle is published"
-            )
+    if host.is_windows and host.is_arm64 and not forced:
+        # Vulkan on Windows ARM64 (Adreno) is opt-in only; detection keeps the CPU/CUDA bundles.
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
         active = _active_rocm_gfx_target(host) or "unknown"
