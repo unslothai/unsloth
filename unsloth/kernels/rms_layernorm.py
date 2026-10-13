@@ -426,14 +426,18 @@ def _rms_layernorm_backward_rows(
 
 
 @triton.jit
-def _rms_sum_dw_partials(partials, dW, n_programs, n_cols, BLOCK_SIZE: tl.constexpr):
-    # Fixed program order, so eager and torch.compile give the same bytes.
-    cols = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = cols < n_cols
-    acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
-    for i in range(n_programs):
-        acc += tl.load(partials + i * n_cols + cols, mask = mask, other = 0)
-    tl.store(dW + cols, acc.to(dW.dtype.element_ty), mask = mask)
+def _rms_sum_dw_partials(
+    partials, dW, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+):
+    # Fixed tile order, so eager and torch.compile give the same bytes.
+    cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    col_mask = cols < n_cols
+    acc = tl.zeros((BLOCK_ROWS, BLOCK_COLS), dtype = tl.float32)
+    for start in range(0, n_programs, BLOCK_ROWS):
+        rows = start + tl.arange(0, BLOCK_ROWS)
+        mask = (rows < n_programs)[:, None] & col_mask[None, :]
+        acc += tl.load(partials + rows[:, None] * n_cols + cols[None, :], mask = mask, other = 0)
+    tl.store(dW + cols, tl.sum(acc, axis = 0).to(dW.dtype.element_ty), mask = col_mask)
 
 
 # Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
@@ -708,8 +712,8 @@ def _rms_sum_partials(partials, W, wrap):
         return None
     programs, n_cols = partials.shape
     dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
-    wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 1024),)](
-        partials, dW, programs, n_cols, BLOCK_SIZE = 1024
+    wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 64),)](
+        partials, dW, programs, n_cols, BLOCK_ROWS = 64, BLOCK_COLS = 64
     )
     return dW
 
