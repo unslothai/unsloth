@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFrom,
+  engineLaunchFieldsFromParams,
+} from "./lib/engine-launch-fields";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -1755,6 +1760,7 @@ export function SharedComposer({
           engine: paneEngine,
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
+          ...engineLaunchFieldsFromParams(ownConfig),
           load_in_4bit: paneEngine === "auto",
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
@@ -1850,6 +1856,7 @@ export function SharedComposer({
             engine,
             engine_precision: "auto",
             engine_parallelism: "tensor",
+            ...DEFAULT_ENGINE_LAUNCH_FIELDS,
             load_in_4bit: false,
             ...(ownConfig.selectedGpuIds !== undefined
               ? {
@@ -2098,6 +2105,7 @@ export function SharedComposer({
           loadedEngine: resp.engine ?? "auto",
           loadedEnginePrecision: resp.engine_precision ?? "auto",
           loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
+          loadedEngineLaunch: engineLaunchFieldsFrom(resp),
           loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
           // value must follow it or Advanced Settings shows the other pane's Vision state.

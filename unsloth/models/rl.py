@@ -601,6 +601,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
+        if "model" in locals():
+            try:
+                from unsloth.models._ddp_defaults import unsloth_default_ddp_find_unused_parameters
+                unsloth_default_ddp_find_unused_parameters(args, model)
+            except Exception:
+                pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()

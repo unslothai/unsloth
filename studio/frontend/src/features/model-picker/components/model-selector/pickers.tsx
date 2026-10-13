@@ -1925,13 +1925,14 @@ function GgufVariantExpander({
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
-  const onUpdateVariant = variantActions?.onUpdate;
+  const [variantsAreGguf, setVariantsAreGguf] = useState(true);
+  const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription =
     variantActions?.renderUpdateDescription;
   const updateDisabled = variantActions?.updateDisabled ?? false;
-  const onDeleteVariant = variantActions?.onDelete;
+  const onDeleteVariant = variantsAreGguf ? variantActions?.onDelete : undefined;
   const deleteVariantTitle =
     variantActions?.deleteTitle ?? "Delete cached model?";
   const renderDeleteVariantDescription =
@@ -1989,6 +1990,7 @@ function GgufVariantExpander({
       }
       setNativeContext(normalized.contextLength);
       setResolvedLocally(normalized.resolvedLocally);
+      setVariantsAreGguf(res?.variant_format !== "mlx");
     };
 
     loadPickerGgufVariants(
@@ -2070,7 +2072,7 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         downloadPresentation,
         contextLength: isAvailable ? contextLength : undefined,
-        isGguf: true,
+        isGguf: variantsAreGguf,
         isVision: variantVisionHint,
         pipelineTag,
       });
@@ -2084,6 +2086,7 @@ function GgufVariantExpander({
       nativeContext,
       pipelineTag,
       variantVisionHint,
+      variantsAreGguf,
     ],
   );
 
@@ -2256,7 +2259,7 @@ function GgufVariantExpander({
     setCompanionBytesByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
     // larger half, so suppressing the request understated a local row by many gigabytes.
-    if (!resolveDownloadFootprint) {
+    if (!resolveDownloadFootprint || !variantsAreGguf) {
       return () => {
         cancelled = true;
       };
@@ -2310,6 +2313,7 @@ function GgufVariantExpander({
     repoId,
     resolveDownloadFootprint,
     sourceOverride,
+    variantsAreGguf,
   ]);
 
   const variantOptionKeys = useMemo(
@@ -2542,7 +2546,7 @@ function GgufVariantExpander({
                     isDownloaded: true,
                     expectedBytes,
                     contextLength: variantContext,
-                    isGguf: true,
+                    isGguf: variantsAreGguf,
                     isVision: variantVisionHint,
                   })
                 }
@@ -3284,6 +3288,32 @@ export function HubModelPicker({
     },
     [modelGgufIds, resultGgufIds],
   );
+
+  const resultMlxIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (
+        result.libraryName?.toLowerCase() === "mlx" ||
+        result.tags?.some((tag) => tag.toLowerCase() === "mlx")
+      ) {
+        ids.add(result.id.toLowerCase());
+      }
+    }
+    return ids;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
+  const [mlxVariantRepoIds, setMlxVariantRepoIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
 
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   // GGUF vision support per repo, reported by the expander once it has read the metadata, so On
@@ -5958,12 +5988,15 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row: GGUF repos expand, others load directly. */
+  /** Handle clicking a model row: GGUF repos and MLX precision-folder repos expand, others load. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isKnownGgufRepo(id)) {
+      const key = id.toLowerCase();
+      if (isKnownGgufRepo(id) || mlxVariantRepoIds.has(key)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
-      } else {
+        return;
+      }
+      const select = () => {
         // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
         const cached = cachedIdFor(id);
         onSelect(cached ?? id, {
@@ -5972,9 +6005,31 @@ export function HubModelPicker({
           isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
+      };
+      if (!resultMlxIds.has(key) || isHuggingFaceOffline()) {
+        select();
+        return;
       }
+      void listGgufVariants(id, hfToken || undefined)
+        .then((res) => {
+          if (res.variant_format === "mlx" && res.variants.length > 0) {
+            setMlxVariantRepoIds((prev) => new Set(prev).add(key));
+            setExpandedGguf(id);
+          } else {
+            select();
+          }
+        })
+        .catch(select);
     },
-    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
+    [
+      onSelect,
+      isKnownGgufRepo,
+      mlxVariantRepoIds,
+      resultMlxIds,
+      hfToken,
+      cachedIdFor,
+      pipelineTagById,
+    ],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
