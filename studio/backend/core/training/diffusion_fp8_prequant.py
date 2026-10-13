@@ -3,11 +3,9 @@
 
 """base_precision="fp8" training straight from a hosted ``unsloth/*-FP8`` denoiser checkpoint.
 
-The checkpoint is the same file Studio inference resolves for its fp8 scheme (same repo, filename and Hub cache root),
-so one download serves both and the dense bf16 transformer is never fetched. Its fp8 layout
-(``<fqn>._weight_qdata`` e4m3 [out, in] + ``<fqn>._weight_scale`` fp32 [out, 1], weight = qdata * scale) is the per-row
-format ``FrozenFp8Linear`` computes with, so the frozen linears take the stored codes as-is. Anything unexpected
-(no mapping, another base's weights, another layout, offline miss) returns None and the caller loads bf16 as before.
+Same file Studio fp8 inference resolves (one download, dense bf16 never fetched). Layout ``<fqn>._weight_qdata`` e4m3
+[out, in] + ``<fqn>._weight_scale`` fp32 [out, 1] is FrozenFp8Linear's per-row format. Anything unexpected returns None
+and the caller loads bf16.
 """
 
 from __future__ import annotations
@@ -191,11 +189,7 @@ def load_fp8_transformer(
     device,
     hf_token = None,
 ):
-    """Build ``transformer_cls`` from ``config_repo``'s transformer config and the fp8 checkpoint at ``path``.
-
-    Dense tensors load as bf16 (fp32 for the class's ``_keep_in_fp32_modules``). Each fp8 Linear keeps a zero-stride
-    bf16 placeholder weight plus its (qdata, scale) on ``PREQUANT_ATTR`` until ``FrozenFp8Linear`` takes them.
-    Raises on any key / shape mismatch."""
+    """Build ``transformer_cls`` from ``config_repo``'s transformer config and the fp8 checkpoint at ``path``. Raises on any key / shape mismatch."""
     import torch
     import torch.nn as nn
     from accelerate import init_empty_weights

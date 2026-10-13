@@ -537,7 +537,6 @@ def _apply_fp8_training(
             )
         import torch
 
-        # Hand the freed bf16 weights back to the driver, not just the allocator's cache.
         device = next(transformer.parameters()).device.type
         if device == "cuda":
             torch.cuda.empty_cache()

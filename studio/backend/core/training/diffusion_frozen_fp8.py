@@ -26,7 +26,6 @@ def _rowwise_quant(x2d):
 
 @torch.no_grad()
 def _quantize_weight(w, rows = 2048):
-    # Row chunks bound the fp32 transient.
     q = torch.empty(w.shape, dtype = _E4M3, device = w.device)
     s = torch.empty((w.shape[0], 1), dtype = torch.float32, device = w.device)
     for i in range(0, w.shape[0], rows):

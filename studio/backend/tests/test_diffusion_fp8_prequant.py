@@ -40,7 +40,6 @@ def _header(**kw):
 
 def test_checkpoint_problem_accepts_the_hosted_per_row_layout():
     assert pq.checkpoint_problem(_header(), _BASE) is None
-    # a mirror / local spelling of the same base is the same base
     assert pq.checkpoint_problem(_header(), "/models/Z-Image-Turbo") is None
 
 
@@ -65,8 +64,8 @@ def test_checkpoint_problem_refuses_other_bases_and_layouts(kw, base, why):
 @pytest.mark.parametrize(
     "scale",
     [
-        {"dtype": "F32", "shape": [1]},  # per-tensor
-        {"dtype": "F32", "shape": [32, 2]},  # block
+        {"dtype": "F32", "shape": [1]},
+        {"dtype": "F32", "shape": [32, 2]},
         {"dtype": "BF16", "shape": [32, 1]},
     ],
 )
