@@ -170,6 +170,9 @@ def test_cached_block_sample_frames_and_cancel():
         on_frame = frames.append,
     )
     ends = [f for f in frames if f["step"] == f["total"]]
+    # Exactly one block-end frame per decoded block; in-block frames stay below total.
+    assert [f["block"] for f in ends] == [1, 2, 3]
+    assert all(0 <= f["step"] < f["total"] for f in frames if f not in ends)
     assert len(ends) == 3 and ends[-1]["tokens"] == out[0].tolist()
     assert all(set(f) == {"block", "step", "total", "tokens", "mask_id"} for f in frames)
 
@@ -378,6 +381,22 @@ def test_dream_fast_sample_matches_reference(alg, max_new_tokens, steps):
         model, ids, max_new_tokens = max_new_tokens, steps = steps, mask_id = MASK_ID, alg = alg
     )
     assert torch.equal(reference, fast)
+
+
+def test_dream_fast_sample_frames_contract():
+    model = _ToyDream().eval()
+    frames = []
+    dream_fast_sample(
+        model,
+        torch.randint(3, MASK_ID, (1, 5)),
+        max_new_tokens = 6,
+        steps = 3,
+        mask_id = MASK_ID,
+        on_frame = frames.append,
+    )
+    ends = [f for f in frames if f["step"] == f["total"]]
+    assert len(ends) == 1 and frames[-1] is ends[0]
+    assert all(0 <= f["step"] < f["total"] for f in frames[:-1])
 
 
 def test_dream_fast_sample_defers_when_the_mask_is_proposed():

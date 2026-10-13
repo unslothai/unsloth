@@ -390,7 +390,8 @@ def cached_block_sample(
             mask_index = window == mask_id
             if not bool(mask_index.any()):
                 break
-            frames.step(x, prompt_length, end, block, step, steps, mask_id)
+            # In-block frames keep step < total; the block end sends step == total once.
+            frames.step(x, prompt_length, end, block, min(step, steps - 1), steps, mask_id)
             logits = pending if pending is not None else run(window, start, end, cache, False)
             pending = None
             x0, transfer = _select(
@@ -442,7 +443,8 @@ def _graph_block_sample(
             mask_index = window == mask_id
             if not bool(mask_index.any()):
                 break
-            frames.step(x, prompt_length, end, block, step, steps, mask_id)
+            # In-block frames keep step < total; the block end sends step == total once.
+            frames.step(x, prompt_length, end, block, min(step, steps - 1), steps, mask_id)
             logits = graph(window, start)
             x0, transfer = _select(
                 logits,
