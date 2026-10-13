@@ -2657,7 +2657,7 @@ def list_chat_sidebar_rows(
             row_ids = json.dumps(list(members_by_row))
             for member in conn.execute(
                 f"""
-                SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id
+                SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id, title
                 FROM chat_threads
                 WHERE (COALESCE(archived, 0) <> 0) = ?
                   AND (
@@ -2695,6 +2695,9 @@ def list_chat_sidebar_rows(
             item["modelIds"] = model_ids
         if not row["is_pair"]:
             item["isFork"] = bool(row["is_fork"])
+        else:
+            # each pane's own title, by threadIds position: the row's title is the newest pane's
+            item["threadTitles"] = [member["title"] or "" for member in members]
         rows.append(item)
 
     next_cursor = None

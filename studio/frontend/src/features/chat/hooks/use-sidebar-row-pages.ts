@@ -123,8 +123,12 @@ export async function fetchSidebarRowPage(
     if (page) {
       serverPages = true;
       // pre-cut legacy titles are repaired as their rows load, as the full listing did for all
+      // each thread with its own title: a Compare row's title is only its newest pane's
       const shown = page.rows.flatMap((row) =>
-        (row.threadIds?.length ? row.threadIds : [row.id]).map((id) => ({ id, title: row.title })),
+        (row.threadIds?.length ? row.threadIds : [row.id]).map((id, index) => ({
+          id,
+          title: row.threadTitles?.[index] ?? row.title,
+        })),
       );
       void repairLegacyChatTitles(shown as ThreadRecord[]).catch(() => undefined);
       return {

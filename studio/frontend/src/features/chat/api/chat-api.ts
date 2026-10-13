@@ -952,6 +952,8 @@ export interface SidebarRowRecord {
   modifiedAt?: number | null;
   modelIds?: string[] | null;
   isFork?: boolean | null;
+  /** Compare rows: each pane's own title, by `threadIds` position. */
+  threadTitles?: string[] | null;
   projectId?: string | null;
 }
 

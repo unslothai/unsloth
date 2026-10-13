@@ -59,6 +59,8 @@ export class RowPager<Q, T extends { id: string }> {
   private refreshing = false;
   // the rows on screen are not this query's top window (a refresh failed), so retry re-reads
   private stale = false;
+  // the depth a page in flight was asked to reach, which a refresh replacing it reads instead
+  private wantedDepth = 0;
   private readonly listeners = new Set<() => void>();
   private readonly maxRequestLimit: number;
   private readonly fetchPage: FetchRowPage<Q, T>;
@@ -134,13 +136,16 @@ export class RowPager<Q, T extends { id: string }> {
     if (queryKey === this.queryKey) return Promise.resolve();
     this.query = query;
     this.queryKey = queryKey;
+    // a page asked of the old query is not a page of this one
+    this.wantedDepth = 0;
     if (!this.state.loaded && !this.state.loading) return Promise.resolve();
     return this.refresh();
   }
 
   refresh(): Promise<void> {
     const generation = ++this.generation;
-    const window = Math.max(this.options.initialLimit, this.state.rows.length);
+    // a page asked for and not yet drawn is read too, or the refresh would drop the scroll's page
+    const window = Math.max(this.options.initialLimit, this.state.rows.length, this.wantedDepth);
     // a loaded list keeps showing its rows while it re-reads them
     this.patch({ loading: true }, this.state.loaded);
     this.refreshing = true;
@@ -149,6 +154,7 @@ export class RowPager<Q, T extends { id: string }> {
         const result = await this.read(null, window, generation);
         if (generation !== this.generation) return;
         this.refreshing = false;
+        this.wantedDepth = 0;
         this.cursor = result.cursor;
         this.stale = false;
         const prev = this.state;
@@ -191,11 +197,13 @@ export class RowPager<Q, T extends { id: string }> {
       return Promise.resolve();
     }
     const generation = this.generation;
+    if (count === this.options.pageSize) this.wantedDepth = this.state.rows.length + count;
     this.patch({ loading: true });
     const run = (async () => {
       try {
         const result = await this.read(this.cursor, count, generation);
         if (generation !== this.generation) return;
+        this.wantedDepth = 0;
         this.cursor = result.cursor;
         this.patch({
           rows: dedupeAppend(this.state.rows, result.rows),
@@ -211,6 +219,7 @@ export class RowPager<Q, T extends { id: string }> {
           await this.refresh();
           return;
         }
+        this.wantedDepth = 0;
         this.patch({ loading: false, error });
       }
     })();

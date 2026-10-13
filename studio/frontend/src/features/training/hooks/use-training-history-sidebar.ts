@@ -44,20 +44,24 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
       // offsets shift if a run is added or removed between requests: read again from the top
       for (let attempt = 0; attempt < 3; attempt++) {
         runs = [];
+        // the server rows read so far, the next offset; a repeated run means the list moved
+        let offset = 0;
         let firstTotal: number | null = null;
         let shifted = false;
-        while (runs.length < wanted) {
+        while (offset < wanted) {
           const result = await listTrainingRuns(
-            Math.min(MAX_REQUEST_LIMIT, wanted - runs.length),
-            runs.length,
+            Math.min(MAX_REQUEST_LIMIT, wanted - offset),
+            offset,
             controller.signal,
           );
+          offset += result.runs.length;
           firstTotal ??= result.total;
-          shifted ||= result.total !== firstTotal;
           const seen = new Set(runs.map((run) => run.id));
-          runs.push(...result.runs.filter((run) => !seen.has(run.id)));
+          const fresh = result.runs.filter((run) => !seen.has(run.id));
+          shifted ||= result.total !== firstTotal || fresh.length < result.runs.length;
+          runs.push(...fresh);
           runTotal = result.total;
-          if (result.runs.length === 0 || runs.length >= result.total) break;
+          if (result.runs.length === 0 || offset >= result.total) break;
         }
         if (!shifted) break;
       }

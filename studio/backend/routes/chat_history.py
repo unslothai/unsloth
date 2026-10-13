@@ -397,6 +397,7 @@ class ChatSidebarRow(BaseModel):
     modifiedAt: Optional[int] = None
     modelIds: Optional[list[str]] = None
     isFork: Optional[bool] = None
+    threadTitles: Optional[list[str]] = None
     projectId: Optional[str] = None
 
 

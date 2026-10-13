@@ -1663,7 +1663,10 @@ export function AppSidebar() {
         .then((pages) => {
           if (!cancelled) setHasUnlistedChats(pages.some((page) => page.rows.length > 0));
         })
-        .catch(() => undefined);
+        // a failed probe knows nothing, so an older answer stops speaking for this history
+        .catch(() => {
+          if (!cancelled) setHasUnlistedChats(null);
+        });
     };
     probe();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, probe);

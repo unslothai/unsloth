@@ -245,7 +245,7 @@ test("rows a page repeats are kept once", async () => {
   assert.equal(ids.length, 40);
 });
 
-test("a cursor the server rejects re-reads the same depth from the top", async () => {
+test("a cursor the server rejects re-reads from the top through the page it asked for", async () => {
   const server = fakeServer(() => rows(100));
   let reject = false;
   const fetchPage: typeof server.fetchPage = async (q, limit, cursor) => {
@@ -262,8 +262,8 @@ test("a cursor the server rejects re-reads the same depth from the top", async (
   server.calls.length = 0;
   await list.loadMore();
   assert.equal(list.getState().error, null);
-  assert.equal(list.getState().rows.length, 40);
-  assert.deepEqual(server.calls, [{ limit: 40, cursor: null }]);
+  assert.equal(list.getState().rows.length, 60);
+  assert.deepEqual(server.calls, [{ limit: 60, cursor: null }]);
 });
 
 test("a failed page stops paging until retried, and keeps the rows it had", async () => {
@@ -791,8 +791,8 @@ test("a drag saved from a partly loaded manual list keeps held-back rows where t
 test("a training refresh past one request re-reads from the top if the run count moved under it", () => {
   const src = readSrc("features/training/hooks/use-training-history-sidebar.ts");
   assert.match(src, /for \(let attempt = 0; attempt < 3; attempt\+\+\) \{/);
-  assert.match(src, /shifted \|\|= result\.total !== firstTotal;/);
-  assert.match(src, /runs\.push\(\.\.\.result\.runs\.filter\(\(run\) => !seen\.has\(run\.id\)\)\);/);
+  assert.match(src, /shifted \|\|= result\.total !== firstTotal \|\| fresh\.length < result\.runs\.length;/);
+  assert.match(src, /runs\.push\(\.\.\.fresh\);/);
   assert.match(src, /if \(!shifted\) break;/);
 });
 
@@ -801,4 +801,39 @@ test("Pinned and manual sections hold rows past their last loaded chat, and a dr
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(rows, order, \(row\) => row\.id\),\n\s*order,\n\s*Boolean\(pinnedHasMore\),/);
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(list, order, \(row\) => row\.id\),\n\s*order,\n\s*sectionHasMore\.has\(section\.id\),/);
   assert.match(src, /settle\(settledManualOrder\(ids, all, current\)\);/);
+});
+
+test("a page asked for just before a history refresh is read by that refresh instead of dropped", async () => {
+  let release: (() => void) | null = null;
+  const fetchPage = async (_q: unknown, limit: number, cursor: string | null) => {
+    const at = cursor ? Number(cursor) : 0;
+    // the scroll's page is slow: a refresh starts while it is in flight
+    if (cursor && !release) await new Promise<void>((resolve) => { release = resolve; });
+    return { rows: rows(100).slice(at, at + limit), nextCursor: String(at + limit), hasMore: at + limit < 100 };
+  };
+  const list = new RowPager<unknown, Row>(fetchPage, {}, "q", { initialLimit: 20, pageSize: 20 });
+  await list.start();
+  const page = list.loadMore();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const refreshed = list.refresh();
+  (release as (() => void) | null)?.();
+  await Promise.all([page, refreshed]);
+  assert.equal(list.getState().rows.length, 40, "the refresh re-read only the 20 already drawn");
+});
+
+test("a Compare row's panes are repaired with their own titles, not the row's", async () => {
+  const src = readSrc("features/chat/hooks/use-sidebar-row-pages.ts");
+  assert.match(src, /title: row\.threadTitles\?\.\[index\] \?\? row\.title,/);
+});
+
+test("a training refresh moves its offset by the server rows read, and a repeated run restarts it", () => {
+  const src = readSrc("features/training/hooks/use-training-history-sidebar.ts");
+  assert.match(src, /offset \+= result\.runs\.length;/);
+  assert.match(src, /shifted \|\|= result\.total !== firstTotal \|\| fresh\.length < result\.runs\.length;/);
+  assert.match(src, /if \(result\.runs\.length === 0 \|\| offset >= result\.total\) break;/);
+});
+
+test("a failed empty-history probe stops an older answer from showing \"No chats yet\"", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /\.catch\(\(\) => \{\n\s*if \(!cancelled\) setHasUnlistedChats\(null\);\n\s*\}\);/);
 });

@@ -225,6 +225,13 @@ def test_full_traversal_matches_get_threads_and_group_threads(client):
     for archived in (False, True):
         expected = _group_threads(listed, archived = archived)
         rows = _page_all(client, {"archived": archived, "limit": 6})
+        # compare rows also carry each pane's own title, by threadIds position
+        title_of = {t["id"]: t["title"] for t in listed}
+        for row in rows:
+            titles = row.pop("threadTitles", None)
+            assert titles == (
+                [title_of[t] for t in row["threadIds"]] if row["type"] == "compare" else None
+            )
         assert rows == expected
 
 
@@ -247,6 +254,7 @@ def test_pair_is_never_split_and_takes_newest_member_title_and_project(client, d
     assert first["rows"][0]["id"] == "pair"
     assert first["rows"][0]["threadIds"] == ["pb", "pa"]
     assert first["rows"][0]["title"] == "B"
+    assert first["rows"][0]["threadTitles"] == ["B", "A"]
     assert first["rows"][0]["projectId"] == "proj"
     assert first["rows"][0]["createdAt"] == 50
     assert first["rows"][0]["type"] == "compare"
