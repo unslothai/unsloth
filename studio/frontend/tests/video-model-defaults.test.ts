@@ -76,6 +76,11 @@ test("the other families keep their recipes", () => {
     ["/models/ltx_2.5_full_bf16.safetensors", 30, 3],
     ["someone/LTX-2.5-sft", 30, 3],
     ["someone/LTX-2.5/ltx-2.5-transformer_full.safetensors", 30, 3],
+    // An opaque file name falls back to the repo or local folder naming LTX, as the backend passes both.
+    ["/models/LTX-2.5-dev/model.safetensors", 30, 3],
+    ["someone/LTX-2.5-sft/diffusion_models/model.safetensors", 30, 3],
+    ["/home/dev/models/LTX-2.5/model.safetensors", 8, 1],
+    ["/models/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
     // The file decides over the repo, and "distilled" wins inside one name.
     ["someone/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
     ["someone/LTX-2.5/ltx-2.5-dev-distilled.safetensors", 8, 1],
