@@ -404,22 +404,56 @@ if _TRACEABLE:
 # Weak, so a freed split model stops costing the others.
 _SPLIT_MODELS = weakref.WeakSet()
 
+# Set by the first RoPE call off the current device: a split nothing registered (dispatched through a
+# dispatch_model bound before Unsloth was imported), or a split model that cannot be tracked. From then
+# on every call drains, as on main.
+_UNREGISTERED_SPLIT_SEEN = False
+
 if DEVICE_COUNT > 1:
     _current_device = getattr(torch, DEVICE_TYPE_TORCH).current_device
 else:
     _current_device = None
 
 
-def register_split_model(model, device_map = None):
-    if device_map is None:
-        device_map = getattr(model, "hf_device_map", None)
-    if DEVICE_COUNT <= 1 or not isinstance(device_map, dict):
-        return False
-    from ..models.rl import _accelerator_indices
+def _accelerator_indices(device_map):
+    # An index-less entry ("cuda", torch.device("cuda")) means the current device, not device 0.
+    current = _current_device() if _current_device is not None else 0
+    indices = set()
+    for value in device_map.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            indices.add(value)
+            continue
+        text = str(value)
+        if text.isdigit():
+            indices.add(int(text))
+            continue
+        if text in ("cpu", "disk", "meta"):
+            continue
+        try:
+            device = torch.device(text)
+        except Exception:
+            continue
+        if device.type in ("cpu", "meta"):
+            continue
+        indices.add(current if device.index is None else device.index)
+    return indices
 
-    if len(_accelerator_indices(device_map)) < 2:
+
+def register_split_model(model, device_map = None):
+    """Never raises: a split that cannot be tracked (an unhashable model) drains every call instead."""
+    global _UNREGISTERED_SPLIT_SEEN
+    if DEVICE_COUNT <= 1:
         return False
-    _SPLIT_MODELS.add(model)
+    try:
+        if device_map is None:
+            device_map = getattr(model, "hf_device_map", None)
+        if not isinstance(device_map, dict) or len(_accelerator_indices(device_map)) < 2:
+            return False
+        _SPLIT_MODELS.add(model)
+    except Exception:
+        _UNREGISTERED_SPLIT_SEEN = True
     return True
 
 
@@ -437,10 +471,7 @@ def _register_splits_on_dispatch():
     @functools.wraps(original)
     def dispatch_model(model, device_map, *args, **kwargs):
         out = original(model, device_map, *args, **kwargs)
-        try:
-            register_split_model(model, device_map)
-        except Exception:
-            pass
+        register_split_model(model, device_map)
         return out
 
     dispatch_model._unsloth_registers_split = True
@@ -459,11 +490,6 @@ def _register_splits_on_dispatch():
 
 if DEVICE_COUNT > 1:
     _register_splits_on_dispatch()
-
-
-# Set by the first RoPE call off the current device: a split nothing registered (dispatched through a
-# dispatch_model bound before Unsloth was imported). From then on every call drains, as on main.
-_UNREGISTERED_SPLIT_SEEN = False
 
 
 def _sync_if_split(Q):

@@ -136,6 +136,26 @@ def test_unregistered_split_syncs_once_seen(monkeypatch, synced):
     assert synced == [1, 1, 0, 0, 1, 1]
 
 
+def test_index_less_entries_mean_the_current_device(monkeypatch, synced, current):
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    current[0] = 1
+    assert not RE.register_split_model(_Model({"model.layers.0": "cuda", "model.layers.1": "cuda:1"}))
+    assert RE.register_split_model(_Model({"model.layers.0": "cuda", "model.layers.1": "cuda:0"}))
+
+
+def test_unhashable_split_model_drains_instead_of_raising(monkeypatch, synced):
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+
+    class _Unhashable(_Model):
+        def __eq__(self, other):
+            return self is other
+
+    assert RE.register_split_model(_Unhashable({"model.layers.0": 0, "model.layers.1": 1}))
+    for index in [0, 0, 1, 1]:
+        _rope(index)
+    assert synced == [0, 0, 1, 1]
+
+
 def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
     # accelerate.dispatch_model called by hand after loading registers the split before the first forward,
     # including through the names transformers bound at import.
