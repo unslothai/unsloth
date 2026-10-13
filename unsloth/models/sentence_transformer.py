@@ -15,6 +15,7 @@ from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     _PLANNED_DEVICE_MAPS,
+    is_distributed,
     requested_device_map,
     unmarked_device_map,
 )
@@ -98,6 +99,11 @@ def _ensure_sentence_attention_masks(model):
         )
         return True
     return False
+
+
+def _encoder_gc_use_reentrant():
+    # Under DDP, reentrant checkpointing re-runs each layer in its own backward, so a LoRA weight's grad hook fires once per checkpoint call and DDP raises "marked as ready twice" (#4680). Same fallback as the FastModel route (#3751).
+    return not is_distributed()
 
 
 def _is_force_float32_config(config):
@@ -726,6 +732,7 @@ class FastSentenceTransformer(FastModel):
         from transformers.models.mpnet import modeling_mpnet
 
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
+        use_reentrant = _encoder_gc_use_reentrant()
 
         def _set_gradient_checkpointing(
             self,
@@ -772,7 +779,7 @@ class FastSentenceTransformer(FastModel):
                         attention_mask,
                         head_mask[i] if head_mask is not None else None,
                         position_bias,
-                        use_reentrant = True,
+                        use_reentrant = use_reentrant,
                     )
                 else:
                     layer_outputs = layer_module(
@@ -810,6 +817,7 @@ class FastSentenceTransformer(FastModel):
         from transformers.models.mpnet import modeling_mpnet
 
         modeling_mpnet.MPNetModel.supports_gradient_checkpointing = True
+        use_reentrant = _encoder_gc_use_reentrant()
 
         def _set_gradient_checkpointing(
             self,
@@ -854,7 +862,7 @@ class FastSentenceTransformer(FastModel):
                         hidden_states,
                         attention_mask,
                         position_bias,
-                        use_reentrant = True,  # required for torch >= 2.9
+                        use_reentrant = use_reentrant,  # explicit: required for torch >= 2.9
                     )
                 else:
                     layer_outputs = layer_module(
@@ -3009,7 +3017,14 @@ class FastSentenceTransformer(FastModel):
                 elif use_gradient_checkpointing and use_gradient_checkpointing != False:
                     if hasattr(inner_model, "gradient_checkpointing_enable"):
                         try:
-                            inner_model.gradient_checkpointing_enable()
+                            # Single GPU keeps the transformers default.
+                            inner_model.gradient_checkpointing_enable(
+                                **(
+                                    {}
+                                    if _encoder_gc_use_reentrant()
+                                    else {"gradient_checkpointing_kwargs": {"use_reentrant": False}}
+                                )
+                            )
                             print("Unsloth: Enabled gradient checkpointing")
                             gc_enabled = True
                         except ValueError as e:
