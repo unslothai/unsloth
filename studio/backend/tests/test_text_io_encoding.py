@@ -283,31 +283,16 @@ def _path_class_names(tree: ast.AST) -> set[str]:
     """The pathlib classes and every name they are imported under in this module.
 
     `from pathlib import Path as P` still puts the path in front of an unbound `P.read_text(p)`,
-    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for."""
+    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for. Names bound by
+    assignment, defaults or subclassing are not followed: those need the binding visible at each
+    call site, and a module-wide guess flags valid calls on an instance that happens to share the
+    name in another scope."""
     names = set(_PATH_CLASSES)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
             for alias in node.names:
                 if alias.name in _PATH_CLASSES:
                     names.add(alias.asname or alias.name)
-    # `P = Path` / `P = pathlib.Path`, followed to a fixed point so `Q = P` counts too.
-    assigns = [
-        (target.id, node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    ]
-    grew = True
-    while grew:
-        grew = False
-        for target, value in assigns:
-            is_path = (isinstance(value, ast.Name) and value.id in names) or (
-                isinstance(value, ast.Attribute) and value.attr in _PATH_CLASSES
-            )
-            if is_path and target not in names:
-                names.add(target)
-                grew = True
     return names
 
 
@@ -797,9 +782,8 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
         "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
         "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
-        # Aliases made by assignment.
-        "unbound_assigned.py": "P = Path\nQ = P\nQ.read_text(p)\n",
-        "unbound_assigned_attr.py": "P = pathlib.Path\nP.read_text(p)\n",
+        # A same-named instance elsewhere is not an alias: no module-wide assignment guessing.
+        "instance_named_p.py": 'def a():\n    P = Path\n\ndef b(P):\n    P.read_text("utf-8")\n',
         # A starred argument hides the runtime position: only a keyword encoding counts.
         "starred_empty.py": "p.read_text(*())\n",
         "unbound_starred.py": "Path.read_text(p, *())\n",
@@ -822,8 +806,6 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "unbound_write.py",
         "unbound_alias.py",
         "unbound_posix.py",
-        "unbound_assigned.py",
-        "unbound_assigned_attr.py",
         "starred_empty.py",
         "unbound_starred.py",
     }, flagged
