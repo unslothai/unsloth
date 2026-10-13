@@ -126,11 +126,15 @@ def cgroup_swap_allowance_bytes(
     free_swap: int,
     cgroup_root: Optional[str] = None,
     proc_self_cgroup: Optional[str] = None,
+    *,
+    ram_budget: Optional[int] = None,
 ) -> int:
     """How much of the host's ``free_swap`` this process may still use: bounded by every enforcing cgroup swap
     limit on this cgroup and its ancestors: v2 ``memory.swap.max`` minus ``memory.swap.current`` per level (a
-    swap-only counter, so the per-level minimum is exact); v1 the tightest ``memsw`` headroom minus the tightest
-    RAM headroom. 0 when a memory limit is enforced but its swap allowance cannot be read."""
+    swap-only counter, so the per-level minimum is exact); v1 the tightest ``memsw`` (RAM+swap) headroom minus the
+    RAM the caller actually budgets (``ram_budget``, e.g. min(MemAvailable, cgroup headroom)), else minus the
+    tightest cgroup RAM headroom. Unreadable cgroup membership is read as the namespace root, like
+    ``cgroup_memory_budgets``, so a root RAM limit without readable swap files still yields 0. 0 when a memory limit is enforced but its swap allowance cannot be read."""
     free_swap = max(int(free_swap or 0), 0)
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
@@ -141,6 +145,9 @@ def cgroup_swap_allowance_bytes(
         lines = []
     allowance = free_swap
     v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
+    if not lines:
+        # Membership unknown: judge the namespace root (where cgroup_memory_budgets reads the RAM limit), fail closed.
+        v2_relative = "/"
     if v2_relative is not None:
         for directory in _directories(cgroup_root, v2_relative):
             raw = _first_line(os.path.join(directory, "memory.swap.max"))
@@ -158,7 +165,7 @@ def cgroup_swap_allowance_bytes(
             if used is None:
                 return 0
             allowance = min(allowance, max(limit - used, 0))
-    v1_relative = None
+    v1_relative = None if lines else "/"
     for line in lines:
         parts = line.split(":", 2)
         if len(parts) == 3 and "memory" in parts[1].split(","):
@@ -195,7 +202,8 @@ def cgroup_swap_allowance_bytes(
             room = memsw_limit - memsw_used
             combined_room = room if combined_room is None else min(combined_room, room)
         if combined_room is not None:
-            allowance = min(allowance, max(combined_room - max(ram_room or 0, 0), 0))
+            ram_side = ram_room if ram_budget is None else ram_budget
+            allowance = min(allowance, max(combined_room - max(ram_side or 0, 0), 0))
     return allowance
 
 

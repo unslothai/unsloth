@@ -1600,6 +1600,56 @@ def h3_native_memory_fit(
     )
 
 
+@dataclass(frozen = True)
+class H3NativeFitInputs:
+    """What ``h3_native_live_fit`` needs that does not change between renders, resolved once at load (the device
+    listing and torch PCI reading included), so a re-fit reads only files."""
+
+    base_flags: tuple[str, ...]  # the committed offload flags BEFORE the device pin
+    accelerator: Optional[str]
+    check_gtt: bool
+    gtt_pci_slot: Optional[str]
+    dit_bytes: int
+    te_bytes: int
+    vae_bytes: int
+    device_name: Optional[str]
+
+
+def h3_native_host_budgets() -> "tuple[Optional[int], int]":
+    """(RAM, swap) a native render may still take: RAM cgroup-capped and without Studio's own RSS, swap bounded by
+    the cgroup against that same RAM budget. (None, 0) when RAM cannot be read."""
+    try:
+        import psutil
+        from utils.host_memory import cgroup_swap_allowance_bytes
+
+        ram = h3_native_host_available_bytes()
+        swap = cgroup_swap_allowance_bytes(int(psutil.swap_memory().free), ram_budget = ram)
+        return ram, swap
+    except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
+        return None, 0
+
+
+def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
+    """``h3_native_memory_fit`` on live RAM, swap and GTT readings: /proc, cgroup and sysfs files only."""
+    ram, swap = h3_native_host_budgets()
+    return h3_native_memory_fit(
+        inputs.base_flags,
+        accelerator = inputs.accelerator,
+        memory_mode = memory_mode,
+        dit_bytes = inputs.dit_bytes,
+        te_bytes = inputs.te_bytes,
+        vae_bytes = inputs.vae_bytes,
+        pinned_free_bytes = amdgpu_gtt_free_bytes(inputs.gtt_pci_slot) if inputs.check_gtt else None,
+        host_ram_bytes = ram,
+        host_swap_bytes = swap,
+    )
+
+
+H3_NATIVE_RENDER_RUNNING_HINT = (
+    " A render on the model being replaced is still running and holds that memory; try again after it finishes."
+)
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
@@ -1631,6 +1681,8 @@ class MiniMaxH3NativeRuntime:
     # Auto only: the GTT-fitted flags an OFFLOADED render runs with, and the refusal when none fits.
     offloaded_flags: Optional[tuple[str, ...]] = None
     offload_refusal: Optional[str] = None
+    # Auto only: re-fit inputs, so an offloaded render is judged on live readings rather than the load's.
+    fit_inputs: Any = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.

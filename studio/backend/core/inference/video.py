@@ -1396,6 +1396,50 @@ def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optiona
     return physical_card_name(ordinal)
 
 
+def _h3_offloaded_render_flags(
+    runtime: Any,
+    render_flags: "list[str]",
+    *,
+    render_resident: bool,
+    memory_mode: Optional[str],
+) -> list[str]:
+    """The flags an H3 native render runs with once Auto chose resident or offloaded. An offloaded Auto render is
+    re-fitted on live RAM, swap and GTT readings (file reads only), so pressure since the load is caught and memory
+    freed since lifts a refusal; a live offloaded sd-server already holds its weights and keeps its own flags."""
+    from .sd_cpp_args import device_backend_flags
+    from .video_minimax_h3 import (
+        H3NativeMemoryRefusal,
+        h3_native_live_fit,
+        h3_native_offloaded_render_flags,
+    )
+
+    inputs = getattr(runtime, "fit_inputs", None)
+    if (
+        render_resident
+        or "--offload-to-cpu" not in render_flags
+        or inputs is None
+        or (memory_mode or "auto") != "auto"
+    ):
+        return h3_native_offloaded_render_flags(
+            render_flags,
+            render_resident = render_resident,
+            offloaded_flags = getattr(runtime, "offloaded_flags", None),
+            offload_refusal = getattr(runtime, "offload_refusal", None),
+        )
+    slot = getattr(runtime, "server_slot", None)
+    live = slot.alive_signature() if slot is not None else None
+    if live is not None and "--offload-to-cpu" in live[2]:
+        # A reading now would count the server's own placed weights against it.
+        return list(live[2])
+    fit = h3_native_live_fit(inputs, "auto")
+    if fit.refusal:
+        raise H3NativeMemoryRefusal(fit.refusal)
+    if fit.note:
+        logger.info("video.h3_native_memory_fit (render): %s", fit.note)
+    flags = tuple(fit.flags)
+    return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
+
+
 def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
     """``DDDD:BB:DD`` of the torch-visible card at *ordinal* (no function digit: torch does not report it)."""
     if ordinal is None:
@@ -4172,13 +4216,12 @@ class VideoBackend:
         native_fit_note: Optional[str] = None
         native_fit_flags: Optional[tuple[str, ...]] = None
         native_fit_refusal: Optional[str] = None
+        native_fit_inputs: Any = None
         if native_device != "cpu":
-            from utils.host_memory import cgroup_swap_allowance_bytes
-
             from .video_minimax_h3 import (
-                amdgpu_gtt_free_bytes,
-                h3_native_host_available_bytes,
-                h3_native_memory_fit,
+                H3_NATIVE_RENDER_RUNNING_HINT,
+                H3NativeFitInputs,
+                h3_native_live_fit,
                 h3_native_render_flags,
                 h3_native_resident_bytes,
                 vulkan_device_is_amd,
@@ -4199,38 +4242,30 @@ class VideoBackend:
             check_gtt = fit_accelerator == "vulkan" and vulkan_device_is_amd(
                 native_listed_description
             )
-
-            def _measure_fit() -> Any:
-                try:
-                    import psutil
-
-                    # The render is a separate process, so Studio's own RSS is not reused (unlike the diffusers
-                    # guard). RAM and swap stay apart: the pinned set cannot be swapped.
-                    host_ram = h3_native_host_available_bytes()
-                    host_swap = cgroup_swap_allowance_bytes(int(psutil.swap_memory().free))
-                except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
-                    host_ram, host_swap = None, 0
-                return h3_native_memory_fit(
-                    native_offload,
-                    accelerator = fit_accelerator,
-                    memory_mode = requested_mode,
-                    dit_bytes = _size(resolved[0]),
-                    te_bytes = _size(resolved[1]),
-                    vae_bytes = _size(resolved[2]) + _size(resolved[3]),
-                    pinned_free_bytes = amdgpu_gtt_free_bytes(_torch_pci_slot(native_ordinal))
-                    if check_gtt
-                    else None,
-                    host_ram_bytes = host_ram,
-                    host_swap_bytes = host_swap,
-                )
-
-            fit = _measure_fit()
+            # Everything a re-fit needs, resolved now (the PCI reading included) so later readings are file reads.
+            native_fit_inputs = H3NativeFitInputs(
+                base_flags = tuple(native_offload),
+                accelerator = fit_accelerator,
+                check_gtt = check_gtt,
+                gtt_pci_slot = _torch_pci_slot(native_ordinal) if check_gtt else None,
+                dit_bytes = _size(resolved[0]),
+                te_bytes = _size(resolved[1]),
+                vae_bytes = _size(resolved[2]) + _size(resolved[3]),
+                device_name = native_device_name,
+            )
+            fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+            release_pending = False
             if fit.refusal or fit.note:
-                # The model this load replaces may still hold an idle sd-server in its keepalive window: its host
-                # RAM and GTT are about to be freed by the teardown, so free them now and measure again. The old
-                # model stays loaded (a failed load keeps it) and respawns its server on its next render.
-                if self._release_native_server("a new MiniMax-H3 load is measuring host memory"):
-                    fit = _measure_fit()
+                # The model this load replaces may still hold its sd-server in the keepalive window: its host RAM and
+                # GTT are about to be freed by the teardown, so free them now and measure again. The old model stays
+                # loaded (a failed load keeps it) and respawns its server on its next render. A server mid-render
+                # only stops at the render's end, so nothing is freed yet and the reading stands.
+                released = self._release_native_server("a new MiniMax-H3 load is measuring host memory")
+                if released == "stopped":
+                    fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+                release_pending = released == "pending"
+            if fit.refusal and release_pending:
+                fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
             if requested_mode == "auto" and (fit.refusal or fit.note):
                 # Auto renders resident whenever live free VRAM covers it, which needs neither the GTT pool nor the
                 # host copy: decide at render time, and refuse here only when even the smallest clip cannot go
@@ -4291,6 +4326,7 @@ class VideoBackend:
             offload_flags = native_offload,
             offloaded_flags = native_fit_flags,
             offload_refusal = native_fit_refusal,
+            fit_inputs = native_fit_inputs if requested_mode == "auto" else None,
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (
@@ -10916,7 +10952,6 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
-            h3_native_offloaded_render_flags,
             h3_native_render_flags,
             h3_native_resident_bytes,
             inspect_video,
@@ -10965,11 +11000,8 @@ class VideoBackend:
                 need_bytes = need,
             )
         # The GTT fit the load prepared for an offloaded Auto render; a resident one never needed it.
-        render_flags = h3_native_offloaded_render_flags(
-            render_flags,
-            render_resident = render_resident,
-            offloaded_flags = getattr(runtime, "offloaded_flags", None),
-            offload_refusal = getattr(runtime, "offload_refusal", None),
+        render_flags = _h3_offloaded_render_flags(
+            runtime, render_flags, render_resident = render_resident, memory_mode = state.memory_mode
         )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
@@ -11266,19 +11298,22 @@ class VideoBackend:
 
     # ── teardown + status ────────────────────────────────────────────────────
 
-    def _release_native_server(self, reason: str) -> bool:
-        """Stop the committed model's idle H3 sd-server (a busy one stops at its render's end), keeping the model
-        itself loaded: the slot respawns on its next render. True when there was a server to release."""
+    def _release_native_server(self, reason: str) -> str:
+        """Stop the committed model's idle H3 sd-server, keeping the model itself loaded (the slot respawns on its
+        next render). "stopped" when its memory is freed now, "pending" when it is mid-render (or starting) and will
+        stop at the render's end, "none" when there was no server. Never waits on a render."""
         with self._lock:
             state = self._state
         slot = getattr(getattr(state, "pipe", None), "server_slot", None)
         if slot is None:
-            return False
+            return "none"
         try:
-            return bool(slot.release(reason))
+            if not slot.release(reason):
+                return "none"
+            return "pending" if slot.is_alive() else "stopped"
         except Exception as exc:  # noqa: BLE001 - a release failure leaves the reading as it was
             logger.warning("video.h3_native_server_release_failed: %s", exc)
-            return False
+            return "none"
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation

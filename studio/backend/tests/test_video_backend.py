@@ -4409,6 +4409,11 @@ class _ReleasableSlot:
         self.released.append(reason)
         return True
 
+    def is_alive(self):
+        return self.busy
+
+    busy = False
+
     def stop(self, reason = "stopped"):
         pass
 
@@ -4438,6 +4443,118 @@ def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(mo
     )
     assert slot.released and "--clip-on-cpu" not in offload
     assert state.pipe.offloaded_flags is None and state.pipe.offload_refusal is None
+
+
+def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, tmp_path):
+    """Mid-render the release is only pending: nothing is freed yet, so no fresh reading is taken, and the refusal
+    says a render is still running rather than blaming the host."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    slot.busy = True
+    readings = []
+
+    def gtt(*_a, **_k):
+        readings.append(1)
+        return 0
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", gtt)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    with pytest.raises(RuntimeError, match = "still running"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_VULKAN,
+            installed_accelerator = "vulkan",
+            backend = backend,
+        )
+    assert slot.released and len(readings) == 1
+
+
+def _render_runtime(*, base = ("--offload-to-cpu", "--diffusion-fa"), slot = None, snapshot_refusal = None):
+    from core.inference.video_minimax_h3 import H3NativeFitInputs
+
+    inputs = H3NativeFitInputs(
+        base_flags = base,
+        accelerator = "vulkan",
+        check_gtt = True,
+        gtt_pci_slot = "0000:03:00",
+        dit_bytes = 1,
+        te_bytes = 1,
+        vae_bytes = 2,
+        device_name = "Vulkan0",
+    )
+    return types.SimpleNamespace(
+        fit_inputs = inputs,
+        server_slot = slot,
+        offloaded_flags = None,
+        offload_refusal = snapshot_refusal,
+    )
+
+
+def _live_gtt(monkeypatch, value):
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: value)
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_available_bytes", lambda: 1 << 50)
+    monkeypatch.setattr(host_memory, "cgroup_swap_allowance_bytes", lambda *a, **k: 0)
+
+
+def test_an_offloaded_auto_render_catches_pressure_since_the_load(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    _live_gtt(monkeypatch, 0)
+    with pytest.raises(H3NativeMemoryRefusal, match = "GTT"):
+        _h3_offloaded_render_flags(
+            _render_runtime(), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+        )
+
+
+def test_an_offloaded_auto_render_lifts_a_refusal_once_memory_is_free(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    # Room for everything but the encoder: the live fit moves it to the CPU and re-pins it there.
+    _live_gtt(monkeypatch, video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 3)
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(snapshot_refusal = "refused at load"),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
+    )
+    assert "--clip-on-cpu" in flags
+    assert flags[-2:] == ["--backend", "diffusion=Vulkan0,te=cpu,vae=Vulkan0"]
+
+
+def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    def boom(*_a, **_k):
+        raise AssertionError("must not re-read with the server's own weights placed")
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_live_fit", boom)
+    running = ("--offload-to-cpu", "--diffusion-fa", "--clip-on-cpu")
+    slot = types.SimpleNamespace(alive_signature = lambda: ("bin", (), running, ()))
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+    ) == list(running)
+
+
+def test_a_resident_render_is_never_re_fitted(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_live_fit", lambda *a, **k: 1 / 0)
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    assert _h3_offloaded_render_flags(
+        _render_runtime(), resident, render_resident = True, memory_mode = "auto"
+    ) == resident
 
 
 def test_h3_native_keeps_the_outgoing_server_when_the_load_fits(monkeypatch, tmp_path):

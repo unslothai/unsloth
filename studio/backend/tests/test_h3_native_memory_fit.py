@@ -359,6 +359,51 @@ def test_cgroup_v1_ram_only_levels_still_bound_the_ram_side(tmp_path):
     assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 16 * GIB
 
 
+def test_unreadable_membership_with_a_root_ram_limit_admits_no_swap(tmp_path):
+    root = tmp_path / "cg"
+    root.mkdir()
+    (root / "memory.max").write_text(str(48 * GIB) + "\n", encoding = "utf-8")
+    missing = str(tmp_path / "no-such-proc-self-cgroup")
+    assert cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 0
+
+
+def test_unreadable_membership_reads_the_root_swap_files(tmp_path):
+    root = tmp_path / "cg"
+    root.mkdir()
+    for name, value in (
+        ("memory.max", str(48 * GIB)),
+        ("memory.swap.max", str(8 * GIB)),
+        ("memory.swap.current", str(3 * GIB)),
+    ):
+        (root / name).write_text(value + "\n", encoding = "utf-8")
+    missing = str(tmp_path / "no-such-proc-self-cgroup")
+    assert cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 5 * GIB
+
+
+def test_unreadable_membership_without_any_limit_keeps_host_swap(tmp_path):
+    root = tmp_path / "cg"
+    root.mkdir()
+    missing = str(tmp_path / "no-such-proc-self-cgroup")
+    assert cgroup_swap_allowance_bytes(8 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 8 * GIB
+
+
+def test_cgroup_v1_swap_is_measured_against_the_ram_the_fit_actually_budgets(tmp_path):
+    """40 GiB cgroup RAM room, 70 GiB RAM+swap room, but only 25 GiB MemAvailable: the fit budgets 25 GiB of RAM, so
+    45 GiB of swap brings the charge to the 70 GiB the memsw limit allows (not 30 + 25 = 55)."""
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/x/memory.limit_in_bytes": str(50 * GIB),
+            "memory/x/memory.usage_in_bytes": str(10 * GIB),
+            "memory/x/memory.memsw.limit_in_bytes": str(80 * GIB),
+            "memory/x/memory.memsw.usage_in_bytes": str(10 * GIB),
+        },
+        proc = "4:memory:/x\n",
+    )
+    assert cgroup_swap_allowance_bytes(100 * GIB, **paths, ram_budget = 25 * GIB) == 45 * GIB
+    assert cgroup_swap_allowance_bytes(100 * GIB, **paths) == 30 * GIB
+
+
 def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):
     from core.inference import video_minimax_h3
     from utils import host_memory
