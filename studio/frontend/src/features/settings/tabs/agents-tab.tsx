@@ -65,6 +65,7 @@ import {
 } from "../components/agent-command-block";
 import {
   type AgentDetails,
+  NOT_AUTO_PICKED_AGENTS,
   SUPPORTED_AGENTS,
   UNSLOTH_START_DOCS_URL,
   detailsFor,
@@ -89,7 +90,7 @@ const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -693,8 +694,10 @@ export function AgentsTab() {
             if (agentSelectionChanged.current) {
               return current;
             }
-            const detected = next.detected.find((agent) =>
-              next.agents.includes(agent),
+            const detected = next.detected.find(
+              (agent) =>
+                next.agents.includes(agent) &&
+                !NOT_AUTO_PICKED_AGENTS.has(agent),
             );
             return (
               detected ??
@@ -725,7 +728,10 @@ export function AgentsTab() {
     agentSelectionChanged.current = false;
     setStoredAgent(null);
     setSelectedAgent(
-      agents.find((agent) => detectedAgents.has(agent)) ??
+      agents.find(
+        (agent) =>
+          detectedAgents.has(agent) && !NOT_AUTO_PICKED_AGENTS.has(agent),
+      ) ??
         agents[0] ??
         FALLBACK_AGENT.id,
     );
@@ -1226,6 +1232,7 @@ export function AgentsTab() {
                         darkIcon={selectedAgentDetails.darkIcon}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
+                        compact={selectedAgentDetails.compact}
                       />
                       <span className="truncate">
                         {selectedAgentDetails.name}
@@ -1233,7 +1240,11 @@ export function AgentsTab() {
                     </span>
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start">
+                {/* Seven 36px rows plus the 4px surface padding. */}
+                <SelectContent
+                  align="start"
+                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                >
                   {agents.map((agentId) => {
                     const agent = detailsFor(agentId);
                     return (
@@ -1245,6 +1256,7 @@ export function AgentsTab() {
                             darkIcon={agent.darkIcon}
                             color={agent.color}
                             mark={agent.mark}
+                            compact={agent.compact}
                           />
                           <span className="truncate">{agent.name}</span>
                           {localDetection &&
@@ -1462,6 +1474,11 @@ export function AgentsTab() {
             copied={copied}
             onCopy={handleCopy}
           />
+          {selectedAgent === "vscode" && (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.agents.vscodeNote")}
+            </p>
+          )}
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.configurationNote")}{" "}
             <a

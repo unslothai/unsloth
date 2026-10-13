@@ -1567,6 +1567,7 @@ export function ModelsPage() {
           isLora: false,
           isDownloaded: true,
           isVision: model.supports_vision,
+          contextLength: model.max_context_length,
         },
       }),
     [openRunSettingsInChat],
