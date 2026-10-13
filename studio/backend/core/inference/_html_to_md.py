@@ -260,6 +260,27 @@ _SKIP_RECOVERY_END_TAGS = (
     )
     | _HEADING_TAGS
 )
+_GENERIC_END_SKIP_TAGS = frozenset({"datalist", "dialog", "footer", "nav"})
+_SPECIAL_HTML_TAGS = _SKIP_RECOVERY_END_TAGS | frozenset(
+    {
+        "body",
+        "colgroup",
+        "form",
+        "frameset",
+        "head",
+        "html",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+        "plaintext",
+        "script",
+        "style",
+        "template",
+        "title",
+        "xmp",
+    }
+)
 _SCOPE_BARRIERS = frozenset(
     {"applet", "caption", "html", "marquee", "object", "select", "table", "td", "template", "th"}
 )
@@ -275,6 +296,7 @@ _TABLE_ONLY_START_TAGS = _TABLE_CONTEXT_END_TAGS | {"col", "colgroup"}
 _TABLE_CELL_TAGS = frozenset({"td", "th"})
 _TABLE_SECTION_TAGS = frozenset({"tbody", "tfoot", "thead"})
 _TABLE_SECTION_START_TAGS = _TABLE_SECTION_TAGS | {"caption", "col", "colgroup"}
+_FOREIGN_ROOT_TAGS = frozenset({"math", "svg"})
 _INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
 # repeated span cells use half the 16k fetch limit to leave room for text after the table
 _MAX_SPAN_CHARS = 8_000
@@ -721,6 +743,7 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_at: dict[str, list[int]] = {}
         self._skip_ns_at: dict[tuple[str, str], list[int]] = {}
         self._skip_namespaces: list[str] = []
+        self._skip_html_at: list[int] = []
         self._skip_html_integration: list[bool] = []
 
         self._scope_tags = scope_tags
@@ -1317,9 +1340,19 @@ class _MarkdownRenderer(HTMLParser):
         for position, name in enumerate(self._skip_tags[index:], start = index):
             self._skip_at[name].pop()
             self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
+        while self._skip_html_at and self._skip_html_at[-1] >= index:
+            self._skip_html_at.pop()
         del self._skip_tags[index:]
         del self._skip_namespaces[index:]
         del self._skip_html_integration[index:]
+
+    def _clear_skip_tags(self) -> None:
+        self._skip_tags.clear()
+        self._skip_at.clear()
+        self._skip_ns_at.clear()
+        self._skip_namespaces.clear()
+        self._skip_html_at.clear()
+        self._skip_html_integration.clear()
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
@@ -1418,6 +1451,35 @@ class _MarkdownRenderer(HTMLParser):
         )
         return max(candidates, default = None)
 
+    def _close_open_target(self, target: int) -> None:
+        names = self._open_tags[target:]
+        for name in reversed(names):
+            self._close_rendered_tag(name)
+
+    def _prepare_heading_start(self, tag: str) -> None:
+        if tag not in _HEADING_TAGS or not self._open_tags:
+            return
+        if self._open_tags[-1] not in _HEADING_TAGS:
+            return
+        self._close_open_target(len(self._open_tags) - 1)
+
+    def _prepare_sibling_table_start(self) -> bool:
+        if not self._in_table:
+            return False
+        if self._skip_tags and self._skipped_tag_namespace("table") != "html":
+            return False
+        tables = self._open_at.get("table")
+        target = tables[-1] if tables else -1
+        if target < 0:
+            return True
+        if self._latest_indexed_open_tag(_TABLE_CELL_TAGS, target):
+            return False
+        if not self._open_target_in_scope("table", target):
+            return True
+        self._clear_skip_tags()
+        self._close_open_target(target)
+        return False
+
     def _prepare_table_start(self, tag: str) -> None:
         if not self._in_table or tag not in _TABLE_ONLY_START_TAGS:
             return
@@ -1451,6 +1513,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._truncate_skip_tags(button)
         if tag in _TABLE_ONLY_START_TAGS and not self._in_table:
             return
+        if tag == "table" and self._prepare_sibling_table_start():
+            return
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
@@ -1461,6 +1525,8 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_ns_at.setdefault((namespace, tag), []).append(position)
                 self._skip_tags.append(tag)
                 self._skip_namespaces.append(namespace)
+                if namespace == "html":
+                    self._skip_html_at.append(position)
                 self._skip_html_integration.append(
                     self._is_html_integration_point(tag, namespace, attr_dict)
                 )
@@ -1468,6 +1534,7 @@ class _MarkdownRenderer(HTMLParser):
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
         self._close_implicit(tag)
+        self._prepare_heading_start(tag)
         self._prepare_table_start(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
@@ -1476,6 +1543,7 @@ class _MarkdownRenderer(HTMLParser):
             namespace = self._html_start_namespace(tag)
             self._skip_ns_at = {(namespace, tag): [0]}
             self._skip_namespaces = [namespace]
+            self._skip_html_at = [0] if namespace == "html" else []
             self._skip_html_integration = [
                 self._is_html_integration_point(tag, namespace, dict(attrs))
             ]
@@ -1612,7 +1680,6 @@ class _MarkdownRenderer(HTMLParser):
             self._title_scan.endtag(tag)
 
         recovered_target = -1
-        recovered_tag = tag
         if self._skip_tags:
             at = self._skip_at.get(tag)
             template = self._last_skip_position("template", "html")
@@ -1620,6 +1687,10 @@ class _MarkdownRenderer(HTMLParser):
             if at and (template < 0 or at[-1] >= template):
                 i = at[-1]
                 if not self._skip_target_in_scope(tag, i):
+                    return
+                if tag in _GENERIC_END_SKIP_TAGS and self._skip_barrier_after(
+                    _SPECIAL_HTML_TAGS, "html", i
+                ):
                     return
                 self._truncate_skip_tags(i)
                 return
@@ -1636,22 +1707,14 @@ class _MarkdownRenderer(HTMLParser):
                 target = positions[-1] if positions else -1
             if target < 0 or not self._open_target_in_scope(tag, target):
                 return
-            self._skip_tags.clear()
-            self._skip_at.clear()
-            self._skip_ns_at.clear()
-            self._skip_namespaces.clear()
-            self._skip_html_integration.clear()
+            self._clear_skip_tags()
             recovered_target = target
-            recovered_tag = self._open_tags[target]
         # kept title buttons close through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
 
         if recovered_target >= 0:
-            descendants = self._open_tags[recovered_target + 1 :]
-            for descendant in reversed(descendants):
-                self._close_rendered_tag(descendant)
-            self._close_rendered_tag(recovered_tag)
+            self._close_open_target(recovered_target)
             return
         self._close_rendered_tag(tag)
 
@@ -1753,9 +1816,16 @@ class _MarkdownRenderer(HTMLParser):
 
     def _skip_target_in_scope(self, tag: str, target: int) -> bool:
         barriers = self._scope_barriers(tag)
-        return not self._skip_barrier_after(
-            barriers, "html", target
-        ) and not self._foreign_skip_barrier_after(target)
+        if self._skip_barrier_after(barriers, "html", target):
+            return False
+        target_namespace = self._skip_namespaces[target]
+        if (
+            tag in _FOREIGN_ROOT_TAGS
+            and target_namespace == tag
+            and (not self._skip_html_at or self._skip_html_at[-1] <= target)
+        ):
+            return True
+        return not self._foreign_skip_barrier_after(target)
 
     def _open_skip_barrier(self, barriers: frozenset[str]) -> bool:
         return self._skip_barrier_after(barriers, "html", -1) or self._foreign_skip_barrier_after(
