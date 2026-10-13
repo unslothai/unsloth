@@ -350,22 +350,28 @@ def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, ma
     assert "Real text of the page" in out
 
 
-def test_end_tag_outside_a_template_keeps_it_skipped():
-    out = html_to_markdown(
-        "<div><template><p>Hidden</div><p>Template text</p></template></div><p>After</p>"
-    )
+@pytest.mark.parametrize(
+    "outside",
+    [
+        "<div><template><p>Hidden</div><p>Template text</p></template></div>",
+        "<nav><template><p>Hidden</nav><p>Template text</p></template></nav>",
+    ],
+)
+def test_end_tag_outside_a_template_keeps_it_skipped(outside):
+    out = html_to_markdown(outside + "<p>After</p>")
     assert "Hidden" not in out and "Template text" not in out
     assert "After" in out
 
 
-def test_stray_end_tags_in_a_skipped_menu_stay_linear():
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",
+        lambda n: "<body>" + "<div>" * n + "<nav><template>x" + "</div>" * n + "</template>" + "</span>" * n,
+    ],
+)
+def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
     import time
-
-    def build(count):
-        return (
-            "<body><nav><ul>" + "<li>x" * count + "</a>" * count
-            + "</ul></nav><main><p>Body</p></main></body>"
-        )
 
     timings = []
     for count in (1000, 8000):

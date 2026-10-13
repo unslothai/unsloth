@@ -644,7 +644,8 @@ class _MarkdownRenderer(HTMLParser):
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_tags: list[str] = []
-        self._skip_counts: dict[str, int] = {}
+        # tag -> its indices in _skip_tags, so end tags resolve without rescanning the stack
+        self._skip_at: dict[str, list[int]] = {}
 
         # Main-content scoping: emit only while inside a scope tag.
         self._scope_tags = scope_tags
@@ -656,6 +657,7 @@ class _MarkdownRenderer(HTMLParser):
 
         # open non-void tags plus hidden-start indices, so an omitted </p>/</li> cannot leave the renderer stuck hidden
         self._open_tags: list[str] = []
+        self._open_counts: dict[str, int] = {}
         # Open tags that can be closed implicitly; zero lets _close_implicit skip the scan.
         self._closable_open: int = 0
         self._hidden_marks: list[int] = []
@@ -1088,6 +1090,7 @@ class _MarkdownRenderer(HTMLParser):
     def _truncate_open_tags(self, index: int) -> None:
         """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
+            self._open_counts[name] -= 1
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
@@ -1209,6 +1212,7 @@ class _MarkdownRenderer(HTMLParser):
         first so recovery also fires for skipped tags."""
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
+            self._open_counts[tag] = self._open_counts.get(tag, 0) + 1
             if tag in _IMPLICIT_CLOSERS:
                 self._closable_open += 1
             if _is_hidden_element(attr_dict):
@@ -1298,8 +1302,8 @@ class _MarkdownRenderer(HTMLParser):
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
+                self._skip_at.setdefault(tag, []).append(len(self._skip_tags))
                 self._skip_tags.append(tag)
-                self._skip_counts[tag] = self._skip_counts.get(tag, 0) + 1
             return
 
         # Recover optional end tags before the skip decision: a skipped <nav>/<footer> still implicitly closes an open
@@ -1308,7 +1312,7 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
-            self._skip_counts = {tag: 1}
+            self._skip_at = {tag: [0]}
             return
 
         attr_dict = dict(attrs)
@@ -1442,20 +1446,20 @@ class _MarkdownRenderer(HTMLParser):
             self._title_scan.endtag(tag)
 
         if self._skip_tags:
-            # counted, so a stray end tag never rescans a long run of unclosed <li>/<p>
-            if self._skip_counts.get(tag):
-                i = len(self._skip_tags) - 1
-                while self._skip_tags[i] != tag:
-                    i -= 1
+            at = self._skip_at.get(tag)
+            templates = self._skip_at.get("template")
+            # a <template> is a scope boundary: end tags of elements outside it are ignored
+            if at and (not templates or at[-1] >= templates[-1]):
+                i = at[-1]
                 for name in self._skip_tags[i:]:
-                    self._skip_counts[name] -= 1
+                    self._skip_at[name].pop()
                 del self._skip_tags[i:]
                 return
-            # an ancestor's end tag also closes the skipped element, as browsers do; a <template> is a scope boundary
-            if self._skip_counts.get("template") or tag not in self._open_tags:
+            # an ancestor's end tag also closes the skipped element, as browsers do
+            if templates or not self._open_counts.get(tag):
                 return
             self._skip_tags.clear()
-            self._skip_counts.clear()
+            self._skip_at.clear()
         # a kept title button closes through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
