@@ -338,6 +338,32 @@ def test_a_torch_oom_keeps_its_old_text():
     assert "smaller resolution, fewer frames, or fewer steps" in detail
 
 
+_V1_SWAP_ROOM = {
+    "memory/p/memory.limit_in_bytes": str(30 * GIB),
+    "memory/p/memory.usage_in_bytes": str(10 * GIB),
+    "memory/p/memory.memsw.limit_in_bytes": str(40 * GIB),
+    "memory/p/memory.memsw.usage_in_bytes": str(10 * GIB),
+}
+
+
+@pytest.mark.parametrize(
+    "swappiness, expected",
+    [
+        ({"memory/p/c/memory.swappiness": "0"}, 0),
+        ({"memory/p/memory.swappiness": "0"}, 0),  # nearest ancestor that reports one
+        ({"memory/p/c/memory.swappiness": "60", "memory/p/memory.swappiness": "0"}, 10 * GIB),
+        ({"memory/p/c/memory.swappiness": "60"}, 10 * GIB),
+    ],
+)
+def test_cgroup_v1_swappiness_zero_admits_no_swap(tmp_path, swappiness, expected):
+    """https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v1/memory.html#swappiness: 0 keeps limit reclaim
+    from swapping at all. The process's own cgroup decides; an ancestor only when the cgroup reports none."""
+    (tmp_path / "cg" / "memory" / "p" / "c").mkdir(parents = True)
+    paths = _cgroup(tmp_path, {**_V1_SWAP_ROOM, **swappiness}, proc = "4:memory:/p/c\n")
+    # RAM room 20 GiB, RAM+swap room 30 GiB: 10 GiB of swap unless swappiness forbids it.
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == expected
+
+
 def test_nested_cgroup_v1_pairs_the_tightest_combined_and_ram_headroom(tmp_path):
     """Child: 2 GiB RAM room, 12 GiB RAM+swap room. Parent: 20 GiB RAM room, 21 GiB RAM+swap room. The process can
     use min(12, 21) - min(2, 20) = 10 GiB of swap; per-level differences would say min(10, 1) = 1."""

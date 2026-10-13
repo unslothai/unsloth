@@ -191,6 +191,14 @@ def cgroup_swap_allowance_bytes(
         # level, never the per-level differences (a tight child RAM limit under a tight parent memsw limit would
         # otherwise subtract the parent's large RAM room and understate the swap).
         v1_root = os.path.join(cgroup_root, "memory")
+        # memory.swappiness 0 (this cgroup's, else the nearest ancestor's that can be read): limit reclaim in this
+        # memcg never swaps, so none of the swap can relieve it.
+        for directory in _directories(v1_root, v1_relative):
+            swappiness = _integer(_first_line(os.path.join(directory, "memory.swappiness")))
+            if swappiness is not None:
+                if swappiness == 0:
+                    return 0
+                break
         ram_room: Optional[int] = None
         combined_room: Optional[int] = None
         for directory in _directories(v1_root, v1_relative):
