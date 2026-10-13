@@ -1258,6 +1258,7 @@ def _launch_with_failing_drafter(
     gguf,
     *,
     refuses_unified_kv = False,
+    n_ctx = 0,
 ):
     cmds = []
 
@@ -1290,7 +1291,7 @@ def _launch_with_failing_drafter(
             GgufLoadIntent(
                 gguf_path = str(gguf),
                 model_identifier = "test",
-                n_ctx = 0,
+                n_ctx = n_ctx,
                 n_parallel = 4,
                 n_parallel_from_default = True,
                 speculative_type = "auto",
@@ -1328,6 +1329,30 @@ def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unif
     assert backend._effective_context_length == int(ctxs[-1])
     if not refuses_unified_kv:
         assert backend._max_context_length == 8192
+
+
+def test_the_restored_slots_reprice_the_published_plan(tmp_path):
+    """Other loads place against this plan, so it is the restored count's, not the cut's."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    backend._estimate_kv_cache_bytes = lambda *args, n_parallel = 1, **kwargs: (
+        gb // 4 * int(n_parallel or 1)
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert sum(backend._planned_vram_mib.values()) == (16 * gb + gb) // (1024 * 1024)
+
+
+def test_an_explicit_context_restores_its_ceiling(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, n_ctx = 8192)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert [c[c.index("-c") + 1] for c in cmds] == ["8192", "8192"]
+    assert backend._max_context_length == backend._effective_context_length == 8192
 
 
 def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):

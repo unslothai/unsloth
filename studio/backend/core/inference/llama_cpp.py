@@ -27211,7 +27211,7 @@ class LlamaCppBackend:
                                         continue
                                     if _c >= _ctx_c * _keep:
                                         _mtp_slots, _mtp_slots_ctx = _s, _c
-                                        _mtp_slots_target_ctx = None if explicit_ctx else _ctx_c
+                                        _mtp_slots_target_ctx = _ctx_c
                                     break
                                 if _mtp_slots:
                                     break
@@ -33060,6 +33060,23 @@ class LlamaCppBackend:
                         _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
                         _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(fallback_cmd)
                         kv_cache_unified = _kv_unified_from_args(fallback_cmd)
+                        # The plan other loads place against was priced at the cut count.
+                        _fb_cut_plan = dict(self._pending_plan_mib)
+                        if self._pending_plan_mib and self._can_estimate_kv():
+                            kv_cache_bytes = self._estimate_kv_cache_bytes(
+                                effective_ctx,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                swa_full = swa_full,
+                                kv_unified = bool(kv_cache_unified),
+                                n_ubatch = _ubatch_for_slots(n_parallel),
+                                flash_attn = planned_flash_attn,
+                            )
+                            self._pending_plan_mib = _gpu_plan_mib(
+                                gguf_size + mmproj_size + kv_cache_bytes,
+                                list(self._pending_plan_mib),
+                                gpus,
+                            )
                     _unified_withdraw_if_unneeded(
                         fallback_cmd,
                         mtp_engages = False,
@@ -33082,6 +33099,7 @@ class LlamaCppBackend:
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         ) = _fb_cut
+                        self._pending_plan_mib = _fb_cut_plan
                         n_parallel = (
                             _fb_slots  # allow-slot-clamp: the restored count failed to start
                         )
