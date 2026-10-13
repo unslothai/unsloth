@@ -9011,6 +9011,79 @@ class LlamaCppBackend:
             )
         return {"enable_thinking": enable_thinking}
 
+    def _replay_preserve_thinking(
+        self, preserve_thinking: Optional[bool], messages
+    ) -> Optional[bool]:
+        """``preserve_thinking`` for a history that carries no reasoning at all.
+
+        With nothing to preserve, the kwarg only decides whether earlier answers keep the empty
+        think block the generation prompt put in front of them. Dropped, every follow-up of a
+        thinking-off chat diverges from llama-server's cache at the previous answer, and a hybrid
+        or SWA model re-processes it. Kept only where the template's own render proves it is
+        byte-identical to what was generated, so other templates see no change.
+        """
+        if preserve_thinking is not False or not getattr(
+            self, "_supports_preserve_thinking", False
+        ):
+            return preserve_thinking
+        for message in messages or ():
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return preserve_thinking
+        return True if self._empty_think_replays_with_preserve() else preserve_thinking
+
+    def _empty_think_replays_with_preserve(self) -> bool:
+        """Whether this template replays a thinking-off answer exactly only with preserve_thinking.
+
+        Probed once per server through /apply-template: the generation prompt plus the answer
+        must be a prefix of the next turn's render with preserve_thinking on, and not with it off.
+        """
+        key = (getattr(self, "base_url", None), id(getattr(self, "_chat_template", None)))
+        cached = getattr(self, "_empty_think_preserve_probe", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = False
+        try:
+            off = dict(self._request_reasoning_kwargs(False, None, None) or {})
+            answer = "Studio replay probe answer."
+            first = [{"role": "user", "content": "Studio replay probe question."}]
+            history = first + [
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Studio replay probe follow-up."},
+            ]
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+
+                def _render(msgs, preserve):
+                    r = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = {
+                            "messages": msgs,
+                            "chat_template_kwargs": {**off, "preserve_thinking": preserve},
+                        },
+                    )
+                    prompt = r.json().get("prompt") if r.status_code == 200 else None
+                    return prompt if isinstance(prompt, str) else None
+
+                generated = _render(first, False)
+                kept = _render(history, True)
+                dropped = _render(history, False)
+            if generated is None or kept is None or dropped is None:
+                return False  # Busy or refused: keep the caller's setting, ask again next time.
+            result = kept.startswith(generated + answer) and not dropped.startswith(
+                generated + answer
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the caller's setting
+            return False
+        self._empty_think_preserve_probe = (key, result)
+        return result
+
     def _request_reasoning_kwargs(
         self,
         enable_thinking: Optional[bool],
@@ -37502,6 +37575,8 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
+        # Before anything prices or renders the prompt, so every pass agrees.
+        preserve_thinking = self._replay_preserve_thinking(preserve_thinking, messages)
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -37966,6 +38041,8 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
+        # Before anything prices or renders the prompt, so every pass agrees.
+        preserve_thinking = self._replay_preserve_thinking(preserve_thinking, messages)
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
