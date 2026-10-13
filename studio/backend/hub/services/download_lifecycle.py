@@ -596,8 +596,9 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
-    if repo_type == "model":
-        # The job is over: its audio.cpp row record need not outlive this process.
+    if repo_type == "model" and state == "complete":
+        # The cache names a finished file's row now. A cancelled or failed job keeps its record: it is
+        # still right, and another backend may be downloading the same key.
         try:
             from core.inference.audio_cpp_models import forget_job_row
 

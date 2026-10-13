@@ -2175,7 +2175,7 @@ def test_backends_saving_rows_at_once_keep_each_others(hub, monkeypatch):
         assert acm.folder_row_for_download(*target) == (row, quant)
 
 
-def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
+def test_only_a_finished_job_drops_its_saved_record(hub, monkeypatch):
     import logging
 
     from core.inference import local_model_resolver
@@ -2195,30 +2195,38 @@ def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
     )
-    registry = SimpleNamespace(
-        cancel_requested = lambda key: True,
-        drop_process = lambda *a: True,
-        get_job_metadata = lambda key: None,
-        set_job = lambda *a: None,
-        update_job_transport = lambda *a: None,
-    )
-    download_lifecycle.finalize_worker_exit(
-        registry,
-        f"{AUDIO_CPP_REPO}::{small[1]}",
-        SimpleNamespace(stderr = io.BytesIO(), wait = lambda: 1),
-        hf_token = None,
-        label = AUDIO_CPP_REPO,
-        log_prefix = "Download",
-        logger = logging.getLogger(__name__),
-        repo_type = "model",
-        repo_id = AUDIO_CPP_REPO,
-    )
-    assert acm._saved_job_row(small[1]) is None
-    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
-    # This process keeps its own copy, and a restarted download records it again.
-    assert acm.folder_row_for_download(*small) == (row, "small/Q8_0")
-    acm.download_target(row, "small/Q8_0")
+
+    def end(key, rc, cancelled):
+        registry = SimpleNamespace(
+            cancel_requested = lambda _key: cancelled,
+            drop_process = lambda *a: True,
+            get_job_metadata = lambda _key: None,
+            set_job = lambda *a: None,
+            update_job_transport = lambda *a: None,
+        )
+        return download_lifecycle.finalize_worker_exit(
+            registry,
+            f"{AUDIO_CPP_REPO}::{key}",
+            SimpleNamespace(stderr = io.BytesIO(), wait = lambda: rc),
+            hf_token = None,
+            label = AUDIO_CPP_REPO,
+            log_prefix = "Download",
+            logger = logging.getLogger(__name__),
+            repo_type = "model",
+            repo_id = AUDIO_CPP_REPO,
+        )
+
+    # Still right, and another backend may be downloading the same key.
+    assert end(small[1], 1, True) != "complete"
+    assert end(small[1], 1, False) != "complete"
     assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    assert end(tiny[1], 0, False) == "complete"
+    assert acm._saved_job_row(tiny[1]) is None
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    # This process keeps its own copy, and a new download of the key records it again.
+    assert acm.folder_row_for_download(*tiny) == (row, "tiny/Q8_0")
+    acm.download_target(row, "tiny/Q8_0")
+    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
 
 
 def test_folder_rows_without_crowding_keep_their_keys(hub, monkeypatch):

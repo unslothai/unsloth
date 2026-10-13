@@ -97,3 +97,13 @@ test("only a timestamped Transcribe waits for the aligner download", () => {
     /alignerDownload\.runWithAligner\(transcribeOptions\.request\.timestamps, \(\) => \{[\s\S]*?!activeRef\.current \|\|\s*modeRef\.current !== "transcribe" \|\|\s*useAudioTranscribeStore\.getState\(\)\.source\?\.id !== source\.id\s*\)\s*return;\s*startTranscriptionRef\.current\(source\);/,
   );
 });
+
+test("a session reset drops a staged plan so Transcribe is not left blocked", () => {
+  const staged = readSrc(
+    "features/hub/download-manager/use-staged-download.ts",
+  );
+  assert.match(
+    staged,
+    /useStagedDownloadQueues\.subscribe\(\(state, previous\) => \{\s*if \(state\.resets === previous\.resets \|\| queueRef\.current === null\) \{\s*return;\s*\}[\s\S]*?setQueue\(null\);\s*onCancelledRef\.current\?\.\(\);/,
+  );
+});

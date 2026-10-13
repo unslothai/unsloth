@@ -11,7 +11,10 @@ import {
   scopedDownloadInventoryKind,
   scopedVariant,
 } from "./download-manager-types";
-import { publishStagedQueue } from "./staged-download-queue";
+import {
+  publishStagedQueue,
+  useStagedDownloadQueues,
+} from "./staged-download-queue";
 import { useRepoDownload } from "./use-repo-download";
 
 /** Total progress for the plan ID returned by `stage()`. */
@@ -116,6 +119,25 @@ export function useStagedDownload({
 
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
+  const queueRef = useRef(queue);
+  useEffect(() => {
+    queueRef.current = queue;
+  });
+  // A session change dropped every job, this plan's included: drop the plan with it.
+  useEffect(
+    () =>
+      useStagedDownloadQueues.subscribe((state, previous) => {
+        if (state.resets === previous.resets || queueRef.current === null) {
+          return;
+        }
+        queueRef.current = null;
+        generation.current += 1;
+        inFlight.current = null;
+        setQueue(null);
+        onCancelledRef.current?.();
+      }),
+    [],
+  );
   useEffect(() => {
     if (!current) return;
     let active = true;
