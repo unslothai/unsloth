@@ -359,7 +359,6 @@ export function useSidebarRowPages(
         retry: () => pager.retry(),
       };
     }
-    // keep identity: every sidebar memo depends on these arrays
     unionRef.current = unionRows(unionRef.current, parts);
     listedRef.current = unionRows(listedRef.current, listedParts);
     return { lists, items: unionRef.current.items, listedItems: listedRef.current.items };
