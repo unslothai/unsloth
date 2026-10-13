@@ -388,8 +388,15 @@ def test_get_visible_gpu_count_uses_device_count(spoof_xpu):
     assert hw.get_visible_gpu_count() == 2
 
 
-def test_get_visible_gpu_count_empty_mask_is_zero(spoof_xpu):
-    hw, _ = spoof_xpu(ze_mask = "")
+def test_get_visible_gpu_count_empty_mask_is_no_mask(spoof_xpu):
+    """Level Zero reads an empty ZE_AFFINITY_MASK as unset (isAffinityMaskSet), so every device stays visible."""
+    hw, _ = spoof_xpu(ze_mask = "", device_count = 2)
+    hw.detect_hardware()
+    assert hw.get_visible_gpu_count() == 2
+
+
+def test_get_visible_gpu_count_blank_mask_is_zero(spoof_xpu):
+    hw, _ = spoof_xpu(ze_mask = " ")
     hw.detect_hardware()
     assert hw.get_visible_gpu_count() == 0
 
