@@ -180,18 +180,71 @@ def _decoder_layers(model: Any) -> Any:
     return layers
 
 
-def quantize_int8_convrot_(
-    model: Any,
-    device: Any = "cpu",
-    resident: bool = False,
-) -> int:
+_MADV_DONTNEED = 4
+
+
+def _file_mapping_holds(start: int, end: int) -> bool:
+    """Whether ``[start, end)`` lies inside one file-backed mapping (Linux). The Hub cache maps the checkpoint by its
+    blob name, which carries no ``.safetensors`` suffix, so any regular file mapping qualifies; anonymous memory,
+    ``[heap]`` and friends never do."""
+    try:
+        with open("/proc/self/maps", "r", encoding = "utf-8", errors = "replace") as fh:
+            for line in fh:
+                fields = line.split(None, 5)
+                if len(fields) < 6:
+                    continue
+                lo, _, hi = fields[0].partition("-")
+                if int(lo, 16) <= start and end <= int(hi, 16):
+                    return fields[4] != "0" and fields[5].strip().startswith("/")
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _release_mapped_pages(tensor: Any) -> bool:
+    """Drop a discarded host tensor's pages of the checkpoint's memory map from this process's resident set; whether
+    it did.
+
+    Linux only, only pages wholly inside the tensor, and only for a tensor that reads straight from a FILE mapping:
+    ``MADV_DONTNEED`` there unmaps the pages and a later read re-faults the file's bytes from the page cache (torch maps
+    checkpoints private, so only an in-place edit of this very tensor would be lost, and the caller has already
+    quantized it and dropped it). Anonymous memory is never touched: DONTNEED zeroes it."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+        import mmap
+
+        if tensor.device.type != "cpu" or not tensor.is_contiguous():
+            return False
+        start = int(tensor.data_ptr())
+        end = start + tensor.numel() * tensor.element_size()
+        if end <= start or not _file_mapping_holds(start, end):
+            return False
+        page = mmap.PAGESIZE
+        lo = (start + page - 1) // page * page
+        hi = end // page * page
+        if hi <= lo:
+            return True
+        libc = ctypes.CDLL(None, use_errno = True)
+        libc.madvise.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+        libc.madvise.restype = ctypes.c_int
+        return libc.madvise(lo, hi - lo, _MADV_DONTNEED) == 0
+    except Exception:  # noqa: BLE001 - best effort: the pages then stay mapped until the copy-out below
+        return False
+
+
+def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = False) -> int:
     """Swap every decoder-layer projection for the weight-only ConvRot INT8 linear, in place; the number swapped.
 
     Each weight is rotated and quantized on ``device`` when it is an accelerator (seconds, not minutes of CPU matmuls).
     ``resident``: each decoder layer moves onto ``device`` first and is quantized there, so the card peaks at the int8
     encoder plus one bf16 layer and the host frees the bf16 weights layer by layer, as the plain ``model.to`` does.
-    Otherwise the codes land on the host, and the tensors left there are copied out of the checkpoint's memory map:
-    the map stays alive (and every page the quantization read stays resident) while any tensor still points into it."""
+    Otherwise the codes land on the host. Each bf16 projection is read straight out of the checkpoint's memory map and
+    its pages are released from this process right after (Linux), so the host never holds more than one bf16
+    projection beside the codes; the rest stays mapped exactly as the bf16 encoder's does. Where a page cannot be
+    released, the tensors left on the host are copied out of the map instead: the map stays alive (and every page the
+    quantization read stays resident) while any tensor still points into it."""
     import torch
     from torch import nn
 
@@ -204,6 +257,7 @@ def quantize_int8_convrot_(
         work = torch.device("cpu")
     on_card = resident and work.type != "cpu"
     swapped = 0
+    released_all = True
     quantized: set = set()
     for layer in _decoder_layers(model):
         if on_card:
@@ -216,12 +270,10 @@ def quantize_int8_convrot_(
                 if not isinstance(linear, nn.Linear):
                     continue
                 home = linear.weight.device
-                codes, scale = quantize_convrot_int8_weight(
-                    linear.weight.detach().to(work), CONVROT_GROUP
-                )
-                new = cls(
-                    linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP
-                )
+                codes, scale = quantize_convrot_int8_weight(linear.weight.detach().to(work), CONVROT_GROUP)
+                if not on_card:
+                    released_all = _release_mapped_pages(linear.weight) and released_all
+                new = cls(linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP)
                 new.weight = codes.to(home)
                 new.weight_scale = scale.to(home)
                 if linear.bias is not None:
@@ -232,7 +284,7 @@ def quantize_int8_convrot_(
                 del linear, codes, scale
     if swapped == 0:
         raise RuntimeError("no Gemma 4 decoder projection could be quantized")
-    if not on_card:
+    if not on_card and not released_all:
         with torch.no_grad():
             for module in model.modules():
                 if id(module) in quantized:

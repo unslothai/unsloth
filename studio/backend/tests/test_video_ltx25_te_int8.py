@@ -105,6 +105,52 @@ def test_worker_swaps_every_decoder_projection_and_keeps_the_math():
     assert swapped.weight.device.type == "meta" and swapped.weight.dtype == torch.int8
 
 
+def test_release_mapped_pages_only_drops_file_backed_pages():
+    # Anonymous memory is refused (DONTNEED would zero it) and left exactly as it was.
+    anon = torch.full((1 << 20,), 3.0)
+    assert worker._release_mapped_pages(anon) is False
+    assert float(anon.sum()) == 3.0 * (1 << 20)
+    assert worker._release_mapped_pages(torch.empty(0)) is False
+
+
+@pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason = "MADV_DONTNEED is Linux only")
+def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp_path):
+    """A host (non-resident) build reads each bf16 projection from the checkpoint's memory map and releases its pages,
+    so the other tensors stay mapped (no copy-out) and the codes match a quantize of the same weights in memory."""
+    from safetensors.torch import load_file, save_file
+
+    torch.manual_seed(0)
+    dense = _TinyGemma().to(torch.bfloat16)
+    path = tmp_path / "model.safetensors"
+    save_file({k: v.contiguous() for k, v in dense.state_dict().items()}, str(path))
+    mapped = _TinyGemma().to(torch.bfloat16)
+    mapped.load_state_dict(load_file(str(path)), assign = True)
+    gate = mapped.model.language_model.layers[0].mlp.gate_proj.weight
+    if not worker._file_mapping_holds(gate.data_ptr(), gate.data_ptr() + gate.numel() * 2):
+        pytest.skip("this safetensors build copies tensors out of the file")
+    before = gate.detach().clone()
+    assert worker._release_mapped_pages(gate) is True
+    assert torch.equal(gate, before)  # a later read re-faults the file's own bytes
+    embed_ptr = mapped.model.language_model.embed_tokens.weight.data_ptr()
+
+    assert worker.quantize_int8_convrot_(mapped, "cpu", resident = False) == 12
+    worker.quantize_int8_convrot_(dense, "cpu", resident = False)
+    # Every projection released: the embedding was not copied out of the map.
+    assert mapped.model.language_model.embed_tokens.weight.data_ptr() == embed_ptr
+    for a, b in zip(mapped.model.language_model.layers, dense.model.language_model.layers):
+        for name in ("q_proj", "k_proj", "o_proj"):
+            assert torch.equal(getattr(a.self_attn, name).weight, getattr(b.self_attn, name).weight)
+            assert torch.equal(getattr(a.self_attn, name).weight_scale, getattr(b.self_attn, name).weight_scale)
+
+
+def test_host_quantize_copies_out_of_the_map_when_pages_cannot_be_released(monkeypatch):
+    monkeypatch.setattr(worker, "_release_mapped_pages", lambda tensor: False)
+    model = _TinyGemma().to(torch.bfloat16)
+    embed_ptr = model.model.language_model.embed_tokens.weight.data_ptr()
+    worker.quantize_int8_convrot_(model, "cpu", resident = False)
+    assert model.model.language_model.embed_tokens.weight.data_ptr() != embed_ptr
+
+
 def test_worker_load_quantizes_only_when_asked(monkeypatch):
     import transformers
 
