@@ -28,6 +28,7 @@ function load(
 ) {
   const posted: Record<string, unknown>[] = [];
   const setVoiceIds: string[] = [];
+  const warnings: string[] = [];
   const adapter = loadWithStubs<Adapter>(
     new URL(
       "../src/features/chat/adapters/studio-speech-synthesis-adapter.ts",
@@ -63,10 +64,16 @@ function load(
           }),
         },
       },
-      "@/lib/toast": { toast: { error: () => {} } },
+      "@/lib/toast": {
+        toast: {
+          error: () => {},
+          warning: (message: string) => warnings.push(message),
+        },
+      },
+      "@/features/audio/audio-workspace-constants": { TTS_MAX_TOKENS: 8192 },
     },
   );
-  return { adapter, posted, setVoiceIds };
+  return { adapter, posted, setVoiceIds, warnings };
 }
 
 test("read aloud keeps its clip out of history and speaks in the model's voice by default", async () => {
@@ -80,8 +87,25 @@ test("read aloud keeps its clip out of history and speaks in the model's voice b
       messages: [{ role: "user", content: "hello" }],
       stream: false,
       persist: false,
+      max_tokens: 8192,
     },
   ]);
+});
+
+test("read aloud warns when the speech stops before the end of the reply", async () => {
+  const { adapter, warnings } = load("", {
+    status: 200,
+    body: {
+      audio: { data: "UklGRg==" },
+      choices: [{ finish_reason: "length" }],
+    },
+  });
+  assert.equal(
+    await adapter.generateStudioTtsAudio("a long reply"),
+    "data:audio/wav;base64,UklGRg==",
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /before the end of the reply/);
 });
 
 test("read aloud sends the saved voice chosen in Settings", async () => {
