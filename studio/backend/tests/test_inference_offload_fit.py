@@ -115,3 +115,73 @@ def test_partial_snapshot_is_not_sized_locally(tmp_path):
 def test_single_file_snapshot_is_sized_locally(tmp_path):
     (tmp_path / "model.safetensors").write_bytes(b"x" * 7)
     assert _local_bytes()(tmp_path) == 7
+
+
+_SPILL = "Some modules are dispatched on the CPU or the disk. Make sure you have enough GPU RAM to fit the quantized model."
+
+
+def _fallback(cuda = True, devices = 1):
+    tree = ast.parse(_SRC.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_with_offload_fallback"
+    )
+    fake_cuda = types.SimpleNamespace(
+        is_available = lambda: cuda,
+        device_count = lambda: devices,
+        empty_cache = lambda: None,
+        memory_allocated = lambda: 0,
+    )
+    scope = {
+        "torch": types.SimpleNamespace(cuda = fake_cuda),
+        "logger": types.SimpleNamespace(info = lambda *a, **k: None),
+    }
+    exec(compile(ast.Module([node], []), str(_SRC), "exec"), scope)
+    return scope["_load_with_offload_fallback"]
+
+
+class _HalfBuilt:
+    pass
+
+
+def test_missed_guess_frees_the_failed_attempt_then_retries_with_auto():
+    import weakref
+
+    calls, seen = [], []
+
+    def load(**kwargs):
+        calls.append(kwargs)
+        if "offload_layers" in kwargs:
+            # The first attempt's half-built model must be gone before the retry allocates.
+            seen.append(refs[0]() is None)
+            return "model", "tok"
+        half_built = _HalfBuilt()
+        refs.append(weakref.ref(half_built))
+        raise ValueError(_SPILL)
+
+    refs = []
+    assert _fallback()(load, model_name = "m", device_map = "sequential") == ("model", "tok")
+    assert calls[1] == {"model_name": "m", "device_map": "sequential", "offload_layers": "auto"}
+    assert seen == [True]
+
+
+@pytest.mark.parametrize(
+    "error, kwargs, devices",
+    [
+        (ValueError(_SPILL), {"offload_layers": "auto"}, 1),  # the guess already asked for it
+        (ValueError("another problem"), {}, 1),
+        (RuntimeError(_SPILL), {}, 1),
+        (ValueError(_SPILL), {}, 2),  # several visible cards
+    ],
+)
+def test_fallback_leaves_other_failures_alone(error, kwargs, devices):
+    calls = []
+
+    def load(**kw):
+        calls.append(kw)
+        raise error
+
+    with pytest.raises(type(error)) as caught:
+        _fallback(devices = devices)(load, device_map = "sequential", **kwargs)
+    assert caught.value is error and len(calls) == 1

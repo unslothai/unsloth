@@ -181,6 +181,36 @@ def _offload_kwargs_for_fit(
     return {"offload_layers": "auto"}
 
 
+def _load_with_offload_fallback(load, **kwargs):
+    """Run the load; when the size check let a single-GPU load through and it still spills to the CPU (size unknown or underestimated), free that attempt entirely and retry once with offload_layers = "auto"."""
+    try:
+        return load(**kwargs)
+    except ValueError as e:
+        text = str(e)
+        spilled = "does not fit in GPU memory" in text or text.startswith(
+            "Some modules are dispatched on the CPU or the disk"
+        )
+        if (
+            not spilled
+            or "offload_layers" in kwargs
+            or kwargs.get("device_map") != "sequential"
+            or not torch.cuda.is_available()
+            or torch.cuda.device_count() != 1
+        ):
+            raise
+    # Outside the except block, so the exception and its traceback (whose frames hold the
+    # half-built model) are already released; collect, then hand the cached blocks back.
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info(
+        f"Model did not fit in GPU memory; retrying with offload_layers='auto' "
+        f"({torch.cuda.memory_allocated() / 2**30:.2f} GiB still allocated)"
+    )
+    return load(offload_layers = "auto", **kwargs)
+
+
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
     if hf_token is False:
         return False
@@ -1006,7 +1036,8 @@ class InferenceBackend:
                 mapped = not use_exact_model_name,
             )
             if config.is_vision:
-                model, processor = FastVisionModel.from_pretrained(
+                model, processor = _load_with_offload_fallback(
+                    FastVisionModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -1056,7 +1087,8 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                model, tokenizer = FastLanguageModel.from_pretrained(
+                model, tokenizer = _load_with_offload_fallback(
+                    FastLanguageModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
