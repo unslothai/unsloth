@@ -2591,10 +2591,15 @@ export function ImagesPage({
   }, []);
   const onImportDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
-      const file = Array.from(event.dataTransfer.files).find((f) => f.type.startsWith("image/"));
-      if (!file) return;
+      if (!event.dataTransfer.types.includes("Files")) return;
+      // Claimed even for a file this cannot read, or the browser navigates away to it.
       event.preventDefault();
-      void importSettingsFromFile(file);
+      const file = Array.from(event.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+      if (file) {
+        void importSettingsFromFile(file);
+      } else {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+      }
     },
     [importSettingsFromFile],
   );

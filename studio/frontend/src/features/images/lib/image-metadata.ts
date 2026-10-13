@@ -393,9 +393,17 @@ function readTiff(tiff: Uint8Array): EmbeddedRecipe {
     const body = comment.subarray(8);
     if (prefix === "UNICODE\0") {
       const cv = new DataView(body.buffer, body.byteOffset, body.byteLength);
+      // piexif (AUTOMATIC1111) always writes UTF-16BE; other writers follow the TIFF byte order.
+      // A leading Latin character has one zero byte, which tells the two apart.
+      const be =
+        body[0] === 0 && body[1] !== 0
+          ? true
+          : body[1] === 0 && body[0] !== 0
+            ? false
+            : !little;
       let s = "";
       for (let i = 0; i + 1 < body.length; i += 2)
-        s += String.fromCharCode(cv.getUint16(i, little));
+        s += String.fromCharCode(cv.getUint16(i, !be));
       out.parameters = s.replace(/\0+$/, "");
     } else {
       out.parameters = new TextDecoder().decode(body).replace(/\0+$/, "");
@@ -564,6 +572,12 @@ export interface RestorableRecipe {
   localized_edit?: string | null;
 }
 
+const clamp = (
+  n: number | undefined,
+  lo: number,
+  hi: number,
+): number | undefined =>
+  n === undefined ? undefined : Math.min(hi, Math.max(lo, n));
 const num = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) ? v : undefined;
 const int = (v: unknown): number | undefined => {
@@ -596,7 +610,8 @@ export function recipeSettings(
       : [],
     strength: num(r.strength),
     upscale: num(r.upscale),
-    reference_image_count: int(r.reference_image_count),
+    // The request caps reference images at 9; restore builds an array of this length.
+    reference_image_count: clamp(int(r.reference_image_count), 0, 9),
     reference_resolution: int(r.reference_resolution),
     localized_edit: str(r.localized_edit) ?? null,
   };
@@ -679,7 +694,10 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
     out.width = width;
     out.height = height;
   }
-  for (const n of Object.values(graph)) {
+  // The loader feeding this sampler, through LoRA loaders and the like.
+  let link: unknown = inputs.model;
+  for (let hop = 0; hop < 8; hop++) {
+    const n = node(link);
     const name = COMFY_MODEL_INPUTS.map((k) => n?.inputs?.[k]).find(
       (v) => typeof v === "string",
     );
@@ -687,6 +705,7 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
       out.model = name;
       break;
     }
+    link = n?.inputs?.model;
   }
   return out;
 }

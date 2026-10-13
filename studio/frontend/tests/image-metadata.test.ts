@@ -365,3 +365,117 @@ test("a ComfyUI PNG imports its prompt, seed, steps, CFG, size and checkpoint", 
     4,
   );
 });
+
+// A little-endian EXIF block holding one UserComment, as a non-piexif writer lays it out.
+function littleEndianExifJpeg(comment: Uint8Array): Uint8Array<ArrayBuffer> {
+  const tiff = new Uint8Array(8 + 18 + 18 + comment.length);
+  const v = new DataView(tiff.buffer);
+  tiff.set([0x49, 0x49, 0x2a, 0]);
+  v.setUint32(4, 8, true);
+  v.setUint16(8, 1, true);
+  v.setUint16(10, 0x8769, true);
+  v.setUint16(12, 4, true);
+  v.setUint32(14, 1, true);
+  v.setUint32(18, 26, true);
+  v.setUint16(26, 1, true);
+  v.setUint16(28, 0x9286, true);
+  v.setUint16(30, 7, true);
+  v.setUint32(32, comment.length, true);
+  v.setUint32(36, 44, true);
+  tiff.set(comment, 44);
+  const length = 2 + 6 + tiff.length;
+  return new Uint8Array([
+    0xff,
+    0xd8,
+    0xff,
+    0xe1,
+    length >> 8,
+    length & 0xff,
+    0x45,
+    0x78,
+    0x69,
+    0x66,
+    0,
+    0,
+    ...tiff,
+    0xff,
+    0xd9,
+  ]);
+}
+
+function utf16(text: string, bigEndian: boolean): Uint8Array {
+  const out = new Uint8Array(8 + text.length * 2);
+  out.set(latin1("UNICODE\0"));
+  const v = new DataView(out.buffer);
+  for (let i = 0; i < text.length; i++)
+    v.setUint16(8 + i * 2, text.charCodeAt(i), !bigEndian);
+  return out;
+}
+
+test("a UNICODE UserComment decodes in either byte order inside a little-endian EXIF", () => {
+  for (const bigEndian of [true, false]) {
+    const read = readEmbeddedRecipe(
+      littleEndianExifJpeg(utf16(PARAMETERS, bigEndian)),
+    );
+    assert.equal(
+      read.parameters,
+      PARAMETERS,
+      bigEndian ? "piexif-style UTF-16BE" : "byte-order UTF-16LE",
+    );
+  }
+});
+
+test("an imported reference count is capped at the request limit", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const capped = recipeSettings(
+    { prompt: "p", workflow: "reference", reference_image_count: 1e9 },
+    defaults,
+  );
+  assert.equal(capped.reference_image_count, 9);
+  assert.equal(
+    recipeSettings({ prompt: "p", reference_image_count: 3 }, defaults)
+      .reference_image_count,
+    3,
+  );
+});
+
+test("the ComfyUI model is the loader feeding the sampler, through a LoRA loader", () => {
+  const graph = JSON.parse(COMFY_PROMPT);
+  // An unused checkpoint listed first, and the sampler fed by a LoRA on another UNet.
+  const reordered = {
+    "1": {
+      class_type: "CheckpointLoaderSimple",
+      inputs: { ckpt_name: "unused.safetensors" },
+    },
+    ...graph,
+    "11": {
+      class_type: "UNETLoader",
+      inputs: { unet_name: "flux1-dev.safetensors" },
+    },
+    "12": {
+      class_type: "LoraLoaderModelOnly",
+      inputs: { model: ["11", 0], lora_name: "x.safetensors" },
+    },
+  };
+  reordered["3"] = {
+    ...graph["3"],
+    inputs: { ...graph["3"].inputs, model: ["12", 0] },
+  };
+  assert.equal(
+    parseComfyPrompt(JSON.stringify(reordered))?.model,
+    "flux1-dev.safetensors",
+  );
+});
+
+test("a file drop on the preview is always claimed before the image filter", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  const drop = page.slice(
+    page.indexOf("const onImportDrop"),
+    page.indexOf("[importSettingsFromFile],"),
+  );
+  assert.ok(
+    drop.indexOf("event.preventDefault()") <
+      drop.indexOf('f.type.startsWith("image/")'),
+  );
+  assert.match(drop, /toast\.error\(/);
+});

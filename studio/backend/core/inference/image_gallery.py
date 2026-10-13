@@ -45,7 +45,7 @@ def gallery_dir() -> Path:
     return ensure_account_dir(account_path("images"))
 
 
-_IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit")
+_IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 
 def _params_text(meta: dict[str, Any]) -> str:

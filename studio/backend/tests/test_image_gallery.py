@@ -112,6 +112,20 @@ def test_negative_prompt_recorded_in_parameters():
         assert "Negative prompt: blurry" in im.text["parameters"]
 
 
+def test_parameters_carry_strength_version_and_the_recipe_the_engine():
+    # Upscale's strength is its denoise, like the img2img workflows; plain txt2img has none.
+    for workflow, expected in (("upscale", True), ("edit", True), ("txt2img", False)):
+        record = gallery.save(_img(), _meta(workflow = workflow, strength = 0.35))
+        raw = base64.b64decode(gallery.image_b64(record["id"]))
+        with Image.open(io.BytesIO(raw)) as im:
+            params = im.text["parameters"]
+            recipe = _json.loads(im.text["unsloth"])
+        assert ("Denoising strength: 0.35" in params) is expected, (workflow, params)
+        assert ", Version: Unsloth Studio" in params
+        assert recipe["generator"].startswith("Unsloth Studio")
+        assert "engine" in recipe
+
+
 def test_delete_and_clear():
     a = gallery.save(_img(), _meta(prompt = "a"))
     gallery.save(_img(), _meta(prompt = "b"))
