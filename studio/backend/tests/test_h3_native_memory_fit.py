@@ -173,12 +173,23 @@ def test_the_gtt_reading_subtracts_what_is_already_used(tmp_path):
 def test_the_gtt_reading_follows_the_selected_card(tmp_path):
     _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 1 * GIB)
     _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 20 * GIB)  # the APU
-    assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 23 * GIB
-    assert amdgpu_gtt_free_bytes("0000:03:00.0", sysfs_root = str(tmp_path)) == 23 * GIB
-    # Unknown slot: the tightest card, since TTM's limit is shared.
-    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path)) == 4 * GIB
+    # TTM's page limit is shared, so the APU's 20 GiB counts against the selected card's pool too.
+    assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 3 * GIB
+    assert amdgpu_gtt_free_bytes("0000:03:00.0", sysfs_root = str(tmp_path)) == 3 * GIB
+    # Unknown slot: the smallest pool, less what every card uses.
+    assert amdgpu_gtt_free_bytes(sysfs_root = str(tmp_path)) == 3 * GIB
     # A slot that is no amdgpu card (an NVIDIA or Intel device) has no pool.
     assert amdgpu_gtt_free_bytes("0000:81:00", sysfs_root = str(tmp_path)) is None
+
+
+def test_gtt_used_on_another_amd_card_shrinks_the_selected_cards_pool(tmp_path):
+    """APU plus discrete card: TTM's page limit is one pool, so the APU's GTT use is not free for the dGPU."""
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 2 * GIB)
+    _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 12 * GIB)
+    assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 10 * GIB
+    # Only the selected card at work: the per-device bound still applies.
+    (tmp_path / "class" / "drm" / "card1" / "device" / "mem_info_gtt_used").write_text("0\n", encoding = "utf-8")
+    assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 22 * GIB
 
 
 def test_a_non_amd_drm_card_is_never_read(tmp_path):
@@ -568,7 +579,8 @@ def test_an_unreadable_gtt_use_is_reported(tmp_path):
     _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB)
     _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 1 * GIB)
     assert amdgpu_gtt_used_unknown("0000:03:00", sysfs_root = str(tmp_path)) is True
-    assert amdgpu_gtt_used_unknown("0000:c5:00", sysfs_root = str(tmp_path)) is False
+    # The shared pool includes card0's unreadable use, so even the readable card's answer is unknown.
+    assert amdgpu_gtt_used_unknown("0000:c5:00", sysfs_root = str(tmp_path)) is True
     assert amdgpu_gtt_used_unknown(sysfs_root = str(tmp_path)) is True
     dev = tmp_path / "class" / "drm" / "card1" / "device"
     (dev / "mem_info_gtt_used").write_text("garbage\n", encoding = "utf-8")
@@ -580,9 +592,9 @@ def test_one_gtt_pass_returns_free_and_readability_together(tmp_path):
 
     _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 4 * GIB)
     _card(tmp_path, "card1", "0000:c5:00.0", total = 16 * GIB)
-    assert amdgpu_gtt_reading("0000:03:00", sysfs_root = str(tmp_path)) == (20 * GIB, True)
-    assert amdgpu_gtt_reading("0000:c5:00", sysfs_root = str(tmp_path)) == (16 * GIB, False)
-    assert amdgpu_gtt_reading(sysfs_root = str(tmp_path)) == (16 * GIB, False)
+    assert amdgpu_gtt_reading("0000:03:00", sysfs_root = str(tmp_path)) == (20 * GIB, False)
+    assert amdgpu_gtt_reading("0000:c5:00", sysfs_root = str(tmp_path)) == (12 * GIB, False)
+    assert amdgpu_gtt_reading(sysfs_root = str(tmp_path)) == (12 * GIB, False)
     assert amdgpu_gtt_reading("0000:81:00", sysfs_root = str(tmp_path)) == (None, True)
 
 

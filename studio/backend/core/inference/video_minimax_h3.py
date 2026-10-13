@@ -1413,20 +1413,21 @@ def h3_native_fit_check_enabled(env: Optional[dict] = None) -> bool:
 def amdgpu_gtt_reading(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> "tuple[Optional[int], bool]":
-    """``(free GTT, use known)`` from ONE pass over sysfs, so both halves describe the same reading. Free is
-    ``mem_info_gtt_total - mem_info_gtt_used`` of the amdgpu card at ``pci_slot`` (``DDDD:BB:DD.F``, or
-    ``DDDD:BB:DD`` for any function), or the least free of every amdgpu card when the slot is unknown (TTM's limit
-    is shared). A card whose use cannot be read counts its whole total and makes ``use known`` False.
-    ``(None, True)`` when no amdgpu card, or none at that slot, reports a total."""
+    """``(free GTT, use known)`` from ONE pass over sysfs, so both halves describe the same reading.
+
+    TTM's page limit is shared by every amdgpu device, so what is left is the pool's size less the GTT used on ALL
+    amdgpu cards, not only on the selected one. The pool's size is the ``mem_info_gtt_total`` of the card at
+    ``pci_slot`` (``DDDD:BB:DD.F``, or ``DDDD:BB:DD`` for any function), or the smallest total when the slot is
+    unknown; that bound is never above the selected card's own ``total - used``. A card whose use cannot be read
+    makes ``use known`` False. ``(None, True)`` when no amdgpu card, or none at that slot, reports a total."""
     want = pci_slot.lower() if pci_slot else None
-    best: Optional[int] = None
+    selected_total: Optional[int] = None
+    smallest_total: Optional[int] = None
+    used_all = 0
     known = True
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
         device = total_path.parent
         if _sysfs_int(device / "vendor") != 0x1002:
-            continue
-        slot = _sysfs_pci_slot(device) if want is not None else None
-        if want is not None and slot != want and not (slot or "").startswith(want + "."):
             continue
         total = _sysfs_int(total_path)
         if not total or total <= 0:
@@ -1435,10 +1436,16 @@ def amdgpu_gtt_reading(
         if used is None or used < 0:
             known = False
             used = 0
-        free = max(total - used, 0)
-        if best is None or free < best:
-            best = free
-    return best, known
+        used_all += used
+        smallest_total = total if smallest_total is None else min(smallest_total, total)
+        if want is not None:
+            slot = _sysfs_pci_slot(device)
+            if slot == want or (slot or "").startswith(want + "."):
+                selected_total = total if selected_total is None else min(selected_total, total)
+    pool = selected_total if want is not None else smallest_total
+    if pool is None:
+        return None, True
+    return max(pool - used_all, 0), known
 
 
 def amdgpu_gtt_free_bytes(
