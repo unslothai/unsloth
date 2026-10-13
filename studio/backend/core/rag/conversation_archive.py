@@ -691,8 +691,8 @@ _EMPTY_TOOL_RESULT = '{"result":""}'
 # Mirrors SERVER_SIDE_BUILTIN_TOOL_NAMES (chat-adapter.ts); name alone never decides, as the frontend also
 # requires.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
-# Mirrors SANDBOX_FILE_TOOLS and tool_loop_controller._SANDBOX_TOOLS.
-_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
+_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 # Mirrors search-images.ts. re.ASCII: Python IGNORECASE folds Unicode, JS /i does not.
 _SEARCH_IMAGE_ID = re.compile(r"[0-9a-f]{12}")

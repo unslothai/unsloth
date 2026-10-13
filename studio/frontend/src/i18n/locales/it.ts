@@ -52,7 +52,7 @@ export const it = {
     agentSettings: {
       title: "Uso del browser",
       enable: "Consenti ai modelli di usare il browser",
-      enableDescription: "I modelli aprono le pagine in una propria scheda del pannello del browser, le leggono e fanno clic e scrivono per te. Anche nel menu + del compositore.",
+      enableDescription: "I modelli aprono le pagine in una propria scheda del browser, le leggono e fanno clic e scrivono per te. Anche nel menu + del compositore.",
       history: "Cronologia di navigazione",
       historyDescription: "Scegli se i modelli possono leggere la cronologia del browser",
       alwaysAsk: "Chiedi sempre",
@@ -4162,6 +4162,7 @@ export const it = {
       chatAboutThis: "Chatta su questo",
       chatWithModel: "Chatta con questo modello",
       addToFavorites: "Aggiungi ai preferiti",
+      regenerateTitle: "Rigenera titolo",
       removeFromFavorites: "Rimuovi dai preferiti",
       download: "Scarica",
       addToFolder: "Aggiungi a cartella",

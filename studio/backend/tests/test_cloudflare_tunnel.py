@@ -1343,6 +1343,7 @@ def test_verify_global_reachability_marks_private_address_unreachable():
     captured = []
     ns = {
         "_public_reachable": None,
+        "_url_scheme": "http",
         "_stdout_color_ok": lambda: False,
         "is_wildcard_host": lambda _host: False,
         "_url_host": lambda host: host,

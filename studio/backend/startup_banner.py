@@ -79,6 +79,7 @@ def print_studio_access_banner(
     network_host: str = "",
     include_stop_hint: bool = True,
     lan_addresses: "tuple[str, ...]" = (),
+    scheme: str = "http",
 ) -> None:
     """display_host may be a public WAN IP, which a LAN peer cannot open; pass network_host instead."""
     use_color = stdout_supports_color()
@@ -95,22 +96,23 @@ def print_studio_access_banner(
     listen_all = is_wildcard_host(bind_host)
     ipv6_bind = bind_host == "::1" or wildcard_loopback_host(bind_host) == "::1"
     if ipv6_bind:
-        loopback_url = f"http://[::1]:{port}"
-        alt_local = f"http://localhost:{port}"
+        loopback_url = f"{scheme}://[::1]:{port}"
+        alt_local = f"{scheme}://localhost:{port}"
     else:
-        loopback_url = f"http://127.0.0.1:{port}"
-        alt_local = f"http://localhost:{port}"
+        loopback_url = f"{scheme}://127.0.0.1:{port}"
+        alt_local = f"{scheme}://localhost:{port}"
     if ":" in display_host:
-        external_url = f"http://[{display_host}]:{port}"
+        external_url = f"{scheme}://[{display_host}]:{port}"
     else:
-        external_url = f"http://{display_host}:{port}"
+        external_url = f"{scheme}://{display_host}:{port}"
 
     resolved_network_host = network_host or display_host
     if ":" in resolved_network_host:
-        network_url = f"http://[{resolved_network_host}]:{port}"
+        network_url = f"{scheme}://[{resolved_network_host}]:{port}"
     else:
-        network_url = f"http://{resolved_network_host}:{port}"
-    # Only these exact aliases get the canned loopback URL; other binds must show their real address.
+        network_url = f"{scheme}://{resolved_network_host}:{port}"
+    # The exact aliases the canned loopback_url is valid for; any other bind (e.g. a specific LAN IP)
+    # must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
 
     primary_url = loopback_url if listen_all or loopback_bind else external_url
@@ -164,7 +166,7 @@ def print_studio_access_banner(
             lines.append(
                 style("  LAN access is on -- also reachable on your network at:", secondary)
             )
-            lines.extend(style(f"    http://{a}:{port}", secondary) for a in lan_addresses)
+            lines.extend(style(f"    {scheme}://{a}:{port}", secondary) for a in lan_addresses)
             lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
         else:
             lines.extend(

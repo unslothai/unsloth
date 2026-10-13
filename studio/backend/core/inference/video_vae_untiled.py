@@ -27,9 +27,12 @@ _OUTPUT_SCALE = {
 # LTX-2 / 2.3 holds every frame: per output frame x latent pixel, 0.102-0.105 MiB bf16 (B200).
 _BYTES_PER_FRAME_LATENT_PIXEL = {
     "ltx-2": 0.11 * 2**20,
+    # Same conv decoder layout as 2.3 (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
+    "ltx-2.5": 0.11 * 2**20,
 }
 _TEMPORAL_SCALE = {
     "ltx-2": 8,
+    "ltx-2.5": 8,
 }
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30

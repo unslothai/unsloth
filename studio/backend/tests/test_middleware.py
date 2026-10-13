@@ -1595,6 +1595,7 @@ def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeyp
         "/api/rag/knowledge-bases/kb1/documents",
         "/api/rag/threads/t1/documents",
         "/api/rag/projects/p1/documents/",
+        "/api/rag/extract-text",
     ):
         assert pattern.match(path), path
         assert main_module._get_upload_passthrough_request_max_bytes(

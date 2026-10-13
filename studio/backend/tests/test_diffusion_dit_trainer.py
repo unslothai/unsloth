@@ -173,8 +173,9 @@ def test_zimage_offers_the_undistilled_base_the_upstream_recipe_trains_on():
     _assert_trusted_base_model("Tongyi-MAI/Z-Image")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("someone/random-z-image-finetune")
-    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0")
-    # No deploy pairing: a family-wide one would send a QLoRA preview to a dense fp32 load.
+    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
+    # No deploy pairing: an adapter previews on whichever checkpoint it trained on. A family-wide
+    # one would also rewrite the nf4 Turbo base, sending a QLoRA run's preview to a dense fp32 load.
     assert fam.deploy_base_repo is None
 
 

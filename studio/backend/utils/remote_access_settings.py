@@ -263,6 +263,11 @@ def start_remote_access(app_state) -> dict:
     origin_host = getattr(app_state, "server_request_host", None)
     if not isinstance(origin_host, str) or not origin_host:
         raise RuntimeError("server_address_unavailable")
+    from utils.studio_tls import loopback_http_port
+
+    # cloudflared dials the origin over plain HTTP, so a TLS launch hands it the loopback self-call listener
+    if loopback_http_port(app_state) is not None:
+        port, origin_host = loopback_http_port(app_state), "127.0.0.1"
     if get_studio_tunnel_control_token() != admission:
         raise RuntimeError("server_lifecycle_changed")
 

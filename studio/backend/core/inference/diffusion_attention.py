@@ -1699,12 +1699,8 @@ def _attention_dits(pipe: Any) -> list:
     """Every DiT the denoise loop runs: the primary ``transformer`` plus a second expert some
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). The
     backend must be set on ALL of them, else the second DiT keeps the native default."""
-    dits: list = []
-    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
-        m = getattr(pipe, attr, None)
-        if m is not None and m not in dits:
-            dits.append(m)
-    return dits
+    from .diffusion_autoopt.targets import denoiser_dits
+    return denoiser_dits(pipe)
 
 
 # head_dim 256 has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20).

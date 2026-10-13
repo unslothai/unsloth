@@ -258,6 +258,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             continue
         rec.pop("metric_history", None)
         rec.pop("config", None)
+        rec.pop("samples", None)
         out.append(rec)
     return out
 
@@ -343,10 +344,49 @@ def _idle_state() -> dict[str, Any]:
         # stay index-aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
+        "samples": [],
     }
 
 
-# One list so a new series cannot be missed by the decimation.
+# Past this the oldest half after the step-0 baseline is thinned, like the metrics.
+_SAMPLES_CAP = 400
+
+
+def _append_samples(
+    state: dict[str, Any],
+    step: Any,
+    images: Any,
+    output_dir: Optional[str] = None,
+) -> None:
+    """Fold one ``sample`` event; thinned rounds' images are deleted so every file on disk stays listed."""
+    from core.training.diffusion_samples import SAMPLE_PATH_RE, delete_sample_files
+
+    try:
+        istep = int(step)
+    except (TypeError, ValueError):
+        return
+    entries = state.setdefault("samples", [])
+    for img in images if isinstance(images, list) else []:
+        if not isinstance(img, dict) or not SAMPLE_PATH_RE.match(str(img.get("path") or "")):
+            continue
+        entries.append(
+            {
+                "step": istep,
+                "path": str(img["path"]),
+                "prompt": str(img.get("prompt") or ""),
+                "seed": img.get("seed") if isinstance(img.get("seed"), int) else None,
+            }
+        )
+    if len(entries) > _SAMPLES_CAP:
+        steps = sorted({e["step"] for e in entries})
+        keep = set(steps[:1] + steps[1:-1][::2] + steps[-1:])
+        state["samples"] = [e for e in entries if e["step"] in keep]
+        delete_sample_files(output_dir, [e["path"] for e in entries if e["step"] not in keep])
+
+
+# The value series, in append order, paired index-for-index with metric_steps. One list so a new
+# series cannot be added to the appends and forgotten in the decimation below, which would
+# silently misalign the curves.
 _METRIC_SERIES: tuple[str, ...] = (
     "metric_loss",
     "metric_lr",
@@ -606,6 +646,9 @@ class DiffusionTrainingService:
             self._config = {
                 k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
             }
+            # A resume's unset bucketing stays unset; the trainer adopts the bundle's.
+            if normalized_cfg.bucketing is not None:
+                self._config["bucketing"] = normalized_cfg.bucketing
             self._config.update(train_recipe_overrides(normalized_cfg))
             self._pump = account_thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
@@ -680,6 +723,19 @@ class DiffusionTrainingService:
             snap = dict(self._state)
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
+
+    def sample_source(self, job_id: str) -> Optional[tuple[Optional[str], list]]:
+        """(output_dir, samples) for the live job ``job_id``, or None when it is not the live job or
+        belongs to another account (the run record answers for a finished one)."""
+        from core.training.account_jobs import job_is_foreign
+
+        if job_is_foreign(self):
+            return None
+        with self._lock:
+            if not job_id or self._state.get("job_id") != job_id:
+                return None
+            out = self._state.get("output_dir") or self._config.get("output_dir")
+            return (str(out) if out else None), list(self._state.get("samples") or [])
 
     def _open_worker_stderr_capture(self) -> None:
         previous = self._stderr_capture
@@ -776,12 +832,22 @@ class DiffusionTrainingService:
             delete = False
         with self._lock:
             own = list(self._own_checkpoints) if delete else []
+            samples = [e.get("path") for e in self._state.get("samples") or []] if delete else []
+            sample_root = self._state.get("output_dir") or self._config.get("output_dir")
             self._state["resume_blocked_reason"] = (
                 "This run was stopped without saving, so it was discarded."
             )
             self._state["checkpoint_path"] = None
             self._state["checkpoint_step"] = None
+            # Their files are deleted, so listing them would serve 404s.
+            self._state["samples"] = []
             self._own_checkpoints = []
+        if samples:
+            try:
+                from core.training.diffusion_samples import discard_sample_paths
+                discard_sample_paths(sample_root, samples)
+            except Exception:  # noqa: BLE001 -- cleanup must never break the terminal transition
+                pass
         if not own:
             return
         try:
@@ -855,6 +921,7 @@ class DiffusionTrainingService:
                     "video_loss": s.get("metric_video_loss") or [],
                     "audio_loss": s.get("metric_audio_loss") or [],
                 },
+                "samples": s.get("samples") or [],
             }
             path = _runs_dir() / f"{s['job_id']}.json"
             path.write_text(json.dumps(record), encoding = "utf-8")
@@ -965,6 +1032,13 @@ class DiffusionTrainingService:
                     ev.get("video_loss"),
                     ev.get("audio_loss"),
                 )
+            elif etype == "sample":
+                _append_samples(
+                    s,
+                    ev.get("step"),
+                    ev.get("images"),
+                    s.get("output_dir") or self._config.get("output_dir"),
+                )
             elif etype == "complete":
                 s.update(
                     active = False,
@@ -995,6 +1069,7 @@ class DiffusionTrainingService:
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )
+                    s["samples"] = []
             elif etype == "error":
                 s.update(
                     active = False,

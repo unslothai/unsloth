@@ -1407,6 +1407,7 @@ def test_status_passes_through_resolved(client, monkeypatch):
         **resolved["transformer_quant"],
         "artifact": None,
         "replaced": None,
+        "steps": None,
     }
     # older backend entries (no requested/status) still parse, defaulting to applied
     assert body["resolved"]["speed_mode"]["requested"] is None

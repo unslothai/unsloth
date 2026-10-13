@@ -372,10 +372,9 @@ def h3_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[int
     if area > H3_CANVAS_MAX_PIXELS:
         scale = math.sqrt(H3_CANVAS_MAX_PIXELS / area)
         width, height = width * scale, height * scale
-    snap = lambda v: max(  # noqa: E731
-        H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
-    )
-    return snap(width), snap(height)
+    from .video_families import snap_canvas_within_cap
+
+    return snap_canvas_within_cap(width, height, H3_CANVAS_MULTIPLE, H3_CANVAS_MAX_PIXELS)
 
 
 def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:

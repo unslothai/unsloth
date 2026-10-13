@@ -281,11 +281,13 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
 def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:
     """Catch a renamed LTX-2.5 file by header: ``is_ltx23_checkpoint`` counts modulation rows, and 2.5 keeps 2.3's nine."""
     from .diffusion_content import is_ltx25_checkpoint
-    from .video_families import unsupported_ltx_message
+    from .video_families import LTX2_FAMILY, wrong_ltx_family_message
 
     if is_ltx25_checkpoint(str(checkpoint_path)):
         raise ValueError(
-            unsupported_ltx_message("2.5", f"'{Path(str(checkpoint_path)).name}' (by its tensors)")
+            wrong_ltx_family_message(
+                "2.5", LTX2_FAMILY, f"'{Path(str(checkpoint_path)).name}' (by its tensors)"
+            )
         )
 
 

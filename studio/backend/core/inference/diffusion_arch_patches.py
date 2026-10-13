@@ -22,13 +22,13 @@ Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``. Implemented for all five fami
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import torch
 
+from .diffusion_autoopt.patches import body_has
 from .diffusion_patch_backend import apply_patch, revert_patch
 
 logger = logging.getLogger(__name__)
@@ -40,14 +40,9 @@ def _patches_enabled() -> bool:
     return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-def _body_has(fn: Callable, *needles: str) -> bool:
-    """True iff every ``needle`` is in ``fn``'s source -- a body-drift guard that self-disables the
-    patch if diffusers changed the rewritten lines."""
-    try:
-        src = inspect.getsource(fn)
-    except (OSError, TypeError):
-        return False
-    return all(n in src for n in needles)
+# The shared needle guard (diffusion_autoopt.patches); the module-level name is what the resolvers below call, so a
+# test can still monkeypatch it here.
+_body_has = body_has
 
 
 def _qwen_modulate(

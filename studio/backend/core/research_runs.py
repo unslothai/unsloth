@@ -1372,6 +1372,11 @@ class ResearchSupervisor:
         return host
 
     def _endpoint(self) -> str:
+        from utils.studio_tls import loopback_http_port
+
+        loopback_port = loopback_http_port(self.app.state)
+        if loopback_port is not None:
+            return f"http://127.0.0.1:{loopback_port}/v1/chat/completions"
         port = self._server_port()
         if port is None:
             raise RuntimeError("Research is waiting for the Unsloth server port")

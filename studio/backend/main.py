@@ -778,6 +778,15 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
+        # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
+        # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
+        # expired.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1281,10 +1290,10 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
-# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
-    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+    r"^/api/rag/(?:(?:knowledge-bases|threads|projects)/[^/]+/documents|extract-text)/?$"
 )
 # One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
 _SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")

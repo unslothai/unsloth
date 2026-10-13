@@ -927,7 +927,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
     # Finite: inf gamma collapses min-SNR weights to 1.0.
     snr_gamma: Optional[float] = Field(
-        5.0, gt = 0, allow_inf_nan = False, description = "Min-SNR loss weighting; null disables"
+        5.0,
+        gt = 0,
+        allow_inf_nan = False,
+        description = "Min-SNR loss weighting (SDXL only; flow-matching families ignore it); null disables",
     )
     gradient_checkpointing: bool = Field(True)
     lr_scheduler: Literal[
@@ -940,7 +943,19 @@ class DiffusionTrainingStartRequest(BaseModel):
     ] = Field("constant")
     lr_warmup_steps: int = Field(0, ge = 0)
     center_crop: bool = Field(False)
-    random_flip: bool = Field(True)
+    # Opt-in: mirroring teaches text, logos and one-sided features in both orientations.
+    random_flip: bool = Field(
+        False, description = "Randomly mirror training images left-right (augmentation)"
+    )
+    bucketing: Optional[bool] = Field(
+        None,
+        description = (
+            "Aspect-ratio buckets: train each image on the same-area canvas nearest its aspect "
+            "ratio instead of a square crop. null means on for a new run and, on a resume, what "
+            "the checkpoint recorded (square for a run from before buckets existed). MiniMax-H3 "
+            "always trains unbucketed."
+        ),
+    )
     caption_column: str = Field("text")
     hf_token: Optional[str] = Field(None)
     cache_latents: bool = Field(
@@ -990,8 +1005,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     flow_shift: Optional[Union[float, Literal["auto"]]] = Field(
         None,
         description = (
-            "Flow-matching timestep shift. null uses the family default "
-            "(auto for qwen-image, 1.0 otherwise)."
+            "Flow-matching timestep shift, as the effective shift on the unshifted schedule "
+            "(musubi / kohya discrete_flow_shift; 1.0 trains unshifted). null uses the family "
+            "default: auto for qwen-image, ltx-2 and minimax-h3, otherwise the model's own "
+            "scheduler shift (3.0 for Z-Image-Turbo, 6.0 for Z-Image)."
         ),
     )
     save_steps: int = Field(
@@ -1006,6 +1023,22 @@ class DiffusionTrainingStartRequest(BaseModel):
     )
     save_total_limit: int = Field(
         2, ge = 0, le = 100, description = "How many checkpoints to keep; 0 keeps every one"
+    )
+    sample_every: int = Field(
+        0,
+        ge = 0,
+        le = 100000,
+        description = (
+            "Render fixed-seed preview images every N optimizer steps (plus a step-0 baseline and "
+            "the final step). 0 (the default) renders none. Image families only."
+        ),
+    )
+    sample_prompts: List[str] = Field(
+        default_factory = list,
+        max_length = 4,
+        description = (
+            "Preview prompts, one image each. Empty uses the instance prompt, else the first caption."
+        ),
     )
     resume_from_checkpoint: Optional[str] = Field(
         None,
@@ -1054,6 +1087,15 @@ class DiffusionMetricHistory(BaseModel):
     audio_loss: List[Optional[float]] = Field(default_factory = list)
 
 
+class DiffusionSampleImage(BaseModel):
+    """One preview image; ``path`` is relative to the run's output_dir."""
+
+    step: int
+    path: str
+    prompt: str = ""
+    seed: Optional[int] = None
+
+
 class DiffusionTrainingStatusResponse(BaseModel):
     """A snapshot of the current diffusion training job (or idle)."""
 
@@ -1086,6 +1128,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     started_at: Optional[float] = None
     updated_at: Optional[float] = None
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunSummary(BaseModel):
@@ -1127,6 +1170,7 @@ class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
     ema_path: Optional[str] = None
     config: Optional[dict] = None
     metric_history: Optional[DiffusionMetricHistory] = None
+    samples: List[DiffusionSampleImage] = Field(default_factory = list)
 
 
 class DiffusionTrainingRunsResponse(BaseModel):
@@ -1161,7 +1205,10 @@ class DiffusionTrainableFamily(BaseModel):
     supports_compile: bool = False
     # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
-    # 1 for a family whose forward covers one packed sequence; a larger value is refused, not clamped.
+    supports_samples: bool = False
+    supports_bucketing: bool = True
+    # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
+    # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None
     # LoRA previews on this repo, not the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 
 import pytest
 
@@ -420,24 +421,53 @@ def test_loader_installs_before_the_step_cache_and_offload_hooks():
             c for c in vars(video).values() if inspect.isclass(c) and hasattr(c, "load_pipeline")
         )
         src = inspect.getsource(cls.load_pipeline)
-    install = src.index("video_wan_fused.install_for_pipe(")
+    # The registered video patch stage (diffusion_autoopt) installs the fused Wan block ...
+    install = src.index("autoopt.STAGE_LOAD,")
     assert install < src.index("apply_step_cache(")
     assert install < src.index("apply_memory_plan(")
-    head = src[src.rindex("if effective_speed != SPEED_OFF:", 0, install) : install]
-    assert "video_wan_fused" in src[:install] and head
     assert '"wan_fused_adaln"' in src
+    from core.inference.diffusion_autoopt import patches as ap
+
+    spec = next(s for s in ap.specs(ap.STAGE_LOAD) if s.name == "wan_fused")
+    # ... held off on speed_mode=off (uninstalled there), like every other optimisation layer.
+    assert spec.speed_only and spec.backends == ("video",) and spec.group == ap.GROUP_VIDEO_FUSED
+    seen = []
+    orig_install, orig_uninstall = wf.install_for_pipe, wf.uninstall
+    try:
+        wf.install_for_pipe = lambda *a, **k: seen.append(("install", a)) or True
+        wf.uninstall = lambda: seen.append(("uninstall",))
+        ctx = ap.PatchContext(
+            pipe = "pipe", dtype = "fp16", device = "cuda", backend = "video", speed_mode = "off"
+        )
+        assert ap.install_stage(ap.STAGE_LOAD, ctx) == {}
+        ctx.speed_mode = "default"
+        assert ap.install_stage(ap.STAGE_LOAD, ctx) == {"wan_fused": True}
+    finally:
+        wf.install_for_pipe, wf.uninstall = orig_install, orig_uninstall
+    assert seen == [("uninstall",), ("install", ("pipe", "fp16", "cuda"))]
 
 
 def test_teardown_and_rollback_restore_the_stock_forward():
     from core.inference import video
+
     cls = next(
         c
         for c in vars(video).values()
         if inspect.isclass(c) and hasattr(c, "_teardown_state_locked")
     )
     for name in ("_teardown_state_locked", "_rollback_precommit_globals"):
-        body = ast.unparse(ast.parse(inspect.getsource(getattr(cls, name)).lstrip()))
-        assert "video_wan_fused.uninstall()" in body, name
+        body = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(getattr(cls, name)))))
+        assert "uninstall_group(GROUP_VIDEO_FUSED)" in body, name
+    from core.inference.diffusion_autoopt import patches as ap
+
+    seen = []
+    orig = wf.uninstall
+    try:
+        wf.uninstall = lambda: seen.append("uninstall")
+        ap.uninstall_group(ap.GROUP_VIDEO_FUSED)
+    finally:
+        wf.uninstall = orig
+    assert seen == ["uninstall"]
 
 
 @needs_cuda
