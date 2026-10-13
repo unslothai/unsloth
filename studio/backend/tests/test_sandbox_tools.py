@@ -199,6 +199,12 @@ class TestLocalDatabaseFileIsNotAHost:
             'import sqlite3 as db\n{db for db in ()}\ndb.connect("sales.db")',
             'import sqlite3 as db\n{db: None for db in ()}\ndb.connect("sales.db")',
             'import sqlite3 as db\ntuple(db for db in ())\ndb.connect("sales.db")',
+            'import sqlite3\ndb = sqlite3\ndb.connect("sales.db")',
+            'import sqlite3\ndb = sqlite3\nother = db\nother.connect("sales.db")',
+            (
+                'def load():\n    import sqlite3\n    db = sqlite3\n'
+                '    return db.connect("sales.db")\nload()'
+            ),
         ],
     )
     def test_local_database_file_opens(self, code):
@@ -214,6 +220,8 @@ class TestLocalDatabaseFileIsNotAHost:
             'import ftplib\nsqlite3 = ftplib.FTP()\nsqlite3.connect("evil.example")',
             'import psycopg2 as duckdb\nduckdb.connect("evil.example")',
             'import sqlite3\nsqlite3.connect(r"\\\\evil.example\\share\\a.db")',
+            'import sqlite3\nsqlite3.connect(r"/\\evil.example\\share\\a.db")',
+            'import sqlite3\nsqlite3.connect(r"\\/evil.example\\share\\a.db")',
             'import sqlite3\nsqlite3.connect("file://evil.example/share/a.db", uri = True)',
             ("import sqlite3\ndef load(sqlite3):\n" '    return sqlite3.connect("evil.example")'),
             (
@@ -271,6 +279,14 @@ class TestLocalDatabaseFileIsNotAHost:
             (
                 "import sqlite3 as db\nimport ftplib\n"
                 '[db.connect("evil.example") for db in [ftplib.FTP()]]'
+            ),
+            (
+                'import sqlite3\nimport ftplib\ndb = sqlite3\n'
+                'db = ftplib.FTP()\ndb.connect("evil.example")'
+            ),
+            (
+                'import sqlite3\nimport ftplib\nsqlite3 = ftplib.FTP()\n'
+                'db = sqlite3\ndb.connect("evil.example")'
             ),
         ],
     )

@@ -19189,9 +19189,23 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     def _is_local_database_target(target: str) -> bool:
-        if target.startswith(("md:", "motherduck:", "file:", "\\\\", "//")):
+        if target.startswith(("md:", "motherduck:", "file:")):
+            return False
+        if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
             return False
         return "://" not in target
+
+    def _local_database_aliases(node):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            if all(isinstance(target, ast.Name) for target in node.targets):
+                return tuple((target.id, node.value.id) for target in node.targets)
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.value, ast.Name)
+        ):
+            return ((node.target.id, node.value.id),)
+        return ()
 
     def _local_database_names(nodes):
         imported: set[str] = set()
@@ -19204,15 +19218,16 @@ def _check_signal_escape_patterns(code: str):
                     (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
             else:
                 other.update(_binding_names(node))
-        return frozenset(imported - other), frozenset(imported)
+        return frozenset(imported - other), frozenset(imported | other)
 
     def _local_database_direct_bindings(root):
         imported: set[str] = set()
         other: set[str] = set()
+        aliases: dict[str, set[str]] = {}
         if isinstance(root, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             for generator in root.generators:
                 other.update(_stored_names([generator.target]))
-            return frozenset(), frozenset(other)
+            return frozenset(), frozenset(other), {}
         args = getattr(root, "args", None)
         if args is not None:
             slots = (
@@ -19247,10 +19262,17 @@ def _check_signal_escape_patterns(code: str):
                 stack.append(node.iter)
                 stack.extend(node.ifs)
                 continue
+            elif pairs := _local_database_aliases(node):
+                for target, source in pairs:
+                    aliases.setdefault(target, set()).add(source)
             else:
                 other.update(_binding_names(node))
             stack.extend(ast.iter_child_nodes(node))
-        return frozenset(imported), frozenset(other)
+        return (
+            frozenset(imported),
+            frozenset(other),
+            {target: frozenset(sources) for target, sources in aliases.items()},
+        )
 
     def _local_database_declarations(root):
         global_names: set[str] = set()
@@ -19325,11 +19347,31 @@ def _check_signal_escape_patterns(code: str):
         bindings = {
             scope: [set(imported), set(other)]
             for scope in roots
-            for imported, other in [direct_bindings[scope]]
+            for imported, other, _ in [direct_bindings[scope]]
+        }
+        aliases = {
+            scope: {target: set(sources) for target, sources in scope_aliases.items()}
+            for scope, (_, _, scope_aliases) in direct_bindings.items()
         }
         declarations = {
             scope: _local_database_declarations(scope_root) for scope, scope_root in roots.items()
         }
+        for scope, (global_names, nonlocal_names) in declarations.items():
+            for name in global_names:
+                if name in aliases[scope]:
+                    bindings[0][1].add(name)
+                    aliases[scope].pop(name)
+            for name in nonlocal_names:
+                if name not in aliases[scope]:
+                    continue
+                owner = parents[scope]
+                while owner not in (None, 0):
+                    owner_imported, owner_other, _ = direct_bindings[owner]
+                    if name in owner_imported | owner_other or name in aliases[owner]:
+                        bindings[owner][1].add(name)
+                        break
+                    owner = parents[owner]
+                aliases[scope].pop(name)
         for scope, (global_names, nonlocal_names) in declarations.items():
             imported, other = bindings[scope]
             for name in global_names:
@@ -19350,7 +19392,7 @@ def _check_signal_escape_patterns(code: str):
                 while owner not in (None, 0):
                     owner_root = roots[owner]
                     owner_global, owner_nonlocal = declarations[owner]
-                    owner_imported, owner_other = direct_bindings[owner]
+                    owner_imported, owner_other, _ = direct_bindings[owner]
                     if (
                         not isinstance(owner_root, ast.ClassDef)
                         and name not in owner_global
@@ -19364,6 +19406,47 @@ def _check_signal_escape_patterns(code: str):
                             target_other.add(name)
                         break
                     owner = parents[owner]
+
+        def alias_source_is_trusted(scope, name):
+            innermost = scope
+            while scope is not None:
+                root = roots[scope]
+                if isinstance(root, ast.ClassDef) and scope != innermost:
+                    scope = parents[scope]
+                    continue
+                global_names, _ = declarations[scope]
+                if name in global_names and scope != 0:
+                    scope = 0
+                    continue
+                if name in aliases[scope]:
+                    return False
+                imported, other = bindings[scope]
+                if name in other:
+                    return False
+                if name in imported:
+                    return True
+                scope = parents[scope]
+            return False
+
+        for scope, root in roots.items():
+            if isinstance(root, ast.ClassDef):
+                bindings[scope][1].update(aliases[scope])
+                aliases[scope].clear()
+        changed = True
+        while changed:
+            changed = False
+            for scope, pending in aliases.items():
+                imported, other = bindings[scope]
+                for target, sources in tuple(pending.items()):
+                    if target in other:
+                        pending.pop(target)
+                        changed = True
+                    elif all(alias_source_is_trusted(scope, source) for source in sources):
+                        imported.add(target)
+                        pending.pop(target)
+                        changed = True
+        for scope, pending in aliases.items():
+            bindings[scope][1].update(pending)
         return (
             roots,
             {
