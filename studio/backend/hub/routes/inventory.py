@@ -355,8 +355,7 @@ async def orphan_companions(
 
 @router.post("/local/reveal")
 async def reveal_local_model(
-    path: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    path: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Reveal an on-device model outside the HF cache (LM Studio, custom folders, ./models)."""
     return await local_model_actions.reveal_local_model_response(
@@ -366,8 +365,7 @@ async def reveal_local_model(
 
 @router.delete("/local/delete")
 async def delete_local_model(
-    path: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    path: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Delete an on-device LM Studio, custom-folder or ./models model listed by /local."""
     return await local_model_actions.delete_local_model_response(
