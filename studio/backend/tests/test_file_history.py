@@ -347,3 +347,19 @@ def test_close_store_releases_the_index(tmp_path, monkeypatch):
     assert str(root) not in file_history._stores
     with pytest.raises(Exception):
         history._db.execute("SELECT 1")
+
+
+def test_one_call_stores_at_most_its_byte_budget(chat, monkeypatch):
+    _workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("seed.txt", "", "s\n")  # the baseline
+    monkeypatch.setattr(file_history, "CALL_BUDGET_BYTES", 1500)
+    execute_tool(
+        "python",
+        {"code": "import os\nfor i in range(4): open(f'f{i}.bin', 'wb').write(os.urandom(1000))"},
+        session_id = "s",
+    )
+    kinds = dict(
+        history._db.execute("SELECT rel_path, kind FROM workdir_state WHERE rel_path LIKE 'f%'")
+    )
+    assert sorted(kinds.values()).count("blob") == 1 and len(kinds) == 4

@@ -70,7 +70,7 @@ test("the completion payload carries user_message_id on the local and external t
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /const userMessageIdField = userMessageIdRequestField\(\s*generationUserMessage\?\.id,?\s*\);/,
+    /const userMessageIdField = userMessageIdRequestField\(\s*resolvedThreadId && isThreadIncognito\(resolvedThreadId\)\s*\? undefined\s*: generationUserMessage\?\.id,?\s*\);/,
   );
   // Local body (also the durable run's requestPayload): beside thread_id.
   assert.match(

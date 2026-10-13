@@ -41,6 +41,7 @@ _RAW, _ZLIB, _ZSTD = b"R", b"Z", b"S"
 
 MAX_FILE_BYTES = 16 << 20
 BASELINE_BUDGET_BYTES = 256 << 20
+CALL_BUDGET_BYTES = 256 << 20
 CHAT_CAP_CHECKPOINTS = 500
 GLOBAL_CAP_BYTES = 2 << 30
 GC_AFTER_BYTES = 128 << 20
@@ -274,7 +275,8 @@ class FileHistory:
             and self._db.execute("SELECT 1 FROM workdirs WHERE workdir=?", (workdir,)).fetchone()
             is None
         )
-        budget = [BASELINE_BUDGET_BYTES] if first else None
+        # Per sync, not only the baseline: one call writing thousands of large files must not copy them all.
+        budget = [BASELINE_BUDGET_BYTES if first else CALL_BUDGET_BYTES]
         changes: dict = {}
         names = snap.keys() if first or paths is None else paths
         for rel in names:

@@ -16,6 +16,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   collectRewindTurnIds,
   defaultRewindMode,
+  isThreadIncognito,
   type RewindMode,
   type RewindResult,
   rewindChangedCount,
@@ -46,6 +47,13 @@ function toastRestoreResult(
 ) {
   const changed = rewindChangedCount(result);
   const skipped = rewindSkippedCount(result) + result.errors.length;
+  if (changed === 0 && skipped > 0) {
+    // Every file was skipped: a failure, so the caller stops before moving the conversation.
+    toast.error(t("rewind.restoreFailed"), {
+      description: t("rewind.skippedCount", { count: skipped }),
+    });
+    return false;
+  }
   const title =
     changed === 0
       ? t("rewind.nothingRestored")
@@ -101,6 +109,7 @@ function toastRestoreResult(
         }
       : {}),
   });
+  return true;
 }
 
 const FileList: FC<{ label: string; files: string[] }> = ({ label, files }) =>
@@ -200,8 +209,10 @@ const RewindChoices: FC<{
   const t = useT();
   const aui = useAui();
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  // A temporary chat keeps no file history (and has no row the route can find).
+  const tracked = Boolean(remoteId) && !isThreadIncognito(remoteId ?? "");
   const [dryRun, setDryRun] = useState<DryRun>(
-    remoteId && turnIds.length > 0
+    tracked && turnIds.length > 0
       ? { state: "loading" }
       : { state: "done", result: null },
   );
@@ -210,7 +221,7 @@ const RewindChoices: FC<{
   const turnKey = turnIds.join("\n");
 
   useEffect(() => {
-    if (!remoteId || turnKey === "") return;
+    if (!remoteId || !tracked || turnKey === "") return;
     let cancelled = false;
     rewindChatThread(remoteId, { turn_ids: turnKey.split("\n"), dry_run: true }).then(
       (result) => {
@@ -225,7 +236,7 @@ const RewindChoices: FC<{
     return () => {
       cancelled = true;
     };
-  }, [remoteId, turnKey]);
+  }, [remoteId, tracked, turnKey]);
 
   const result = dryRun.state === "done" ? dryRun.result : null;
   // Rows can exist with nothing left to put back (right after a rewind): that is no change.
@@ -243,7 +254,10 @@ const RewindChoices: FC<{
           turn_ids: turnIds,
           dry_run: false,
         });
-        toastRestoreResult(t, remoteId, restored);
+        if (!toastRestoreResult(t, remoteId, restored)) {
+          setBusy(false);
+          return;
+        }
       } catch (error) {
         setBusy(false);
         toast.error(t("rewind.restoreFailed"), {
