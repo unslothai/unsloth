@@ -185,12 +185,16 @@ _frontend_build_begin() {
     _pid=${_owner%% *}
     while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
         [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
-        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt 600 ] &&
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt "${_FRONTEND_OWNER_POLLS:-600}" ] &&
         [ "$(ps -o stat= -p "$_pid" 2>/dev/null | cut -c1)" != Z ]; do
         [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
         sleep 1
         _n=$((_n + 1))
     done
+    # Still alive after that: a hung background build (its own group), so stop it, never share the tree.
+    if [ "$_n" -ge "${_FRONTEND_OWNER_POLLS:-600}" ] && [ "$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d ' ')" = "$_pid" ]; then
+        kill -KILL -- "-$_pid" 2>/dev/null || :
+    fi
     _n=0
     while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] && [ "$_n" -lt 30 ] &&
         [ "$_pid" -gt 1 ] 2>/dev/null && kill -0 -- "-$_pid" 2>/dev/null; do

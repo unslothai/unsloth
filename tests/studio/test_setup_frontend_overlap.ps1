@@ -158,6 +158,18 @@ $sw.Restart()
 $null = Invoke-Case "Wait-FrontendBuildOwner"
 Check "a reused process id is not waited for" ($sw.Elapsed.TotalSeconds -lt 2)
 
+Write-Host "== a build still alive after the wait is stopped, not shared =="
+$r = Invoke-Case @"
+`$null = Start-FrontendBuildBackground -WorkingDirectory '$fe' -FilePath `$Build -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 120')
+Write-Output "owner=`$(`$script:FrontendBuildProc.Id)"
+"@
+$hungId = [int]([regex]::Match($r.Out, "owner=(\d+)")).Groups[1].Value
+$sw.Restart()
+$null = Invoke-Case "Wait-FrontendBuildOwner -TimeoutSeconds 2"
+$hungAlive = $null -ne (Get-Process -Id $hungId -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited })
+Check "hung build stopped after the timeout" ($hungId -gt 0 -and -not $hungAlive -and $sw.Elapsed.TotalSeconds -lt 30)
+if ($hungAlive) { Stop-Process -Id $hungId -Force -ErrorAction SilentlyContinue }
+
 Write-Host "== gate =="
 function Gate([hashtable]$Env, [string]$Extra = "") {
     $saved = @{}

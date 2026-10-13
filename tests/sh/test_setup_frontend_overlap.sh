@@ -250,6 +250,14 @@ if [ "$waited" -le 10 ]; then ok "stopped waiting once the owner cleared its mar
 kill "$owner" 2>/dev/null; wait "$owner" 2>/dev/null
 rm -f "$MARK"
 
+echo "== a background build still alive after the wait is stopped, not shared =="
+python3 -c 'import subprocess as s; print(s.Popen(["sleep", "120"], start_new_session=True, stdout=s.DEVNULL, stderr=s.DEVNULL).pid)' > "$WORK/hung"
+hung=$(cat "$WORK/hung")
+ps -o pid= -o lstart= -p "$hung" | sed 's/^ *//' > "$MARK"
+run_case '_FRONTEND_OWNER_POLLS=3; _frontend_build_begin' >/dev/null
+if wait_gone "$hung" 10; then ok "hung build group stopped"; else bad "hung build $hung left running"; kill -KILL "$hung" 2>/dev/null; fi
+rm -f "$MARK"
+
 echo "== a zombie owner nobody reaps is not waited for =="
 python3 -c 'import os, sys, time
 pid = os.fork()

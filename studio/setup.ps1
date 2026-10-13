@@ -256,21 +256,33 @@ function Start-FrontendBuildBackground {
     return $true
 }
 
-# Wait (up to 10 min) for a build a killed setup left running (marker = id + start time).
+# Wait (up to 10 min, then stop it) for a build a killed setup left running (marker = id + start time).
 function Wait-FrontendBuildOwner {
+    param([int]$TimeoutSeconds = 600)
     try { $owner = @(([System.IO.File]::ReadAllText($FrontendBuildMark)).Trim() -split ' ') } catch { return }
     if ($owner.Count -ne 2) { return }
     $said = $false
-    $deadline = (Get-Date).AddMinutes(10)
-    while ((Get-Date) -lt $deadline) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
         try {
             $p = Get-Process -Id ([int]$owner[0]) -ErrorAction Stop
             # Within 1 s: .NET on Linux derives StartTime from boot time and drifts by microseconds.
             if ([Math]::Abs($p.StartTime.ToFileTimeUtc() - [long]$owner[1]) -gt 10000000) { return }
         } catch { return }
+        if ((Get-Date) -ge $deadline) { break }
         if (-not $said) { substep "waiting for an earlier frontend build in this checkout (pid $($owner[0]))..."; $said = $true }
         Start-Sleep -Seconds 1
     }
+    # Still alive after that: hung, so stop its tree rather than share node_modules and dist with it.
+    try {
+        $taskkill = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\taskkill.exe" } else { $null }
+        if ($taskkill -and (Test-Path -LiteralPath $taskkill)) {
+            & $taskkill /T /F /PID $p.Id *> $null
+        } else {
+            try { $p.Kill($true) } catch { $p.Kill() }
+        }
+        [void]$p.WaitForExit(10000)
+    } catch { }
 }
 
 function Restore-FrontendBuildGitignores {
