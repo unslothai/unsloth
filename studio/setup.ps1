@@ -196,6 +196,8 @@ function Exit-SetupFailure {
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
+    # A rerun right after this must not find the old frontend build still writing (#8818).
+    if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }
     if (-not $NoTauriMarker -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
         (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
@@ -203,6 +205,119 @@ function Exit-SetupFailure {
         [Console]::Out.Flush()
     }
     exit $Code
+}
+
+# ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
+$script:FrontendBuildProc = $null
+$script:FrontendBuildFiles = @()
+$script:FrontendBuildHidden = @()
+
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB, so ask for 4 logical CPUs and 12 GiB usable; a failing probe keeps the serial path.
+function Test-FrontendBuildInBackground {
+    if (@("1", "true") -contains $env:UNSLOTH_STUDIO_SERIAL_SETUP) { return $false }
+    if ($script:UnslothVerbose) { return $false }
+    if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    try {
+        if ([Environment]::ProcessorCount -lt 4) { return $false }
+        return ([long](Get-UsableMemoryMb) -ge 12288)
+    } catch { return $false }
+}
+
+# Start `npm run build` with its output in files and stdin on an empty file (a Ctrl-C must not
+# leave cmd.exe asking "Terminate batch job"). $false when it could not start: build serially.
+function Start-FrontendBuildBackground {
+    param(
+        [string]$WorkingDirectory,
+        [object[]]$HiddenGitignores = @(),
+        [string]$FilePath = $env:ComSpec,
+        [string[]]$ArgumentList = @("/d", "/c", "npm run build")
+    )
+    try {
+        $files = @((New-UnslothTemporaryFile).FullName, (New-UnslothTemporaryFile).FullName, (New-UnslothTemporaryFile).FullName)
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory `
+            -NoNewWindow -PassThru -RedirectStandardOutput $files[0] -RedirectStandardError $files[1] `
+            -RedirectStandardInput $files[2] -ErrorAction Stop
+        # Windows PowerShell only reports ExitCode later if the handle was taken now.
+        $null = $proc.Handle
+    } catch {
+        return $false
+    }
+    $script:FrontendBuildProc = $proc
+    $script:FrontendBuildFiles = $files
+    $script:FrontendBuildHidden = @($HiddenGitignores)
+    return $true
+}
+
+function Restore-FrontendBuildGitignores {
+    foreach ($gi in $script:FrontendBuildHidden) {
+        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+    }
+    $script:FrontendBuildHidden = @()
+}
+
+function Remove-FrontendBuildFiles {
+    foreach ($f in $script:FrontendBuildFiles) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    $script:FrontendBuildFiles = @()
+}
+
+# Kill the build's whole process tree and put back what it hid; the build mark stays, so the
+# next run rebuilds.
+function Stop-FrontendBuildBackground {
+    $proc = $script:FrontendBuildProc
+    if (-not $proc) { return }
+    $script:FrontendBuildProc = $null
+    try {
+        if (-not $proc.HasExited) {
+            $taskkill = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\taskkill.exe" } else { $null }
+            if ($taskkill -and (Test-Path -LiteralPath $taskkill)) {
+                & $taskkill /T /F /PID $proc.Id *> $null
+            } else {
+                try { $proc.Kill($true) } catch { $proc.Kill() }
+            }
+            [void]$proc.WaitForExit(10000)
+        }
+    } catch { }
+    Restore-FrontendBuildGitignores
+    Remove-FrontendBuildFiles
+}
+
+# CSS check, the "built" line, and clearing the build mark: shared by the serial path and the join.
+function Complete-FrontendBuildOutput {
+    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
+    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
+    if ($MaxCssSize -lt 100000) {
+        step "frontend" "built (warning: CSS may be truncated)" "Yellow"
+    } else {
+        step "frontend" "built"
+    }
+    Remove-Item -LiteralPath $FrontendBuildMark -Force -ErrorAction SilentlyContinue
+}
+
+# Join the background build; with -IfDone, only when it has already exited.
+function Complete-FrontendBuildBackground {
+    param([switch]$IfDone)
+    $proc = $script:FrontendBuildProc
+    if (-not $proc) { return }
+    if ($IfDone -and -not $proc.HasExited) { return }
+    if (-not $proc.HasExited) { substep "waiting for the frontend build..." }
+    $proc.WaitForExit()
+    $buildExit = $proc.ExitCode
+    $script:FrontendBuildProc = $null
+    $output = ""
+    foreach ($f in $script:FrontendBuildFiles[0..1]) {
+        $text = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+        if ($text) { $output += $text }
+    }
+    Restore-FrontendBuildGitignores
+    Remove-FrontendBuildFiles
+    if ($buildExit -ne 0) {
+        if ($output) { Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red }
+        Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
+        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
+    }
+    Complete-FrontendBuildOutput
 }
 
 function Test-SetupScriptReplaced {
@@ -276,6 +391,8 @@ function Get-SetupHostInterpreterInVenv {
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+$FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
@@ -5774,11 +5891,14 @@ if ($SkipFrontend) {
             Where-Object { $_.Name -ne "bun.lock" -and $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
-    if (-not $NewerFile) {
+    if ($NewerFile) {
+        substep "Frontend source changed since last build -- rebuilding..." "Yellow"
+    } elseif (Test-Path -LiteralPath $FrontendBuildMark) {
+        # An earlier build that never finished (killed, failed) left its mark: redo it.
+        substep "Previous frontend build did not finish -- rebuilding..." "Yellow"
+    } else {
         $NeedFrontendBuild = $false
         step "frontend" "up to date"
-    } else {
-        substep "Frontend source changed since last build -- rebuilding..." "Yellow"
     }
 }
 
@@ -5908,6 +6028,8 @@ if ($NeedNodeForSetup) {
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-StudioLine ""
     substep "building frontend..."
+    # Cleared only once the build succeeds, so one that dies at any point is redone next run.
+    try { [System.IO.File]::WriteAllText($FrontendBuildMark, "$PID") } catch { }
 
     # Tailwind v4's oxide scanner respects parent .gitignore, and a venv's "*" hides the .tsx files.
     $HiddenGitignores = @()
@@ -5980,29 +6102,28 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
 
-    $buildExit = Invoke-SetupCommand { npm run build }
-    if ($buildExit -ne 0) {
+    if ((Test-FrontendBuildInBackground) -and
+        (Start-FrontendBuildBackground -WorkingDirectory $FrontendDir -HiddenGitignores $HiddenGitignores)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
-        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
-        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
-    }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_npm
-
-    # ── Restore hidden .gitignore files ──
-    foreach ($gi in $HiddenGitignores) {
-        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
-    }
-
-    # ── Validate CSS output ──
-    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
-    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
-    if ($MaxCssSize -lt 100000) {
-        step "frontend" "built (warning: CSS may be truncated)" "Yellow"
     } else {
-        step "frontend" "built"
+        $buildExit = Invoke-SetupCommand { npm run build }
+        if ($buildExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_npm
+            foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+            Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
+            Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
+        }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_npm
+
+        # ── Restore hidden .gitignore files ──
+        foreach ($gi in $HiddenGitignores) {
+            Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+        }
+
+        Complete-FrontendBuildOutput
     }
 }
 
@@ -9403,11 +9524,13 @@ if ($stackExit -ne 0) {
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
+Complete-FrontendBuildBackground -IfDone
 
 # ── Finish with the setup script this update installed ──
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
+    Complete-FrontendBuildBackground
     step "setup" "the update replaced this setup script; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
@@ -10392,6 +10515,8 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
 if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if ($NeedLlamaSourceBuild) { Complete-FrontendBuildBackground }
 
 # Asked before Phase 3.5: OpenSSL is a system install too.
 $script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
@@ -11098,6 +11223,8 @@ if (-not $llamaCppIsLink -and (
     )) {
     Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }
+
+Complete-FrontendBuildBackground
 
 # ─────────────────────────────────────────────
 # Footer
