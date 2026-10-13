@@ -230,6 +230,22 @@ test("an open backdrop reports its tone, and a plain one none", (t) => {
   assert.equal(getViewportBackdropTone(), null);
 });
 
+test("a strong backdrop stacked over a plain one still reports its tone", (t) => {
+  reset();
+  children.push(
+    viewportBackdrop("open"),
+    new FakeElement({
+      "data-slot": "dialog-overlay",
+      "data-viewport-backdrop": "true",
+      "data-viewport-backdrop-tone": "strong",
+      "data-state": "open",
+    }),
+  );
+  t.after(subscribeViewportBackdrop(() => undefined));
+  assert.equal(getViewportBackdropOpen(), true);
+  assert.equal(getViewportBackdropTone(), "strong");
+});
+
 test("both observers go when the last listener goes", (t) => {
   reset();
   const first = subscribeViewportBackdrop(() => undefined);

@@ -23,8 +23,8 @@ function readViewportBackdrop(): void {
       child.getAttribute("data-state") === "open"
     ) {
       next = true;
-      tone = child.getAttribute("data-viewport-backdrop-tone");
-      break;
+      // Stacked popups: any tone wins over none, so Settings over a dialog still darkens the titlebar.
+      tone = child.getAttribute("data-viewport-backdrop-tone") ?? tone;
     }
   }
   if (next === backdropOpen && tone === backdropTone) return;
