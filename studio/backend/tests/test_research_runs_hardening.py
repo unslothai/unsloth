@@ -221,6 +221,10 @@ def test_sanitize_query_redacts_every_auth_param_after_an_authorization_scheme()
         f'Authorization: Digest username="bob", realm="api", nonce="{nonce}", uri="/x", response="{digest}"',
         "Authorization: AWS4-HMAC-SHA256 Credential=AKIA/20261013/us-east-1/s3/aws4_request, "
         f"SignedHeaders=host;x-amz-date, Signature={digest}{nonce}",
+        "Authorization: Digest username*=UTF-8''J%C3%A4ger, realm=\"api\", "
+        f'nonce="{nonce}", response="{digest}"',
+        f'Authorization: Digest username="a\\"b", realm="api", nonce="{nonce}", response="{digest}"',
+        f"Authorization: SCRAM-SHA-256 data={digest}{nonce}",
     ):
         cleaned = _sanitize_public_query(f"why does {header} get a 401")
         assert nonce not in cleaned and digest not in cleaned, header
@@ -229,7 +233,11 @@ def test_sanitize_query_redacts_every_auth_param_after_an_authorization_scheme()
 
 def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential():
     secret = "9f8e7d6c5b4a" + "39281706f5e4d3c2b1a0"
-    for text in (f"password: basic\ntoken: {secret}\nwhy", f"password: basic token: {secret} why"):
+    for text in (
+        f"password: basic\ntoken: {secret}\nwhy",
+        f"password: basic token: {secret} why",
+        f"password: basic api key: {secret} why",
+    ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text
         assert "why" in cleaned, text

@@ -27,13 +27,20 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # An unescaped copy could move the synthesis boundary and truncate the report; spelled out to avoid
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
-_QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
+_CREDENTIAL_LABEL = r"""api[\s_-]?key|access[\s_-]?(?:key|token)
     |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
-    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
-    (?:(?:aws4-hmac-sha256|bearer|basic|digest|dpop|negotiate|ntlm|token)[ \t]+(?![\w-]+[ \t]*:)
-    (?:[\w-]+[ \t]*=[ \t]*(?:"[^"]*"|[^\s,"]+)(?:[ \t]*,[ \t]*[\w-]+[ \t]*=[ \t]*(?:"[^"]*"|[^\s,"]+))*
-    |"[^"]*"|'[^']*'|[^\s,;]+)
+    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token"""
+# RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
+_AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
+_AUTH_PARAM = rf"""{_AUTH_TOKEN}[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|[^\s,"]+)"""
+_AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
+# Never step over a following label: it may carry its own credential.
+_NOT_A_LABEL = rf"(?!(?:{_CREDENTIAL_LABEL})[ \t]*[:=]|[\w-]+[ \t]*:)"
+_QUERY_CREDENTIAL = re.compile(
+    rf"""(?ix)(?<![A-Za-z0-9])(?:{_CREDENTIAL_LABEL})\s*[:=]\s*
+    (?:(?:aws4-hmac-sha256|bearer|basic|digest|dpop|negotiate|ntlm|token)[ \t]+{_NOT_A_LABEL}
+    (?:{_AUTH_PARAMS}|"[^"]*"|'[^']*'|[^\s,;]+)
+    |{_AUTH_TOKEN}[ \t]+{_NOT_A_LABEL}{_AUTH_PARAMS}
     |"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
 _QUERY_NAMED_ASSIGNMENT = re.compile(
