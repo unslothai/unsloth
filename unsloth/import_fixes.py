@@ -5086,11 +5086,9 @@ _VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtra
 
 
 def fix_transformers_voxtral_realtime_inplace_audio_add():
-    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`. With input gradients on
-    (gradient checkpointing, every Unsloth LoRA run) the embedding output is a leaf that requires
-    grad, so the first training step raises "a leaf Variable that requires grad is being used in an
-    in-place operation" (#3013; still in transformers 5.19). Hand forward a non-leaf copy instead.
-    Lazy: patches only once transformers imported the module, so `import unsloth` never pays for it."""
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
     cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
     if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
         return
