@@ -1690,16 +1690,19 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         own[first] = f"{own[first]}, {value}" if first in own else value
     scheme, host, port = origin
     default_port = 443 if scheme == "https" else 80
+    serialized_origin = f"{scheme}://" + (f"[{host}]" if ":" in host else host)
+    serialized_origin += "" if port == default_port else f":{port}"
+    # Typed addresses can keep non-ASCII text, which no header can carry; a browser sends it encoded.
+    page = urlsplit(request.page)
+    path = (page.path or "/") + (f"?{page.query}" if page.query else "")
     # What a browser adds to a same-origin request: Referer (the default policy keeps the whole
     # address), fetch metadata, and Origin on anything but GET and HEAD.
     added = {
-        "Referer": request.page.split("#", 1)[0],
+        "Referer": serialized_origin + quote(path, safe = ":/?#[]@!$&'()*+,;=%~"),
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
-    serialized_origin = f"{scheme}://" + (f"[{host}]" if ":" in host else host)
-    serialized_origin += "" if port == default_port else f":{port}"
     if method not in ("GET", "HEAD"):
         added["Origin"] = serialized_origin
     if "accept" not in named:

@@ -148,6 +148,26 @@ def test_a_put_carries_its_body_type_and_origin(monkeypatch):
     assert hop["headers"]["content-type"] == "application/json"
 
 
+@pytest.mark.parametrize(
+    "page, referer",
+    [
+        (
+            "https://site.test/models?note=日本#top",
+            "https://site.test/models?note=%E6%97%A5%E6%9C%AC",
+        ),
+        ("https://пример.рф/вики", "https://xn--e1afmkfd.xn--p1ai/%D0%B2%D0%B8%D0%BA%D0%B8"),
+    ],
+)
+def test_a_typed_non_ascii_address_is_sent_encoded_as_the_referer(monkeypatch, page, referer):
+    host = urlsplit(referer).hostname
+    sent = _serve(monkeypatch, {f"{host}/api": (200, b"ok", {})})
+    browser_mod._page_request(
+        browser_mod.BrowserPageRequest(page = page, url = f"https://{host}/api"),
+        threading.Event(),
+    )
+    assert sent[0]["headers"]["referer"] == referer
+
+
 def test_an_ipv6_pages_origin_is_bracketed(monkeypatch):
     sent = _serve(monkeypatch, {"[2606:4700:4700::1111]:8443/api": (200, b"ok", {})})
     browser_mod._page_request(
