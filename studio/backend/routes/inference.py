@@ -13252,6 +13252,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _dflash_drafter_breaks_on_images,
             _extra_args_device,
             _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
@@ -13346,6 +13347,17 @@ def _estimate_gguf_required_gb(
                         _auto_dflash = False
                 except Exception:
                     pass
+        # Mirrors load_model's #13511 rule: Auto skips a NeoX DFlash drafter on an M-RoPE vision load.
+        if _auto_dflash and not disable_vision and not extra_args_disable_mmproj(llama_extra_args):
+            _vd_mmproj = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"}) or getattr(
+                config, "gguf_mmproj_file", None
+            )
+            if _vd_mmproj and Path(_vd_mmproj).is_file():
+                _auto_dflash = not _dflash_drafter_breaks_on_images(
+                    getattr(config, "gguf_file", None),
+                    getattr(config, "gguf_dflash_file", None),
+                    str(_vd_mmproj),
+                )
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
