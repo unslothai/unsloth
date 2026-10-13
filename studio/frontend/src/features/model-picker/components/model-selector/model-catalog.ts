@@ -479,6 +479,15 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
 ];
 
+// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames, Diffusers pack (the single file
+// assembles the same components). Host RAM is the server's peak RSS plus the Gemma 4 encoder worker's, which runs
+// on the CPU in both tiers. 24 GiB: int8 DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host.
+// 48 GiB: int8 DiT resident, encoder streamed, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
+  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true },
+  { gpuGb: 48, systemRamGb: 48 },
+];
+
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "MiniMaxAI/MiniMax-H3",
@@ -551,12 +560,17 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     scope: "video",
     capabilities: { audio: true },
     artifacts: [
-      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, { label: "BF16 - Diffusers" }),
+      // Both repos are gated on the Hub (license + token).
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, {
+        label: "BF16 - Diffusers",
+        gated: true,
+        offloadFitTiers: LTX25_OFFLOAD_TIERS,
+      }),
       bf16Single(
         "Lightricks/LTX-2.5",
         "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
         75,
-        { label: "BF16 - Single file" },
+        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_OFFLOAD_TIERS },
       ),
     ],
   },

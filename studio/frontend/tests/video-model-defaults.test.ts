@@ -80,6 +80,17 @@ test("the other families keep their recipes", () => {
     ["someone/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
     ["someone/LTX-2.5/ltx-2.5-dev-distilled.safetensors", 8, 1],
     ["someone/LTX-2.5/ltx-2.5-developer.safetensors", 8, 1],
+    // The compact spellings the backend's ltx_name_version accepts, and diffusers' pre-release "2.4".
+    ["someone/LTX25", 8, 1],
+    ["someone/ltx2.5", 8, 1],
+    ["someone/LTX-Video-2.5", 8, 1],
+    ["someone/LTXV-2.5-dev", 30, 3],
+    ["/models/ltx25_dev.safetensors", 30, 3],
+    ["someone/LTX-2.4-Diffusers", 8, 1],
+    // Neither the old releases nor a future one take the LTX-2.5 recipe.
+    ["someone/LTX2", 40, 4],
+    ["someone/ltx-2.3-dev", 40, 4],
+    ["someone/LTX-2.6", 40, 4],
     ["hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["someone/unknown-model", 8, 1],
     ["wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],

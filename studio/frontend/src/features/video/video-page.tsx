@@ -256,8 +256,6 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "distilled", steps: 8, guidance: 1 },
   // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
   { match: "fusionx", steps: 8, guidance: 1 },
-  // LTX-2.5: the distilled default (pack or file) runs 8 steps at guidance 1; defaultsFor routes a dev pick to 30 / 3.
-  { match: "ltx-2-5-", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
@@ -279,10 +277,24 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
-  // LTX-2.5 dev, as the backend's ltx25_is_dev reads the last path segment: "distill" wins, then a dev / full / sft
-  // token (transformer_full folds to "transformer-full-", which the full token covers).
-  if (id.includes("ltx-2-5-") && !/(^|-)distill/.test(name) && /(^|-)(dev|full|sft)-/.test(name)) {
-    return { steps: 30, guidance: 3 };
+  // LTX-2.5 (diffusers' pre-release "2.4" too), named the way the backend's ltx_name_version reads it, file before
+  // repo ("ltx-2.5", "LTX25", "ltx2.5", "LTX-Video-2.5"). The distilled default (pack or file) runs 8 steps at
+  // guidance 1; a dev pick, as ltx25_is_dev reads the last path segment ("distill" wins, then a dev / full / sft
+  // token; transformer_full folds to "transformer-full-"), runs 30 at guidance 3.
+  const ltxMinor = (text: string) => {
+    for (const found of text.toLowerCase().matchAll(
+      /(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))/g,
+    )) {
+      if (found[2] === undefined || Number(found[2]) >= 4) return Number(found[1] ?? found[2] ?? 0);
+    }
+    return undefined;
+  };
+  const leaf = repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  const minor = ltxMinor(leaf) ?? ltxMinor(repoId);
+  if (minor === 4 || minor === 5) {
+    return !/(^|-)distill/.test(name) && /(^|-)(dev|full|sft)-/.test(name)
+      ? { steps: 30, guidance: 3 }
+      : { steps: 8, guidance: 1 };
   }
   return (
     MODEL_DEFAULTS.find((d) =>
