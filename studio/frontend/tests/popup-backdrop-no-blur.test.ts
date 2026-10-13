@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const read = (path: string) => readFileSync(join(SRC, path), "utf8");
-const BLUR = /backdrop-blur-(?!none|0\b)|backdrop-filter:\s*blur/;
+const BLUR = /backdrop-blur(?!-(?:none|0)\b)|backdrop-filter:\s*blur/;
 
 function sources(dir: string): string[] {
   return readdirSync(join(SRC, dir)).flatMap((name) => {
