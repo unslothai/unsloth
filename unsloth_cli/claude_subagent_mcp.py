@@ -181,7 +181,9 @@ def run_local_agent(
         "--no-session-persistence",
         # The full tool set (~16k tokens) fills a small window; plan mode is no write barrier, so read-only gets no writer.
         "--tools",
-        "Read,Grep,Glob" if read_only else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
+        "Read,Grep,Glob,ExitPlanMode"
+        if read_only
+        else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
         "--append-system-prompt",
         _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
         f"Task: {task}",

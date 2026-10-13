@@ -347,7 +347,7 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
-    assert command[command.index("--tools") + 1] == "Read,Grep,Glob"
+    assert command[command.index("--tools") + 1] == "Read,Grep,Glob,ExitPlanMode"
     # No Bash: plan mode routes it through a classifier served by this same local model, so a
     # "read-only" child with Bash can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
