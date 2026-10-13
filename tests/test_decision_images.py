@@ -56,7 +56,6 @@ def test_image_records_batch_and_permute_without_losing_order(processor, row):
     ]
     for item, record in zip(items, encoded):
         assert item["input_ids"] == list(record.input_ids)
-        # Items keep no pixels: the collator makes them again per batch.
         assert "pixel_values" not in (item["record"].media or {})
     expected = collate_records(encoded, processor.tokenizer.pad_token_id, torch.device("cpu"))
     collator = decision.ClefDataCollator(processor.tokenizer.pad_token_id, tokenizer = processor)

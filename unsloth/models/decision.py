@@ -1772,8 +1772,7 @@ class FastDecisionModel:
         Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
         "answer" (the option, True / False for noul, the level number for score) and
         "probabilities" over every option. Works for Laya, Clef and converted language models.
-        Clef accepts ordered images when tokenizer is the multimodal processor returned by
-        from_pretrained. Training rows can carry the same ordered list in their images field."""
+        A Clef also reads ordered `images` when tokenizer is the processor from from_pretrained."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state = _parsed(state)
