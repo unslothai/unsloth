@@ -1501,7 +1501,6 @@ export function ImagesPage({
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
-  // Per model, like the rest of the recipe: a model switch brings back what was last used with it.
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
   // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
   const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
@@ -2498,7 +2497,6 @@ export function ImagesPage({
     if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
     setGuidance(image.guidance);
-    // A recipe without one ran on the shipped scheduler; a choice this model lacks falls back to it.
     const restoredChoice = {
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,

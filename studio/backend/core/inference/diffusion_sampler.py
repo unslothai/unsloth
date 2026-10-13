@@ -30,7 +30,6 @@ SAMPLERS: dict[str, tuple[str, Optional[str], dict[str, Any]]] = {
     ),
 }
 
-# id -> (label, sigma flag set True; None = every sigma flag off)
 SCHEDULE_TYPES: dict[str, tuple[str, Optional[str]]] = {
     AUTOMATIC_SCHEDULE: ("Automatic", None),
     "uniform": ("Uniform", None),
@@ -159,8 +158,7 @@ def build_scheduler(
     built = cls.from_config(resident.config, **overrides)
     set_begin_index = getattr(built, "set_begin_index", None)
     if callable(set_begin_index):
-        # Zero-SNR Karras grids repeat 999, so DPM++ without a begin index (SDXL ControlNet sets none) overruns
-        # its sigmas. img2img / inpaint set their own start after set_timesteps.
+        # Zero-SNR Karras grids repeat 999; without a begin index (SDXL ControlNet sets none) DPM++ overruns.
         set_timesteps = built.set_timesteps
 
         @wraps(set_timesteps)
@@ -189,7 +187,6 @@ def _safetensors_top_level_keys(path: str) -> frozenset[str]:
 
     with open(path, "rb") as fh:
         (size,) = struct.unpack("<Q", fh.read(8))
-        # A header past 100 MB is not a safetensors file.
         if size <= 0 or size > 100_000_000:
             return frozenset()
         header = json.loads(fh.read(size))

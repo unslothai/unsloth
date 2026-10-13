@@ -36,7 +36,6 @@ export const DEFAULT_SAMPLER_CHOICE: SamplerChoice = {
   scheduleType: AUTOMATIC_SCHEDULE,
 };
 
-/** `choice` if the loaded model offers it, else the nearest that it does (shipped scheduler last). */
 export function normalizeSamplerChoice(
   options: SamplerOption[],
   choice: Partial<SamplerChoice> | null | undefined,
@@ -62,7 +61,6 @@ export function samplerRequestFields(
   };
 }
 
-/** "DPM++ 2M Karras" for the recipe panel; null when the image ran on the shipped scheduler. */
 export function samplerRecipeLabel(
   sampler: string | null | undefined,
   scheduleType: string | null | undefined,

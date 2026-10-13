@@ -47217,7 +47217,6 @@ async def generate_diffusion_image(
                         # From the engine, not the request: an omitted resolution resolves to the family default.
                         "reference_resolution": result.get("reference_resolution"),
                         "localized_edit": result.get("localized_edit"),
-                        # From the engine: what ran, with "automatic" resolved to the schedule it picked.
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
                         "created_at": created_at,

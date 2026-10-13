@@ -74,8 +74,7 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
-  // Samplers the loaded model can run, "default" first. Empty or absent = no choice (flow models,
-  // the native and MLX engines, an older backend).
+  // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.

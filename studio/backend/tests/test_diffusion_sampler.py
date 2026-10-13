@@ -46,7 +46,6 @@ def test_sdxl_offers_the_popular_samplers():
     options = {o["id"]: o["schedule_types"] for o in sampler_options(_sdxl())}
     assert list(options) == ["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"]
     assert options["dpmpp_2m"] == ["automatic", "uniform", "karras", "exponential"]
-    # EulerAncestralDiscreteScheduler has no sigma-schedule flags.
     assert options["euler_a"] == ["automatic", "uniform"]
 
 
@@ -119,7 +118,6 @@ def test_zero_snr_automatic_avoids_exponential():
     built, resolved = build_scheduler(vpred, "dpmpp_2m_sde", "automatic")
     assert resolved == "karras"
     assert built.config.use_karras_sigmas is True
-    # An explicit choice is honoured.
     assert build_scheduler(vpred, "dpmpp_2m_sde", "exponential")[1] == "exponential"
 
 
@@ -168,7 +166,6 @@ def test_vpred_ztsnr_markers(tmp_path):
     assert config.prediction_type == "v_prediction"
     assert config.rescale_betas_zero_snr is True
     assert config.timestep_spacing == "trailing"
-    # Idempotent: a second pass changes nothing.
     assert apply_checkpoint_prediction_type(pipe, path) is False
 
 
