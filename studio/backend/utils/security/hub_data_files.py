@@ -15,6 +15,7 @@ through a preview or a load. A Hub card may name relative paths and hf / http(s)
 import functools
 import importlib.abc
 import importlib.util
+import os
 import re
 import sys
 
@@ -28,9 +29,30 @@ _MARK = "_unsloth_hub_card_guard"
 _SNAPSHOT = re.compile(r"[\\/]datasets--[^\\/]+[\\/]snapshots[\\/]")
 
 
+def _hub_cache_roots() -> list[str]:
+    roots = [os.environ.get("HF_HUB_CACHE")]
+    try:
+        from huggingface_hub import constants
+        roots.append(constants.HF_HUB_CACHE)
+    except Exception:  # noqa: BLE001 - a root we cannot read is simply not one
+        pass
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        roots.append(active_hf_hub_cache())
+    except Exception:  # noqa: BLE001
+        pass
+    return [os.path.realpath(root) for root in roots if root]
+
+
 def _hub_base(base_path) -> bool:
     text = str(base_path or "")
-    return text.startswith("hf://") or bool(_SNAPSHOT.search(text + "/"))
+    if text.startswith("hf://"):
+        return True
+    # Spelling alone is not enough: an owner's own folder may be named like a snapshot.
+    if not _SNAPSHOT.search(text + "/"):
+        return False
+    real = os.path.realpath(text)
+    return any(real.startswith(root.rstrip(os.sep) + os.sep) for root in _hub_cache_roots())
 
 
 def _stays_on_the_hub(value, *, urls: bool) -> bool:
@@ -42,7 +64,8 @@ def _stays_on_the_hub(value, *, urls: bool) -> bool:
         return False
     protocol, _ = split_protocol(text)
     if protocol is None:
-        return is_relative_path(text)
+        # Relative, but ".." would climb out of a cached snapshot onto the host.
+        return is_relative_path(text) and ".." not in re.split(r"[\\/]", text)
     return urls and protocol in _HUB_URL_PROTOCOLS
 
 

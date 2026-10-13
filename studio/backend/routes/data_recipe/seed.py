@@ -1109,11 +1109,13 @@ def _require_own_seed_source(dataset_name: str) -> None:
         part not in {"", ".", ".."} and all(c.isalnum() or c in "-_." for c in part)
         for part in parts
     )
-    try:
-        local = Path(dataset_name).expanduser().exists()
-    except (ValueError, RuntimeError, OSError):
-        local = True
-    if not hub_id or local:
+    if hub_id:
+        # Only a well-formed id reaches the filesystem: a UNC name would start SMB auth on Windows.
+        try:
+            hub_id = not Path(dataset_name).expanduser().exists()
+        except (ValueError, RuntimeError, OSError):
+            hub_id = False
+    if not hub_id:
         raise HTTPException(
             status_code = 403,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",

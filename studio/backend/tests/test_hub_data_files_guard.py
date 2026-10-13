@@ -49,6 +49,11 @@ show("DATA_DIR", lambda: card(owner))
 # A cached Hub snapshot is loaded as a local folder; its card is still the Hub's.
 snapshot = sys.argv[3]
 show("SNAPSHOT", lambda: datasets.data_files.resolve_pattern(secret, base_path = snapshot))
+climb = "../" * (snapshot.count("/") + 2) + secret.lstrip("/")
+show("TRAVERSAL", lambda: datasets.data_files.resolve_pattern(climb, base_path = snapshot))
+# An owner's own folder merely named like a snapshot, outside the Hub cache, stays local.
+lookalike = sys.argv[4]
+show("LOOKALIKE", lambda: datasets.data_files.resolve_pattern(secret, base_path = lookalike))
 own_rows = datasets.data_files.resolve_pattern("train.csv", base_path = snapshot)
 print("SNAPSHOT_OWN", "read" if own_rows and own_rows[0].endswith("train.csv") else "other")
 # A local dataset may still name its own files by absolute path.
@@ -60,7 +65,15 @@ print("DOUBLE", getattr(wrapped, "_unsloth_hub_card_guard", False))
 print("FINDERS", sum(isinstance(f, hub_data_files._Finder) for f in sys.meta_path))
 """
 
-HUB_ROUTES = ("ABSOLUTE", "FILE_URL", "LOCAL_URL", "CHAINED", "DATA_DIR", "SNAPSHOT")
+HUB_ROUTES = (
+    "ABSOLUTE",
+    "FILE_URL",
+    "LOCAL_URL",
+    "CHAINED",
+    "DATA_DIR",
+    "SNAPSHOT",
+    "TRAVERSAL",
+)
 
 
 def _probe(tmp_path, before, after):
@@ -69,15 +82,22 @@ def _probe(tmp_path, before, after):
     (owner / "private.csv").write_text("secret\n1\n")
     snapshot = tmp_path / "hub" / "datasets--org--repo" / "snapshots" / "abc123"
     snapshot.mkdir(parents = True)
+    lookalike = tmp_path / "mine" / "datasets--archive" / "snapshots" / "current"
+    lookalike.mkdir(parents = True)
     (snapshot / "train.csv").write_text("a\n1\n")
     code = textwrap.dedent(PROBE.format(before = before, after = after))
     out = subprocess.run(
-        [sys.executable, "-c", code, str(owner), str(tmp_path), str(snapshot)],
+        [sys.executable, "-c", code, str(owner), str(tmp_path), str(snapshot), str(lookalike)],
         cwd = BACKEND,
         capture_output = True,
         text = True,
         timeout = 300,
-        env = {"PYTHONPATH": str(BACKEND), "HF_HUB_OFFLINE": "1", "PATH": "/usr/bin:/bin"},
+        env = {
+            "PYTHONPATH": str(BACKEND),
+            "HF_HUB_OFFLINE": "1",
+            "HF_HUB_CACHE": str(tmp_path / "hub"),
+            "PATH": "/usr/bin:/bin",
+        },
     )
     assert out.returncode == 0, out.stderr
     return dict(line.split(" ", 1) for line in out.stdout.splitlines() if " " in line)
@@ -98,6 +118,7 @@ def test_a_hub_card_cannot_reach_a_host_file(tmp_path, before, after):
     assert {route: seen[route] for route in HUB_ROUTES} == dict.fromkeys(HUB_ROUTES, "refused")
     assert seen["LOCAL_DATASET"] == "read"
     assert seen["SNAPSHOT_OWN"] == "read"
+    assert seen["LOOKALIKE"] == "read"
     assert seen["DOUBLE"] == "False"
     assert seen["FINDERS"] == "1"
 

@@ -1504,6 +1504,19 @@ def test_a_managed_account_inspects_hub_ids_only(monkeypatch, tmp_path, name):
     assert read
 
 
+@pytest.mark.parametrize("name", ["//attacker/share", "\\\\attacker\\share", "org/repo/extra"])
+def test_a_malformed_id_never_reaches_the_filesystem(monkeypatch, tmp_path, name):
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
+    probed = []
+    monkeypatch.setattr(Path, "exists", lambda self: probed.append(str(self)) or False)
+
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code in (400, 403)
+    assert probed == [] and read == []
+
+
 def test_the_owner_still_inspects_a_local_folder(monkeypatch, tmp_path):
     _owner_rows, own, _linked = _seed_folders(tmp_path)
     inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = False)
