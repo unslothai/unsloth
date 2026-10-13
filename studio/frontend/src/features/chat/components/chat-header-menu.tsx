@@ -41,12 +41,14 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import type { ReactNode } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
@@ -56,6 +58,7 @@ import {
   chatExportOptions,
   exportConversationByFormat,
   getSidebarItemThreadIds,
+  regenerateChatTitleWithToast,
 } from "./chat-row-menu";
 import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
@@ -152,6 +155,10 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
+  // Off while any of its threads generates, as in the Library.
+  const generating = useChatRuntimeStore((s) =>
+    getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
+  );
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
     try {
@@ -168,6 +175,13 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
     <>
       <Item icon={Edit03Icon} onSelect={menu.rename} shortcut="renameChat">
         {t("common.rename")}
+      </Item>
+      <Item
+        icon={Refresh01Icon}
+        onSelect={() => void regenerateChatTitleWithToast(menu.item)}
+        disabled={generating}
+      >
+        {t("library.menu.regenerateTitle")}
       </Item>
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
