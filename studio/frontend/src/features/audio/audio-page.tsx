@@ -455,8 +455,7 @@ export function AudioPage({
     });
   }, [active, refreshStatus, refreshSttStatus]);
 
-  // A delete or a finished download changes which speech-to-text models are on disk, and the
-  // Transcribe page lists them On Device from the STT status, not the picker's inventory.
+  // Transcribe lists On Device from the STT status, not the picker inventory: refresh it on cache changes.
   const inventoryVersion = useInventoryVersion();
   const seenInventoryVersion = useRef(inventoryVersion);
   useEffect(() => {

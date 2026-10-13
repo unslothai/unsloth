@@ -2610,10 +2610,8 @@ def cached_folder_target(
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
     if wanted and model is not None and _on_disk_quant_named(model.variants, wanted, ref.folder):
-        # An ambiguous match on disk is a refusal, not a cue to act on some other download's state.
         return AUDIO_CPP_REPO, []
-    # A quant cancelled before any file finished has only its download state (manifest or cancel
-    # marker, plus .incomplete blobs); the variant delete clears that too.
+    # A quant cancelled before any file finished has only download state; the variant delete clears it.
     partial = _folder_state_keys(ref.folder)
     if wanted:
         partial = [k for k in partial if _state_key_named(k, wanted, ref.folder)]
@@ -2689,7 +2687,6 @@ def _variants_matching(
         [v for v in variants if v.main_file.lower() in (low, f"{folder}/{low}".lower())],
         [v for v in variants if v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")],
     ):
-        # A file name two directories share names neither.
         if len(exact) == 1:
             return exact, False
         if exact:
@@ -2723,14 +2720,12 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     if ref is None or not ref.folder or not ref.repo_id or ":" in ref.folder:
         return None
     snapshots = [s for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
-    # The snapshot holding a cached variant's weights, not a newer one that kept only metadata,
-    # an adapter or a partial file.
+    # The snapshot holding a variant's weights, not a newer metadata-only or partial one.
     from core.inference.audio_cpp_files import _file_complete
 
     model = resolve(ref.id, network = False)
     variants = [v for v in (model.variants if model is not None else ()) if v.files]
     for snapshot in snapshots:
-        # Every file of some variant, voice embeddings included, as the On Device listing requires.
         if any(all(_file_complete(snapshot / f.path, f.size) for f in v.files) for v in variants):
             return snapshot / ref.folder
     for snapshot in snapshots:

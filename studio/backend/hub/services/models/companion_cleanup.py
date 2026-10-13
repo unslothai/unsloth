@@ -92,7 +92,6 @@ def _variant_bytes(repo_info, variant: str) -> int:
     from hub.services.models.deletion import _audio_cpp_package_scope
 
     wanted = _variant_keys(repo_info, variant)
-    # The same files the delete removes: an audio.cpp variant's own embeddings and configs too.
     own, protected = _audio_cpp_package_scope(repo_info, variant)
 
     def _matches(name: str) -> bool:

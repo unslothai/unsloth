@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The backend lists each cached folder of the audio.cpp umbrella repo as its own row, next to
-// the one umbrella row. Only the Audio pages that offer a folder may list it; there it reads as
-// its folder name, sits with the Unsloth rows, links to its tree, and can be revealed or deleted.
+// Umbrella folder rows list only on Audio pages that offer them.
 
 import assert from "node:assert/strict";
 import test from "node:test";

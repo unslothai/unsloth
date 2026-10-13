@@ -139,7 +139,6 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(isAudioCppFolderId(AUDIO_CPP_REPO), false);
   assert.equal(isAudioCppFolderId(`${AUDIO_CPP_REPO}/`), false);
   assert.equal(isAudioCppFolderId("unslothai/Qwen3-ASR-0.6B-GGUF"), false);
-  // A folder lives under the umbrella repo's tree; any other id has no tree path.
   assert.equal(
     audioCppHubPath(`${AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF`),
     `${AUDIO_CPP_REPO}/tree/main/Qwen3-TTS-12Hz-0.6B-Base-GGUF`,
