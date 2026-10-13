@@ -13577,8 +13577,10 @@ _MCP_TOOL_SEARCH_SHARE = 0.10
 _MCP_TOOL_SEARCH_LIMIT = 5
 # Up to this many tools ranked against the user's message are listed up front, within their own share of the
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
-_MCP_TOOL_PRELOAD = 3
-_MCP_TOOL_PRELOAD_SHARE = 0.25
+_MCP_TOOL_PRELOAD = 5
+_MCP_TOOL_PRELOAD_SHARE = 0.33
+# Each tool the search tool names carries this much of its description, so the model can tell what to search for.
+_MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 # Deferred names the search tool lists, so the model knows what exists without paying for the schemas.
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
@@ -13617,15 +13619,16 @@ def set_mcp_listing_context_tokens(
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
 
 
-def _mcp_tool_search_spec(catalog: list[tuple[str, list[str]]]) -> dict:
-    """``catalog`` is (server display name, raw tool names) per server, in listing order."""
+def _mcp_tool_search_spec(catalog: list[tuple[str, list[tuple[str, str]]]]) -> dict:
+    """``catalog`` is (server display name, [(raw tool name, summary)]) per server, in listing order."""
     budget = _MCP_TOOL_SEARCH_MAX_NAMES
     groups = []
-    for display, names in catalog:
-        shown, budget = names[: max(budget, 0)], budget - len(names)
-        more = len(names) - len(shown)
-        listed = ", ".join(shown) + (f"{' and ' if shown else ''}{more} more" if more > 0 else "")
-        groups.append(f"{display}: {listed}")
+    for display, tools in catalog:
+        shown, budget = tools[: max(budget, 0)], budget - len(tools)
+        lines = [f"- {name}: {summary}" if summary else f"- {name}" for name, summary in shown]
+        if len(tools) > len(shown):
+            lines.append(f"- and {len(tools) - len(shown)} more")
+        groups.append(f"{display}:\n" + "\n".join(lines))
     return {
         "type": "function",
         "function": {
@@ -13634,7 +13637,7 @@ def _mcp_tool_search_spec(catalog: list[tuple[str, list[str]]]) -> dict:
                 "Find and load MCP tools. The connected MCP servers have the tools named below; one that is "
                 "not in your tool list must be loaded with this tool before you call it. Search with keywords "
                 "for the action (or the tool's exact name); the best matches are loaded and you can then call "
-                "them with their full parameters. Tools: " + "; ".join(groups)
+                "them with their full parameters. Tools:\n" + "\n".join(groups)
             ),
             "parameters": {
                 "type": "object",
@@ -13662,13 +13665,13 @@ def _mcp_input_schema(tool: dict) -> dict:
     )
 
 
-def _mcp_summary(description: str) -> str:
+def _mcp_summary(description: str, limit: int = _MCP_SUMMARY_CHARS) -> str:
     text = " ".join((description or "").split()).lstrip("# ")
     match = re.match(r"(.+?[.!?])(?:\s|$)", text)
     if match:
         text = match.group(1)
-    if len(text) > _MCP_SUMMARY_CHARS:
-        text = text[: _MCP_SUMMARY_CHARS - 3].rstrip() + "..."
+    if len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
     return text
 
 
@@ -13808,9 +13811,20 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     pinned = [_MCP_LISTING_FORCED.get()]
     catalog = []
     for server, payload, server_specs in listed:
+        display = server.get("display_name") or server["id"]
         names = [_mcp_raw_tool_name(spec["function"]["name"]) for spec in server_specs]
+        tools_listed = [
+            (
+                name,
+                _mcp_summary(
+                    spec["function"]["description"].removeprefix(f"[{display}]"),
+                    _MCP_TOOL_SEARCH_SUMMARY_CHARS,
+                ),
+            )
+            for name, spec in zip(names, server_specs)
+        ]
         if names:
-            catalog.append((server.get("display_name") or server["id"], names))
+            catalog.append((display, tools_listed))
         tools = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
         pinned += [
             spec["function"]["name"]

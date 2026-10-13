@@ -2284,7 +2284,9 @@ def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, l
     listing_window(1_000)
     specs = tools_mod.cached_mcp_tools()[0]
     assert _names(specs) == ["mcp_tool_search"]
-    assert _search_spec(specs)["function"]["description"].endswith("Tools: A: ping, query")
+    assert _search_spec(specs)["function"]["description"].endswith(
+        "Tools:\nA:\n- ping: Ping.\n- query: Query rows."
+    )
 
 
 def test_mcp_listing_defers_every_tool_past_its_share(tmp_path, monkeypatch, listing_window):
@@ -2303,7 +2305,7 @@ def test_mcp_listing_defers_every_tool_past_its_share(tmp_path, monkeypatch, lis
     specs = tools_mod.cached_mcp_tools()[0]
     assert _names(specs) == ["mcp_tool_search"]
     assert _search_spec(specs)["function"]["description"].endswith(
-        "Tools: A: ping, query, huge; B: echo"
+        "Tools:\nA:\n- ping: Ping.\n- query: Query rows.\n- huge: Query rows.\nB:\n- echo"
     )
     listing_window(int(full_tokens * 1.1 / tools_mod._MCP_TOOL_SEARCH_SHARE))
     assert tools_mod.cached_mcp_tools()[0] == full
@@ -2313,8 +2315,12 @@ def test_mcp_tool_search_lists_a_bounded_number_of_names(monkeypatch):
     from core.inference import tools as tools_mod
 
     monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_MAX_NAMES", 2)
-    spec = tools_mod._mcp_tool_search_spec([("A", ["a", "b", "c"]), ("B", ["d"])])
-    assert spec["function"]["description"].endswith("Tools: A: a, b and 1 more; B: 1 more")
+    spec = tools_mod._mcp_tool_search_spec(
+        [("A", [("a", "Does a."), ("b", ""), ("c", "")]), ("B", [("d", "")])]
+    )
+    assert spec["function"]["description"].endswith(
+        "Tools:\nA:\n- a: Does a.\n- b\n- and 1 more\nB:\n- and 1 more"
+    )
 
 
 def test_mcp_summary_caps_a_description_without_a_sentence_end():
@@ -2503,7 +2509,11 @@ def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
     big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
     _cache_server_tools(tmp_path, monkeypatch, big)
     cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
-    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: int(2.5 * cost / 0.25))
+    monkeypatch.setattr(
+        tools_mod,
+        "_window_context_tokens",
+        lambda: int(2.5 * cost / tools_mod._MCP_TOOL_PRELOAD_SHARE),
+    )
     found = tools_mod.mcp_tool_search_specs({"query": "query rows"})
     assert len(found) == 2
     # The best match loads even when it alone is over the room.
