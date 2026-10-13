@@ -2,6 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """RoPE drains the stream only for a model split over several devices, not on every multi-GPU host."""
 
+import gc
+import weakref
+
 import pytest
 import torch
 
@@ -18,8 +21,21 @@ class _FakeQ:
         return self.index
 
 
+class _Model:
+    def __init__(self, device_map):
+        self.hf_device_map = device_map
+
+
 @pytest.fixture
-def synced(monkeypatch):
+def current(monkeypatch):
+    # The current device of the process: a DDP rank sets it to its own index.
+    device = [0]
+    monkeypatch.setattr(RE, "_current_device", lambda: device[0], raising = False)
+    return device
+
+
+@pytest.fixture
+def synced(monkeypatch, current):
     calls = []
 
     class _Stream:
@@ -30,7 +46,7 @@ def synced(monkeypatch):
             calls.append(self.device.index)
 
     monkeypatch.setattr(RE, "torch_device_stream", _Stream)
-    monkeypatch.setattr(RE, "_ROPE_DEVICES", set(), raising = False)
+    monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
     monkeypatch.setattr(RE.Fast_RoPE_Embedding_QK, "apply", lambda Q, K, *a: (Q, K))
     monkeypatch.setattr(RE.Slow_RoPE_Embedding, "apply", lambda Q, *a: Q)
     return calls
@@ -42,9 +58,11 @@ def _rope(index):
 
 
 @pytest.mark.parametrize("index", [0, 3])
-def test_single_device_on_multi_gpu_host_never_syncs(monkeypatch, synced, index):
+def test_single_device_on_multi_gpu_host_never_syncs(monkeypatch, synced, current, index):
     # Single-GPU training (or one DDP rank) with several GPUs visible.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 8)
+    current[0] = index
+    assert not RE.register_split_model(_Model({"": index}))
     for _ in range(64):
         _rope(index)
     assert synced == []
@@ -60,6 +78,7 @@ def test_inplace_rope_single_device_never_syncs(monkeypatch, synced):
 
 def test_one_visible_device_never_syncs(monkeypatch, synced):
     monkeypatch.setattr(RE, "DEVICE_COUNT", 1)
+    assert not RE.register_split_model(_Model({"model.layers.0": 0, "model.layers.1": 1}))
     for _ in range(8):
         _rope(0)
         Q = _FakeQ(0)
@@ -67,25 +86,60 @@ def test_one_visible_device_never_syncs(monkeypatch, synced):
     assert synced == []
 
 
-def test_split_model_keeps_the_sync(monkeypatch, synced):
-    # Layers on cuda:0 then cuda:1 (device_map / pipeline split): once a second device shows up,
-    # every RoPE call drains its own device's stream, as before.
+def test_split_model_syncs_from_the_first_call(monkeypatch, synced):
+    # Layers on cuda:0 then cuda:1 (device_map split): registered at load, so the cuda:0 shard of the
+    # very first forward drains too, as on main.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    model = _Model({"model.embed_tokens": 0, "model.layers.0": "cuda:0", "model.layers.1": "1", "lm_head": "cpu"})
+    assert RE.register_split_model(model)
     layers = [0, 0, 1, 1]
     for _ in range(3):
         for index in layers:
             _rope(index)
-    assert synced == [1, 1] + layers * 2
+    assert synced == layers * 3
     Q = _FakeQ(0)
     RE.inplace_rope_embedding(Q, Q, None, None, None)
     assert synced[-1] == 0
+
+
+def test_independent_single_device_models_stay_unsynced(monkeypatch, synced, current):
+    # Two single-device models on different GPUs of one process, each run with its device current.
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    a, b = _Model({"": 0}), _Model({"": "cuda:1"})
+    assert not RE.register_split_model(a) and not RE.register_split_model(b)
+    for _ in range(4):
+        for index in (0, 1):
+            current[0] = index
+            _rope(index)
+    assert synced == []
+
+
+def test_freed_split_model_stops_syncing(monkeypatch, synced):
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    model = _Model({"model.layers.0": 0, "model.layers.1": 1})
+    assert RE.register_split_model(model)
+    _rope(0)
+    assert synced == [0]
+    del model
+    gc.collect()
+    _rope(0)
+    assert synced == [0]
+
+
+def test_unregistered_split_syncs_off_current_device(monkeypatch, synced):
+    # A model the user dispatched without the Unsloth loader: the shard off the current device drains.
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    for index in [0, 0, 1, 1]:
+        _rope(index)
+    assert synced == [1, 1]
 
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "Triton RoPE kernel needs CUDA")
 @pytest.mark.parametrize("use_indices", [False, True])
 def test_real_kernel_single_device_no_sync_same_result(monkeypatch, use_indices):
-    monkeypatch.setattr(RE, "_ROPE_DEVICES", set(), raising = False)
+    monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
+    monkeypatch.setattr(RE, "_current_device", torch.cuda.current_device)
     count = [0]
     real = torch.cuda.Stream.synchronize
 

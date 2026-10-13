@@ -11,10 +11,11 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import functools
+import weakref
 import triton
 import triton.language as tl
 import torch
-from ..device_type import DEVICE_COUNT
+from ..device_type import DEVICE_COUNT, DEVICE_TYPE_TORCH
 from typing import Tuple
 from .utils import calculate_settings, long_indexing, torch_gpu_device, torch_device_stream
 from .rms_layernorm import (
@@ -396,19 +397,37 @@ if _TRACEABLE:
     _tag_compile_cache(__file__)
 
 
-# Accelerator indices RoPE has run on in this process. The stream drain after RoPE was added for models
-# split over several GPUs (device_map / pipeline, #3049, #3061). One model on one device of a multi-GPU
-# host, or one DDP rank, launches every kernel on that device's current stream, so it skips the drain.
-_ROPE_DEVICES = set()
+# Models whose device_map spans several accelerators, registered at load (`register_split_model`). The
+# stream drain after RoPE was added for such split models (#3049, #3061), so while one is alive every
+# RoPE call drains, including the first shard of the first forward. One model on one device of a
+# multi-GPU host, or one DDP rank, launches every kernel on that device's current stream and skips it.
+# Weak, so a freed split model stops costing the others.
+_SPLIT_MODELS = weakref.WeakSet()
+
+if DEVICE_COUNT > 1:
+    _current_device = getattr(torch, DEVICE_TYPE_TORCH).current_device
+else:
+    _current_device = None
+
+
+def register_split_model(model):
+    device_map = getattr(model, "hf_device_map", None)
+    if DEVICE_COUNT <= 1 or not isinstance(device_map, dict):
+        return False
+    from ..models.rl import _accelerator_indices
+
+    if len(_accelerator_indices(device_map)) < 2:
+        return False
+    _SPLIT_MODELS.add(model)
+    return True
 
 
 def _sync_if_split(Q):
     if DEVICE_COUNT <= 1:
         return
-    index = Q.get_device()
-    if index not in _ROPE_DEVICES:
-        _ROPE_DEVICES.add(index)
-    if len(_ROPE_DEVICES) > 1:
+    # A layer on another device than the current one is a split the loader did not see (a model the
+    # user dispatched): drain that call, as before.
+    if _SPLIT_MODELS or Q.get_device() != _current_device():
         torch_device_stream(Q.device).synchronize()
 
 
