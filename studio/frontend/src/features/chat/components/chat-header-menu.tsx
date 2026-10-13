@@ -155,7 +155,6 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
-  // Off while any of its threads generates, as in the Library.
   const generating = useChatRuntimeStore((s) =>
     getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
   );
