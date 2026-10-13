@@ -581,3 +581,39 @@ def test_cached_path_of_a_folder_finds_weights_with_an_uppercase_extension(hub):
     (newer / "Upper-GGUF").mkdir()
     (newer / "Upper-GGUF" / "README.md").write_text("card")
     assert acm.folder_snapshot_dir(f"{AUDIO_CPP_REPO}/Upper-GGUF") == older / "Upper-GGUF"
+
+
+def test_a_folder_delete_preview_keeps_shared_extras_a_downloading_sibling_needs(hub, monkeypatch):
+    from hub.services.models import companion_cleanup, deletion
+    from hub.utils import download_registry
+
+    _idle(monkeypatch)
+    snap = hub / SNAPSHOT
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
+    for quant in ("q8_0", "f16"):
+        rel = f"PocketTTS-GGUF/english/pocket-tts-english-{quant}.gguf"
+        _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+    voice = blobs / "voice-english"
+    voice.write_bytes(b"v" * 900)
+    path = snap / "PocketTTS-GGUF/english/embeddings/alba.safetensors"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    os.symlink(os.path.relpath(voice, path.parent), path)
+    acm.forget()
+    registry = download_registry.DownloadRegistry()
+    peer = "PocketTTS-GGUF/english/pocket-tts-english-bf16"
+    registry.claim(
+        f"{AUDIO_CPP_REPO}::{peer}",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+        variant = peer,
+        blob_hashes = frozenset({"peer"}),
+        progress_blob_hashes = frozenset({"peer"}),
+    )
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
+    ggufs = sum(p.stat().st_size for p in (snap / "PocketTTS-GGUF/english").glob("*.gguf"))
+    impact = asyncio.run(companion_cleanup.delete_impact_response(pocket, None))
+    assert impact["reclaimed_bytes"] == ggufs
+    asyncio.run(deletion.delete_cached_model_response(pocket, None))
+    assert path.exists() and voice.exists()

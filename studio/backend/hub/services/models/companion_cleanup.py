@@ -268,6 +268,16 @@ def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
     model = resolve(repo_id, network = False)
     if model is None or not model.repo_id:
         return 0
+    from hub.services.models import downloads
+
+    # The delete keeps a variant's extras while a sibling in its directory downloads; so does this.
+    if any(
+        downloads.registry.has_active_peer_variant(
+            model.repo_id, key, prefix = key.rsplit("/", 1)[0] + "/"
+        )
+        for key in keys
+    ):
+        return 0
     deleting = {key.lower() for key in keys}
     listed: dict[str, int] = {}
     kept: set[str] = set()
