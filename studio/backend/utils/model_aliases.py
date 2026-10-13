@@ -193,7 +193,8 @@ class ModelAliasMiddleware:
             body = rewritten
             headers = [(k, v) for k, v in scope.get("headers", []) if k != b"content-length"]
             headers.append((b"content-length", str(len(body)).encode("ascii")))
-            scope = {**scope, "headers": headers}
+            # In place: outer middlewares (keep-warm) read markers the route sets on this same dict.
+            scope["headers"] = headers
 
         replayed = False
 

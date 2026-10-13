@@ -274,3 +274,57 @@ def test_list_keeps_quant_pin_rows_next_to_aliases(store, monkeypatch):
         ("unsloth/Qwen3-4B-GGUF:Q4_K_M", None),
         ("fast-chat", "unsloth/Qwen3-4B-GGUF:Q4_K_M"),
     ]
+
+
+def test_keepwarm_sees_the_markers_a_route_sets_on_an_aliased_request(store):
+    from core.inference import llama_keepwarm
+    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware, note_admitted_inference
+
+    async def route(scope, receive, send):
+        await receive()
+        note_admitted_inference(scope)
+        assert llama_keepwarm.other_admitted_inference_count() == 1
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    async def send(message):
+        pass
+
+    body = b'{"model": "fast-chat", "messages": []}'
+    sent = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive():
+        return sent.pop(0)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [(b"content-type", b"application/json"), (b"content-length", b"%d" % len(body))],
+    }
+    set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF"}])
+    asyncio.run(LlamaKeepWarmMiddleware(ModelAliasMiddleware(route))(scope, receive, send))
+    assert llama_keepwarm.other_admitted_inference_count() == 0
+
+
+def test_retrieve_alias_to_an_unloaded_pin_reports_status(store, monkeypatch):
+    import core.inference.local_model_resolver as resolver
+    import routes.inference as inference
+
+    async def catalog(quant_pins = False):
+        return [
+            {
+                "id": "unsloth/Qwen3-4B-GGUF",
+                "object": "model",
+                "loaded": False,
+                "status": {"value": "unloaded"},
+            }
+        ]
+
+    monkeypatch.setattr(inference, "_openai_model_objects", lambda: [])
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+    monkeypatch.setattr(resolver, "local_gguf_pinned_variant", lambda model_id, **_: "Q4_K_M")
+    set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF:Q4_K_M"}])
+    got = asyncio.run(inference.openai_retrieve_model("fast-chat", current_subject = "owner"))
+    assert got["alias_for"] == "unsloth/Qwen3-4B-GGUF:Q4_K_M"
+    assert got["status"] == {"value": "unloaded"}

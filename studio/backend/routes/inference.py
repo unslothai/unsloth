@@ -36801,7 +36801,7 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
         objects = await _openai_catalog_objects(quant_pins = True)
     else:
         objects = await _openai_catalog_objects()
-    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_object)
+    aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_row)
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
     return [o for o in objects if str(o.get("id", "")).lower() not in shadowed] + aliases
@@ -36868,6 +36868,11 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     if not variant:
         return None
     return _quant_pin_object(listed, variant, _resident_gguf_quants)
+
+
+def _pinned_quant_row(model_id: str, objects: list[dict]) -> Optional[dict]:
+    pinned = _pinned_quant_object(model_id, objects)
+    return None if pinned is None else _with_openai_residency(pinned)
 
 
 def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
