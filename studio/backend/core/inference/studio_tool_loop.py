@@ -1375,7 +1375,7 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 _PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 
 # The most calls one round overlaps. Each is a worker with a pump task on top, all starting side
-# effects at once,
+# effects at once; `max_tool_calls_per_message` cannot bound them.
 _MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
 
 

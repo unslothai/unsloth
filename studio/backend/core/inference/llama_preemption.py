@@ -48,7 +48,7 @@ DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
 # Backstop for an announced prefill that never happens. The stream waits this long for a first
-# token (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`),
+# token (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`), so a shorter figure drops a live reserve.
 PENDING_PREFILL_TTL_S = 1200.0
 
 # Bounds churn under contention: this many pauses in a row with no new output between them end the
@@ -106,7 +106,7 @@ class PreemptSignal:
         self._depth = 0
         self._pending = False
         self._reason: Optional[str] = None
-        # When the stream last saw its prefill advance, on `time.monotonic()`;
+        # When the stream last saw its prefill advance, on `time.monotonic()`; 0 is never.
         self._prefill_progress_at = 0.0
 
     def note_prefill_progress(self) -> None:
@@ -1145,8 +1145,7 @@ class PreemptionController:
             if participant is None:
                 return
             if not participant.measured:
-                # Bumped so the stamp is strictly past any epoch a probe already in flight
-                # captured;
+                # Bumped so the stamp is strictly past any epoch a probe already in flight captured.
                 self._resident_seq += 1
                 participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
@@ -1449,7 +1448,7 @@ class ControllerPreemptionPolicy:
             try:
                 lease.preempt()
             except Exception:
-                # A handback that fails must not take the conversation with it;
+                # A handback that fails must not take the conversation with it.
                 pass
 
     def await_resume(
@@ -1563,7 +1562,7 @@ class ControllerPreemptionPolicy:
                     coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             # A backstop for a loop that never runs the coroutine at all. resume_async resets its
-            # own bound on progress up to the same hard deadline, so this waits as long,
+            # own bound on progress up to the same hard deadline, so this waits as long, then cancels it.
             try:
                 got = bool(future.result(timeout = max(0.0, hard_deadline - time.monotonic()) + 5.0))
             except BaseException:

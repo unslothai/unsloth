@@ -138,7 +138,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--log-disable"}),
     # Slot-state dir: Unsloth owns it for KV persistence across idle unload. Endpoint exposure (--slots, --props) is
     # deliberately NOT denied alongside it: GET /props is always served and GET /slots is on by
-    # default in every build that can start here (ggml-org/llama.cpp#15630),
+    # default in every build that can start here (ggml-org/llama.cpp#15630).
     frozenset({"--slot-save-path"}),
     # These print and exit instead of serving, so the load would "succeed" with no server behind it and only time out
     # later

@@ -389,7 +389,7 @@ class TestNobodyIsExemptFromEviction:
     def test_the_biggest_chat_is_still_preemptable(self):
         controller = _controller(budget = 16384)
         # Registration order matters now, so the huge chat is deliberately NOT the oldest: as the
-        # oldest it would be taken last and then spared by the last-holder rule,
+        # oldest it would be spared by the last-holder rule, making this unreachable.
         _fill(controller, "oldest", 0.14)
         _fill(controller, "huge", 0.72)
         _fill(controller, "newest", 0.14)

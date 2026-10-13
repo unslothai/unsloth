@@ -2120,7 +2120,7 @@ def _openai_llama_admission_output_allowance(
     stated = cap if (cap is not None and cap < window) else None
     if stated is not None and not preemption_active:
         return stated
-    # A STATED cap falls through to the same optimistic estimate as an unstated one:
+    # A STATED cap falls through to the same optimistic estimate as an unstated one (vLLM-style).
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
     if share is not None and share - prompt_tokens > _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS:
@@ -2834,8 +2834,8 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         _gguf_slots_seen["occupancy"] = occupancy
         _gguf_slots_seen["parked"] = parked_before
         if occupancy is None:
-            # GET /slots is on by default in every build that can start here (ggml-
-            # org/llama.cpp#15630), so this is --no-slots, a 401, or a socket error.
+            # GET /slots is on by default (ggml-org/llama.cpp#15630), so this is --no-slots,
+            # a 401, or a socket error.
             if not _gguf_slots_seen.get("said_unavailable"):
                 _gguf_slots_seen["said_unavailable"] = True
                 _llama_preemption_log("slots-probe-unavailable", level = "debug", base = base)
@@ -3807,7 +3807,7 @@ def _openai_llama_admission_recost(
             if cancel_event is not None and cancel_event.is_set():
                 raise LlamaAdmissionCancelled("stopped while the round was being counted")
         else:
-            # The translated conversation already includes system content;
+            # The translated conversation already includes system content; do not charge it twice.
             prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
                 conversation,
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
@@ -32820,7 +32820,7 @@ async def produce_openai_chat_completions(
                     _gguf_decode["erased"] = False
 
             # Created before the generator is BUILT because it is passed into it, while the policy
-            # resolves lazily:
+            # resolves lazily; None unless the operator opted in.
             _gguf_preempt_signal = PreemptSignal() if preemption_enabled() else None
 
             _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state = (
@@ -33475,7 +33475,7 @@ async def produce_openai_chat_completions(
                                 )
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     finally:
-                        # AFTER the drain and the generator close, never before:
+                        # AFTER the drain and the generator close, never before, and unconditionally.
                         _openai_llama_preemption_disarm(
                             llama_backend = llama_backend,
                             gen_id = completion_id,
@@ -33530,7 +33530,7 @@ async def produce_openai_chat_completions(
                             cancel_event = cancel_event,
                         )
                         if not _gguf_preempt_policy_hold.bound:
-                            # Arm HERE, with the lease in hand, for a chat that waited:
+                            # Arm HERE, with the lease in hand: a chat that queued otherwise never armed.
                             _gguf_preempt_policy_hold.bind(
                                 _openai_llama_preemption_arm(
                                     request = request,
@@ -33892,7 +33892,7 @@ async def produce_openai_chat_completions(
         # ── Standard GGUF path (no tools) ─────────────────────
 
         # Preemption for a PLAIN chat, not just a tool loop. Created before the generator is built
-        # because it is passed into it, with the policy bound once admission has returned,
+        # because it is passed into it, with the policy bound once admission has returned.
         _plain_preempt_signal = PreemptSignal() if preemption_enabled() else None
         _plain_preempt_policy = DeferredPreemptionPolicy()
         _plain_refresh_residency, _plain_observe_tokens, _plain_note_state = (
@@ -34496,7 +34496,7 @@ async def produce_openai_chat_completions(
 
             try:
                 # Register the residency probe BEFORE arming, for the reason the streaming branch
-                # above gives: without it the resume wait loop never re-reads the cache,
+                # above gives: without it the resume wait loop never re-reads the cache.
                 try:
                     get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                         lambda: _plain_refresh_residency(
@@ -40366,7 +40366,7 @@ async def _responses_stream(
             # one equal cache share no matter how large the request really was.
             payload = chat_req,
             # Streams llama-server's bytes with no generator behind them: `STREAMING_RAW`, never a
-            # victim and reporting no growth,
+            # victim and reporting no growth.
             preemptable = False,
         )
     except LlamaAdmissionQueueFull as exc:
@@ -43989,7 +43989,7 @@ async def anthropic_messages(
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
                 # The same three the plain generator gets: `_arm_anthropic` registers this as an
-                # ordinary preemptible participant,
+                # ordinary preemptible participant, so it must see its signal.
                 preempt_event = _anthropic_preempt_signal,
                 preempt_policy = _anthropic_preempt_policy,
                 on_tokens = _anthropic_observe_tokens,

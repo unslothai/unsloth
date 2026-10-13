@@ -29,7 +29,7 @@ def _clean_registry():
 
 
 # The blocker's cells as llama-server reports them. Two things ride on this figure: it is far
-# above the ledger's own sum,
+# above the ledger's own sum, and past the ceiling so the waiter stays refused.
 _BUDGET = 16384
 _RESIDENT = _BUDGET
 _WANT = 4000

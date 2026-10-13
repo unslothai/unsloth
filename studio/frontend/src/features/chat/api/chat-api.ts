@@ -1872,7 +1872,7 @@ export async function* streamChatCompletions(
   let sawAssistantContent = false;
   let sawReasoningContent = false;
   // A turn the backend gave up on ends on `length` because that is the shape a continuation
-  // resumes from;
+  // resumes from.
   let sawPreemptGaveUp = false;
   // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
   // Tokens below the context length does not mean Max Tokens stopped the generation.

@@ -5371,7 +5371,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
     # The cap keeps the FIRST calls and drops the tail. Which of them reaches its tool first is no
-    # longer fixed, since the round runs them together, so compare the set:
+    # longer fixed, since the round runs them together, so compare the set.
     assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
     (notice,) = [
         m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")

@@ -7284,7 +7284,7 @@ export function createOpenAIStreamAdapter(
               }
 
               // Queued for a slot, or paused so another chat can finish: neither is an error and
-              // neither produces a token,
+              // neither produces a token, so show a status line.
               const admissionStatus = (
                 chunk as unknown as { _admissionStatus?: AdmissionStatus }
               )._admissionStatus;
@@ -7932,7 +7932,7 @@ export function createOpenAIStreamAdapter(
                 incompleteReason = null;
                 if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
                   // The give-up latch too, not just the reason it set: the override below is
-                  // unconditional, so a tool run that gave up,
+                  // unconditional, so a run that gave up then finished was stamped paused.
                   preemptGaveUp = false;
                 }
               }
@@ -8769,7 +8769,7 @@ export function createOpenAIStreamAdapter(
         }
 
         // A turn the backend gave up on is `paused`, not `length`: it ends on `length` because
-        // that is the shape a continuation resumes from,
+        // that is the shape a continuation resumes from; Max Tokens was never the constraint.
         if (preemptGaveUp) {
           incompleteReason = "paused";
         }

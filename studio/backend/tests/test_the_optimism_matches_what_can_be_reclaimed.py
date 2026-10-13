@@ -143,7 +143,7 @@ class TestARawSurfaceKeepsTheShare:
 
     def test_the_overflow_retry_keeps_the_raw_flag(self):
         # The first bound on both OpenAI passthroughs is raw; the bound priced again after a
-        # context overflow dropped history must be too,
+        # context overflow dropped history must be too.
         source = ROUTES.read_text(encoding = "utf-8")
         needle = "def _repriced_passthrough_cap(fitted):"
         starts, at = [], source.find(needle)

@@ -37959,7 +37959,7 @@ class LlamaCppBackend:
         _tokens_this_stream = 0
         _tokens_reported = 0
         # Bound out here because the preempt handler reads it and the pause can arrive before the
-        # stream is open, where the inner binding below has not run yet: unbound,
+        # stream is open; unbound, the pause would surface as a NameError 500.
         reasoning_text = ""
         in_thinking = False
         _stream_done = False
@@ -38113,7 +38113,7 @@ class LlamaCppBackend:
                                     _metadata_finish_reason = _fr
 
                                 # The live n_i for THIS chat, the only thing that makes preemption
-                                # act rather than merely be armed:
+                                # act rather than merely be armed; never let the sweep fail a healthy generation.
                                 if (
                                     delta.get("content")
                                     or delta.get("reasoning_content")
@@ -38285,7 +38285,7 @@ class LlamaCppBackend:
                 return
             if not resumed_p:
                 # The room never came back. Ending here leaves the client the partial it was
-                # streamed, which the length-continuation path picks up, but it must SAY so,
+                # streamed, but must SAY so or an early give-up looks like an empty turn.
                 logger.info(
                     "llama preemption gave up waiting for room; finishing the turn with "
                     "what it has and telling the client"
@@ -38356,7 +38356,7 @@ class LlamaCppBackend:
                     yield _resumed_item
                     continue
                 # Snapshots are cumulative and every consumer diffs them, so the resumed attempt's
-                # must extend this one's;
+                # must extend this one's, or the client's diff drops text.
                 if _paused_in_thinking:
                     if _resumed_item.startswith("<think>"):
                         yield _paused_prefix + _resumed_item[len("<think>") :]
@@ -38422,7 +38422,7 @@ class LlamaCppBackend:
             return True
 
         if checkpoint.has_reasoning_resume_point():
-            # Carried as `reasoning_content` so the backend re-opens the thought;
+            # Carried as `reasoning_content` so the backend re-opens the thought, not as the answer.
             prior = trailing_assistant_reasoning(conversation)
             if prior:
                 conversation[-1] = {
@@ -39510,7 +39510,7 @@ class LlamaCppBackend:
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
                 # Bound here, not at the chunk loop, because a pause can be raised before the
-                # first chunk arrives and its handler charges what this attempt decoded:
+                # first chunk arrives and its handler charges what this attempt decoded.
                 _tokens_this_stream = 0
                 _tokens_reported = 0
                 _prov_entry = None
@@ -40959,9 +40959,9 @@ class LlamaCppBackend:
                     else:
                         _starved_call[0] = False
 
-                    # No-progress guard, keyed on the RESULT rather than the arguments:
+                    # No-progress guard, keyed on the RESULT: argument-keyed it missed 18 identical truncations.
                     if isinstance(result, str):
-                        # The arguments are part of the key UNLESS the window produced the result:
+                        # The arguments are part of the key UNLESS the window produced the result (a starved notice).
                         _result_key = (
                             decision.tool_name,
                             hashlib.sha1(result.encode("utf-8", "replace")).hexdigest(),
@@ -41002,7 +41002,7 @@ class LlamaCppBackend:
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
                     # Parsed only for a result that carries them and a model that will be shown
-                    # them;
+                    # them, testing the marker first.
                     _completion_images = (
                         completion.mcp_images()
                         if mcp_images_mentioned_in(completion.result or "") and self.is_vision
@@ -41444,8 +41444,9 @@ class LlamaCppBackend:
                         # than a stream that stops mid-turn.
                         resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                         if _parallel_round:
-                            # Its place in the round is still its own: closed and appended here,
-                            # ahead of the calls before it still running,
+                            # Its place in the round is still its own: appended ahead of earlier calls still running,
+                            # the tool messages would misorder. Marked refused so
+                            # `record_result` does not file a call that never ran as a success.
                             _pending_calls.append(
                                 (
                                     decision,
@@ -41955,9 +41956,8 @@ class LlamaCppBackend:
                                 if _e[1].tool_call_id:
                                     _stand_in["tool_call_id"] = _e[1].tool_call_id
                                 _probe.append(_stand_in)
-                            # And with the arguments of every call the gate admitted on the
-                            # promise that they are compacted before the next prompt already
-                            # compacted, or the round is priced against a prompt it will never
+                            # And with the admitted calls' arguments already compacted, or the round is priced against
+                            # a prompt it will never send.
                             for _e in _pending_calls:
                                 if _e[0] is _TOOL_START_DEFERRED and _e[5] and _e[1].tool_call_id:
                                     _probe = compact_executed_call_arguments(
@@ -42342,9 +42342,8 @@ class LlamaCppBackend:
                     return
                 try:
                     _resumed = yield from _await_resume(preempt_policy, cancel_event)
-                    # Cleared BEFORE `on_resumed`. The clear stays because the policy protocol
-                    # does not promise one and a signal still set would abort the resumed attempt,
-                    # but afterwards it raced the sweep: a pause issued between the two was erased
+                    # Cleared BEFORE `on_resumed`: afterwards it races the sweep and can erase a
+                    # pause already counted as room.
                     if preempt_event is not None:
                         preempt_event.clear()
                     if _resumed:
@@ -42861,7 +42860,7 @@ class LlamaCppBackend:
                     cancel_event,
                     on_respawn = _refit_final_after_respawn,
                     # The answering pass decodes into the same shared cache, often for longer, so
-                    # it has to be interruptible on the same signal:
+                    # it has to be interruptible on the same signal, or its cells are never reclaimed.
                     **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 ) as (
                     response,
@@ -43350,7 +43349,7 @@ class LlamaCppBackend:
                 return
             except _preemption.LlamaStreamPreempted:
                 # Paused to free KV while the answer was being written, which is not a cancel and
-                # must not end the turn: without this a turn chosen here kept decoding,
+                # must not end the turn; without this the chosen turn stayed PREEMPTING forever.
                 if cancel_event is not None and cancel_event.is_set():
                     return
                 logger.info("llama preemption caught in the final answering pass")
@@ -43402,7 +43401,7 @@ class LlamaCppBackend:
                         _preempt_resumes,
                         _preempt_stalled,
                     )
-                    # Nothing decodes after this, but the participant must not be left PREEMPTING:
+                    # Nothing decodes after this, but the participant must not be left PREEMPTING for a sweep.
                     _decline_preemption(preempt_policy, "final pass")
                     if preempt_event is not None:
                         preempt_event.clear()
@@ -43485,7 +43484,7 @@ class LlamaCppBackend:
                 _metadata_timings = None
                 _attempt_started_at = _last_emitted
                 # Per attempt, and for a sharper reason than tidiness: `on_preempted` has moved
-                # this attempt's tokens into `base_tokens` through `note_replayed`,
+                # this attempt's tokens into `base_tokens`, so a carried count doubles this chat's size.
                 _final_tokens_this_stream = 0
                 _final_tokens_reported = 0
                 continue

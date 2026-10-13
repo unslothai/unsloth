@@ -142,7 +142,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
     # Same shape for preemption, except the DEFAULT is the nothing-changes case: nothing in this
-    # test sets UNSLOTH_LLAMA_ADMISSION_PREEMPT,
+    # test sets UNSLOTH_LLAMA_ADMISSION_PREEMPT, so neither side may be armed.
     assert (
         preemption_enabled() is False
     ), "this test speaks for a default install, which does not opt into preemption"
