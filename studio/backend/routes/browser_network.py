@@ -61,6 +61,20 @@ BROWSER_NETWORK_JS = r"""
           post({ type: "request", id, ...request });
         });
         const bodiless = (method) => method === "GET" || method === "HEAD";
+        // A GET or HEAD tries the browser first: where the site already answers the sandbox's origin
+        // (an API sending ACAO null or *), streams, long polls and large bodies stay as they were. One
+        // the browser can't read goes to the panel, and that address goes there directly from then on.
+        const needsRelay = new Set();
+        const address = (url) => { const parts = new URL(url); return parts.origin + parts.pathname; };
+        const fromBrowser = async (request) => {
+          if (!bodiless(request.method) || needsRelay.has(address(request.url))) return null;
+          try { return await nativeFetch(request); }
+          catch (error) {
+            if (request.signal.aborted) throw error;
+            needsRelay.add(address(request.url));
+            return null;
+          }
+        };
         const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
         const withoutHash = (url) => url.split("#")[0];
         // What a fetched response has and a constructed one lacks, kept through clone(): "basic" on
@@ -104,7 +118,7 @@ BROWSER_NETWORK_JS = r"""
           if (!ownSite(url)) return nativeFetch(input, init).finally(done);
           let request;
           try { request = new Request(input instanceof Request ? input : url, init); } catch (error) { done(); return Promise.reject(error); }
-          return relayFetch(request).finally(done);
+          return fromBrowser(request).then((response) => response ?? relayFetch(request)).finally(done);
         };
 
         // An XHR to the page's site stays OPENED while the panel makes it, then the browser loads the
@@ -200,8 +214,17 @@ BROWSER_NETWORK_JS = r"""
               }
               return request.arrayBuffer();
             })();
+            // The browser's answer, when it can read one, is read whole like the panel's.
+            const browserReply = async () => {
+              let request;
+              try { request = new Request(state.url, { method: state.method, headers: state.headers, signal: controller.signal }); } catch { return null; }
+              const response = await fromBrowser(request);
+              if (!response) return null;
+              return { status: response.status, statusText: response.statusText, url: response.url, headers: [...response.headers], body: await response.arrayBuffer() };
+            };
             bytes
-              .then((content) => relay({ url: state.url, method: state.method, headers: state.headers, body: content, redirect: "follow" }, controller.signal))
+              .then(async (content) => (content === null && (await browserReply()))
+                || relay({ url: state.url, method: state.method, headers: state.headers, body: content, redirect: "follow" }, controller.signal))
               .then((reply) => {
                 if (relayed.get(this) !== state || state.readyState !== undefined) return;
                 clearTimeout(timer);

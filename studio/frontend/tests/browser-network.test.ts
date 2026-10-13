@@ -73,14 +73,30 @@ class PageXMLSerializer {
   }
 }
 
-/** `pageUrl`: the page's address; with none (a local file) nothing goes through the panel. */
-function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null, anyOrigin = false) {
+/** `pageUrl`: the page's address; with none (a local file) nothing goes through the panel.
+ *  `browserReads`: own-site addresses the sandbox can read itself (the site answers its origin);
+ *  the browser's fetch of any other own-site address fails, as CORS makes it. */
+function setup(
+  XHR: typeof NativeXHR = NativeXHR,
+  pageUrl: string | null = null,
+  anyOrigin = false,
+  browserReads: (url: string) => boolean = () => false,
+) {
   let now = 0;
   // The script patches its Response's body readers: a class of its own keeps that out of other tests.
   class PageResponse extends Response {}
   const answers: Array<(response: Response) => void> = [];
+  const refused: string[] = [];
   const window = Object.assign(new EventTarget(), {
-    fetch: () => new Promise<Response>((resolve) => answers.push(resolve)),
+    fetch: (input: unknown) =>
+      new Promise<Response>((resolve, reject) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const own = pageUrl !== null && new URL(url, pageUrl).origin === new URL(pageUrl).origin;
+        if (own && !browserReads(url)) {
+          refused.push(url);
+          reject(new TypeError("Failed to fetch"));
+        } else answers.push(resolve);
+      }),
     XMLHttpRequest: XHR,
   });
   // What the page sent its parent, the shell.
@@ -113,6 +129,7 @@ function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null,
     answer: (i: number, body = "{}") => answers[i](new PageResponse(body)),
     Response: PageResponse,
     native: answers,
+    refused,
     posted,
     reply,
   };
@@ -228,7 +245,7 @@ test("a fetch to the page's own site goes through the panel and reads as same-or
 });
 
 test("a page whose site answers any origin keeps its own requests, which the browser can read", async () => {
-  const t = setup(NativeXHR, "https://site.test/", true);
+  const t = setup(NativeXHR, "https://site.test/", true, () => true);
   const own = t.window.fetch("/stream");
   assert.equal(t.native.length, 1);
   const xhr = new t.window.XMLHttpRequest();
@@ -239,6 +256,57 @@ test("a page whose site answers any origin keeps its own requests, which the bro
   assert.deepEqual(xhr.calls.at(-1), ["send", undefined]);
   t.answer(0);
   await own;
+});
+
+test("an own-site GET the browser can read stays the browser's, streamed as it was", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, (url) => url.endsWith("/api/models"));
+  const read = t.window.fetch("/api/models");
+  await tick();
+  assert.equal(t.native.length, 1);
+  assert.equal(t.posted.length, 0);
+  t.answer(0, "[1]");
+  assert.deepEqual(await (await read).json(), [1]);
+});
+
+test("one the browser can't read goes to the panel, and that address goes there directly after", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const first = t.window.fetch("/models-json?search=a");
+  await tick();
+  assert.equal(t.refused.length, 1);
+  assert.equal(t.posted.length, 1);
+  t.reply(t.posted[0].id, ok("{}"));
+  await first;
+  const second = t.window.fetch("/models-json?search=ab");
+  await tick();
+  // Same address, another query: no second try in the browser.
+  assert.equal(t.refused.length, 1);
+  assert.equal(t.posted.length, 2);
+  t.reply(t.posted[1].id, ok("{}"));
+  await second;
+});
+
+test("a write never tries the browser first", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, () => true);
+  const write = t.window.fetch("/api", { method: "POST", body: "x" });
+  await tick();
+  assert.equal(t.native.length, 0);
+  assert.equal(t.posted.length, 1);
+  t.reply(t.posted[0].id, ok("{}"));
+  await write;
+});
+
+test("an XHR GET the browser can read loads the browser's answer, with no panel request", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, () => true);
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  xhr.open("GET", "/poll");
+  xhr.send();
+  await tick();
+  assert.equal(t.posted.length, 0);
+  t.answer(0, "late");
+  await tick();
+  await tick();
+  const [open] = xhr.calls.slice(-2);
+  assert.match(String(open[2]), /^blob:/);
 });
 
 test("requests to other sites, and from a page with no address, stay the browser's", async () => {
