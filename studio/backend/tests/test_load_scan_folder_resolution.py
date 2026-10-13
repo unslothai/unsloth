@@ -198,9 +198,8 @@ def test_a_pinned_quant_only_the_parked_copy_holds_loads_from_it(roots):
     # The quant race: the active cache holds one complete quant while a parked copy holds
     # another. A pin names the exact artifact, so it resolves to the row holding it instead
     # of falling through to a remote download; the bare id keeps loading the active-cache
-    # copy, which already loads by repo id. (The repo/file.gguf id form is the api-key
-    # branch's rewriter extension; it resolves through the same resolve_local_gguf and
-    # picks the variant match up when that branch re-cuts against this one.)
+    # copy, which already loads by repo id. (The repo/file.gguf id form resolves through
+    # the same resolve_local_gguf and picks the variant match up the same way.)
     active, scan = roots
     _cache_repo(active, ["Tiny-Probe-Q8_0.gguf"])
     parked = _cache_repo(scan, ["Tiny-Probe-UD-Q5_K_XL.gguf"])

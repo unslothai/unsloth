@@ -470,6 +470,10 @@ def test_v1_models_advertises_the_quant_a_bare_repo_id_loads(monkeypatch, tmp_pa
     _pin_single_cache(monkeypatch, tmp_path, active)
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
     rows = models_route.collect_local_models(tmp_path / "models")
+    # The fixture stamps the parked copy newer (updated_at sorting lists it first), and
+    # that order is what the takeover rule runs against: without it, first-wins would
+    # leave the parked row's quant on the id.
+    assert [row.source for row in rows] == ["custom", "hf_cache"]
     servable_rows = []
     for row in rows:
         result = local_servable_model(row)
