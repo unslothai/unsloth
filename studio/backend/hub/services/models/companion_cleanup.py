@@ -229,12 +229,47 @@ class _SingleRepoScan:
         self.repos = repos
 
 
+def _folder_delete_impact_blocking(
+    repo_id: str,
+    variant: Optional[str],
+    umbrella: str,
+    keys: list[str],
+    cache_path: Optional[str],
+) -> dict:
+    """The impact of deleting an umbrella folder row: the sum over its own variant keys."""
+    impacts = [_delete_impact_blocking(umbrella, key, cache_path) for key in keys]
+
+    def merged(field: str) -> list[dict]:
+        rows = {row["repo_id"]: row for impact in impacts for row in impact[field]}
+        return list(rows.values())
+
+    return {
+        "repo_id": repo_id,
+        "variant": variant,
+        "reclaimed_bytes": sum(impact["reclaimed_bytes"] for impact in impacts),
+        "cache_path": impacts[0]["cache_path"],
+        "retained_companions": merged("retained_companions"),
+        "freeable_companions": merged("freeable_companions"),
+        "blocked_by": sorted({name for impact in impacts for name in impact["blocked_by"]}),
+    }
+
+
 async def delete_impact_response(
     repo_id: str,
     variant: Optional[str] = None,
     cache_path: Optional[str] = None,
 ) -> dict:
     """What a delete of *repo_id* (/*variant*) would reclaim, retain, and be blocked by."""
+    from core.inference.audio_cpp_models import cached_folder_target
+
+    folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
+    if folder is not None:
+        umbrella, keys = folder
+        if not keys:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+        return await asyncio.to_thread(
+            _folder_delete_impact_blocking, repo_id, variant, umbrella, keys, cache_path
+        )
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None

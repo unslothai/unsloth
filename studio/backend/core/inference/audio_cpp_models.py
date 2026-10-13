@@ -2566,6 +2566,74 @@ def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tu
     return row_id, "/".join([*parts[1:-1], quant_label(f"{parts[-1]}.gguf")])
 
 
+def cached_folder_target(
+    identifier: Optional[str], variant: Optional[str] = None
+) -> Optional[tuple[str, list[str]]]:
+    """``(umbrella repo, path-qualified variant keys)`` a cache action on an umbrella folder row
+    works on, from the cache only; None for any other id.
+
+    With a variant, only that folder's own variant (a bare ``Q8_0`` would name another folder's file
+    at repo scope); without one, every variant of the folder with its GGUF on disk. Never the whole
+    repo: an empty list means nothing of this folder is cached.
+    """
+    if not is_umbrella_id(identifier):
+        return None
+    base, inline = split_variant_ref(str(identifier))
+    ref = parse_identifier(base)
+    if ref is None or not ref.folder:
+        return None
+    wanted = (variant or "").strip() or inline or ref.variant_hint
+    model = resolve(ref.id, wanted, network = False)
+    if model is None or not model.repo_id:
+        return AUDIO_CPP_REPO, []
+    if wanted:
+        chosen = _cached_variants_named(model.variants, wanted, ref.folder)
+    else:
+        snapshots = snapshot_dirs(model.repo_id)
+        chosen = [
+            v
+            for v in model.variants
+            if v.primary
+            and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
+        ]
+    from hub.utils.gguf import gguf_variant_key
+
+    return model.repo_id, [gguf_variant_key(v.primary) for v in chosen if v.primary]
+
+
+def _cached_variants_named(
+    variants: Sequence[AudioCppVariant], wanted: str, folder: str
+) -> list[AudioCppVariant]:
+    """The cached variants ``wanted`` names. The picker keys a multi-size folder's quants from the Hub
+    listing (``tiny/Q8_0``) while a cache holding one size keys it ``Q8_0``, so scope words also
+    match the file path; a quant must still pick exactly one, never a fallback default."""
+    hit = match_variant(variants, wanted, folder)
+    if hit is not None:
+        return [hit]
+    parts = [p for p in wanted.lower().replace("\\", "/").split("/") if p]
+    quants = {quant_label(v.main_file).lower() for v in variants}
+    quant = parts[-1] if parts and parts[-1] in quants else None
+    words = parts[:-1] if quant else parts
+    found = [
+        v
+        for v in variants
+        if (quant is None or quant_label(v.main_file).lower() == quant)
+        and all(w in f"{v.key}/{v.main_file}".lower() for w in words)
+    ]
+    return found if quant is None or len(found) == 1 else []
+
+
+def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
+    """``<snapshot>/<Folder>`` of the first cached snapshot holding an umbrella folder row."""
+    ref = parse_identifier(split_variant_ref(str(identifier or ""))[0])
+    if ref is None or not ref.folder or not ref.repo_id:
+        return None
+    for snapshot in snapshot_dirs(ref.repo_id):
+        if (snapshot / ref.folder).is_dir():
+            return snapshot / ref.folder
+    return None
+
+
 def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
     """Raise ``AudioCppModelError`` when Studio cannot run ``model`` (for ``task`` when given)."""
     if model.unsupported:

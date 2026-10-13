@@ -1,0 +1,336 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Cache actions on an audio.cpp umbrella folder row (``audio-cpp/audio.cpp-gguf/<Folder>``):
+delete, delete impact, cached path and reveal act on that folder alone, and the cached GGUF
+inventory lists each downloaded folder for the Audio pages."""
+
+import asyncio
+import hashlib
+import os
+import struct
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from core.inference import audio_cpp_files
+from core.inference import audio_cpp_models as acm
+from core.inference.audio_cpp_models import AUDIO_CPP_REPO
+
+QWEN = f"{AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF"
+KOKORO = f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"
+ASR = f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"
+QWEN_FILE = "Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf"
+SNAPSHOT = Path("models--audio-cpp--audio.cpp-gguf") / "snapshots" / ("a" * 40)
+QWEN_KEY = "Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0"
+FILES = {
+    QWEN_FILE: "qwen3_tts",
+    "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf": "qwen3_asr",
+    "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf": "kokoro_tts",
+}
+
+
+def _gguf(family: str, pad: int) -> bytes:
+    kv = [
+        ("general.architecture", 8, "audiocpp"),
+        ("general.name", 8, "t"),
+        ("audiocpp.model_spec.version", 4, 1),
+        ("audiocpp.model_spec.family", 8, family),
+    ]
+    out = bytearray(struct.pack("<IIQQ", 0x46554747, 3, 0, len(kv)))
+    for key, vtype, value in kv:
+        k = key.encode()
+        out += struct.pack("<Q", len(k)) + k + struct.pack("<I", vtype)
+        if vtype == 8:
+            v = value.encode()
+            out += struct.pack("<Q", len(v)) + v
+        else:
+            out += struct.pack("<I", value)
+    return bytes(out) + b"\0" * pad
+
+
+def _add_snapshot(hub: Path, sha: str, files: dict, *, main: bool) -> Path:
+    repo_dir = hub / ("models--" + AUDIO_CPP_REPO.replace("/", "--"))
+    snap = repo_dir / "snapshots" / sha
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    if main:
+        (repo_dir / "refs").mkdir(exist_ok = True)
+        (repo_dir / "refs" / "main").write_text(sha)
+    for index, (rel, family) in enumerate(files.items()):
+        data = _gguf(family, 4096 * (index + 1)) + rel.encode()
+        blob = repo_dir / "blobs" / hashlib.sha256(data).hexdigest()
+        blob.write_bytes(data)
+        path = snap / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        os.symlink(os.path.relpath(blob, path.parent), path)
+    return snap
+
+
+@pytest.fixture
+def hub(tmp_path, monkeypatch):
+    """A three-folder umbrella repo in an HF cache that is the only one any lookup can see."""
+    from hub.services.models import cache_inventory, deletion
+    from hub.utils import hf_cache_state
+    from utils import hf_cache_settings
+
+    hf_home = tmp_path / "hf"
+    root = hf_home / "hub"
+    root.mkdir(parents = True)
+    paths = hf_cache_settings.HuggingFaceCachePaths(hf_home, root, hf_home / "xet", "studio")
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_cache_homes", lambda: [hf_home])
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [root])
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(root))
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **_kwargs: [root])
+    monkeypatch.setattr(acm, "_hub_cache", lambda: root)
+    monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
+    monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: None)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(root))
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    acm.forget()
+    cache_inventory.invalidate_hf_cache_scans()
+    _add_snapshot(root, "a" * 40, FILES, main = True)
+    yield root
+    acm.forget()
+    cache_inventory.invalidate_hf_cache_scans()
+
+
+def _path(repo_id: str, variant: str) -> dict:
+    import routes.models as rm
+
+    return asyncio.run(
+        rm.get_cached_model_path(repo_id = repo_id, variant = variant, current_subject = "x")
+    )
+
+
+def _left(hub: Path) -> list[str]:
+    repo_dir = hub / ("models--" + AUDIO_CPP_REPO.replace("/", "--"))
+    return sorted(
+        p.relative_to(s).as_posix()
+        for s in (repo_dir / "snapshots").iterdir()
+        for p in s.rglob("*.gguf")
+    )
+
+
+def _idle(monkeypatch, *, active = None, loading = (), stt = None):
+    from core.inference import orchestrator, stt_audiocpp_sidecar
+
+    side = stt_audiocpp_sidecar.AudioCppSttSidecar()
+    if stt:
+        side._loading, side._loading_model = True, stt
+    backend = SimpleNamespace(active_model_name = active, loading_models = set(loading))
+    monkeypatch.setattr(stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: side)
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+
+
+def test_cached_folder_target_scopes_keys_to_the_folder(hub):
+    assert acm.cached_folder_target(QWEN, "Q8_0") == (AUDIO_CPP_REPO, [QWEN_KEY])
+    assert acm.cached_folder_target(QWEN, None) == (AUDIO_CPP_REPO, [QWEN_KEY])
+    assert acm.cached_folder_target(f"{QWEN}:Q8_0") == (AUDIO_CPP_REPO, [QWEN_KEY])
+    assert acm.cached_folder_target(QWEN, "Q4_K_M") == (AUDIO_CPP_REPO, [])
+    assert acm.cached_folder_target(f"{AUDIO_CPP_REPO}/Missing-GGUF", None) == (AUDIO_CPP_REPO, [])
+    # The repo itself and ordinary repos keep their own handling.
+    assert acm.cached_folder_target(AUDIO_CPP_REPO, "Q8_0") is None
+    assert acm.cached_folder_target("unsloth/Qwen3-0.6B-GGUF", "Q8_0") is None
+
+
+@pytest.mark.parametrize("variant", ["Q8_0", None])
+def test_deleting_a_folder_row_keeps_every_other_folder(hub, monkeypatch, variant):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    calls = []
+    real = deletion._delete_cached_model_blocking
+    monkeypatch.setattr(
+        deletion,
+        "_delete_cached_model_blocking",
+        lambda repo_id, v, *a, **k: calls.append((repo_id, v)) or real(repo_id, v, *a, **k),
+    )
+    result = asyncio.run(deletion.delete_cached_model_response(QWEN, variant))
+    assert result["repo_id"] == QWEN
+    assert calls == [(AUDIO_CPP_REPO, QWEN_KEY)]
+    assert _left(hub) == [
+        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+        "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf",
+    ]
+
+
+def test_deleting_an_uncached_quant_of_a_folder_changes_nothing(hub, monkeypatch):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deletion.delete_cached_model_response(QWEN, "Q4_K_M"))
+    assert err.value.status_code == 404
+    assert len(_left(hub)) == 3
+
+
+def test_a_loaded_folder_blocks_only_its_own_delete(hub, monkeypatch):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch, active = f"{KOKORO}:Q8_0")
+    asyncio.run(deletion.delete_cached_model_response(QWEN, "Q8_0"))
+    assert QWEN_FILE not in _left(hub)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deletion.delete_cached_model_response(KOKORO, "Q8_0"))
+    assert err.value.status_code == 400
+    assert "Unload" in err.value.detail
+    assert "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf" in _left(hub)
+
+
+@pytest.mark.parametrize(
+    "loaded",
+    [
+        {"active": QWEN},
+        {"active": f"{QWEN}:Q8_0"},
+        {"loading": [QWEN]},
+        {"stt": ASR},
+    ],
+)
+def test_folder_guard_matches_the_folder_however_it_was_loaded(monkeypatch, loaded):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch, **loaded)
+    held = loaded.get("stt") or (loaded.get("loading") or [loaded.get("active")])[0]
+    held_row = acm.split_variant_ref(held)[0]
+    other = KOKORO
+    assert deletion._audio_cpp_blocks_delete(held_row) is True
+    assert deletion._audio_cpp_blocks_delete(other) is False
+    # The whole repo is still held while any of its folders is.
+    assert deletion._audio_cpp_blocks_delete(AUDIO_CPP_REPO) is True
+
+
+def test_folder_guard_maps_a_legacy_dictation_key_to_its_folder(monkeypatch):
+    from hub.services.models import deletion
+
+    legacy = acm.legacy_keys()[0]
+    row = acm.parse_identifier(legacy).id
+    _idle(monkeypatch, stt = legacy)
+    assert deletion._audio_cpp_blocks_delete(row) is True
+    assert deletion._audio_cpp_blocks_delete(f"{AUDIO_CPP_REPO}/Not-That-Folder-GGUF") is False
+
+
+def test_delete_impact_of_a_folder_row_counts_only_its_files(hub):
+    from hub.services.models import companion_cleanup
+
+    qwen_bytes = (hub / SNAPSHOT / QWEN_FILE)
+    size = qwen_bytes.stat().st_size
+    for variant in ("Q8_0", None):
+        impact = asyncio.run(companion_cleanup.delete_impact_response(QWEN, variant))
+        assert impact["repo_id"] == QWEN
+        assert impact["reclaimed_bytes"] == size
+    whole = asyncio.run(companion_cleanup.delete_impact_response(AUDIO_CPP_REPO, None))
+    assert whole["reclaimed_bytes"] > size
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(companion_cleanup.delete_impact_response(QWEN, "Q4_K_M"))
+    assert err.value.status_code == 404
+
+
+def test_cached_path_and_reveal_of_a_folder_row(hub, monkeypatch):
+    import routes.models as rm
+    from utils.paths import path_utils
+
+    snap = hub / SNAPSHOT
+    got = _path(QWEN, "Q8_0")
+    assert Path(got["path"]) == snap / QWEN_FILE
+    got = _path(QWEN, "")
+    assert Path(got["path"]) == snap / "Qwen3-TTS-12Hz-0.6B-Base-GGUF"
+    assert got["is_dir"] is True
+    revealed = []
+    monkeypatch.setattr(rm.account_access, "require_installation_owner", lambda: None)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: revealed.append(path))
+    asyncio.run(rm.reveal_cached_model(repo_id = QWEN, variant = None, current_subject = "x"))
+    assert revealed == [snap / "Qwen3-TTS-12Hz-0.6B-Base-GGUF"]
+    with pytest.raises(HTTPException) as err:
+        _path(QWEN, "Q4_K_M")
+    assert err.value.status_code == 404
+    # Ordinary malformed ids are still refused.
+    with pytest.raises(HTTPException) as err:
+        _path("a/b/c", "")
+    assert err.value.status_code == 400
+
+
+def test_cached_path_of_a_folder_only_in_an_older_snapshot(hub):
+    kokoro_q4 = {"Kokoro-82M-GGUF/kokoro-82m-q4_0.gguf": "kokoro_tts"}
+    newer = _add_snapshot(hub, "b" * 40, kokoro_q4, main = True)
+    older = hub / SNAPSHOT
+    acm.forget()
+    got = _path(QWEN, "")
+    assert Path(got["path"]) == older / "Qwen3-TTS-12Hz-0.6B-Base-GGUF"
+    assert Path(got["path"]).parent != newer
+
+
+def test_cached_gguf_lists_each_umbrella_folder_beside_the_repo_row(hub):
+    from hub.schemas.inventory import CachedGgufResponse
+    from hub.services.models import cache_inventory
+
+    aligner = "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf"
+    _add_snapshot(hub, "a" * 40, {aligner: "qwen3_forced_aligner"}, main = True)
+    rows = {row["repo_id"]: row for row in cache_inventory._scan_cached_gguf()}
+    # A companion with no Audio page of its own is managed through the repo row only.
+    assert f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF" not in rows
+    assert AUDIO_CPP_REPO in rows
+    assert not rows[AUDIO_CPP_REPO].get("umbrella_folder")
+    assert {QWEN, KOKORO, ASR} <= set(rows)
+    qwen, kokoro, asr = rows[QWEN], rows[KOKORO], rows[ASR]
+    assert qwen["umbrella_folder"] is True
+    assert qwen["load_id"] == QWEN
+    assert qwen["task"] == "text-to-speech"
+    assert qwen["audio_type"] == "audiocpp_tts"
+    assert qwen["audio_workflows"] == ["clone"]
+    assert kokoro["audio_workflows"] == ["speak"]
+    assert asr["task"] == "automatic-speech-recognition"
+    assert qwen["capabilities"]["can_chat"] is False
+    assert qwen["inventory_id"] != rows[AUDIO_CPP_REPO]["inventory_id"]
+    qwen_size = (hub / SNAPSHOT / QWEN_FILE).stat().st_size
+    assert qwen["size_bytes"] == qwen_size
+    folders = sum(rows[r]["size_bytes"] for r in (QWEN, KOKORO, ASR))
+    assert folders <= rows[AUDIO_CPP_REPO]["size_bytes"]
+    dumped = CachedGgufResponse(cached = list(rows.values())).model_dump()
+    flags = {row["repo_id"]: row["umbrella_folder"] for row in dumped["cached"]}
+    assert flags[QWEN] is True and flags[AUDIO_CPP_REPO] is False
+
+
+@pytest.mark.parametrize("local_path", [None, QWEN, "cache"])
+def test_variants_of_a_folder_row_list_whatever_local_path_the_picker_sends(hub, local_path):
+    from hub.services.models import gguf_variants
+
+    if local_path == "cache":
+        local_path = str(hub / "models--audio-cpp--audio.cpp-gguf")
+    answer = asyncio.run(
+        gguf_variants.get_gguf_variants_answer(QWEN, offline = True, local_path = local_path)
+    )
+    assert [(v.quant, v.downloaded) for v in answer.response.variants] == [("Q8_0", True)]
+
+
+def test_a_multi_size_folder_matches_the_hub_key_against_its_one_cached_size(hub):
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    key = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
+    _add_snapshot(hub, "a" * 40, {f"{key}.gguf": "moonshine_asr"}, main = True)
+    acm.forget()
+    # The picker names the quant from the Hub listing; the cache holds only the tiny size.
+    assert acm.cached_folder_target(moon, "tiny/Q8_0") == (AUDIO_CPP_REPO, [key])
+    assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [key])
+    assert acm.cached_folder_target(moon, "small/Q8_0") == (AUDIO_CPP_REPO, [])
+    assert acm.cached_folder_target(f"{moon}/tiny", None) == (AUDIO_CPP_REPO, [key])
+
+
+def test_a_loaded_model_holds_the_folder_it_loads_as_a_companion(monkeypatch):
+    from hub.services.models import deletion
+
+    codec = acm.FAMILIES["miotts"].companions[0].id
+    miotts = f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF"
+    monkeypatch.setattr(
+        acm,
+        "resolve",
+        lambda identifier, *a, **k: SimpleNamespace(companions = acm.FAMILIES["miotts"].companions)
+        if identifier.startswith(miotts)
+        else None,
+    )
+    _idle(monkeypatch, active = f"{miotts}:Q8_0")
+    assert deletion._audio_cpp_blocks_delete(codec) is True
+    assert deletion._audio_cpp_blocks_delete(KOKORO) is False

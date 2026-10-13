@@ -334,6 +334,9 @@ class CachedGgufRepo(CachedRepoBase):
             "watching for on-disk change need this to notice it."
         ),
     )
+    # One folder of the audio.cpp umbrella repo, listed for the Audio pages; the Model Hub keeps
+    # the repo's own row.
+    umbrella_folder: bool = False
 
 
 class CachedGgufResponse(BaseModel):

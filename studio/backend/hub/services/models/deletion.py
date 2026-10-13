@@ -910,6 +910,25 @@ async def delete_cached_model_response(
     become an installed checkpoint since the list the caller is acting on was built.
     """
     account_access.require_installation_owner()
+    from core.inference.audio_cpp_models import cached_folder_target, folder_row_for_download
+
+    # An umbrella folder row is one subfolder of audio-cpp/audio.cpp-gguf: delete its own variant
+    # keys one at a time, never the repo, which holds every other folder too.
+    folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
+    if folder is not None:
+        umbrella, keys = folder
+        if not keys:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+        result: dict = {}
+        for key in keys:
+            result = await delete_cached_model_response(
+                umbrella,
+                key,
+                hf_token,
+                cache_path,
+                only_if_orphan = only_if_orphan,
+            )
+        return {**result, "repo_id": repo_id, "variant": variant}
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -918,16 +937,18 @@ async def delete_cached_model_response(
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    # One umbrella folder's variant is blocked only by that folder being loaded.
+    guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant) or (
-            _inference_backend_blocks_delete(repo_id)
+        if _llama_cpp_blocks_delete(guard_id, variant) or (
+            _inference_backend_blocks_delete(guard_id)
         ):
             return "Unload the model before deleting"
-        if _audio_cpp_blocks_delete(repo_id):
+        if _audio_cpp_blocks_delete(guard_id):
             return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -998,15 +1019,32 @@ async def delete_cached_model_response(
 def _audio_cpp_blocks_delete(repo_id: str) -> bool:
     """Whether an audio.cpp model from this repo is resident or loading. An umbrella id names a
     subfolder of the repo, so the id comparisons of the other guards never match it."""
-    from core.inference.audio_cpp_models import repo_of
+    from core.inference.audio_cpp_models import (
+        is_umbrella_id,
+        parse_identifier,
+        resolve,
+        split_variant_ref,
+    )
     from core.inference.orchestrator import peek_inference_backend
     from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
 
     wanted = (repo_id or "").strip().lower()
 
     def holds(name) -> bool:
-        repo = repo_of(name) if isinstance(name, str) else None
-        return bool(repo and repo.lower() == wanted)
+        if not isinstance(name, str):
+            return False
+        base = split_variant_ref(name)[0]
+        ref = parse_identifier(base) if not base.lower().endswith(".gguf") else None
+        if ref is None or not ref.repo_id:
+            return False
+        # The whole repo is held by any of its folders; one folder by itself or by a model that loads
+        # it as a companion (MioTTS opens MioCodec).
+        if wanted in (ref.repo_id.lower(), ref.id.lower()):
+            return True
+        if not is_umbrella_id(wanted):
+            return False
+        model = resolve(base, network = False)
+        return bool(model and any(c.id.lower() == wanted for c in model.companions))
 
     backend = peek_inference_backend()
     active = getattr(backend, "active_model_name", None) if backend is not None else None

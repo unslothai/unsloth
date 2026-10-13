@@ -1162,7 +1162,10 @@ async def get_gguf_variants_answer(
                 account_access.require_model_access, local_path, **access_options
             )
     hf_token = account_access.account_hf_token(hf_token)
-    if not local_path:
+    from core.inference.audio_cpp_models import is_umbrella_id
+
+    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path.
+    if not local_path or is_umbrella_id(repo_id):
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
         if audio_cpp_answer is not None:
             return audio_cpp_answer

@@ -478,3 +478,31 @@ test("keeps .gguf on Hub repo ids, which are not file paths", () => {
   assert.equal(modelDisplayName("/srv/Qwen3-Q4.gguf"), "Qwen3-Q4");
   assert.equal(modelDisplayName(String.raw`C:\models\Qwen3-Q4.gguf`), "Qwen3-Q4");
 });
+
+test("an audio.cpp umbrella folder id is a Hub id, not a path", () => {
+  // Mirrors the umbrella exemption in model_ids._looks_like_path.
+  const folder = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(publicModelId(folder), folder);
+  assert.equal(modelDisplayName(folder), "Qwen3-TTS-12Hz-0.6B-Base-GGUF");
+  assert.equal(residentModelIdMatches(folder, folder), true);
+  assert.equal(
+    residentModelIdMatches(folder.toUpperCase(), folder),
+    true,
+  );
+  assert.equal(
+    residentModelIdMatches(folder, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"),
+    false,
+  );
+  // A folder never stands in for the umbrella snapshot, or the reverse.
+  const snapshot =
+    "/c/hub/models--audio-cpp--audio.cpp-gguf/snapshots/abc123";
+  assert.equal(residentModelIdMatches(folder, snapshot), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", folder), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", snapshot), true);
+  // Still a path once it names a file or climbs out of the repo.
+  assert.equal(
+    publicModelId("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF/kokoro-Q8_0.gguf"),
+    "kokoro-Q8_0",
+  );
+  assert.equal(publicModelId("audio-cpp/audio.cpp-gguf/../x"), "x");
+});
