@@ -179,8 +179,7 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
-        # Only file and shell tools: the full set is ~16k tokens, most of a small window. This also drops
-        # the human-blocking tools, and the read-only side gets no writer since plan mode is not a write barrier.
+        # The full tool set (~16k tokens) fills a small window; plan mode is no write barrier, so read-only gets no writer.
         "--tools",
         "Read,Grep,Glob" if read_only else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
         "--append-system-prompt",
