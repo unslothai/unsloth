@@ -703,7 +703,6 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
         }
-        // The composer matches these by extension and reads them on the server.
         other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
             Some("application/octet-stream")
         }

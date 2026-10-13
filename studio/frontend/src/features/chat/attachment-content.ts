@@ -2062,8 +2062,7 @@ export async function readAttachmentText(
   name: string,
   contentType: string | undefined,
 ): Promise<AttachmentText> {
-  // First, as in the adapters: text would claim a .mht sent as message/rfc822.
-  // An .odt/.ods past the browser reader's ceiling was attached through the server; reuse that read.
+  // Before text, which claims a .mht sent as message/rfc822; a large .odt/.ods reuses its server read.
   if (
     isServerDocumentAttachmentName(name) ||
     (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES && isOpenDocumentAttachment(name, contentType)) ||

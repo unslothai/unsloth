@@ -903,8 +903,7 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     // Loaded on use: the first screen has no document to read.
     const text = import("./server-document").then((m) => m.extractServerDocumentText(file));
     return text.catch((cause: unknown) => {
-      // Only formats whose originals the python tool can keep at this size (200 MB). A textless PDF here is
-      // past the 50 MB PDF originals cap (chat_originals.max_bytes), so it is refused instead.
+      // Not PDFs: their originals stop at 50 MB (chat_originals.max_bytes), so a textless one here is refused.
       if (
         (cause as Error | undefined)?.name === "NoDocumentTextError" &&
         isToolOnlyAttachmentName(file.name) &&
