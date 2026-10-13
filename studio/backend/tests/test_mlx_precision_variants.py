@@ -563,3 +563,19 @@ def test_a_caller_refused_the_cache_learns_nothing_from_it(monkeypatch, tmp_path
     # Offline, the cache is the only source, so nothing is listed.
     answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO, offline = True))
     assert not answer.response.variants
+
+
+def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+
+    folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO, offline = True))
+    assert [(v.quant, v.downloaded) for v in answer.response.variants] == [("6-bit", True)]
+    assert answer.response.variant_format == "mlx"
+    # A repo with nothing usable cached still answers 404, as before.
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(gguf_variants.get_gguf_variants_answer("org/absent", offline = True))
+    assert missing.value.status_code == 404

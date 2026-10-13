@@ -2421,7 +2421,19 @@ async def get_gguf_variants_answer(
             if mlx_answer is not None:
                 return mlx_answer
         return answer
-    except HTTPException:
+    except HTTPException as exc:
+        # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.
+        if (
+            offline
+            and exc.status_code == 404
+            and not local_path
+            and not hub_cached_read_refused(
+                hf_token, repo_id = repo_id, is_cached = lambda: True, offline = True
+            )
+        ):
+            mlx_answer = await _mlx_precision_variants_answer(repo_id, hf_token, True)
+            if mlx_answer is not None:
+                return mlx_answer
         raise
     except Exception as e:
         scrubbed = modelscope_missing(e) or download_registry.scrub_secrets(
