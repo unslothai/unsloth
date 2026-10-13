@@ -692,6 +692,10 @@ def _assert_video_precision_for_target(
         and h3_te_quant_scheme(te_mode) is not None
     ):
         return
+    # LTX-2.5's encoder worker quantizes its own Gemma 4 (ConvRot INT8: plain tensors and an F.linear, no torchao);
+    # validate_load_request already refused every other scheme.
+    if getattr(fam, "name", None) == "ltx-2.5":
+        return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
     if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
@@ -3337,11 +3341,11 @@ class VideoBackend:
         normalize_transformer_quant(transformer_quant)
         # Reject a malformed text_encoder_quant the same way. Every kind: an unsupported scheme is a bad request
         # regardless of whether this family has a hosted quantized encoder for it.
-        if normalize_te_quant(text_encoder_quant) is not None and fam.name == "ltx-2.5":
-            raise ValueError(
-                "LTX-2.5's Gemma 4 text encoder runs in its own worker at bf16, so a text encoder "
-                "precision cannot be applied to it yet. Leave the text encoder precision unset."
-            )
+        if fam.name == "ltx-2.5":
+            from .video_ltx25 import ltx25_te_quant_scheme
+
+            # int8 (ConvRot, opt-in) or bf16 (unset); any other scheme is refused here.
+            ltx25_te_quant_scheme(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -7056,7 +7060,11 @@ class VideoBackend:
         ltx25_dev = False
         if fam.name == "ltx-2.5":
             from .video_families import ltx25_is_dev
-            from .video_ltx25 import encoder_resident_for_plan, start_text_encoder
+            from .video_ltx25 import (
+                encoder_resident_for_plan,
+                ltx25_te_quant_scheme,
+                start_text_encoder,
+            )
 
             ltx25_dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
             # A stale load's pending worker goes only while this load is current; a superseded load that resumes here
@@ -7076,6 +7084,7 @@ class VideoBackend:
                 dtype = str(dtype).replace("torch.", ""),
                 resident = encoder_resident_for_plan(plan),
                 budget_mib = (getattr(plan, "estimates", None) or {}).get("safe_device_budget_mib"),
+                te_quant = ltx25_te_quant_scheme(text_encoder_quant),
             )
             # Installed only while this load is current: a load superseded during the start must not overwrite the
             # newer load's worker (whose token-scoped cleanup could then never find it).
@@ -7127,7 +7136,8 @@ class VideoBackend:
         # an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that OOMs.
         # Placement is applied post-assembly (apply_memory_plan below), so re-plan at bf16 here, exactly as the
         # dense-quant fallback below restores bf16_plan.
-        if te_scale != 1.0 and not te_injected:
+        # LTX-2.5's scale is its worker's own int8 encoder, never an injected one.
+        if te_scale != 1.0 and not te_injected and fam.name != "ltx-2.5":
             logger.warning(
                 "video.te_prequant_budget: no pre-cast encoder was injected; re-planning "
                 "memory at the dense bf16 text-encoder size"
@@ -7705,14 +7715,20 @@ class VideoBackend:
 
         # dense text-encoder quant (opt-in): the companion encoder is often the largest resident, so quantise it in
         # place before placement, for every kind. Best-effort.
-        text_encoder_outcome = quantize_text_encoders(
-            pipe,
-            target,
-            mode = text_encoder_quant,
-            family = fam.name,
-            offload_active = plan.offload_policy != "none",
-            logger = logger,
-        )
+        if ltx25_client is not None:
+            from .video_ltx25 import ltx25_te_outcome
+
+            # LTX-2.5's encoder lives in its worker, which quantized it (or not) at load.
+            text_encoder_outcome = ltx25_te_outcome(ltx25_client)
+        else:
+            text_encoder_outcome = quantize_text_encoders(
+                pipe,
+                target,
+                mode = text_encoder_quant,
+                family = fam.name,
+                offload_active = plan.offload_policy != "none",
+                logger = logger,
+            )
         text_encoder_quant_engaged = text_encoder_outcome.mode
         if (
             (text_encoder_quant_engaged is None or text_encoder_outcome.partial)

@@ -162,6 +162,36 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
     module.weight.data = (blocks @ h.T).reshape(out_features, in_features).to(weight.dtype)
 
 
+def quantize_convrot_int8_weight(weight: Any, group_size: int) -> tuple[Any, Any]:
+    """``(int8 codes [out, in], float32 per-row scale [out, 1])`` of ``W @ blockdiag(H).T``.
+
+    The weight half of ComfyUI's ``int8_tensorwise`` + ``convrot`` layout (comfy-kitchen
+    ``quantize_int8_convrot_weight``): rotate in float32, per-output-row absmax / 127, round half to
+    even, clamp to [-128, 127]. Checked against Lightricks' own ``*-comfy-int8-convrot`` LTX-2.5
+    text encoder: the same codes up to float32 rounding ties (at most 1 code in ~1e-7 of the
+    entries) and the same scales to 1 ulp. Float32 on purpose: rotating in bfloat16 changes ~9% of
+    the codes. TF32 is switched off for the rotation for the same reason."""
+    import torch
+
+    out_features, in_features = weight.shape
+    if in_features % group_size:
+        raise ValueError(
+            f"in_features {in_features} is not divisible by the ConvRot group {group_size}"
+        )
+    h = build_convrot_hadamard(group_size, device = weight.device, dtype = torch.float32)
+    blocks = weight.float().reshape(out_features, in_features // group_size, group_size)
+    tf32 = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        rotated = (blocks @ h.T).reshape(out_features, in_features)
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = tf32
+    del blocks
+    scale = (rotated.abs().amax(dim = -1, keepdim = True) / 127.0).clamp(min = 1e-30)
+    codes = rotated.div_(scale).round_().clamp_(-128.0, 127.0).to(torch.int8)
+    return codes, scale
+
+
 @lru_cache(maxsize = None)
 def convrot_linear_class() -> Any:
     """The ``nn.Linear`` subclass that rotates its input, built lazily so importing this module

@@ -154,9 +154,86 @@ def _load(config: dict) -> tuple[Any, Any]:
         )
     model.eval()
     model.requires_grad_(False)
+    if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
+        quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
+    elif config.get("te_quant"):
+        raise RuntimeError(f"unsupported text encoder precision '{config.get('te_quant')}'")
     if config.get("resident"):
         model.to(config["device"])
     return tokenizer, model
+
+
+# ComfyUI's LTX-2.5 workflows load ``gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors``: every decoder
+# layer's attention and MLP projection INT8 (per-row float32 scale) in a block-Hadamard rotated basis, group 256, the
+# rest bf16. The same quantization is made here from the bf16 weights already on disk, so no second 15 GB download.
+TE_QUANT_INT8_CONVROT = "int8"
+CONVROT_GROUP = 256
+_PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def _decoder_layers(model: Any) -> Any:
+    inner = getattr(model, "model", model)
+    language = getattr(inner, "language_model", inner)
+    layers = getattr(language, "layers", None)
+    if layers is None:
+        raise RuntimeError("the Gemma 4 encoder has no language_model.layers to quantize")
+    return layers
+
+
+def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = False) -> int:
+    """Swap every decoder-layer projection for the weight-only ConvRot INT8 linear, in place; the number swapped.
+
+    Each weight is rotated and quantized on ``device`` when it is an accelerator (seconds, not minutes of CPU matmuls).
+    ``resident``: each decoder layer moves onto ``device`` first and is quantized there, so the card peaks at the int8
+    encoder plus one bf16 layer and the host frees the bf16 weights layer by layer, as the plain ``model.to`` does.
+    Otherwise the codes land on the host, and the tensors left there are copied out of the checkpoint's memory map:
+    the map stays alive (and every page the quantization read stays resident) while any tensor still points into it."""
+    import torch
+    from torch import nn
+
+    from core.inference.diffusion_convrot import quantize_convrot_int8_weight
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class
+
+    cls = _int8_convrot_linear_class()
+    work = torch.device(str(device))
+    if work.type not in ("cuda", "xpu") or not getattr(torch, work.type).is_available():
+        work = torch.device("cpu")
+    on_card = resident and work.type != "cpu"
+    swapped = 0
+    quantized: set = set()
+    for layer in _decoder_layers(model):
+        if on_card:
+            layer.to(work)
+        for parent in (getattr(layer, "self_attn", None), getattr(layer, "mlp", None)):
+            if parent is None:
+                continue
+            for name in _PROJECTIONS:
+                linear = getattr(parent, name, None)
+                if not isinstance(linear, nn.Linear):
+                    continue
+                home = linear.weight.device
+                codes, scale = quantize_convrot_int8_weight(linear.weight.detach().to(work), CONVROT_GROUP)
+                new = cls(linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP)
+                new.weight = codes.to(home)
+                new.weight_scale = scale.to(home)
+                if linear.bias is not None:
+                    new.bias = linear.bias.detach().to(device = home, dtype = torch.bfloat16)
+                setattr(parent, name, new)
+                quantized.add(id(new))
+                swapped += 1
+                del linear, codes, scale
+    if swapped == 0:
+        raise RuntimeError("no Gemma 4 decoder projection could be quantized")
+    if not on_card:
+        with torch.no_grad():
+            for module in model.modules():
+                if id(module) in quantized:
+                    continue
+                for table in (module._parameters, module._buffers):
+                    for key, tensor in table.items():
+                        if tensor is not None and tensor.device.type == "cpu":
+                            tensor.data = tensor.data.clone()
+    return swapped
 
 
 # Room an onloaded encode needs beyond the weights: every hidden state stacked for the packed embeddings (49 x 1024 x
@@ -171,6 +248,13 @@ def _weights_mib(model: Any) -> int:
     for tensor in list(model.parameters()) + list(model.buffers()):
         total += tensor.numel() * tensor.element_size()
     return total >> 20
+
+
+def _weights_mib_or_none(model: Any) -> Optional[int]:
+    try:
+        return _weights_mib(model)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return None
 
 
 def _encode_device(
@@ -301,6 +385,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     getattr(model.config, "text_config", model.config), "hidden_size", None
                 ),
                 "resident": bool(config.get("resident")),
+                "te_quant": config.get("te_quant") or None,
+                "weights_mib": _weights_mib_or_none(model),
                 **_memory_stats(config.get("device") or ""),
             }
         )
