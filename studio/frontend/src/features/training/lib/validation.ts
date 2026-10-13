@@ -44,11 +44,28 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || config.isDatasetAudio === true);
+  return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
+}
+
+/**
+ * On a Mac a Clef's trainer reads the audio in its own rows and reports the ones the model cannot
+ * hear, so the chat audio path's limits do not apply. Elsewhere, and for Laya, audio rows would be
+ * trained on as text alone.
+ */
+function hasChatAudioRows(
+  config: TrainingConfigState,
+  deviceType?: string,
+): boolean {
+  const clefReadsRows =
+    deviceType === "mac" &&
+    config.modelType === "decision" &&
+    config.decisionLayout === "clef";
+  return config.isDatasetAudio === true && !clefReadsRows;
 }
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
+  deviceType?: string,
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
@@ -58,7 +75,7 @@ export function hasIncompatibleTrainingModalities(
     // real download error, which is what a gated text model already does.
     (!config.audioCapabilityUnknown &&
       !config.isAudioModel &&
-      config.isDatasetAudio === true)
+      hasChatAudioRows(config, deviceType))
   );
 }
 

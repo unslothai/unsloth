@@ -294,7 +294,8 @@ export function buildTrainingStartPayload(
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
-    is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
+    // The decision trainer reads its rows itself; this flag selects the chat audio path.
+    is_dataset_audio: isEmbedding || isDecision ? false : config.isDatasetAudio,
     is_embedding: isEmbedding && !isDecision,
     is_decision: isDecision,
     model_subfolder: isDecision ? config.modelSubfolder : null,

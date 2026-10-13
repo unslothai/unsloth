@@ -14,8 +14,13 @@ registerStoreStubResolver();
 installLocalStorageFake();
 
 const yaml = await import("js-yaml");
-const { DEFAULT_HYPERPARAMS, LR_DEFAULT_DECISION_FULL, LR_DEFAULT_LORA } =
-  await import("../src/config/training.ts");
+const {
+  DEFAULT_HYPERPARAMS,
+  LR_DEFAULT_DECISION_FULL,
+  LR_DEFAULT_LORA,
+  applyPriorityOrdering,
+  priorityTrainingModels,
+} = await import("../src/config/training.ts");
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { useTrainingConfigStore } = await import(
   "../src/features/training/stores/training-config-store.ts"
@@ -28,6 +33,9 @@ const { DatasetFormatError } = await import(
 );
 const { validateTrainingConfig } = await import(
   "../src/features/training/lib/validation.ts"
+);
+const { classifyUnslothSupport } = await import(
+  "../src/features/hub/lib/unsloth-support.ts"
 );
 const { deriveTrainingReadiness } = await import(
   "../src/features/training/hooks/use-training-readiness.ts"
@@ -525,6 +533,62 @@ test("the model picker knows Laya is a decision model before its config loads", 
   assert.equal(modelType, "decision");
   assert.equal(isTrainingModelTypeSupportedOnDevice(modelType, "mac"), true);
   assert.equal(isTrainingModelTypeSupportedOnDevice(modelType, "cuda"), true);
+});
+
+test("a Mac lists Clef Omni and trains it on rows that carry audio", () => {
+  const omni = "mlx-community/clef-omni-8bit";
+  const metadata = {
+    pipelineTag: "zero-shot-classification",
+    tags: ["mlx", "safetensors", "qwen3_omni_moe", "clef", "audio", "video"],
+  };
+  assert.equal(
+    inferTrainingModelTypeFromFlags(
+      trainingModelTypeFlagsFromMetadata({
+        pipelineTag: "image-text-to-text",
+        tags: ["clef", "text-to-audio"],
+      }),
+    ),
+    "decision",
+  );
+  assert.equal(
+    inferTrainingModelTypeFromFlags(trainingModelTypeFlagsFromMetadata(metadata)),
+    "decision",
+  );
+  const support = classifyUnslothSupport({
+    modelId: omni,
+    libraryName: "mlx",
+    deviceType: "mac",
+    ...metadata,
+  });
+  assert.equal(support.status, "supported");
+  assert.equal(priorityTrainingModels("cuda").includes(omni), false);
+  assert.deepEqual(applyPriorityOrdering(["unsloth/x", omni, LAYA], "mac"), [
+    LAYA,
+    omni,
+    "unsloth/x",
+  ]);
+
+  const config = {
+    ...useTrainingConfigStore.getState(),
+    ...HF_DECISION_DATASET,
+    selectedModel: omni,
+    modelType: "decision" as const,
+    decisionLayout: "clef" as const,
+    isDatasetAudio: true,
+  };
+  assert.equal(deriveTrainingReadiness(config, "mac", true).isReady, true);
+  // The backend refuses the chat audio flag on a Mac, and the decision trainer never reads it.
+  assert.equal(buildTrainingStartPayload(config, null).is_dataset_audio, false);
+  // Only the MLX Clef trainer reads the clips: Laya, another device and a chat model would not.
+  for (const [other, device] of [
+    [{ decisionLayout: "laya" as const }, "mac"],
+    [{}, "cuda"],
+    [{ modelType: "text" as const }, "mac"],
+  ] as const) {
+    const blocked = deriveTrainingReadiness({ ...config, ...other }, device, true);
+    assert.equal(blocked.isReady, false);
+    assert.equal(blocked.isIncompatible, true);
+  }
 });
 
 test("only the Studio owner can start a decision run", () => {
