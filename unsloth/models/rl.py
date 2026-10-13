@@ -2309,6 +2309,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 v = re.escape("\n")
             if v is EMPTY:
                 arguments.append(k)
+            elif type(v) is str and v != re.escape("\n") and ("\n" in v or "'" in v):
+                # A newline or quote ends the bare '...' literal early (SDFT's teacher_prompt_template).
+                arguments.append(f"{k} = {v!r}")
             elif type(v) is str:
                 arguments.append(f"{k} = '{v}'")
             elif type(v) in types:
@@ -3026,6 +3029,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_steps"] = 0.1
     else:
         replacements["warmup_ratio"] = 0.1
+    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group.
+    if trainer_file == "gold_trainer":
+        replacements.pop("num_generations")
+    # SDFT needs the eval batch divisible by num_generations (8).
+    if trainer_file == "sdft_trainer":
+        replacements.pop("per_device_eval_batch_size")
 
     for k, v in replacements.items():
         x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
@@ -3239,7 +3248,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
+    # GOLD: TRL already checks generation_batch_size * num_generations == batch * grad accum.
+    elif (
+        "per_device_train_batch_size" in call_args
+        and "num_generations" in call_args
+        and trainer_file != "gold_trainer"
+    ):
         if "steps_per_generation" not in call_args:
             print(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
         if "generation_batch_size" not in call_args:
@@ -3529,6 +3543,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
 
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
+    # The generated module has no package: make function-level relative imports (ServerDistillationTrainer.__init__) absolute.
+    _source_package = getattr(inspect.getmodule(RLTrainer), "__package__", None)
+    if _source_package:
+        RLTrainer_source = re.sub(
+            r"^([ \t]*from[ \t]+)(\.+[\w.]*)([ \t]+import[ \t])",
+            lambda m: m.group(1)
+            + importlib.util.resolve_name(m.group(2), _source_package)
+            + m.group(3),
+            RLTrainer_source,
+            flags = re.MULTILINE,
+        )
 
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
@@ -3969,16 +3995,20 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     return RLTrainer_source
 
 
-# TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer.
+# TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+# Not async_distillation: it loads the student from a model name, so an Unsloth model never reaches it.
 _TRL_EXPERIMENTAL_TRAINERS = (
     "bco",
     "cpo",
     "gkd",
+    "gold",
     "nash_md",
     "online_dpo",
     "orpo",
     "ppo",
     "prm",
+    "sdft",
+    "server_distillation",
     "xpo",
 )
 

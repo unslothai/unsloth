@@ -3887,7 +3887,9 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
             "Unsloth: This model has LoRA layers, but the save method was called on the "
             "base model. This happens when the adapter is attached with "
             "`peft.PeftModel.from_pretrained`. Load the adapter folder with "
-            "`FastModel.from_pretrained(<adapter folder>)` instead."
+            "`FastModel.from_pretrained(<adapter folder>)` instead. If the adapter was added with "
+            "`peft.get_peft_model` (VeRA, LoHa, AdaLoRA, ...), run `model = model.merge_and_unload()` "
+            "first, then save."
         )
 
 

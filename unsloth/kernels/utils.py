@@ -351,6 +351,12 @@ def _has_active_dora_adapter(proj):
     return any(adapter in magnitude for adapter in adapters)
 
 
+def _has_non_lora_adapter(proj):
+    # VeRA, LoHa, LoKr, IA3, OFT and AdaLoRA layers from peft.get_peft_model hold no lora_A Linears (#1385).
+    modules = proj._modules
+    return "base_layer" in modules and not isinstance(modules.get("lora_A"), torch.nn.ModuleDict)
+
+
 def _has_active_lora_bias(proj):
     # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
     lora_B = getattr(proj, "lora_B", None)
@@ -1387,7 +1393,8 @@ def fast_linear_forward(
     out = None,
 ):
     if (
-        _has_multiple_active_adapters(proj)
+        _has_non_lora_adapter(proj)
+        or _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)

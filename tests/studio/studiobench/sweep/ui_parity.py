@@ -825,6 +825,7 @@ def visible_report(
     unstable: frozenset[tuple[str, str]] = frozenset(),
     select: Optional[set] = None,
     min_reps: int = 1,
+    declared_ui_change: bool = False,
 ) -> Outcome:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
 
@@ -944,9 +945,16 @@ def visible_report(
             "\n  NOTHING WAS COMPARED. Not one action pair yielded a visible-region verdict, so\n"
             "  this run carries no UI verdict at all -- neither a pass nor a failure."
         )
-    if differing or build_failed:
+    # See the same three lines in `behaviour_report` and `report`: the diagnosis prints, then a
+    # failure outranks a refusal.
+    if build_failed or (differing and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
-    if matched == 0:
+    if differing:
+        print(
+            "\n  DECLARED UI CHANGE: the PR says it changes the screen (--declared-ui-change), so the "
+            "rendering differences above are reported, not failed. Behaviour differences still fail."
+        )
+    if matched == 0 and not differing:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
@@ -1616,6 +1624,7 @@ def report(
     select: Optional[set] = None,
     min_reps: int = 1,
     min_compared: int = 0,
+    declared_ui_change: bool = False,
 ) -> Outcome:
     """THREAD-STRUCTURE PARITY. `select` scores only those pair keys; see `decide_modes`.
 
@@ -1871,11 +1880,22 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    # A one-sided action fails like a differing digest; `expect_bad` is collected earlier.
-    if stable_bad or one_sided or expect_bad:
+    # A one-sided action is a failure on the same footing as a differing digest: the two builds
+    # behaved differently and the difference leaves no digest to compare.
+    # `expect_bad` is collected ahead of the verdict branches.
+    if one_sided or expect_bad or (stable_bad and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
-    # Exit 2 when nothing was decided, checked after the failure return.
-    if decided == 0:
+    if stable_bad:
+        print(
+            "\n  DECLARED UI CHANGE: the PR says it changes the screen (--declared-ui-change), so the "
+            "rendering differences above are reported, not failed. Behaviour differences still fail."
+        )
+
+    # 2, the same code the empty-payload path uses: the tool was asked a question it could not
+    # answer, and exiting 0 would let CI go green on a run structurally incapable of firing.
+    # `decided`, not `matched`. AFTER the failure return, since "it failed" is more specific.
+    # A declared difference was decided too: a wrapper change can differ on every pair.
+    if decided == 0 and not stable_bad:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
@@ -2079,6 +2099,12 @@ def main(argv: list[str] | None = None) -> int:
         "excuse needs no excuse. Uses --min-reps, so pass the verdict's own value",
     )
     ap.add_argument(
+        "--declared-ui-change",
+        action = "store_true",
+        help = "the PR declares that it changes the screen: rendering differences are reported, not "
+        "failed. One-arm-only actions, failed action assertions and behaviour differences still fail",
+    )
+    ap.add_argument(
         "--allow-undecided",
         metavar = "ACTIONS",
         dest = "allow_undecided",
@@ -2191,7 +2217,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 floor = frozenset()
             vis = visible_report(
-                paths, f"UI PARITY: {pattern}", floor, select = win, min_reps = args.min_reps
+                paths,
+                f"UI PARITY: {pattern}",
+                floor,
+                select = win,
+                min_reps = args.min_reps,
+                declared_ui_change = args.declared_ui_change,
             )
             worst = max(worst, int(vis))
             windowed_compared = frozenset(vis.compared)
@@ -2316,9 +2347,21 @@ def main(argv: list[str] | None = None) -> int:
                 f"{len(select) + len(entry['windowed'])})"
             )
         scored_structural += len(select) if select is not None else 0
-        # `select` is the fourth positional. `min_compared` is not passed down: it is applied once
-        # across reports, not per report.
-        struct = report(paths, label, effective, select, args.min_reps)
+        # BOTH SIDES OF THE MERGE, and the argument list is why this had to be read rather than chosen:
+        # `select` is the FOURTH positional and the incoming call omitted it, which would have bound
+        # `args.min_reps` to `select` and left the coverage floor at 0. `min_compared` is deliberately NOT
+        # passed down any more: a floor applied inside each report is checked per report, so a run
+        # comparing nine windowed and nine structural pairs would fail a floor of sixteen twice over.
+        # `args.min_compared` was the argument that went missing.
+        # `report` (`elif decided == 0`) and `visible_report` (`and not not_run`) each check their own.
+        struct = report(
+            paths,
+            label,
+            effective,
+            select,
+            args.min_reps,
+            declared_ui_change = args.declared_ui_change,
+        )
         worst = max(worst, int(struct))
         note(pattern, struct)
     # Worst outcome wins across payloads.

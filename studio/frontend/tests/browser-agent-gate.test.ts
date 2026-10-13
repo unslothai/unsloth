@@ -122,8 +122,13 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
   assert.equal(gateElement("click", element({ name: "Post reply" }), page, open, NONE).kind, "ask");
   assert.equal(gateElement("click", element({ name: "Show more results" }), page, open, NONE).kind, "allow");
   const login = element({ name: "Continue", submits: true, formMethod: "post", formAction: "https://shop.example/login", formHasPassword: true });
-  const signIn = gateElement("click", login, page, open, NONE);
+  // Only a password the user filled in makes it a sign-in; an empty one still asks, as sending a form.
+  const signIn = gateElement("click", { ...login, formPasswordFilled: true }, page, open, NONE);
   assert.ok(signIn.kind === "ask" && signIn.ask === "signIn");
+  const emptyPassword = { ...login, formMethod: "get" };
+  const send = gateElement("click", emptyPassword, page, open, NONE);
+  assert.ok(send.kind === "ask" && send.ask === "submit" && send.prompt === "Submit this form on shop.example?");
+  assert.equal(gateElement("click", { ...emptyPassword, formHasPassword: false }, page, open, NONE).kind, "allow");
   const comment = element({ name: "Save", submits: true, formMethod: "post", formAction: "https://shop.example/c" });
   assert.ok(gateElement("click", comment, page, open, NONE).kind === "ask");
   const search = element({ role: "searchbox", tag: "input", name: "Search", formAction: "https://shop.example/s" });

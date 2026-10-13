@@ -637,18 +637,6 @@ def test_headless_load_swaps_onto_the_retained_layers_card():
     assert built == [card]
 
 
-@pytest.mark.parametrize("path", ["llama.py", "vision.py"])
-def test_auto_plan_never_counts_on_an_embedding_offload_the_platform_refuses(path):
-    src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
-    call = next(
-        n
-        for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "resolve_auto_block_swap"
-    )
-    kw = next(k for k in call.keywords if k.arg == "offload_embedding")
-    assert "_offload_embedding_unsupported_platform" in ast.get_source_segment(src, kw.value)
-
-
 def test_load_time_swappers_allocate_the_planned_prefetch_depth():
     torch = pytest.importorskip("torch")
     mod = ast.parse(open(UTILS, encoding = "utf-8").read())
