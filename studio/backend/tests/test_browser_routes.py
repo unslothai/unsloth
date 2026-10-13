@@ -105,8 +105,8 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     # A real browser resolves against the document URL when the page has no <base>; checked in
     # Chromium, as this suite has no browser to run the shell in.
     shell = browser_mod._FRAME_HTML
-    assert "base: data.base || null" in shell
-    assert 'cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null' in shell
+    assert "ownBase: data.ownBase === true" in shell
+    assert 'cfg.url && !cfg.ownBase ? document.querySelector("base") : null' in shell
     assert shell.index("pageUrl = next;") < shell.index(
         'routedBase?.setAttribute("href", pageUrl);'
     )
@@ -229,7 +229,20 @@ def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
     assert response.headers["x-unsloth-browser-kind"] == "html"
     payload = json.loads(response.body)
     assert payload["url"] == payload["base"] == "https://example.com/final"
+    assert payload["ownBase"] is False
     assert "<title>x</title>" in payload["html"]
+
+
+def test_a_page_base_equal_to_its_url_is_still_its_own(monkeypatch):
+    # <base href="/"> on the site root: the shell must keep it fixed when the router moves.
+    _fetch(
+        monkeypatch,
+        (None, b'<html><head><base href="/"></head></html>', "text/html"),
+        {"url": "https://example.com/", "charset": "utf-8"},
+    )
+    payload = json.loads(_call(url = "example.com").body)
+    assert payload["url"] == payload["base"] == "https://example.com/"
+    assert payload["ownBase"] is True
 
 
 def test_raw_text_is_transcoded_from_its_charset(monkeypatch):

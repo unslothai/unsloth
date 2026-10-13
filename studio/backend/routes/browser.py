@@ -173,7 +173,7 @@ _FRAME_HTML = r"""<!doctype html>
         let pageUrl = cfg.url || location.href;
         // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
         // relative links and requests after a pushState resolve as in a browser.
-        const routedBase = cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null;
+        const routedBase = cfg.url && !cfg.ownBase ? document.querySelector("base") : null;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
@@ -713,7 +713,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, base: data.base || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -1214,9 +1214,10 @@ def _join(base: str, href: str) -> Optional[str]:
         return None
 
 
-def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
-    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed."""
-    base_url = url
+def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dict]]:
+    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed; ``base_url``
+    is None when the page declares no base."""
+    base_url = None
     for tag in _BASE_TAG_RE.findall(page):
         href = _attr(_ATTR_HREF_RE.search(tag))
         if href:
@@ -1240,7 +1241,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
             parsed = _REFRESH_RE.match(_attr(_CONTENT_ATTR_RE.search(tag)) or "")
             if parsed and parsed.group(2) and refresh is None:
                 delay = float(parsed.group(1))
-                target = _join(base_url, parsed.group(2))
+                target = _join(base_url or url, parsed.group(2))
                 if delay <= _MAX_REFRESH_DELAY_S and target:
                     refresh = {"delay": delay, "url": target}
             return ""
@@ -1533,9 +1534,16 @@ def _build_response(
                 status_code = 502,
                 detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
             )
-        page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        page, own_base, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        base_url = own_base or final_url
         page = _inline_module_scripts(page, base_url, cancel_event)
-        payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
+        payload = {
+            "url": final_url,
+            "base": base_url,
+            "ownBase": own_base is not None,
+            "refresh": refresh,
+            "html": page,
+        }
         return Response(
             content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
             media_type = "application/json",
