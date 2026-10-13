@@ -339,3 +339,24 @@ def test_rocm_forward_without_fp8e4nv_skips_act_quant(monkeypatch, gcn_arch):
         torch.bfloat16
     )
     torch.testing.assert_close(out, X @ W.T)
+
+
+def test_real_device_forward_matches_the_dequant_reference():
+    # Unmocked: whatever this GPU is (sm80, sm89+, gfx1151, gfx942 ...), the public forward must run
+    # and agree with a float32 dequant reference. On a card triton cannot compile fp8e4nv for, the
+    # guard is the only thing between this call and a compile error.
+    from unsloth.kernels import fp8
+
+    torch.manual_seed(0)
+    bs, m, k = 128, 256, 512
+    weight = (torch.randn(m, k, device = "cuda") * 0.3).to(torch.float8_e4m3fn)
+    scale = torch.rand(m // bs, k // bs, device = "cuda", dtype = torch.float32) + 0.5
+    scale.block_size = [bs, bs]
+    X = torch.randn(16, k, device = "cuda", dtype = torch.bfloat16) * 0.5
+    out = fp8.FP8BlockQuantLinear.apply(X, weight, scale)
+    torch.cuda.synchronize()
+    full_scale = scale.repeat_interleave(bs, 0).repeat_interleave(bs, 1)
+    ref = X.float() @ (weight.float() * full_scale).t()
+    rel = (out.float() - ref).norm() / ref.norm()
+    # The fp8 kernels also quantize the activation (a few % error); the dequant path is ~bf16 exact.
+    assert torch.isfinite(out.float()).all() and rel < 0.08, f"relative error {rel:.4f}"
