@@ -34,6 +34,32 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+def reasoning_parser_for_template(template, engine):
+    """vLLM reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
+    if engine != "vllm" or not isinstance(template, str):
+        return None
+    if "<|channel|>" in template and "<|message|>" in template:
+        return "openai_gptoss"
+    if "<think>" not in template or "</think>" not in template:
+        return None
+    for marker, parser in (
+        ("<arg_key>", "glm45"),
+        ("<minimax:tool_call>", "minimax_m2"),
+        ("<|tool_calls_section_begin|>", "kimi_k2"),
+    ):
+        if marker in template:
+            return parser
+    # Per vLLM's reasoning_outputs.md: V3.1 / V3.2 gate on a `thinking` variable and answer untagged when
+    # it is off (deepseek_v3); R1, QwQ and Qwen3 Thinking-2507 open <think> in the prompt (deepseek_r1).
+    if "<｜Assistant｜>" in template:
+        if "reasoning_effort" in template:
+            return None
+        return "deepseek_v3" if "thinking" in template.replace("think>", "") else "deepseek_r1"
+    if "<|im_start|>" in template:
+        return "qwen3" if "enable_thinking" in template else "deepseek_r1"
+    return None
+
+
 def _release_at_least(version: str | None, floor: str) -> bool:
     from packaging.version import InvalidVersion, Version
     try:
@@ -57,8 +83,13 @@ class EngineAdapter:
         return {"VLLM_API_KEY" if self.name == "vllm" else "UNSLOTH_ENGINE_API_KEY": key}
 
     def environment(self, gpu_count):
-        if self.name == "vllm" and gpu_count > 1:
-            return {"VLLM_HOST_IP": "127.0.0.1"}
+        if self.name == "vllm":
+            # vLLM 0.30+ DeepSeek-OCR encoder kernel reads a plain-float LOG2E global, a NameError on
+            # Triton 3.7 (unslothai/unsloth#3911). The knob only lifts that error and is not in the cache key.
+            env = {"TRITON_ALLOW_NON_CONSTEXPR_GLOBALS": "1"}
+            if gpu_count > 1:
+                env["VLLM_HOST_IP"] = "127.0.0.1"
+            return env
         if self.name == "sglang" and gpu_count > 1:
             # Else SGLang rejects GPUs whose free memory differs >10%; KV pools size from the minimum anyway.
             return {
@@ -82,11 +113,16 @@ class EngineAdapter:
         served_model_name = None,
     ):
         options = options or {}
+        if options.get("gpu_memory_utilization"):
+            # A user ceiling only lowers Studio's measured budget: above it the engine would OOM.
+            memory_fraction = min(memory_fraction, options["gpu_memory_utilization"])
         tool_args = []
         if options.get("tool_parser"):
             tool_args = ["--tool-call-parser", options["tool_parser"]]
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
+        if self.name == "vllm" and options.get("reasoning_parser"):
+            tool_args += ["--reasoning-parser", options["reasoning_parser"]]
         mode = options.get("parallelism", "tensor")
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
         if mode != "tensor":
@@ -204,6 +240,25 @@ class EngineAdapter:
             *parallel_args,
             *precision_args,
             *tool_args,
+            *(
+                ["--max-num-seqs", str(options["max_num_seqs"])]
+                if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
+            *(
+                [
+                    "--kv-cache-dtype",
+                    # SGLang names the FP8 format; vLLM's "fp8" is the same E4M3 cache.
+                    "fp8_e4m3" if self.name == "sglang" else options["kv_cache_dtype"],
+                ]
+                if options.get("kv_cache_dtype")
+                else []
+            ),
+            *(
+                ["--random-seed" if self.name == "sglang" else "--seed", str(options["seed"])]
+                if options.get("seed") is not None
+                else []
+            ),
             *(["--trust-remote-code"] if trust_remote_code else []),
             *self.extra_args,
             "--host",
@@ -287,39 +342,22 @@ def gpu_memory_fraction(
     gpu_ids: list[int],
     reserve_mib: int = 512,
     reserve_share: float = 0.0,
+    measure = None,
 ) -> float:
     """Budget every selected physical GPU after the previous resident is stopped.
 
     Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
-    engine does not budget. An unreadable
+    engine does not budget. ``measure`` returns (total, free) MiB per selected GPU; nvidia-smi
+    answers by default. An unreadable
     device is an actionable failure, never permission to fall back to a larger engine default.
     """
-    from utils.hardware.nvidia import _nvidia_smi_executable
     from utils.vram_budget_settings import get_vram_budget_fraction
-
     try:
-        result = subprocess.run(
-            [
-                _nvidia_smi_executable(),
-                "--id",
-                ",".join(str(gpu_id) for gpu_id in gpu_ids),
-                "--query-gpu=memory.total,memory.free",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            **windows_hidden_subprocess_kwargs(),
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 60,
-            check = True,
-        )
-        rows = result.stdout.strip().splitlines()
+        rows = (measure or _nvidia_memory_rows)(gpu_ids)
         if len(rows) != len(gpu_ids):
             raise ValueError("Could not measure every selected GPU")
         fraction = get_vram_budget_fraction()
-        for row in rows:
-            total, free = (float(value.strip()) for value in row.split(","))
+        for total, free in rows:
             reserve = max(reserve_mib, reserve_share * total)
             if total <= 0 or free <= reserve or free > total:
                 raise ValueError("Insufficient available GPU memory")
@@ -332,3 +370,27 @@ def gpu_memory_fraction(
         raise RuntimeError(
             "Could not reserve memory on every selected GPU. Free GPU memory or select fewer GPUs and retry."
         ) from exc
+
+
+def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
+    from utils.hardware.nvidia import _nvidia_smi_executable
+    result = subprocess.run(
+        [
+            _nvidia_smi_executable(),
+            "--id",
+            ",".join(str(gpu_id) for gpu_id in gpu_ids),
+            "--query-gpu=memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output = True,
+        **windows_hidden_subprocess_kwargs(),
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 60,
+        check = True,
+    )
+    return [
+        tuple(float(value.strip()) for value in row.split(","))
+        for row in result.stdout.strip().splitlines()
+    ]

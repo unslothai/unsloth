@@ -3,6 +3,8 @@
 
 import { documentKind, isMarkdown } from "@/components/file-viewer";
 import { attachmentTextLanguage } from "@/features/chat";
+import { mediaKind } from "./media-kind";
+import { REACT_PREVIEW_TYPE } from "./react-preview-type";
 
 export const HTML_NAME = /\.(html?|xhtml)$/i;
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
@@ -10,16 +12,9 @@ export const TEXT_TYPE = /^(text\/|application\/(json|xml|javascript|x-yaml|yaml
 export const TEXT_NAME =
   /\.(txt|log|md|markdown|mdx|json|jsonl|ya?ml|toml|ini|cfg|conf|csv|tsv|xml|svg|py|ipynb|js|mjs|cjs|ts|tsx|jsx|css|scss|sh|bash|zsh|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|swift|sql|r|lua|pl|tex)$/i;
 
-export type Media = "image" | "video" | "audio";
+export { type Media, mediaKind } from "./media-kind";
 
-export function mediaKind(name: string, contentType: string): Media | null {
-  if (/^image\//i.test(contentType) || /\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(name)) return "image";
-  if (/^video\//i.test(contentType) || /\.(mp4|webm|mov|m4v|ogv)$/i.test(name)) return "video";
-  if (/^audio\//i.test(contentType) || /\.(mp3|wav|ogg|oga|flac|m4a|aac|opus)$/i.test(name)) return "audio";
-  return null;
-}
-
-export type TextFileKind = "html" | "markdown" | "code" | "text";
+export type TextFileKind = "html" | "react" | "markdown" | "code" | "text";
 
 export function isHtml(name: string, contentType: string): boolean {
   return HTML_NAME.test(name) || HTML_TYPE.test(contentType);
@@ -28,11 +23,18 @@ export function isHtml(name: string, contentType: string): boolean {
 /** How a text file shows, or null for documents, media and files that don't show as text. */
 export function textFileKind(name: string, contentType: string, plainText = false): TextFileKind | null {
   if (plainText) return "text";
+  if (contentType === REACT_PREVIEW_TYPE) return "react";
   if (mediaKind(name, contentType) || documentKind(name, contentType)) return null;
   if (!(TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType)) return null;
   if (isHtml(name, contentType)) return "html";
   if (isMarkdown(name, contentType)) return "markdown";
   return attachmentTextLanguage(name, null) ? "code" : "text";
+}
+
+/** The kind the file bar follows: a React preview gets the HTML page's controls. */
+export function fileBarKind(name: string, contentType: string, plainText = false): TextFileKind | null {
+  const kind = textFileKind(name, contentType, plainText);
+  return kind === "react" ? "html" : kind;
 }
 
 // Types a blob URL shows without running anything. Anchored, so SVG or smuggled params fail.

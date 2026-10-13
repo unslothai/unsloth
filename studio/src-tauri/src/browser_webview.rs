@@ -26,6 +26,8 @@ const EVENT: &str = "unsloth-browser";
 const MAIN_WEBVIEW: &str = "main";
 const MAIN_WINDOW: &str = "main";
 const URL_POLL: Duration = Duration::from_millis(800);
+/// How far left of the window a parked page sits, in logical pixels.
+const PARK_GAP: f64 = 64.0;
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
@@ -241,6 +243,14 @@ enum BrowserEvent {
         download_id: Option<String>,
         /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
         marked: Option<bool>,
+        /// The DownloadPrompt `id` it was asked under; None when refused before asking.
+        prompt_id: Option<String>,
+    },
+    /// An approved download that left no file (its save dialog was cancelled).
+    DownloadCancelled {
+        tab_id: String,
+        url: String,
+        prompt_id: String,
     },
     DownloadPrompt {
         tab_id: String,
@@ -249,6 +259,8 @@ enum BrowserEvent {
         site: String,
         name: String,
         id: String,
+        /// Started from the page's context menu: the user asked for it, so save it via a dialog.
+        save_as: bool,
     },
 }
 
@@ -540,6 +552,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
     path: &Path,
     download_id: Option<String>,
     marked: Option<bool>,
+    prompt_id: &str,
 ) {
     emit(
         app,
@@ -556,6 +569,23 @@ pub(crate) fn emit_download_done<R: Runtime>(
             success: true,
             download_id,
             marked,
+            prompt_id: Some(prompt_id.to_string()),
+        },
+    );
+}
+
+pub(crate) fn emit_download_cancelled<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    prompt_id: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::DownloadCancelled {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            prompt_id: prompt_id.to_string(),
         },
     );
 }
@@ -565,6 +595,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
     tab_id: &str,
     url: &Url,
     name: &str,
+    prompt_id: Option<&str>,
 ) {
     emit(
         app,
@@ -578,6 +609,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
             success: false,
             download_id: None,
             marked: None,
+            prompt_id: prompt_id.map(str::to_string),
         },
     );
 }
@@ -919,6 +951,136 @@ async fn poll_url<R: Runtime>(app: AppHandle<R>) {
     }
 }
 
+/// Stage a tab's download and ask about it. False refuses it.
+pub(crate) fn download_requested<R: Runtime>(
+    webview: &Webview<R>,
+    download_tab: &str,
+    url: Url,
+    destination: &mut PathBuf,
+    save_as: bool,
+) -> bool {
+    let app = webview.app_handle();
+    if crate::browser_downloads::unanswered(app, download_tab)
+        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
+    {
+        let name = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        emit_download_failed(app, download_tab, &url, &name, None);
+        return false;
+    }
+    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
+        return false;
+    };
+    let path = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        // macOS reports no path when a download finishes, so two of one URL at
+        // once couldn't be told apart: one at a time.
+        let busy = cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
+        let in_flight = inner.downloads.values().map(Vec::len).sum();
+        let starts = inner
+            .download_starts
+            .entry(download_tab.to_string())
+            .or_default();
+        if busy || !download_allowed(in_flight, starts, Instant::now()) {
+            drop(inner);
+            let _ = std::fs::remove_dir_all(&staging);
+            if !busy {
+                let name = destination
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                emit_download_failed(app, download_tab, &url, &name, None);
+            }
+            return false;
+        }
+        let path = download_destination(&staging, destination, &HashSet::new());
+        inner
+            .downloads
+            .entry(url.to_string())
+            .or_default()
+            .push(path.clone());
+        path
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    *destination = path.clone();
+    crate::browser_downloads::add_pending(
+        app,
+        id.clone(),
+        download_tab.to_string(),
+        url.clone(),
+        path,
+    );
+    // "" before the view showed its own page: the frontend knows the tab's address or opener.
+    let committed = app
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .contains(download_tab);
+    let site = match webview.url() {
+        Ok(page) if committed => page.to_string(),
+        _ => String::new(),
+    };
+    emit(
+        app,
+        BrowserEvent::DownloadPrompt {
+            tab_id: download_tab.to_string(),
+            url: url.to_string(),
+            site,
+            name,
+            id,
+            save_as,
+        },
+    );
+    true
+}
+
+/// Settle a finished download. Needs no view: its tab may have closed meanwhile.
+pub(crate) fn download_finished<R: Runtime>(
+    app: &AppHandle<R>,
+    url: Url,
+    path: Option<PathBuf>,
+    success: bool,
+) {
+    let (recorded, retired) = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        let ViewsState {
+            downloads,
+            unexplained_finishes,
+            ..
+        } = &mut *inner;
+        let key = url.to_string();
+        let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
+        let pending = downloads.entry(key.clone()).or_default();
+        let taken = take_finished(pending, &mut unexplained, path.as_deref());
+        if pending.is_empty() {
+            downloads.remove(&key);
+        } else if unexplained > 0 {
+            unexplained_finishes.insert(key, unexplained);
+        }
+        taken
+    };
+    // The reserved path first: the engine may report another spelling of it.
+    crate::browser_downloads::finished(app, [recorded.as_deref(), path.as_deref()], success);
+    for staged in retired {
+        crate::browser_downloads::finished(app, [Some(&staged), None], false);
+    }
+}
+
+fn close_view<R: Runtime>(page: &Webview<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::browser_context_downloads::forget(page);
+    page.close()
+}
+
 fn create_view<R: Runtime>(
     caller: &Webview<R>,
     tab_id: &str,
@@ -1033,124 +1195,15 @@ fn create_view<R: Runtime>(
             }
             NewWindowResponse::Deny
         })
-        .on_download(move |webview, event| {
-            let app = webview.app_handle();
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    if crate::browser_downloads::unanswered(app, &download_tab)
-                        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
-                    {
-                        let name = destination
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        emit_download_failed(app, &download_tab, &url, &name);
-                        return false;
-                    }
-                    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
-                        return false;
-                    };
-                    let path = {
-                        let state = app.state::<BrowserViews>();
-                        let mut inner = state.inner.lock().unwrap();
-                        // macOS reports no path when a download finishes, so two of one URL at
-                        // once couldn't be told apart: one at a time.
-                        let busy =
-                            cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
-                        let in_flight = inner.downloads.values().map(Vec::len).sum();
-                        let starts = inner
-                            .download_starts
-                            .entry(download_tab.clone())
-                            .or_default();
-                        if busy || !download_allowed(in_flight, starts, Instant::now()) {
-                            drop(inner);
-                            let _ = std::fs::remove_dir_all(&staging);
-                            if !busy {
-                                let name = destination
-                                    .file_name()
-                                    .map(|name| name.to_string_lossy().into_owned())
-                                    .unwrap_or_default();
-                                emit_download_failed(app, &download_tab, &url, &name);
-                            }
-                            return false;
-                        }
-                        let path = download_destination(&staging, destination, &HashSet::new());
-                        inner
-                            .downloads
-                            .entry(url.to_string())
-                            .or_default()
-                            .push(path.clone());
-                        path
-                    };
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    *destination = path.clone();
-                    crate::browser_downloads::add_pending(
-                        app,
-                        id.clone(),
-                        download_tab.clone(),
-                        url.clone(),
-                        path,
-                    );
-                    // "" before the view showed its own page: the frontend knows the tab's address or opener.
-                    let committed = app
-                        .state::<BrowserViews>()
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .committed
-                        .contains(&download_tab);
-                    let site = match webview.url() {
-                        Ok(page) if committed => page.to_string(),
-                        _ => String::new(),
-                    };
-                    emit(
-                        app,
-                        BrowserEvent::DownloadPrompt {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            site,
-                            name,
-                            id,
-                        },
-                    );
-                    true
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    let (recorded, retired) = {
-                        let state = app.state::<BrowserViews>();
-                        let mut inner = state.inner.lock().unwrap();
-                        let ViewsState {
-                            downloads,
-                            unexplained_finishes,
-                            ..
-                        } = &mut *inner;
-                        let key = url.to_string();
-                        let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
-                        let pending = downloads.entry(key.clone()).or_default();
-                        let taken = take_finished(pending, &mut unexplained, path.as_deref());
-                        if pending.is_empty() {
-                            downloads.remove(&key);
-                        } else if unexplained > 0 {
-                            unexplained_finishes.insert(key, unexplained);
-                        }
-                        taken
-                    };
-                    // The reserved path first: the engine may report another spelling of it.
-                    crate::browser_downloads::finished(
-                        app,
-                        [recorded.as_deref(), path.as_deref()],
-                        success,
-                    );
-                    for staged in retired {
-                        crate::browser_downloads::finished(app, [Some(&staged), None], false);
-                    }
-                    true
-                }
-                _ => false,
+        .on_download(move |webview, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                download_requested(&webview, &download_tab, url, destination, false)
             }
+            DownloadEvent::Finished { url, path, success } => {
+                download_finished(webview.app_handle(), url, path, success);
+                true
+            }
+            _ => false,
         })
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
@@ -1162,6 +1215,10 @@ fn create_view<R: Runtime>(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::place(&webview);
+    #[cfg(target_os = "macos")]
+    crate::browser_context_downloads::watch(&webview, &tab);
     // A muted tab whose view closed (four at most stay open) opens muted again.
     if app.state::<BrowserViews>().inner.lock().unwrap().muted.contains(&tab) {
         let _ = apply_mute(&webview, true);
@@ -1309,7 +1366,41 @@ pub fn browser_view_supported() -> bool {
     false
 }
 
+/// Whether pages sit under the app's webview (`browser_layer`). Elsewhere covered pages are snapshotted.
+/// Asked once per load of the app, so it also drops input state a reload left behind.
+#[tauri::command]
+pub fn browser_view_layered<R: Runtime>(webview: Webview<R>) -> Result<bool, String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    {
+        if crate::browser_layer::set_input(false, &[]) {
+            let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+        }
+        Ok(browser_view_supported())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(false)
+}
+
+/// The panel UI over the page: all of it while a menu or dialog is open, else clickable rects.
+#[tauri::command]
+pub fn browser_view_input<R: Runtime>(
+    webview: Webview<R>,
+    blocked: bool,
+    exclude: Vec<ViewBounds>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    if crate::browser_layer::set_input(blocked, &exclude) {
+        let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (blocked, exclude);
+    Ok(())
+}
+
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
+/// `parked` moves the page just off-window instead of hiding it, so it keeps painting under its snapshot.
 /// Async: creating a webview from a sync command deadlocks on Windows (Tauri known issue).
 #[tauri::command]
 pub async fn browser_view_show<R: Runtime>(
@@ -1318,13 +1409,18 @@ pub async fn browser_view_show<R: Runtime>(
     tab_id: Option<String>,
     url: Option<String>,
     bounds: Option<ViewBounds>,
+    parked: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
+    let parked = parked.unwrap_or(false);
     let target = match (&tab_id, &bounds) {
         (Some(tab_id), Some(bounds)) => Some(match app.get_webview(&label_for(tab_id)?) {
             Some(view) => {
-                let (position, size) = logical_rect(&webview, bounds);
+                let (mut position, size) = logical_rect(&webview, bounds);
+                if parked {
+                    position.x = -size.width - PARK_GAP;
+                }
                 view.set_bounds(Rect {
                     position: position.into(),
                     size: size.into(),
@@ -1332,8 +1428,11 @@ pub async fn browser_view_show<R: Runtime>(
                 .map_err(|error| error.to_string())?;
                 view
             }
+            None if parked => return Err("no page to park".into()),
             None => {
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                #[cfg(target_os = "macos")]
+                crate::browser_layer::install(&webview);
                 create_view(&webview, tab_id, url, bounds)?
             }
         }),
@@ -1553,6 +1652,140 @@ pub async fn browser_view_annotate<R: Runtime>(
     serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
+// The panel's browser agent (frontend agent/page-agent.ts): installed on first use per page, then
+// each call runs one command and returns `{ installed, result }`.
+const AGENT_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.agent");
+  const command = __COMMAND__;
+  if (!window[key] && command.install) {
+    try {
+__CODE__
+    } catch (error) {}
+  }
+  const agent = window[key];
+  if (!agent) return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.run(command.op) });
+})()"#;
+const MAX_AGENT_OP: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentCommand {
+    op: serde_json::Map<String, serde_json::Value>,
+    code: Option<String>,
+}
+
+fn agent_script(command: &AgentCommand) -> Result<String, String> {
+    let code = command.code.as_deref().unwrap_or("");
+    if code.len() > MAX_ANNOTATE_CODE {
+        return Err("agent code too large".into());
+    }
+    let args = serde_json::json!({ "install": !code.is_empty(), "op": command.op }).to_string();
+    if args.len() > MAX_AGENT_OP {
+        return Err("agent command too large".into());
+    }
+    let (head, rest) = AGENT_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad agent script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad agent script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs a browser agent command in a tab's page. The panel checks the result, since the page
+/// shares the agent's world and can write to it.
+#[tauri::command]
+pub async fn browser_view_agent<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AgentCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = agent_script(&command)?;
+    eval_json(&page, script).await
+}
+
+// Spliced past the CSP; the document check is its own statement since spliced code can close any wrapper.
+const EVAL_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
+})();
+JSON.stringify({ installed: true, result: window[Symbol.for("unsloth.agent")].evaluate(__ID__, __DOC__, async () => {
+__CODE__
+}) });"#;
+// browser_agent.py allows 8000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 32_000;
+
+fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
+    if doc.len() < 2
+        || doc.len() > 16
+        || !doc.starts_with('r')
+        || !doc[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err("bad document ref".into());
+    }
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("bad script id".into());
+    }
+    if code.len() > MAX_EVAL_CODE {
+        return Err("script too large".into());
+    }
+    // Single pass over the template, so the code can't inject a placeholder.
+    let mut out = String::with_capacity(EVAL_SCRIPT.len() + code.len() + 96);
+    let mut rest = EVAL_SCRIPT;
+    for (marker, value) in [
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__ID__", format!("\"{id}\"")),
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__CODE__", code.to_string()),
+    ] {
+        let (head, tail) = rest.split_once(marker).ok_or("bad eval script")?;
+        out.push_str(head);
+        out.push_str(&value);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn browser_view_eval<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    id: String,
+    doc: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = eval_script(&id, &doc, &code)?;
+    eval_json(&page, script).await
+}
+
+async fn eval_json<R: Runtime>(
+    page: &Webview<R>,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
+}
+
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
 /// across loads; macOS mutes the page's media, and each page it loads after (see `MUTE_SCRIPT`).
 #[tauri::command]
@@ -1624,7 +1857,7 @@ pub fn browser_view_close<R: Runtime>(
         }
     }
     if let Ok(page) = view(webview.app_handle(), &tab_id) {
-        page.close().map_err(|error| error.to_string())?;
+        close_view(&page).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1647,7 +1880,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
             set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {
-            let _ = page.close();
+            let _ = close_view(&page);
         }
     }
     let live = if closing {
@@ -1681,7 +1914,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
     };
     let result = clear_profile(&page).await;
     if hidden {
-        let _ = page.close();
+        let _ = close_view(&page);
     }
     result
 }
@@ -2140,6 +2373,47 @@ mod tests {
             code: "x".repeat(MAX_ANNOTATE_CODE + 1)
         })
         .is_err());
+    }
+
+    #[test]
+    fn agent_code_and_command_are_spliced_once() {
+        let mut op = serde_json::Map::new();
+        op.insert("op".into(), "find".into());
+        op.insert("query".into(), "__CODE__".into());
+        let script = agent_script(&AgentCommand {
+            op: op.clone(),
+            code: Some("window.x = '__COMMAND__';".into()),
+        })
+        .unwrap();
+        assert!(script.contains(
+            r#"const command = {"install":true,"op":{"op":"find","query":"__CODE__"}};"#
+        ));
+        assert!(script.contains("window.x = '__COMMAND__';"));
+        let bare = agent_script(&AgentCommand { op, code: None }).unwrap();
+        assert!(bare.contains(r#""install":false"#));
+        assert!(agent_script(&AgentCommand {
+            op: serde_json::Map::new(),
+            code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn eval_code_is_spliced_once_and_ids_are_plain() {
+        let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
+        let check = script
+            .find(r#"agent.owns("r100001") !== true) throw"#)
+            .unwrap();
+        let run = script
+            .find(r#".evaluate("s1-a_B", "r100001", async () => {"#)
+            .unwrap();
+        assert!(check < run && script[check..run].contains("})();"));
+        assert!(script.contains("return '__ID__' + '__DOC__';"));
+        assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
+        assert!(eval_script("", "r1", "").is_err());
+        assert!(eval_script("s1", "r1\"", "").is_err());
+        assert!(eval_script("s1", "", "").is_err());
+        assert!(eval_script("s1", "r1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

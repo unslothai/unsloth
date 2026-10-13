@@ -18,6 +18,8 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_device import float64_device
+
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
 TILE_LATENTS = 32
@@ -67,11 +69,12 @@ def axis_weights(
     shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
     margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = device)
+    build = float64_device(device)
+    pos = (torch.arange(size, dtype = torch.float64, device = build) + 0.5) / scale
+    total = torch.zeros(length * scale, dtype = torch.float64, device = build)
     weights = []
     for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = device)
+        w = torch.ones(size, dtype = torch.float64, device = build)
         if s > 0:
             w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
         if s + tile < length:
@@ -80,7 +83,10 @@ def axis_weights(
         weights.append(w)
     if float(total.min()) <= 0.0:
         raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    return [(w / total[s * scale : s * scale + size]).float() for w, s in zip(weights, starts)]
+    return [
+        (w / total[s * scale : s * scale + size]).float().to(device)
+        for w, s in zip(weights, starts)
+    ]
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:
@@ -271,6 +277,16 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
+    # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
+    # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
+    import torch
+
+    if (
+        z.device.type == "cuda"
+        and getattr(torch.version, "hip", None)
+        and type(vae).__name__ == "AutoencoderKLQwenImage21"
+    ):
+        return TILE_LATENTS**2
     try:
         _, tile, _ = _geometry(vae)
         # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on

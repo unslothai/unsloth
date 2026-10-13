@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { ManagedEngineOffer } from "@/features/model-picker";
 import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -48,6 +49,9 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
@@ -81,6 +85,8 @@ export interface LoadModelRequest {
   /** Override --spec-draft-n-max for drafter speculative decoding. Applied only when speculative_type
    *  resolves to "mtp", "mtp+ngram", "dspark" or "dflash". */
   spec_draft_n_max?: number | null;
+  /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
+  spec_draft_model?: string | null;
   /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
    *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
@@ -165,6 +171,8 @@ export interface ValidateModelResponse {
   transformers_upgrade?: TransformersUpgradeInfo | null;
   /** Replacement repository for an MLX BNB model or adapter base. */
   mlx_loads_base_model?: string | null;
+  /** The Default engine cannot run this quantization; these optional engines can on this host. */
+  managed_engine_offer?: ManagedEngineOffer | null;
 }
 
 export interface GgufVariantDetail {
@@ -202,6 +210,8 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(
@@ -226,6 +236,9 @@ export function isMultimodalResponse(
 export interface LoadModelResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   evicted?: string[];
@@ -289,6 +302,7 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
@@ -353,6 +367,9 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
@@ -434,6 +451,7 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  spec_draft_model?: string | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /** The load ran with the vision projector deliberately left unloaded. Echoes the request, so it
@@ -728,6 +746,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  deduplicate_tool_calls?: boolean;
   /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
@@ -737,6 +756,8 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /** The user message that started this turn; keys the turn's file checkpoints for /rewind. */
+  user_message_id?: string;
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;
@@ -754,7 +775,7 @@ export interface OpenAIChatCompletionsRequest {
    *  container. OpenAI cloud and the gpt-5.5 family only. */
   openai_code_exec_container_id?: string | null;
   /** Anthropic code_execution container id from the prior response in this thread. When set and the
-   *  Code pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
+   *  Tools pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
    *  state persists; unset is auto-created. */
   anthropic_code_exec_container_id?: string | null;
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
@@ -817,6 +838,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
+    // true while the checkpoint in force was started by /compact
+    manual?: boolean;
     // true when the provider summarized earlier turns instead of Unsloth dropping them
     summarized?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt

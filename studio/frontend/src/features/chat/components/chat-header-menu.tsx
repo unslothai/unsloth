@@ -41,12 +41,14 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  Refresh01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import type { ReactNode } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
@@ -56,8 +58,9 @@ import {
   chatExportOptions,
   exportConversationByFormat,
   getSidebarItemThreadIds,
+  regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem } from "./open-chat-folder-item";
+import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -152,6 +155,9 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
+  const generating = useChatRuntimeStore((s) =>
+    getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
+  );
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
     try {
@@ -168,6 +174,13 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
     <>
       <Item icon={Edit03Icon} onSelect={menu.rename} shortcut="renameChat">
         {t("common.rename")}
+      </Item>
+      <Item
+        icon={Refresh01Icon}
+        onSelect={() => void regenerateChatTitleWithToast(menu.item)}
+        disabled={generating}
+      >
+        {t("library.menu.regenerateTitle")}
       </Item>
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
@@ -327,6 +340,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <OpenChatFolderItem item={menu.item} />
+      <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
       <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}

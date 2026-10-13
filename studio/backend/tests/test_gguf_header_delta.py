@@ -106,6 +106,12 @@ def cache_with_old(
 @pytest.fixture(autouse = True)
 def _small_ranges(monkeypatch, tmp_path):
     monkeypatch.delenv(delta.DELTA_ENV, raising = False)
+    # The blob-layout tests build a symlinked cache themselves, so Hub must agree symlinks work here,
+    # whatever an earlier test in this worker did to its process-wide symlink switch.
+    from huggingface_hub import constants, file_download
+
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
     monkeypatch.setattr(delta, "_FIRST_RANGE", 64)
     monkeypatch.setattr(delta, "_HEADER_SLACK", 64)
     memo = tmp_path / "refused.json"

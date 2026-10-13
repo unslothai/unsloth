@@ -634,10 +634,11 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
 
 
 def test_no_bare_winget_token_survives_at_a_call_site():
-    """winget installs both Python and uv, so an alias on it owns the same ground.
+    """winget installs uv, so an alias on it owns the same ground.
 
-    Detection used a bare Get-Command, and all five invocations were bare tokens, so the fix
-    applied to uv left the other half of the bootstrap exposed to the identical wrapper.
+    Detection used a bare Get-Command and every invocation was a bare token, so the fix applied
+    to uv left the winget half of the bootstrap exposed to the identical wrapper. (Python itself
+    no longer comes from winget: the Studio environment is always on a uv-managed Python.)
     """
     src = _install_ps1()
     assert (
@@ -646,7 +647,7 @@ def test_no_bare_winget_token_survives_at_a_call_site():
     for bare in ("\n                winget ", "\n                    winget ", "{ winget "):
         assert bare not in src, f"winget must be invoked through the resolved path, found {bare!r}"
     assert (
-        src.count("& $script:WingetExe ") >= 5
+        src.count("& $script:WingetExe ") >= 2
     ), "every winget invocation must route through the resolved path"
 
 

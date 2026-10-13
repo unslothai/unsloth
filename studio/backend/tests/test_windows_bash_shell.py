@@ -427,3 +427,114 @@ def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blockl
     # token as a flag, and never reach the shell name behind it.
     assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
     assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}
+
+
+@pytest.fixture
+def _windows_backstop(monkeypatch, _windows_blocklist):
+    # The command-position backstop is compiled from _BLOCKED_COMMANDS at import as well.
+    monkeypatch.setattr(tools, "_BLOCKED_WORD_RE", tools._blocked_word_re(False))
+    monkeypatch.setattr(tools, "_BLOCKED_WORD_RE_WITH_ASSIGNMENTS", tools._blocked_word_re(True))
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # #12054: each was refused as "Blocked command(s) for safety: .".
+        r"C:\flutter\bin\flutter.bat create C:\src\my_app",
+        "C:/flutter/bin/flutter.bat create my_app",
+        r"C:\Python312\python.exe -m pip list",
+        "c:/tools/node.exe -v",
+        r"cd C:\src && D:\sdk\dart.exe --version",
+        r"C:\Users\me\.venv\Scripts\python.exe -m pip list",
+        r"C:\Users\me\.cargo\bin\cargo.exe build",
+        ".venv/bin/python -m pip list",
+        "ls; /home/me/.local/bin/tool",
+    ],
+)
+def test_an_absolute_windows_program_path_stays_runnable(
+    monkeypatch, bash, command, _windows_backstop
+):
+    assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -c ls", "powershell"),
+        ("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe", "powershell"),
+        (r"C:\pwsh.exe -c ls", "pwsh"),
+        (r"echo hi; C:\tools\rm.exe -rf x", "rm"),
+    ],
+)
+def test_a_blocked_program_behind_a_drive_path_is_still_screened(
+    monkeypatch, bash, command, expected, _windows_backstop
+):
+    assert expected in _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("command", ["echo hi; . script.sh", "x=$(. script.sh)", ". ./env.sh"])
+def test_dot_as_a_command_is_still_screened(monkeypatch, command, _windows_backstop):
+    assert "." in _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # A quoted program path with a space, handed on by cmd or START: re-lexing it as a command line
+        # split it at the space and screened `C:\Program` instead.
+        (r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd //c "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'start "" "C:\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd //c start "" "C:\x y\powershell.exe"', "powershell"),
+        ('cmd /c "C:/x y/rm.exe" -rf z', "rm"),
+        # START's program slot holds only a program, so a relative path counts there too.
+        (r'start "" "tools dir\pwsh.exe" -c ls', "pwsh"),
+        (r'cmd /c "%SystemDrive%\Program Files\PowerShell\7\pwsh.exe" -c ls', "pwsh"),
+        # START resolves an extensionless program through PATHEXT.
+        (r'start "" "C:\Program Files\PowerShell\7\pwsh" -c ls', "pwsh"),
+        (r'cmd /c "C:\Program Files\PowerShell\7\pwsh" -c ls', "pwsh"),
+    ],
+)
+def test_a_quoted_program_path_handed_to_cmd_or_start_is_screened(
+    monkeypatch, bash, command, expected, _windows_blocklist
+):
+    assert expected in _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_cmd_strips_the_outer_quotes_of_a_doubled_quote_payload(monkeypatch, _windows_blocklist):
+    # cmd turns `""prog" args"` into `"prog" args`. Git Bash would strip the backslashes first, so only
+    # the cmd Terminal runs this as pwsh.
+    assert "pwsh" in _screen_on_windows(monkeypatch, None, r'cmd /c ""C:\x\pwsh.exe" -c ls"')
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd /c "C:\Program Files\nodejs\node.exe" -v',
+        r'start "" "C:\Program Files\Microsoft VS Code\Code.exe" .',
+        # A blocked name that is only an argument, a folder or a document.
+        r'cmd /c "dir C:\src\curl"',
+        r'cmd /c "git -C C:\src\ssh status"',
+        r'start "" "tools dir\notepad.exe" readme.txt',
+        # A rooted command line whose last argument names a blocked program.
+        r'cmd /c "\Windows\System32\where.exe \src\rm"',
+        r'cmd /c type "C:\Users\me\My Documents\rm.txt"',
+    ],
+)
+def test_a_quoted_program_path_that_is_not_blocked_stays_runnable(
+    monkeypatch, bash, command, _windows_blocklist
+):
+    assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_a_quoted_start_title_is_not_screened_as_the_program(monkeypatch, _windows_blocklist):
+    # cmd keeps the quotes, so START reads this as the title and runs notepad. Git Bash hands START the
+    # path unquoted, which it then runs, so that reading stays blocked.
+    assert not _screen_on_windows(monkeypatch, None, r'start "C:\x\rm.exe" notepad')
+    assert "rm" in _screen_on_windows(
+        monkeypatch, _WINDOWS_SHELLS[0], r'start "C:\x\rm.exe" notepad'
+    )

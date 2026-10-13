@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DocumentAnnotations } from "@/features/chat";
+import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { defaultZoom } from "./prefs-store";
+import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -16,18 +17,21 @@ export type BrowserEntry =
       url: string;
       method?: "GET" | "POST";
       body?: string;
-      /** The page that sent the tab here (link, form, script, refresh); a file here downloads on its behalf. */
+      /** source page for link, form, script, or refresh; files reached here download on its behalf. */
       from?: string;
+      /** Opened beside a temporary chat, so it stays out of history. */
+      temporary?: true;
     }
   | {
       kind: "file";
       fileId: string;
       name: string;
       contentType: string;
-      /** Show as text even if named .html (text extracted from a document). */
+      /** show document-extracted text as text even when named .html. */
       plainText?: boolean;
-      /** The tab's openKey while this entry shows, so Back restores it. */
+      /** the tab's openKey while this entry shows, so Back restores it. */
       openKey?: string;
+      chatPage?: boolean;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -40,8 +44,7 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-/** Resolves false when the composer refused them (it says why), so the marks stay.
- *  `files` (an annotation screenshot) go in the same message. */
+/** false keeps marks when the composer rejects them and explains why; `files` carries the annotation screenshot. */
 export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
 /** Stages a file in the chat's composer; false when it refused it (it says why). */
@@ -208,9 +211,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
-  const entry: BrowserEntry =
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string, temporary?: boolean): BrowserEntry {
+  const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  if (temporary ?? useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 
@@ -275,20 +279,20 @@ type BrowserState = {
   closePanel: () => void;
   togglePanel: () => void;
   newTab: () => void;
-  /** A new tab just after `tabId`, as its menu's New tab to the right opens. */
   newTabAfter: (tabId: string) => void;
-  /** A copy of the tab and its history, just after it. */
+  /** copies the tab and its history immediately after it. */
   duplicateTab: (tabId: string) => void;
-  /** Opens a pinned page in a tab of its own, or shows the tab already showing it. */
+  /** opens a pinned page in its own tab or focuses the tab already showing it. */
   openPinned: (pinnedId: string, url: string, title: string) => void;
   setTabPinned: (tabId: string, pinnedId: string | null) => void;
   renamingTabId: string | null;
   setRenamingTab: (tabId: string | null) => void;
-  /** A name for the tab, or null for the page's own title. */
+  /** sets a tab name, or null to use the page title. */
   renameTab: (tabId: string, title: string | null) => void;
   setMuted: (tabId: string, muted: boolean) => void;
   closeOtherTabs: (tabId: string) => void;
   closeTabsToRight: (tabId: string) => void;
+  closeChatPages: () => void;
   openUrl: (
     url: string,
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
@@ -296,10 +300,10 @@ type BrowserState = {
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
     options?: { replace?: boolean },
   ) => void;
-  /** A page-sent entry that became a download: back to that page and out of history, unless the tab moved on. */
+  /** removes a page-sent download from history and returns to its sending page unless the tab moved on. */
   leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
   goForward: (tabId: string) => void;
@@ -346,6 +350,19 @@ function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): numbe
   }
   if (entry.kind === "file" && from.kind === "web" && at(preferred)) return 1;
   return tab.zoom;
+}
+
+/** The same-origin address the page's router moved to, for Reload; null if unmoved or a POST. */
+function routerEntry(tab: BrowserTab): BrowserEntry | null {
+  const entry = currentEntry(tab);
+  if (nativeWebHistory || entry.kind !== "web" || entry.method === "POST") return null;
+  if (!tab.displayUrl || tab.displayUrl === entry.url) return null;
+  try {
+    if (new URL(tab.displayUrl).origin !== new URL(entry.url).origin) return null;
+  } catch {
+    return null;
+  }
+  return webEntry(tab.displayUrl, "GET", undefined, undefined, entry.temporary);
 }
 
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
@@ -481,6 +498,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (index < 0) return;
       for (const tab of tabs.slice(index + 1)) get().closeTab(tab.id);
     },
+    closeChatPages: () => {
+      for (const tab of get().tabs) {
+        if (tab.history.some((entry) => entry.kind === "file" && entry.chatPage)) get().closeTab(tab.id);
+      }
+    },
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
       if (options?.method === "POST") {
@@ -502,18 +524,21 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
+      const type = contentType || blob.type;
       const entry: BrowserEntry = {
         kind: "file",
         fileId,
         name: name || "Untitled",
-        contentType: contentType || blob.type,
+        // Only a React preview opened from chat runs as one; a file that claims the type is text.
+        contentType: type === REACT_PREVIEW_TYPE && !key?.startsWith(REACT_PREVIEW_KEY_PREFIX) ? "text/plain" : type,
         plainText,
         ...(openKey ? { openKey } : {}),
+        ...(key?.startsWith("html:") ? { chatPage: true } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
-        // The file may have changed since it opened: refresh in order per tab, so the last reopen wins.
+        // refresh changed files in order per tab so the last reopen wins.
         const previous = refreshes.get(existing.id) ?? Promise.resolve();
         queuedFiles.add(fileId);
         const next = previous.then(async () => {
@@ -547,7 +572,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
-          const entry = webEntry(request.url, request.method, request.body, request.from);
+          const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
           if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
           return pushEntry(tab, entry, replace);
         }),
@@ -577,7 +602,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (tab) pageCache.delete(currentEntry(tab));
       set((state) => ({
-        tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const moved = routerEntry(tab);
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1 };
+          // Swapped in place, as a browser's reload: Forward keeps its pages.
+          const next = pushEntry(tab, moved, true);
+          return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };
+        }),
       }));
     },
     activateTab: (tabId) => set({ activeTabId: tabId, annotateTabId: null }),

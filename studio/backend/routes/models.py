@@ -417,7 +417,11 @@ def _has_non_gguf_weights(path: Path) -> bool:
     try:
         # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
         # "._" already fails.
-        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
+        from core.inference.diffusion_lora import is_image_lora_file
+        if any(
+            not is_appledouble_metadata(f) and not is_image_lora_file(f)
+            for f in path.glob("*.safetensors")
+        ):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
@@ -433,10 +437,13 @@ def _servable_gguf_names(directory: Path) -> list[str]:
     """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
     calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
     companions of a real model and presence is all they decide."""
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         p.name
         for p in directory.glob("*.gguf")
-        if not is_appledouble_metadata(p) and not _is_imatrix_path(p.name)
+        if not is_appledouble_metadata(p)
+        and not _is_imatrix_path(p.name)
+        and not is_image_lora_file(p)
     ]
 
 
@@ -524,6 +531,7 @@ def _scan_models_dir(
             ),
         )
     if limit is None or len(found) < limit:
+        from core.inference.diffusion_lora import is_image_lora_file
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
@@ -532,6 +540,7 @@ def _scan_models_dir(
                 gguf_file.is_file()
                 and _is_main_gguf_filename(gguf_file.name)
                 and not is_appledouble_metadata(gguf_file)
+                and not is_image_lora_file(gguf_file)
             ):
                 try:
                     updated_at = gguf_file.stat().st_mtime
@@ -712,6 +721,8 @@ def _scan_lmstudio_dir(
             ),
         ]
 
+    from core.inference.diffusion_lora import is_image_lora_file
+
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
         try:
@@ -720,6 +731,7 @@ def _scan_lmstudio_dir(
                     _is_main_gguf_filename(child.name)
                     and child.is_file()
                     and not is_appledouble_metadata(child)
+                    and not is_image_lora_file(child)
                 ):
                     try:
                         updated_at = child.stat().st_mtime
@@ -762,7 +774,7 @@ def _scan_lmstudio_dir(
                             bool(_servable_gguf_names(model_dir))
                             or (model_dir / "config.json").exists()
                             or any(
-                                not is_appledouble_metadata(p)
+                                not is_appledouble_metadata(p) and not is_image_lora_file(p)
                                 for p in model_dir.glob("*.safetensors")
                             )
                         )
@@ -788,6 +800,7 @@ def _scan_lmstudio_dir(
                         _is_main_gguf_filename(model_dir.name)
                         and model_dir.is_file()
                         and not is_appledouble_metadata(model_dir)
+                        and not is_image_lora_file(model_dir)
                     ):
                         try:
                             updated_at = model_dir.stat().st_mtime
@@ -3181,7 +3194,7 @@ async def scan_diffusion_loras(
     """
     from core.inference import diffusion_lora
 
-    entries = diffusion_lora.list_loras(family = family)
+    entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
@@ -3194,6 +3207,7 @@ async def scan_diffusion_loras(
                 "families": list(e.families),
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
+                "fine_tuned": e.fine_tuned,
             }
             for e in entries
         ],
@@ -4829,6 +4843,7 @@ async def get_gguf_variants(
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
+                variant_format = getattr(response, "variant_format", None),
             ),
             via_api_key = via_api_key,
         )
@@ -5726,6 +5741,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
+def _resolve_cached_path_for_row(repo_id: str, variant: Optional[str]) -> Path:
+    """``_resolve_cached_model_path`` for a picker row id. An audio.cpp umbrella folder row resolves
+    to its own variant's file, or without a variant to its folder, never the repo's snapshot root."""
+    from core.inference.audio_cpp_models import cached_folder_target, folder_snapshot_dir
+
+    folder = cached_folder_target(repo_id, variant)
+    if folder is None:
+        if not _is_valid_repo_id(repo_id):
+            raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        return _resolve_cached_model_path(repo_id, variant)
+    umbrella, keys = folder
+    if not keys:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+    if variant:
+        return _resolve_cached_model_path(umbrella, keys[0])
+    path = folder_snapshot_dir(repo_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Cached model path not found")
+    return path
+
+
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -5740,9 +5776,7 @@ async def get_cached_model_path(
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant.strip() or None)
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
@@ -5758,10 +5792,8 @@ async def reveal_cached_model(
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant)
     try:
         await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:

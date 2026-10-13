@@ -51,6 +51,20 @@ def test_gemma4_text_only_is_not_routed_either():
     assert u._prefers_flex_for_head_dim(text_only) is False
 
 
+@pytest.mark.parametrize("top", ["gemma4_unified", None])
+def test_gemma4_unified_is_not_routed_either(top):
+    text = _Cfg(
+        model_type = "gemma4_unified_text",
+        head_dim = 256,
+        global_head_dim = 512,
+        sliding_window = 1024,
+        num_attention_heads = 16,
+    )
+    cfg = text if top is None else _Cfg(model_type = top, text_config = text)
+    assert u._text_attention_head_dim(cfg) == 512
+    assert u._prefers_flex_for_head_dim(cfg) is False
+
+
 def test_the_head_dim_is_still_large_so_this_really_is_the_exclusion_talking():
     assert u._text_attention_head_dim(_gemma4()) == 512
 

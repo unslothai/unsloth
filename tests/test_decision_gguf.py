@@ -660,13 +660,20 @@ def test_a_failed_publish_keeps_the_export_of_the_same_weights(
     assert contract.read_export(folder) is None
 
 
+@pytest.fixture
+def default_sigterm():
+    """The SIGTERM disposition is per process, and a pytest worker has run other suites first. A skip
+    read at collection cannot see a handler a later test leaves behind, and the export rightly defers
+    to one, so the SIGTERM sent below then reaches that handler and can take the worker with it."""
+    previous = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    yield
+    signal.signal(signal.SIGTERM, previous)
+
+
 @needs_gguf
-@pytest.mark.skipif(
-    not hasattr(signal, "SIGKILL") or signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL,
-    reason = "POSIX signals with the default SIGTERM handler",
-)
+@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason = "POSIX signals")
 def test_sigterm_cleans_up_and_a_killed_export_is_swept_later(
-    tmp_path, fake_llama_cpp, monkeypatch
+    tmp_path, fake_llama_cpp, monkeypatch, default_sigterm
 ):
     folder = _clef_folder(tmp_path / "run", ("Qwen3_5ForCausalLM",))
     convert = decision_gguf._convert

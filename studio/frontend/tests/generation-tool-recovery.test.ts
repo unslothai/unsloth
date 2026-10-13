@@ -236,6 +236,33 @@ test("sandbox results retain files, images and the run's session", () => {
   });
 });
 
+test("an edit_file result is wrapped only when it created a file", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start("a"), 0, 1);
+  replay(
+    {
+      ...end("a"),
+      result: 'Created index.html (2 lines)\n__FILES__:[{"name":"index.html","size":12}]',
+    },
+    0,
+    2,
+    "saved-session",
+  );
+  replay(start("b"), 0, 3);
+  replay({ ...end("b"), result: "Edited index.html (1 replacement)" }, 0, 4, "saved-session");
+  assert.deepEqual((carried[0].part as Record<string, unknown>).result, {
+    text: "Created index.html (2 lines)",
+    files: [{ name: "index.html", size: 12 }],
+    images: [],
+    sessionId: "saved-session",
+  });
+  assert.equal(
+    (carried[1].part as Record<string, unknown>).result,
+    "Edited index.html (1 replacement)",
+  );
+});
+
 test("MCP image results remain structured and malformed envelopes remain readable", () => {
   for (const [result, expected] of [
     [
@@ -1527,4 +1554,22 @@ test("each rebuild yields its own source objects", () => {
   assert.notEqual(first, second);
   assert.equal(second.title, "Docs");
   assert.deepEqual(second.metadata, { description: "only" });
+});
+
+test("recovery keeps a model note on the finished card it targets", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 1);
+  replay(end(), 20, 2);
+  const note = {
+    type: "tool_model_note",
+    tool_call_id: "call_0",
+    suffix: "\n\nbudget",
+  };
+  replay({ _toolEvent: note }, 20, 3);
+  replay(note, 20, 3);
+  const part = carried[0].part as Record<string, unknown>;
+  assert.equal(carried.length, 1);
+  assert.equal(part.result, "ok");
+  assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
 });

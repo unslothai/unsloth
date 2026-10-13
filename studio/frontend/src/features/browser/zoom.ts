@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mediaKind } from "./media-kind";
 import { defaultZoom } from "./prefs-store";
 import { type BrowserTab, currentEntry, pageDownload, useBrowserStore } from "./store";
 
 export function canZoom(tab: BrowserTab | undefined): tab is BrowserTab {
-  const kind = tab ? currentEntry(tab).kind : null;
-  return kind === "web" || kind === "file";
+  const entry = tab ? currentEntry(tab) : null;
+  if (entry?.kind === "web") return true;
+  if (entry?.kind !== "file") return false;
+  // Video and audio players don't scale with the page zoom.
+  const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
+  return media !== "video" && media !== "audio";
 }
 
 export const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];

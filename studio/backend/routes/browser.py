@@ -28,10 +28,17 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.inference.tools import _USER_AGENTS, _fetch_url_raw, _normalize_url_scheme
+from core.inference.tools import (
+    _USER_AGENTS,
+    _WHATWG_CHARSET_CODECS,
+    _fetch_url_raw,
+    _normalize_url_scheme,
+    _sniff_meta_charset,
+)
 from loggers import get_logger
+from routes.browser_network import BROWSER_NETWORK_JS
 
-# Same embedders as the canvas shell.
+# same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
 
 logger = get_logger(__name__)
@@ -68,8 +75,6 @@ _CONTENT_ATTR_RE = re.compile(
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
-_META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
-
 # The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
 _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
 # One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
@@ -166,6 +171,9 @@ _FRAME_HTML = r"""<!doctype html>
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
         const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
+        // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
+        // relative links and requests after a pushState resolve as in a browser.
+        const routedBase = cfg.url && !cfg.ownBase ? document.querySelector("base") : null;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
@@ -237,6 +245,7 @@ _FRAME_HTML = r"""<!doctype html>
           let jar = "";
           Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
         } catch {}
+        /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
         let reportedUrl = pageUrl;
@@ -252,13 +261,21 @@ _FRAME_HTML = r"""<!doctype html>
         };
         for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
           history[method] = function (state, title, url) {
-            let next = url != null ? resolve(String(url)) : null;
+            const raw = url != null ? String(url) : null;
+            let next = raw !== null ? resolve(raw) : null;
+            // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
+            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            if (fromShell && cfg.url) {
+              const page = new URL(pageUrl);
+              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+            }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;
             try { original.call(this, state, title, next ? shellPath(next) : undefined); }
             catch { original.call(this, state, title); }
             if (next) {
               pageUrl = next;
+              routedBase?.setAttribute("href", pageUrl);
               reportUrl();
             }
           };
@@ -487,7 +504,7 @@ _FRAME_HTML = r"""<!doctype html>
         // Annotate: the panel marks parts of the page to ask about (_ANNOTATE_JS). Its code comes from
         // the panel when annotate mode turns on, so pages never annotated don't parse it. Until then
         // only the latest on/off and numbering are kept, to apply once it is installed.
-        let annotation = null, wanted = null, numbers = null;
+        let annotation = null, wanted = null, numbers = null, agent = null;
         const install = (code) => {
           if (annotation || typeof code !== "string" || code.length > 262144) return;
           try { annotation = compile("post", code)(post); } catch { return; }
@@ -651,11 +668,23 @@ _FRAME_HTML = r"""<!doctype html>
           }
           else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation ? annotation.number(data.numbers) : (numbers = data.numbers);
-          else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "zoom") {
+            applyZoom(data.value);
+            // A zoom fires no scroll or resize, so marks are redrawn here.
+            annotation?.redraw();
+          }
           else if (data.command === "mute") setMuted(data.on === true);
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "agent" && typeof data.id === "string") {
+            // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
+            if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
+              // Its own return value, not window's key: a page script can set that key first.
+              try { agent = compile("return " + data.code)() || null; } catch {}
+            }
+            post({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+          }
         });
         // The panel may have asked for annotate before this page could hear it.
         post({ type: "annotate", event: "ready" });
@@ -684,7 +713,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -707,6 +736,8 @@ _FRAME_HTML = r"""<!doctype html>
     </script>
   </body>
 </html>"""
+
+_FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under
@@ -791,13 +822,21 @@ _ANNOTATE_JS = r"""
             }
             return document.documentElement;
           };
-          // Where a mark is now: around what it marks, or its blank area, moved with its anchor.
+          // Where a mark is now: a drag as drawn, a click around its target, a blank area by its anchor.
           const markBox = (mark) => {
-            if (mark.ranges) return boxOf(mark.ranges);
-            const { element, dx, dy, width, height } = mark.anchor;
+            if (mark.ranges) {
+              const box = boxOf(mark.ranges);
+              if (!box || !mark.frame) return box;
+              // Scale by the zoom change since the drag, as the content did.
+              const { dx, dy, width, height, zoom } = mark.frame;
+              const k = zoomOf() / zoom;
+              return { left: box.left + PAD + dx * k, top: box.top + PAD + dy * k, width: width * k, height: height * k };
+            }
+            const { element, dx, dy, width, height, zoom } = mark.anchor;
             if (!element.isConnected) return null;
             const rect = element.getBoundingClientRect();
-            return { left: rect.left + dx, top: rect.top + dy, width, height };
+            const k = zoomOf() / zoom;
+            return { left: rect.left + dx * k, top: rect.top + dy * k, width: width * k, height: height * k };
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -898,18 +937,23 @@ _ANNOTATE_JS = r"""
             marks.set(id, mark);
             send("mark", { id, rect: mark.at, ...details });
           };
-          const addMark = (ranges) => {
+          const addMark = (ranges, area = null) => {
             if (!ranges || !ranges.length) return;
             const quote = quoteOf(ranges);
             const picture = pictureOf(ranges);
             if (!quote && picture === null) return;
-            createMark({ ranges }, { quote, image: picture !== null, alt: picture || "", area: false });
+            // Keep a drag's box as drawn, not shrunk to its text.
+            const content = area && boxOf(ranges);
+            const frame = content
+              ? { dx: area.left - content.left - PAD, dy: area.top - content.top - PAD, width: area.width, height: area.height, zoom: zoomOf() }
+              : null;
+            createMark({ ranges, frame }, { quote, image: picture !== null, alt: picture || "", area: false });
           };
           // An area with nothing in it marks that part of the page itself.
           const addArea = (area) => {
             const element = anchorOf(area);
             const rect = element.getBoundingClientRect();
-            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
+            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height, zoom: zoomOf() };
             createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
           // The panel numbers the marks, matching the order they take in the chat.
@@ -979,7 +1023,7 @@ _ANNOTATE_JS = r"""
             send("up");
             if (box) {
               const ranges = blocksIn(new DOMRect(box.left, box.top, box.width, box.height));
-              ranges.length ? addMark(ranges) : addArea(box);
+              ranges.length ? addMark(ranges, box) : addArea(box);
             }
             else if (pin !== null) send("open", { id: pin });
             else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
@@ -1030,7 +1074,7 @@ _ANNOTATE_JS = r"""
             pending = press = hover = lastMove = overlay = root = null;
             marks.clear();
           };
-          return { start, stop, forget, number };
+          return { start, stop, forget, number, redraw };
 """
 
 
@@ -1100,8 +1144,9 @@ class BrowserFetchRequest(BaseModel):
     url: str = Field(..., min_length = 1, max_length = 8192)
     method: Literal["GET", "POST"] = "GET"
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
-    # Smaller cap for favicons, so an icon can't be 50 MB.
+    # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
+    error_page: bool = False
 
 
 _BOMS = (
@@ -1111,34 +1156,47 @@ _BOMS = (
 )
 
 
-# Browsers read these labels as windows-1252 (WHATWG Encoding), which fills 0x80-0x9F with quotes and dashes.
-_WINDOWS_1252_LABELS = frozenset(
-    "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 "
-    "iso_8859-1 iso_8859-1:1987 l1 latin1 latin-1 us-ascii windows-1252 x-cp1252".split()
-)
+# headers may name UTF-16; meta labels map it to UTF-8 through the shared table.
+_HEADER_CODECS = {
+    **_WHATWG_CHARSET_CODECS,
+    **dict.fromkeys(
+        "csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le".split(), "utf-16"
+    ),
+    "unicodefffe": "utf-16-be",
+    "utf-16be": "utf-16-be",
+    "latin-1": "cp1252",
+}
 
 
-def _codec(label: str) -> str:
-    label = label.strip().lower()
-    return "cp1252" if label in _WINDOWS_1252_LABELS else label
+def _codec(label: Optional[str], table: dict = _HEADER_CODECS) -> Optional[str]:
+    return table.get(label.strip().lower()) if label else None
+
+
+def _raw_codec(label: Optional[str]) -> Optional[str]:
+    codec = _codec(label)
+    if codec or not label:
+        return codec
+    try:
+        return codecs.lookup(label).name
+    except (LookupError, ValueError):
+        return None
 
 
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
-    # A byte order mark wins over any declared charset, as in browsers.
+    # byte order marks override declared charsets, matching browsers.
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
-    candidates = [_codec(charset)] if charset else []
-    sniffed = _META_CHARSET_RE.search(raw[:4096])
-    if sniffed:
-        candidates.append(_codec(sniffed.group(1).decode("ascii", "ignore")))
-    candidates.append("utf-8")
-    for candidate in candidates:
-        try:
-            return raw.decode(candidate)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    # Unlabelled and not UTF-8: windows-1252, as browsers default to.
+    labelled = _codec(charset)
+    if labelled is None:
+        labelled = _sniff_meta_charset(raw[:4096], "text/html")
+    if labelled:
+        return raw.decode(labelled, errors = "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # browsers use U+FFFD for bad bytes in labelled pages and windows-1252 for unlabelled pages.
     return raw.decode("cp1252", errors = "replace")
 
 
@@ -1149,19 +1207,21 @@ def _attr(match: "re.Match[str] | None") -> Optional[str]:
 
 
 def _join(base: str, href: str) -> Optional[str]:
-    """``urljoin``, or None for an address it cannot parse (``http://[bad``)."""
+    """return None when ``urljoin`` cannot parse an address such as ``http://[bad``."""
     try:
         return urljoin(base, href.strip())
     except ValueError:
         return None
 
 
-def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
-    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed."""
-    base_url = url
+def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dict]]:
+    """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed; ``base_url``
+    is None when the page declares no base."""
+    base_url = None
     for tag in _BASE_TAG_RE.findall(page):
         href = _attr(_ATTR_HREF_RE.search(tag))
-        if href:
+        # href="" is a base too, frozen at the document's URL (HTML: the base element).
+        if href is not None:
             base_url = _join(url, href) or url
             break
     page = _BASE_TAG_RE.sub("", page)
@@ -1182,7 +1242,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
             parsed = _REFRESH_RE.match(_attr(_CONTENT_ATTR_RE.search(tag)) or "")
             if parsed and parsed.group(2) and refresh is None:
                 delay = float(parsed.group(1))
-                target = _join(base_url, parsed.group(2))
+                target = _join(base_url or url, parsed.group(2))
                 if delay <= _MAX_REFRESH_DELAY_S and target:
                     refresh = {"delay": delay, "url": target}
             return ""
@@ -1430,12 +1490,13 @@ def _fetch(
         meta_out = meta,
         cancel_event = cancel_event,
         host_headers = _studio_headers,
+        error_page = request.error_page,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
-    """The server's name for a download, as a bare file name."""
+    """server-provided download name reduced to a bare file name."""
     name = meta.get("filename")
     if not isinstance(name, str):
         return None
@@ -1451,9 +1512,13 @@ def _build_response(
     meta: dict,
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
-    """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
-    if error is not None:
-        # The host only: a page address can carry a sign-in token.
+    """build the panel response in the fetch pool to keep large pages off the event loop."""
+    looks_html = not content_type and body[:512].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
+    is_html = content_type in _HTML_TYPES or looks_html
+    if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
+        # log the host only because page URLs can carry sign-in tokens.
         try:
             host = urlsplit(url).hostname
         except ValueError:
@@ -1464,32 +1529,36 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
-    if content_type in _HTML_TYPES or looks_html:
+    if is_html:
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,
                 detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
             )
-        page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        page, own_base, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        base_url = own_base or final_url
         page = _inline_module_scripts(page, base_url, cancel_event)
-        payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
+        payload = {
+            "url": final_url,
+            "base": base_url,
+            "ownBase": own_base is not None,
+            "refresh": refresh,
+            "html": page,
+        }
         return Response(
             content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
             media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
-    charset = meta.get("charset")
+    codec = _raw_codec(meta.get("charset"))
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
-    if textual and charset and charset.lower().replace("_", "-") not in ("utf-8", "utf8"):
-        # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
+    if textual and codec and codec != "utf-8":
+        # transcode text to UTF-8 to match the response label.
         try:
-            body = body.decode(_codec(charset), errors = "replace").encode("utf-8")
-        except LookupError:
+            body = body.decode(codec, errors = "replace").encode("utf-8")
+        except (LookupError, UnicodeError, ValueError):
             pass
     return Response(
         content = body,
@@ -1497,7 +1566,7 @@ def _build_response(
         headers = {
             KIND_HEADER: "raw",
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
-            # Never rendered on Studio's origin.
+            # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
         },

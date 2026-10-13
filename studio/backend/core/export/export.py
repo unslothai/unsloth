@@ -419,6 +419,15 @@ def _torchao_runtime_unavailable():
         return False
 
 
+def _torchao_too_old():
+    """Installed torchao version when it is below what transformers' TorchAoConfig accepts, else None."""
+    try:
+        from core._torchao_stub import torchao_too_old_for_export
+        return torchao_too_old_for_export()
+    except Exception:
+        return None
+
+
 def _is_torchao_alias(alias):
     """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
     ROCm guard catches it before it is misread as compressed-tensors."""
@@ -701,6 +710,15 @@ class ExportBackend:
         self.is_peft = False
         self._audio_type = None
         self.decision = None
+        self.diffusion_lm_profile = None
+
+    def _diffusion_refusal(self, method: str) -> Optional[str]:
+        profile = getattr(self, "diffusion_lm_profile", None)
+        if not profile:
+            return None
+        from utils.models.diffusion_lm import export_refusal
+
+        return export_refusal(profile, method)
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -770,6 +788,7 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+            self.diffusion_lm_profile = None
 
             # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
             from core.export.decision import decision_kind
@@ -815,6 +834,18 @@ class ExportBackend:
                 self.is_vision = not self._audio_type and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+                self.diffusion_lm_profile = (
+                    None
+                    if self._audio_type
+                    else diffusion_lm_profile_for_model(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                )
+                if self.diffusion_lm_profile:
+                    # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
+                    self.is_vision = False
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -866,17 +897,22 @@ class ExportBackend:
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+                from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
-                model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None if _IS_MLX else torch.float32,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                    **_device_map_kw,
-                )
+                with spark_tts_adapter_load_target(
+                    checkpoint_path, hf_token = token, local_files_only = local_files_only
+                ) as load_target:
+                    model, tokenizer = FastModel.from_pretrained(
+                        model_name = load_target,
+                        max_seq_length = max_seq_length,
+                        dtype = None if _IS_MLX else torch.float32,
+                        load_in_4bit = False,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                        **_device_map_kw,
+                    )
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel
@@ -885,6 +921,20 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                )
+
+            elif self.diffusion_lm_profile:
+                from unsloth import FastModel
+                logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -938,6 +988,12 @@ class ExportBackend:
                     f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
                 )
 
+            # A Hub adapter has no config.json for the probe, but core loads a diffusion base through its
+            # diffusion path: classify from what loaded, so the merged / GGUF refusals still apply.
+            if not self.diffusion_lm_profile and not _IS_MLX:
+                from utils.models.diffusion_lm import loaded_diffusion_profile
+                self.diffusion_lm_profile = loaded_diffusion_profile(model)
+
             # The MLX GGUF LoRA converter honors the approved load decision.
             self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
@@ -946,6 +1002,8 @@ class ExportBackend:
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
+            elif self.diffusion_lm_profile:
+                model_type = f"Text-diffusion ({self.diffusion_lm_profile})"
             elif self.is_vision:
                 model_type = "Vision"
             else:
@@ -1117,6 +1175,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("merged")
+        if refusal:
+            return False, refusal, None
 
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
@@ -1139,6 +1200,18 @@ class ExportBackend:
                 "16-bit merged or GGUF quantization instead.",
                 None,
             )
+
+        # transformers 5 refuses torchao < 0.15 as "requires torchao to be installed"; name the real cause.
+        if _is_torchao_alias(compressed_alias):
+            _old_torchao = _torchao_too_old()
+            if _old_torchao:
+                return (
+                    False,
+                    f"Portable torchao FP8/INT8 export needs torchao 0.15 or newer, but torchao "
+                    f"{_old_torchao} is installed. Update Unsloth to install a newer torchao, or "
+                    "use 16-bit merged or GGUF quantization instead.",
+                    None,
+                )
 
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
@@ -1550,6 +1623,9 @@ class ExportBackend:
             )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf")
+        if refusal:
+            return False, refusal, None
 
         # Older unsloth builds raise on an unexpected imatrix_file kwarg even for a plain no-imatrix export.
         if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
@@ -1933,9 +2009,11 @@ class ExportBackend:
             )
 
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
+        from utils import llama_cpp_source
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        base_source_dir = source_dir
         # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
@@ -1948,55 +2026,73 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # Pinned to the installed binaries' revision (else the latest release).
+            # The installed binaries' revision (else latest), from its unslothai/llama.cpp release.
             try:
-                _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+                repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
-                tag = None
-            tag = tag.split("-mix-")[0] if tag else None
-            if tag:
+                repo, tag = None, None
+            converter = None
+            if tag and llama_cpp_source.is_fork_release_tag(repo, tag):
                 source_dir = f"{source_dir}-{tag}"
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
-                converter = None
+                if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
+                    converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+            elif tag and not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                # Offline only: online, the download path resolves the stable mix release first.
+                cached = sorted(
+                    glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
+                    key = os.path.getmtime,
+                )
+                cached = [
+                    d for d in cached if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if cached:
+                    converter = os.path.join(cached[-1], "convert_lora_to_gguf.py")
+            # Trees the previous git-clone exporter left: llama.cpp-source-<upstream tag>, or
+            # llama.cpp-source when no revision was known.
+            legacy = base_source_dir + (f"-{tag.split('-mix-')[0]}" if tag else "")
+            if converter is None and os.path.isfile(
+                os.path.join(legacy, "convert_lora_to_gguf.py")
+            ):
+                converter = os.path.join(legacy, "convert_lora_to_gguf.py")
+            if converter is None and not tag:
+                # No revision known (offline, no marker): the newest tree any exporter left.
+                trees = [
+                    d
+                    for d in glob.glob(f"{glob.escape(base_source_dir)}-*")
+                    if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if trees:
+                    converter = os.path.join(
+                        max(trees, key = os.path.getmtime), "convert_lora_to_gguf.py"
+                    )
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
                     "GGUF adapter export needs llama.cpp's convert_lora_to_gguf.py, which is not "
-                    f"installed, and offline mode forbids cloning it; clone llama.cpp into {source_dir}."
+                    "installed, and offline mode forbids downloading it; extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
             if not getattr(_zoo_llama_cpp, "_auto_install_enabled", lambda: True)():
                 raise RuntimeError(
-                    "GGUF adapter export needs a llama.cpp source checkout and automatic "
-                    f"installation was declined (UNSLOTH_AUTO_INSTALL=0); clone llama.cpp into {source_dir}."
+                    "GGUF adapter export needs llama.cpp's converter sources and automatic "
+                    "installation was declined (UNSLOTH_AUTO_INSTALL=0); extract the "
+                    f"{llama_cpp_source.FORK_REPO} release's llama.cpp-source-<tag>.tar.gz into "
+                    f"{source_dir}."
                 )
-            # Not install_llama_cpp: it probes apt-get even when only cloning, which fails on macOS.
-            ensure_dir(Path(source_dir).parent)
-            with tempfile.TemporaryDirectory(dir = Path(source_dir).parent) as tmp_dir:
-                clone = os.path.join(tmp_dir, "llama.cpp")
-                subprocess.run(
-                    [
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        *(["--branch", tag] if tag else []),
-                        "https://github.com/ggml-org/llama.cpp",
-                        clone,
-                    ],
-                    check = True,
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
+            # Not install_llama_cpp: it probes apt-get even when only fetching sources, which fails on macOS.
+            try:
+                fetched = llama_cpp_source.download_converter_source(
+                    repo, tag, Path(source_dir).parent
                 )
-                if not os.path.exists(source_dir):
-                    os.replace(clone, source_dir)
-            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            if not os.path.exists(converter):
+            except Exception as exc:
                 raise RuntimeError(
-                    f"convert_lora_to_gguf.py is missing from the llama.cpp clone at {source_dir}."
-                )
+                    "Could not download llama.cpp's converter sources from the "
+                    f"{llama_cpp_source.FORK_REPO} release: {exc}"
+                ) from exc
+            converter = os.path.join(str(fetched), "convert_lora_to_gguf.py")
+            if not os.path.exists(converter):
+                raise RuntimeError(f"convert_lora_to_gguf.py is missing from {fetched}.")
         if importlib.util.find_spec("gguf") is None and not os.path.isdir(
             os.path.join(os.path.dirname(converter), "gguf-py")
         ):
@@ -2085,6 +2181,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf") if gguf else None
+        if refusal:
+            return False, refusal, None
 
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None

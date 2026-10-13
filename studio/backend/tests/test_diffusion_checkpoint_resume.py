@@ -402,6 +402,19 @@ def test_non_finite_progress_is_dropped_from_the_manifest(run_dir):
     assert dc.load_checkpoint(run_dir / "checkpoint-2").running_loss == 0.0
 
 
+def test_the_fp16_loss_scaler_state_round_trips_through_progress(run_dir):
+    import torch
+
+    scaler = torch.amp.GradScaler("cuda", init_scale = 1024.0, enabled = True)
+    state = scaler.state_dict()
+    _Run(run_dir).save(2, progress = {"running_loss": 1.0, "grad_scaler": state})
+    restored = dc.load_checkpoint(run_dir / "checkpoint-2").progress["grad_scaler"]
+    assert restored == state
+    fresh = torch.amp.GradScaler("cuda", enabled = True)
+    fresh.load_state_dict(restored)
+    assert fresh.state_dict() == state
+
+
 def test_save_total_limit_keeps_only_the_newest_bundles(run_dir):
     run = _Run(run_dir, save_total_limit = 2)
     for step in (1, 2, 3, 4):
@@ -1996,7 +2009,7 @@ def test_the_identity_covers_the_input_stream(run_dir):
         ("cache_latents", False, "latent caching"),
         ("cache_variants", 8, "cached crop variants"),
         ("center_crop", True, "centre cropping"),
-        ("random_flip", False, "random flipping"),
+        ("random_flip", True, "random flipping"),
     ):
         changed_cfg = dataclasses.replace(base.cfg, **{field: value})
         reason = dc.identity_for_config(base.cfg).mismatch_reason(
@@ -2009,8 +2022,9 @@ def test_the_identity_covers_the_input_stream(run_dir):
         assert older is not None
         assert older.mismatch_reason(dc.identity_for_config(changed_cfg)) is None, field
     # False is a VALUE, not an unknown: the flags are recorded as on/off for exactly that.
-    flipped = dataclasses.replace(base.cfg, random_flip = False)
-    assert dc.identity_for_config(flipped).random_flip == "off"
+    assert dc.identity_for_config(base.cfg).random_flip == "off"
+    flipped = dataclasses.replace(base.cfg, random_flip = True)
+    assert dc.identity_for_config(flipped).random_flip == "on"
 
 
 def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):
@@ -2107,22 +2121,21 @@ def test_a_first_periodic_save_does_not_spend_the_previous_runs_bundles(run_dir)
         assert "discard_existing = False," in source, name
 
 
-def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
+def test_both_trainers_honour_the_fp32_optimizer_override(run_dir, monkeypatch):
     """The preflight refuses 8-bit moments when the override is set, which is only sound if
     every trainer actually obeys it -- otherwise DiT checkpoints written on this host become
-    unresumable on the same host."""
-    trainers = Path(dc.__file__).parent
-    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
-        source = (trainers / name).read_text(encoding = "utf-8")
-        marker = source.find("def _make_optimizer")
-        if marker < 0:
-            marker = source.find("def _make_lora_optimizer")
-        assert marker > 0, name
-        body = source[marker : marker + 1200]
-        # The env READ, not a mention of it in prose.
-        read = 'os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM"'
-        assert read in body, name
-        assert body.index(read) < body.index("AdamW8bit"), name
+    unresumable on the same host. Asked of the factories themselves, including for a resume of
+    an 8-bit bundle, which is the one case that otherwise builds AdamW8bit."""
+    import core.training.diffusion_dit_trainer as dit
+    import core.training.diffusion_lora_trainer as sdxl
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP32_OPTIM", "1")
+    for factory in (sdxl._make_lora_optimizer, dit._make_optimizer):
+        for resume in (None, "bitsandbytes.optim.adamw.AdamW8bit"):
+            param = torch.nn.Parameter(torch.zeros(2, 2))
+            optimizer = factory([param], 1e-4, resume)
+            assert type(optimizer) is torch.optim.AdamW, factory
+            assert not optimizer.defaults.get("fused"), factory
 
 
 def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):

@@ -61,9 +61,12 @@ import {
   HubOptionMenu,
   TrainIcon,
   TransportConflictDialog,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
+  revealLocalModel,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
   isHuggingFaceOffline,
@@ -123,7 +126,6 @@ import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import {
   Add01Icon,
   ArrowUpDownIcon,
-  AudioWave01Icon,
   Cancel01Icon,
   Copy01Icon,
   DashboardCircleIcon,
@@ -139,6 +141,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
@@ -157,6 +160,10 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import {
+  audioCppHubPath,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
@@ -169,6 +176,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   localAudioRowIsUndecodableGguf,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -209,6 +217,7 @@ import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
 import {
   type ModelLoadTimes,
+  loadStampId,
   loadedAt,
   useModelLoadTimes,
 } from "./model-usage";
@@ -223,17 +232,21 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
+  coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
   estimateQuantBytes,
+  formatFilterValues,
   hfModelFitsDevice,
   isMlxId,
+  isCapableCheckpointQuant,
   isMobileVariant,
   isRecommendableFormat,
   loadScopedGpu,
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
+  pickerSearchMatches,
   recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
@@ -245,7 +258,9 @@ import {
 } from "./row-identity";
 import {
   type FormatTone,
+  isFeaturedOnDeviceRepoId,
   isUnslothOwner,
+  onDeviceRepoLabel,
   parseMetaTokens,
   splitRepoLabel,
 } from "./row-meta";
@@ -295,7 +310,7 @@ function isUnslothRepoId(repoId: string): boolean {
 
 /** Official publisher namespaces used only for visual On Device grouping. */
 function isUnslothPublisherRepoId(repoId: string): boolean {
-  return isUnslothOwner(splitRepoLabel(repoId).owner);
+  return isFeaturedOnDeviceRepoId(repoId);
 }
 
 function normalizeForSearch(s: string): string {
@@ -560,7 +575,7 @@ const CAPABILITY_BADGES: {
     // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
     tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
-      <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
+      <HugeiconsIcon icon={AiSpeechIcon} strokeWidth={1.8} {...props} />
     ),
   },
 ];
@@ -1227,6 +1242,10 @@ export function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  // Pinned, sole-quant and collapsed rows pass metadata's has_vision straight in; an audio scope hides it.
+  const visionShown =
+    showVision === true &&
+    (capabilityScope === null || capabilityScope.includes("vision"));
   const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw: Images and Audio draw no glyph and Video
   // draws one, so holding the chat row's slot open there is dead space.
@@ -1455,7 +1474,7 @@ export function ModelRow({
               )}
             >
               {showCaps && <CapabilityIcons caps={caps} />}
-              {showVision && <VisionBadge />}
+              {visionShown && <VisionBadge />}
               {partial && alignMeta !== "device" ? (
                 <PartialBadge resumable={partialResumable} />
               ) : null}
@@ -1464,7 +1483,7 @@ export function ModelRow({
           ) : (
             <>
               {showCaps && <CapabilityIcons caps={caps} />}
-              {showVision && <VisionBadge />}
+              {visionShown && <VisionBadge />}
               {loaded && (
                 <DotTag
                   tone="success"
@@ -1906,13 +1925,14 @@ function GgufVariantExpander({
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
-  const onUpdateVariant = variantActions?.onUpdate;
+  const [variantsAreGguf, setVariantsAreGguf] = useState(true);
+  const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription =
     variantActions?.renderUpdateDescription;
   const updateDisabled = variantActions?.updateDisabled ?? false;
-  const onDeleteVariant = variantActions?.onDelete;
+  const onDeleteVariant = variantsAreGguf ? variantActions?.onDelete : undefined;
   const deleteVariantTitle =
     variantActions?.deleteTitle ?? "Delete cached model?";
   const renderDeleteVariantDescription =
@@ -1923,6 +1943,10 @@ function GgufVariantExpander({
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
+  const capabilityScope = useContext(CapabilityScope);
+  const visionInScope =
+    capabilityScope === null || capabilityScope.includes("vision");
+  const showVision = hasVision === true && visionInScope;
   // Native max context (GGUF metadata); only set once a variant is downloaded.
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1961,11 +1985,12 @@ function GgufVariantExpander({
       setVariants(normalized.variants);
       setDefaultVariant(normalized.defaultVariant);
       setHasVision(normalized.hasVision);
-      if (normalized.hasVision !== undefined) {
+      if (normalized.hasVision !== undefined && visionInScope) {
         onHasVision?.(normalized.hasVision);
       }
       setNativeContext(normalized.contextLength);
       setResolvedLocally(normalized.resolvedLocally);
+      setVariantsAreGguf(res?.variant_format !== "mlx");
     };
 
     loadPickerGgufVariants(
@@ -2002,7 +2027,15 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
+  }, [
+    repoId,
+    localSource,
+    refreshKey,
+    hfToken,
+    pipelineTag,
+    onDevice,
+    visionInScope,
+  ]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2039,7 +2072,7 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         downloadPresentation,
         contextLength: isAvailable ? contextLength : undefined,
-        isGguf: true,
+        isGguf: variantsAreGguf,
         isVision: variantVisionHint,
         pipelineTag,
       });
@@ -2053,6 +2086,7 @@ function GgufVariantExpander({
       nativeContext,
       pipelineTag,
       variantVisionHint,
+      variantsAreGguf,
     ],
   );
 
@@ -2225,7 +2259,7 @@ function GgufVariantExpander({
     setCompanionBytesByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
     // larger half, so suppressing the request understated a local row by many gigabytes.
-    if (!resolveDownloadFootprint) {
+    if (!resolveDownloadFootprint || !variantsAreGguf) {
       return () => {
         cancelled = true;
       };
@@ -2279,6 +2313,7 @@ function GgufVariantExpander({
     repoId,
     resolveDownloadFootprint,
     sourceOverride,
+    variantsAreGguf,
   ]);
 
   const variantOptionKeys = useMemo(
@@ -2344,7 +2379,7 @@ function GgufVariantExpander({
           <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
             Quantizations
           </span>
-          {hasVision && (
+          {showVision && (
             <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
               <HugeiconsIcon
                 icon={ViewIcon}
@@ -2357,7 +2392,7 @@ function GgufVariantExpander({
         </div>
       )}
       {!onDevice &&
-        hasVision &&
+        showVision &&
         displayVariantGroups.some((group) => group.title) && (
           <div className="px-2 pt-1">
             <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
@@ -2511,7 +2546,7 @@ function GgufVariantExpander({
                     isDownloaded: true,
                     expectedBytes,
                     contextLength: variantContext,
-                    isGguf: true,
+                    isGguf: variantsAreGguf,
                     isVision: variantVisionHint,
                   })
                 }
@@ -2685,6 +2720,17 @@ function mediaPageForTask(
   return "images";
 }
 
+function taskFilterHasAudio(filter: HfTaskFilter): boolean {
+  const tasks: readonly string[] = filter
+    ? typeof filter === "string"
+      ? [filter]
+      : filter
+    : [];
+  return tasks.some((entry) =>
+    (AUDIO_GEN_TASKS as readonly string[]).includes(entry),
+  );
+}
+
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image the
 // text-to-image backend rejects, so they are hidden by id (mirrors _EDIT_KEYWORDS). The
 // task itself must stay, since FLUX.2-klein carries it too.
@@ -2734,7 +2780,8 @@ function passesTaskGate(
           catalogTask: exactArtifact?.group.task,
           pickerTask: filter,
         })) &&
-      !isImageEditModel(repoId)
+      // The edit-keyword hiding is an Images rule; audio edit models (DotTTS-Edit) load fine.
+      !(!taskFilterHasAudio(filter) && isImageEditModel(repoId))
     ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
@@ -2837,10 +2884,6 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
     ),
   };
 });
-const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
-  (option) => option.value !== "npu",
-);
-
 // Connected has no size, download date or load history, so it sorts by what a hosted catalogue
 // does offer: the connection, or the name.
 type ConnectedSortKey = "provider" | "name";
@@ -2962,7 +3005,9 @@ function localDirectGgufMeta(
  *  row shows no empty address line. */
 function hubRepoUrl(id: string | null | undefined): string | undefined {
   const trimmed = id?.trim();
-  return trimmed ? `huggingface.co/${trimmed}` : undefined;
+  return trimmed
+    ? `huggingface.co/${audioCppHubPath(trimmed) ?? trimmed}`
+    : undefined;
 }
 
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so callers gate
@@ -2994,9 +3039,11 @@ export function HubModelPicker({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   value,
+  valueLoaded,
   onSelect: onSelectProp,
   resolveDownloadFootprint,
   onFoldersChange,
@@ -3021,11 +3068,15 @@ export function HubModelPicker({
    *  example the two-file STT sidecars). */
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
+  /** Task-owned loaded quant; when given it replaces the chat store's, null meaning none. */
+  loadedGgufVariantOverride?: string | null;
   /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
   /** Connected provider models, shown in the Connected section. */
   externalModels?: ExternalModelOption[];
   value?: string;
+  /** Whether `value` is resident; false keeps it from being stamped as a load. */
+  valueLoaded?: boolean;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
@@ -3057,12 +3108,27 @@ export function HubModelPicker({
   // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
   // left the parent rows and the "Fits on device" filter on the 0.97 default.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
+  // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
+  // whatever their size. Task pages keep their own formats.
+  const quantFormatsKey = gpu.checkpointQuantFormats.join(",");
+  const runsCheckpointQuant = useCallback(
+    (r: { id: string; quantMethod?: string; isGguf?: boolean }) =>
+      !task &&
+      isCapableCheckpointQuant(
+        r.id,
+        r.quantMethod,
+        quantFormatsKey ? quantFormatsKey.split(",") : [],
+        r.isGguf,
+      ),
+    [task, quantFormatsKey],
+  );
   // Whether THIS picker's rows load through the diffusion backend. Not `Boolean(task)`: Audio is
   // task-scoped but runs its GGUFs under llama.cpp / whisper.
   const diffusionLoad = useMemo(() => {
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
   // resident. Same predicate as the header tick.
@@ -3079,9 +3145,13 @@ export function HubModelPicker({
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeGgufVariant =
+    loadedGgufVariantOverride !== undefined
+      ? loadedGgufVariantOverride
+      : storeGgufVariant;
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
-  const loadTimes = useModelLoadTimes(value);
+  const loadTimes = useModelLoadTimes(loadStampId(value, valueLoaded));
   // Fade the list's top edge once scrolled, and its bottom edge while more rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
@@ -3143,6 +3213,8 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
   const recommendedSearch = useHubModelSearch("", {
+    // Audio keeps only task rows, so an untasked listing pages forever without finding one.
+    task: audioTaskPicker ? task : undefined,
     ownerScope: "unsloth",
     sortBy: recommendedSort,
     sortDirection: "desc",
@@ -3216,6 +3288,32 @@ export function HubModelPicker({
     },
     [modelGgufIds, resultGgufIds],
   );
+
+  const resultMlxIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (
+        result.libraryName?.toLowerCase() === "mlx" ||
+        result.tags?.some((tag) => tag.toLowerCase() === "mlx")
+      ) {
+        ids.add(result.id.toLowerCase());
+      }
+    }
+    return ids;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
+  const [mlxVariantRepoIds, setMlxVariantRepoIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
 
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   // GGUF vision support per repo, reported by the expander once it has read the metadata, so On
@@ -3635,7 +3733,8 @@ export function HubModelPicker({
       // Image/Video tab (task set): only task-matching, non-editing results.
       if (task)
         return (
-          taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id)
+          taskMatchesFilter(r.pipelineTag, task) &&
+          !(!audioTaskPicker && isImageEditModel(r.id))
         );
       return (
         classifyUnslothSupport({
@@ -3648,7 +3747,18 @@ export function HubModelPicker({
         }).status !== "unsupported"
       );
     },
-    [deviceType, task],
+    [audioTaskPicker, deviceType, task],
+  );
+  // A capable FP8 / NVFP4 checkpoint passes the runtime gate's quant-method check (vLLM loads
+  // compressed-tensors), never its pipeline check: an FP8 image model stays off the chat list.
+  const chatSupportedCheckpointQuant = useCallback(
+    (r: HfModelResult) =>
+      isChatSupported(r) ||
+      // Only compressed-tensors: the vLLM engine loads it; fbgemm / fine-grained FP8 stay refused.
+      (runsCheckpointQuant(r) &&
+        r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+        isChatSupported({ ...r, quantMethod: undefined })),
+    [isChatSupported, runsCheckpointQuant],
   );
 
   const isTaskRuntimeSupported = useCallback(
@@ -3705,11 +3815,15 @@ export function HubModelPicker({
         task
           ? isKnownGgufRepo(id) ||
             Boolean(catalog && artifactForRepoId(id, catalog))
-          : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+          : !chatOnly ||
+            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            runsCheckpointQuant({ id }),
       )
       // Member repos would collapse into the canonical group row, but nothing renders those rows yet
       // and a task-scoped picker's `models` is exactly group members, so hiding them emptied it.
-      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
+      .filter(
+        (id) => runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
+      );
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
@@ -3727,6 +3841,7 @@ export function HubModelPicker({
     task,
     catalog,
     taskCatalogSeedIds,
+    runsCheckpointQuant,
   ]);
 
   const showHfSection = debouncedQuery.trim().length > 0;
@@ -3737,8 +3852,22 @@ export function HubModelPicker({
   // Format filter toggle for the Unsloth listing.
   const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
   const npuCatalog = useNpuCatalog(npu);
-  const formatFilter: FormatFilter =
-    chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
+  // MLX only runs on a Mac; chat keeps it everywhere.
+  const offeredFormatFilters = useMemo(
+    () => formatFilterValues({ npu: !!npuCatalog, mlx: isMac || !task }),
+    [npuCatalog, isMac, task],
+  );
+  const formatFilterOptions = useMemo(
+    () =>
+      FORMAT_FILTER_OPTIONS.filter((option) =>
+        offeredFormatFilters.includes(option.value),
+      ),
+    [offeredFormatFilters],
+  );
+  const formatFilter = coerceFormatFilter(
+    chosenFormatFilter,
+    offeredFormatFilters,
+  );
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
   const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // What this picker's task filter has already established about every row it can show; chat
@@ -3789,7 +3918,7 @@ export function HubModelPicker({
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
       .filter((id) => !isMobileVariant(id))
-      .filter((id) => !isImageEditModel(id))
+      .filter((id) => audioTaskPicker || !isImageEditModel(id))
       .filter(curatedOfferable)
       .filter((id) => {
         const isG = isKnownGgufRepo(id);
@@ -3809,7 +3938,15 @@ export function HubModelPicker({
         // Same reason the size is curated: a seed the listing does not return has no other source for its param chip.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
-  }, [catalog, models, formatFilter, isKnownGgufRepo, task, curatedOfferable]);
+  }, [
+    audioTaskPicker,
+    catalog,
+    models,
+    formatFilter,
+    isKnownGgufRepo,
+    task,
+    curatedOfferable,
+  ]);
 
   /** The catalog's own fit verdict for a curated artifact, or undefined where it has none. Every
    *  list that judges a row against the device goes through this, so a badge and its filters
@@ -3856,8 +3993,10 @@ export function HubModelPicker({
           isHidden: isHiddenModelId(r.id),
           format: formatFilter,
           matchesFormat: matchesFormatFilter(r.id, r.isGguf, formatFilter),
-          matchesTask: isChatSupported(r),
-          isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac),
+          matchesTask: chatSupportedCheckpointQuant(r),
+          isRecommendable:
+            isRecommendableFormat(r.id, r.isGguf, isMac) ||
+            runsCheckpointQuant(r),
         })
       );
     };
@@ -3881,6 +4020,7 @@ export function HubModelPicker({
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
       cachedIdFor(r.id) !== null ||
+      runsCheckpointQuant(r) ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget)?.fits ??
@@ -3945,6 +4085,8 @@ export function HubModelPicker({
     communityRecommendedEnabled,
     communityBrowse.results,
     isLoadableCommunityRepo,
+    runsCheckpointQuant,
+    chatSupportedCheckpointQuant,
   ]);
 
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
@@ -4306,7 +4448,7 @@ export function HubModelPicker({
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               ((c.task === "automatic-speech-recognition" ||
                 c.task === "text-to-speech") &&
-                communityAudioRowIsRunnable({
+                (communityAudioRowIsRunnable({
                   isStt: c.task === "automatic-speech-recognition",
                   isTts: c.task === "text-to-speech",
                   isGguf: false,
@@ -4314,7 +4456,13 @@ export function HubModelPicker({
                   tags: c.tags,
                   libraryName: c.library_name,
                   audioType: c.audio_type,
-                }) &&
+                }) ||
+                  macMlxSttRowIsRunnable({
+                    isMac,
+                    isStt: c.task === "automatic-speech-recognition",
+                    isGguf: false,
+                    libraryName: c.library_name,
+                  })) &&
                 macTtsHubRowIsRunnable({
                   isMac,
                   isTts: c.task === "text-to-speech",
@@ -4615,6 +4763,12 @@ export function HubModelPicker({
               meta.source === "exported" ||
               meta.source === "local",
             ...(hubEvidenceById.get(id) ?? {}),
+          }) &&
+          !macMlxSttRowIsRunnable({
+            isMac,
+            isStt: pickedTask === "automatic-speech-recognition",
+            isGguf: Boolean(meta.isGguf || meta.ggufFilename),
+            libraryName: cachedModels.find((c) => c.repo_id === id)?.library_name,
           })
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
@@ -4638,7 +4792,7 @@ export function HubModelPicker({
       }
       onSelectProp(id, meta);
     },
-    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
+    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp, isMac, cachedModels],
   );
 
   // Fine-tuned models for the On Device section: flat, query-filtered, newest first.
@@ -4721,9 +4875,12 @@ export function HubModelPicker({
       return (
         matchesFormatFilter(model.id, model.isGguf === true, formatFilter) &&
         (!needle ||
-          normalizeForSearch(
-            `${model.id} ${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
-          ).includes(needle))
+          pickerSearchMatches(
+            model.id,
+            [model.id],
+            `${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
+            needle,
+          ))
       );
     });
     return sortCachedRepos(
@@ -5199,9 +5356,14 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        // A mirror row also answers to its vendor id.
+        // What the row shows, plus the vendor id a mirror row answers to.
         .filter((id) =>
-          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+          pickerSearchMatches(
+            id,
+            aliasesOf(id),
+            catalog ? curatedRow(id).name : null,
+            q,
+          ),
         )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
@@ -5212,6 +5374,7 @@ export function HubModelPicker({
           (id) =>
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
+            runsCheckpointQuant({ id }) ||
             searchRowFits({ id }),
         )
     );
@@ -5221,11 +5384,14 @@ export function HubModelPicker({
     catalogSeedIds,
     recommendedIds,
     aliasesOf,
+    catalog,
+    curatedRow,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
     cachedIdFor,
     searchRowFits,
+    runsCheckpointQuant,
   ]);
 
   // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
@@ -5241,13 +5407,14 @@ export function HubModelPicker({
   const searchIdsFrom = useCallback(
     (rows: readonly HfModelResult[], owned: (id: string) => boolean) =>
       rows
-        .filter(isChatSupported)
+        .filter(chatSupportedCheckpointQuant)
         .filter(isTaskRuntimeSupported)
         .filter((r) => !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag }))
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
             cachedIdFor(r.id) !== null ||
+            runsCheckpointQuant(r) ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -5261,9 +5428,14 @@ export function HubModelPicker({
         // empty Recommended view.
         .filter(
           (id) =>
-            !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+            !chatOnly ||
+            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            runsCheckpointQuant({ id }),
         )
-        .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
+        .filter(
+          (id) =>
+            runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         ),
@@ -5271,7 +5443,7 @@ export function HubModelPicker({
       recommendedSet,
       chatOnly,
       isKnownGgufRepo,
-      isChatSupported,
+      chatSupportedCheckpointQuant,
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
@@ -5280,6 +5452,7 @@ export function HubModelPicker({
       isMac,
       curatedOfferable,
       rowFilter,
+      runsCheckpointQuant,
     ],
   );
 
@@ -5815,12 +5988,15 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row: GGUF repos expand, others load directly. */
+  /** Handle clicking a model row: GGUF repos and MLX precision-folder repos expand, others load. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isKnownGgufRepo(id)) {
+      const key = id.toLowerCase();
+      if (isKnownGgufRepo(id) || mlxVariantRepoIds.has(key)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
-      } else {
+        return;
+      }
+      const select = () => {
         // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
         const cached = cachedIdFor(id);
         onSelect(cached ?? id, {
@@ -5829,9 +6005,31 @@ export function HubModelPicker({
           isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
+      };
+      if (!resultMlxIds.has(key) || isHuggingFaceOffline()) {
+        select();
+        return;
       }
+      void listGgufVariants(id, hfToken || undefined)
+        .then((res) => {
+          if (res.variant_format === "mlx" && res.variants.length > 0) {
+            setMlxVariantRepoIds((prev) => new Set(prev).add(key));
+            setExpandedGguf(id);
+          } else {
+            select();
+          }
+        })
+        .catch(select);
     },
-    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
+    [
+      onSelect,
+      isKnownGgufRepo,
+      mlxVariantRepoIds,
+      resultMlxIds,
+      hfToken,
+      cachedIdFor,
+      pipelineTagById,
+    ],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -5844,9 +6042,17 @@ export function HubModelPicker({
     error: recommendedSearch.error,
     hubPhase,
   });
+  // A typed query on a community-enabled picker waits on both searches before calling it empty.
+  const communitySearchActive =
+    communityDiscoveryEnabled && debouncedQuery.trim().length > 0;
+  const communitySearching =
+    communitySearchActive && communityQuerySearch.isLoading;
+  const communitySearchError = communitySearchActive
+    ? communityQuerySearch.error
+    : null;
   const searchEmpty = recommendedEmptyState({
-    isLoading,
-    error: searchError,
+    isLoading: isLoading || communitySearching,
+    error: searchError ?? communitySearchError,
     hubPhase,
   });
   const downloadedEmpty =
@@ -5907,8 +6113,9 @@ export function HubModelPicker({
     </span>
   );
   // On Device rows are already on disk, so the device-fit filter only applies to the Unsloth listing.
+  // Audio's listing is nearly all umbrella and vendor rows, which a sort cannot reorder.
   const sectionSortDropdown =
-    section === "recommended" ? (
+    section === "recommended" && audioTaskPicker ? null : section === "recommended" ? (
       <HubOptionMenu
         value={recommendedSort}
         options={RECOMMENDED_SORT_OPTIONS}
@@ -6428,7 +6635,7 @@ export function HubModelPicker({
       >
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={c.repo_id}
+            label={onDeviceRepoLabel(c.repo_id)}
             tooltipText={localPathTooltip(
               c.repo_id,
               c.cache_path,
@@ -6466,12 +6673,12 @@ export function HubModelPicker({
         <span className={ROW_ACTIONS_CLASS}>
           {onConfigure && (
             <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
             />
           )}
           <ModelRowMenu
-            ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+            ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
             items={ejectMenuItems(c.repo_id)}
             pin={{
@@ -6494,12 +6701,12 @@ export function HubModelPicker({
                 <>
                   This will remove{" "}
                   <span className="font-medium text-foreground">
-                    {c.repo_id} ({variant.quant})
+                    {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
                   </span>{" "}
                   from disk. You can re-download it later.
                 </>
               ),
-              successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+              successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
               disabled: deleteDisabled,
               onConfirm: async () => {
                 await deleteCachedModel(
@@ -6547,7 +6754,7 @@ export function HubModelPicker({
         <div className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
-              label={c.repo_id}
+              label={onDeviceRepoLabel(c.repo_id)}
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
@@ -6584,7 +6791,7 @@ export function HubModelPicker({
           {isPartialRepo ? (
             <span className={ROW_ACTIONS_PINNED_CLASS}>
               <ModelRowMenu
-                ariaLabel={`More options for ${c.repo_id}`}
+                ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)}`}
                 cachePath={{ repoId: c.repo_id }}
                 del={{
                   title: "Delete cached model?",
@@ -6596,13 +6803,13 @@ export function HubModelPicker({
                     <>
                       This will remove{" "}
                       <span className="font-medium text-foreground">
-                        {c.repo_id}
+                        {onDeviceRepoLabel(c.repo_id)}
                       </span>{" "}
                       and everything downloaded under it from disk. You can
                       download it again later.
                     </>
                   ),
-                  successMessage: `Deleted ${c.repo_id}`,
+                  successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)}`,
                   disabled: deleteDisabled,
                   onConfirm: async () => {
                     await deleteCachedModel(
@@ -6786,6 +6993,35 @@ export function HubModelPicker({
     );
   };
 
+  const renderLocalRowMenu = (m: LocalModelInfo) => {
+    const name = m.model_id ?? m.display_name;
+    return (
+      <ModelRowMenu
+        ariaLabel={`More options for ${name}`}
+        onReveal={() => revealLocalModel(m.path, m.id)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(m.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{name}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">{m.path}</span>.
+                  </>
+                ),
+                successMessage: `Deleted ${name}`,
+                disabled: deleteDisabled,
+                onConfirm: () => deleteLocalModel(m.path, m.id),
+                onDeleted: refreshLocalModelsList,
+              }
+            : undefined
+        }
+      />
+    );
+  };
+
   const renderAdditionalOnDeviceModelRow = (model: ModelOption) => {
     const optionKey = makeModelOptionKey("additional-on-device", model.id);
     const isSelected = value === model.id;
@@ -6796,7 +7032,7 @@ export function HubModelPicker({
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={isLocalPath ? model.name : model.id}
+            label={isLocalPath ? model.name : onDeviceRepoLabel(model.id)}
             hubUrl={isLocalPath ? undefined : hubRepoUrl(model.id)}
             meta={
               isLocalPath
@@ -6826,7 +7062,35 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+        {isAudioCppFolderId(model.id) ? (
+          <span className={ROW_ACTIONS_CLASS}>
+            <ModelRowMenu
+              ariaLabel={`More options for ${onDeviceRepoLabel(model.id)}`}
+              cachePath={{ repoId: model.id }}
+              del={{
+                title: "Delete cached model?",
+                impact: { repoId: model.id },
+                description: (
+                  <>
+                    This will remove{" "}
+                    <span className="font-medium text-foreground">
+                      {onDeviceRepoLabel(model.id)}
+                    </span>{" "}
+                    from disk. You can re-download it later.
+                  </>
+                ),
+                successMessage: `Deleted ${onDeviceRepoLabel(model.id)}`,
+                disabled: deleteDisabled,
+                onConfirm: async () => {
+                  await deleteCachedModel(model.id, undefined, hfToken || undefined);
+                },
+                onDeleted: refreshCachedLists,
+              }}
+            />
+          </span>
+        ) : (
+          <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+        )}
       </div>
     );
   };
@@ -6959,12 +7223,14 @@ export function HubModelPicker({
               placeholder={
                 section === "downloaded"
                   ? "Search local models"
-                  : "Search Unsloth models"
+                  : communityDiscoveryEnabled
+                    ? "Search models"
+                    : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
               className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
             />
-            {isLoading && (
+            {(isLoading || communitySearching) && (
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
@@ -7028,16 +7294,18 @@ export function HubModelPicker({
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
-                options={
-                  npuCatalog
-                    ? FORMAT_FILTER_OPTIONS
-                    : FORMAT_FILTER_OPTIONS_WITHOUT_NPU
-                }
+                options={formatFilterOptions}
                 onValueChange={setFormatFilter}
                 ariaLabel="Filter by format"
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                // Audio has no sort for its listing, so the fit toggle lives here.
+                footer={
+                  audioTaskPicker && section === "recommended"
+                    ? fitOnDeviceFooter
+                    : undefined
+                }
               />
               {sectionSortDropdown}
             </div>
@@ -7661,7 +7929,11 @@ export function HubModelPicker({
                         );
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -7714,8 +7986,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7745,6 +8016,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf &&
@@ -7805,7 +8077,11 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -7857,8 +8133,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7888,6 +8163,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -7939,7 +8215,11 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("local-dir", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -7987,8 +8267,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -8018,6 +8297,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -8338,9 +8618,18 @@ export function HubModelPicker({
                 section === "recommended" &&
                 formatFilter !== "npu" ? (
                   <>
-                    {searchRowIds.length === 0 && !isLoading ? (
+                    {searchRowIds.length === 0 &&
+                    !isLoading &&
+                    !communitySearching ? (
                       filteredRecommendedIds.length > 0 ? null : searchEmpty === "failed" ? (
-                        <HubFailureHint message={searchError} onRetry={retrySearch} />
+                        <HubFailureHint
+                          message={searchError ?? communitySearchError}
+                          onRetry={
+                            searchError
+                              ? retrySearch
+                              : communityQuerySearch.retry
+                          }
+                        />
                       ) : (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
                           {communityDiscoveryEnabled

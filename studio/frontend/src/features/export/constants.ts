@@ -409,3 +409,8 @@ export function adapterCompatibilityTip(
     "is required for GGUF adapter export."
   );
 }
+
+// The image LoRA route reports a path relative to the exports folder unless the user typed an absolute one.
+export function savedLabel(path: string): string {
+  return /^([a-zA-Z]:[\\/]|[\\/])/.test(path) ? path : `exports/${path}`;
+}

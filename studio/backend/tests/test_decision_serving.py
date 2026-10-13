@@ -2,11 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import dataclasses
 import json
 import os
 import shutil
 import struct
+import sys
+import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -24,6 +28,7 @@ from utils.account_context import OWNER, run_as
 from utils.paths import outputs_root
 
 _REAL_LOAD = laya_runtime._load_checkpoint
+_REAL_ENGINE = laya_runtime._engine_available
 QUESTIONS = {"urgent": {"type": "noul", "instructions": "Does this need a reply now?"}}
 UPSTREAM = {
     "model": "jev-1.13",
@@ -49,6 +54,8 @@ def home(tmp_path, monkeypatch):
     for name in ("_agent", "_loaded", "_device_name", "_loader", "_loading", "_failure"):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
+    # The MLX engine is opted into per test, so a run on Apple Silicon selects what CI does.
+    monkeypatch.setattr(laya_runtime, "_engine_available", lambda: False)
     monkeypatch.setattr(
         laya_runtime, "_load_checkpoint", lambda checkpoint: (SimpleNamespace(), "cpu")
     )
@@ -141,7 +148,7 @@ def gpu(home, monkeypatch):
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(torch_device_probe, "device_can_allocate", lambda device: True)
     # The real loader around a stand-in model; placing it only records where it would go.
-    state = SimpleNamespace(training = False, placed = [], on_build = None)
+    state = SimpleNamespace(training = False, placed = [], on_build = None, oom = False, closed = 0)
 
     def build(path, **kwargs):
         if state.on_build:
@@ -152,7 +159,24 @@ def gpu(home, monkeypatch):
         state.placed.append(device.type)
         agent.device = device
 
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            build(root)
+            if cancelled():
+                raise laya_runtime.LayaWorkerError("A training run took the GPU while Laya loaded.")
+            state.placed.append(device)
+            self.device = device
+
+        def predict(self, decision_state, questions):
+            if state.oom:
+                self.device = "cpu"
+            return _answer(self, decision_state, questions)
+
+        def close(self):
+            state.closed += 1
+
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
     monkeypatch.setattr(laya_runtime, "_load_laya", build)
     monkeypatch.setattr(laya_runtime, "_place", place)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
@@ -175,6 +199,28 @@ def test_the_model_returns_to_the_gpu_after_training(home, client, gpu):
     assert _post(client).status_code == 200
     assert gpu.placed == ["cuda", "cpu", "cuda"]
     assert client.get("/api/settings/systemone").json()["loaded_device"] == "cuda"
+
+
+def test_a_gpu_worker_that_fell_back_to_cpu_reports_cpu(home, client, gpu):
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    assert client.get("/api/settings/systemone").json()["loaded_device"] == "cuda"
+    gpu.oom = True
+    assert _post(client).status_code == 200
+    assert client.get("/api/settings/systemone").json()["loaded_device"] == "cpu"
+    assert laya_runtime.status()["holds_gpu"]
+    gpu.training = True
+    assert _post(client).status_code == 200
+    assert gpu.closed == 1
+    assert gpu.placed == ["cuda", "cpu"]
+
+
+def test_shutdown_ends_a_gpu_worker(home, client, gpu):
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    laya_runtime.shutdown()
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):
@@ -321,9 +367,11 @@ def clef(home, monkeypatch):
             cancelled = None,
         ):
             self.folder, self.closed, self.cancelled = folder, False, cancelled
+            self.states = []
             state.agents.append(self)
 
         def decide(self, state_, questions):
+            self.states.append(state_)
             answers = {name: {"type": "noul", "noul": 0.25} for name in questions}
             return {"answers": answers, "input_tokens": 7, "truncated": False}
 
@@ -334,6 +382,8 @@ def clef(home, monkeypatch):
     _spoof_device(monkeypatch, "cuda")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
+    # An owner an earlier test left would stop the reload after training.
+    monkeypatch.setattr("core.inference.gpu_arbiter._owner", None)
     return state
 
 
@@ -399,7 +449,344 @@ def test_a_clef_load_that_training_overtakes_frees_the_gpu(home, clef, monkeypat
     assert clef.agents[0].closed
     assert laya_runtime._agent is None and laya_runtime._device_name is None
     # The loader also stops the worker mid-load, not only once it reports ready.
-    assert clef.agents[0].cancelled is laya_runtime._training_active
+    assert clef.agents[0].cancelled()
+
+
+def _reload_finished():
+    for thread in threading.enumerate():
+        if thread.name == "systemone-reload":
+            thread.join(5)
+
+
+def test_a_clef_that_training_unloaded_is_back_and_warm_when_the_run_ends(
+    home, client, clef, monkeypatch
+):
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    assert clef.agents[0].closed
+    time.sleep(0.2)
+    assert len(clef.agents) == 1
+    clef.training = False
+    _reload_finished()
+    assert client.get("/api/settings/systemone").json()["loaded_model"] == served
+    assert len(clef.agents[1].states) == 1
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 2
+
+
+def test_a_settings_change_cancels_the_reload_after_training(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        agent(folder, cancelled)
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    assert _put(client, enabled = False).status_code == 200
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+
+
+def test_a_request_waiting_on_the_reload_does_not_bring_back_a_disabled_clef(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    answers, waiting = [], threading.Event()
+    ensure = laya_runtime._ensure_loading
+
+    def ensuring(checkpoint, unloads = None):
+        loader = ensure(checkpoint, unloads)
+        # Only the reload passes unloads; a request is handed the reload's loader.
+        if unloads is None and loader is not None:
+            waiting.set()
+        return loader
+
+    monkeypatch.setattr(laya_runtime, "_ensure_loading", ensuring)
+    request = threading.Thread(target = lambda: answers.append(_post(client)))
+    request.start()
+    assert waiting.wait(10)
+    assert _put(client, enabled = False).status_code == 200
+    request.join(10)
+    _reload_finished()
+    assert answers[0].status_code == 503
+    assert len(clef.agents) == 2
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_an_unload_as_the_reload_starts_wins(home, client, clef, monkeypatch):
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    probe = laya_runtime._hub_download_active
+
+    def unloaded_meanwhile(checkpoint):
+        if threading.current_thread().name == "systemone-reload":
+            assert client.post("/api/settings/systemone/unload").status_code == 200
+        return probe(checkpoint)
+
+    monkeypatch.setattr(laya_runtime, "_hub_download_active", unloaded_meanwhile)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert len(clef.agents) == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_run_that_starts_during_the_reload_is_waited_out(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("A training run took the GPU while Clef loaded.")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    clef.training = True
+    time.sleep(0.3)
+    assert client.get("/api/settings/systemone").json()["error"] is None
+    clef.training = False
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] == served and settings["error"] is None
+    assert len(clef.agents) == 3
+
+
+def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        agent(folder, cancelled)
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+    assert len(clef.agents) == 2
+
+
+def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    agent = clef_runtime.ClefAgent
+
+    class Dying(agent):
+        def decide(self, state_, questions):
+            if state_ == "ready":
+                raise clef_runtime.ClefWorkerError("The Clef worker exited (code -9)")
+            return super().decide(state_, questions)
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Dying)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert clef.agents[1].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 3
+
+
+def test_a_run_over_before_the_worker_is_reaped_still_retries_the_reload(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        # A run that failed at once is over before the worker is reaped.
+        clef.training = False
+        raise clef_runtime.ClefWorkerError("A training run took the GPU while Clef loaded.")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    clef.training = True
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] == served and settings["error"] is None
+    assert len(clef.agents) == 3
+
+
+def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    agent = clef_runtime.ClefAgent
+
+    class Warming(agent):
+        def decide(self, state_, questions):
+            if state_ == "ready":
+                monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+            return super().decide(state_, questions)
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Warming)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert clef.agents[1].states == ["ready"] and clef.agents[1].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    lookup = laya_runtime._checkpoint_dir
+    stopped = []
+
+    def looked_up(checkpoint, *args, **kwargs):
+        if threading.current_thread().name == "systemone-load" and len(clef.agents) == 1:
+            assert _put(client, enabled = False).status_code == 200
+        return lookup(checkpoint, *args, **kwargs)
+
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if cancelled():
+                stopped.append(True)
+                raise clef_runtime.ClefWorkerError("stopped")
+            time.sleep(0.01)
+        return built
+
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", looked_up)
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert stopped == [True]
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+
+
+@pytest.mark.parametrize("meanwhile", ["unloaded", "chat_on_gpu"])
+def test_no_reload_after_training_once_the_user_moved_on(
+    home, client, clef, monkeypatch, meanwhile
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    if meanwhile == "unloaded":
+        assert client.post("/api/settings/systemone/unload").status_code == 200
+    else:
+        monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    clef.training = False
+    _reload_finished()
+    assert len(clef.agents) == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
 def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
@@ -597,3 +984,361 @@ def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
 
     with pytest.raises(clef_runtime.ClefWorkerError, match = "exited"):
         _clef_agent(Conn()).decide("state", {})
+
+
+@pytest.fixture
+def engine(home, monkeypatch, tmp_path):
+    _spoof_device(monkeypatch, "mlx")
+    monkeypatch.setattr("utils.hardware.hardware.DETECTION_COMPLETE", done := threading.Event())
+    done.set()
+    state = SimpleNamespace(loaded = [], asked = [], error = None, cached = set())
+
+    def answer(state_, questions, *images):
+        state.asked.append(questions)
+        state.read = (state_, images)
+        if state.error:
+            raise state.error("no")
+        answers = {name: {"type": "noul", "noul": 0.5} for name in questions}
+        return {"answers": answers, "usage": {"input_tokens": 3}}
+
+    def load(folder, family, base_model):
+        state.loaded.append((folder.name, family, base_model and base_model.name))
+        tokenizer = SimpleNamespace(encode = lambda text, **_: [0] * len(text.encode()))
+        return SimpleNamespace(answer = answer, tokenizer = tokenizer)
+
+    def dirs(checkpoint, local_only):
+        if local_only and checkpoint.name not in state.cached:
+            raise FileNotFoundError(checkpoint.name)
+        if checkpoint.layout == "clef":
+            return Path(checkpoint.source), None
+        base = catalog.MLX_COMPANIONS[checkpoint.name].base
+        return tmp_path / checkpoint.name, base and tmp_path / base.repo.split("/")[1]
+
+    zoo = SimpleNamespace(load_decision_model = load)
+    zoo.DecisionRequestError = type("RequestError", (ValueError,), {})
+    zoo.DecisionUnsupportedError = type("UnsupportedError", (zoo.DecisionRequestError,), {})
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", zoo)
+    monkeypatch.setattr(laya_runtime, "_engine_available", _REAL_ENGINE)
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_mlx_dirs", dirs)
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: False)
+    # Whatever an earlier test in this process left holding the GPU.
+    monkeypatch.setattr("core.inference.gpu_arbiter._owner", None)
+    yield state
+    laya_runtime.unload()
+
+
+def test_apple_silicon_answers_text_through_the_mlx_engine(home, client, engine, monkeypatch):
+    served, folder = _clef_fine_tune(home, "clef_mlx_1"), home / "clef_mlx_1"
+    assert _put(client, enabled = True, model = "kev-4b").status_code == 200
+    answered = _post(client)
+    assert answered.status_code == 200 and answered.json()["answers"]["urgent"]["noul"] == 0.5
+    assert engine.loaded == [("kev-4b", "kev", "Qwen3.5-4B-Base")]
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["effective_backend"], settings["loaded_backend"]) == ("mlx", "mlx")
+    models = {m["name"]: m for m in settings["models"]}
+    assert all(models[name]["available"] for name in (served, "clef-flash", "kev-4b"))
+    assert _post(client, served).headers["x-unsloth-decision-backend"] == "mlx"
+    assert engine.loaded[-1] == ("clef_mlx_1", "clef", None)
+    # Images, a forced runtime and a Clef saved as adapters are not the engine's.
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    assert laya_runtime._mlx_choice(kev, ["png"], None, "auto") is None
+    assert laya_runtime._mlx_choice(kev, None, None, "llama.cpp") is None
+    (folder / "config.json").rename(folder / "adapter_config.json")
+    (folder / "model.safetensors").rename(folder / "adapter_model.safetensors")
+    assert laya_runtime._mlx_target(catalog.fine_tune(served)) is None
+    # A downloaded GGUF serves before the MLX form is fetched.
+    laya_runtime.unload()
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+    monkeypatch.setattr(laya_runtime, "is_cached", laya_runtime._is_native)
+    assert laya_runtime.select(kev)[0].backend == "llama.cpp"
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    assert laya_runtime.select(kev)[0].backend == "mlx"
+
+
+def test_the_mlx_runtime_serves_only_through_the_engine(home, client, engine, monkeypatch):
+    served, folder = _clef_fine_tune(home, "clef_mlx_2"), home / "clef_mlx_2"
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    assert _put(client, enabled = True, model = "kev-4b", backend = "mlx").status_code == 200
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["mlx_available"] and settings["effective_backend"] == "mlx"
+    described = {m["name"]: "llama.cpp or MLX" in m["description"] for m in settings["models"]}
+    assert described["kev-9b"] and not described["laya-gguf"]
+    assert _post(client, served).headers["x-unsloth-decision-backend"] == "mlx"
+    tuned = catalog.fine_tune(served)
+    # Unlike Auto, a downloaded GGUF does not take the request.
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+    monkeypatch.setattr(laya_runtime, "is_cached", laya_runtime._is_native)
+    assert laya_runtime.select(kev)[0].backend == "mlx"
+    assert laya_runtime.mlx_ready(kev) and not laya_runtime.native_ready(kev)
+    assert _post(client).headers["x-unsloth-decision-backend"] == "mlx"
+    with pytest.raises(
+        laya_runtime.Unavailable, match = "MLX runtime does not read these images for kev-4b"
+    ):
+        laya_runtime.select(kev, ["png"])
+    (folder / "config.json").rename(folder / "adapter_config.json")
+    (folder / "model.safetensors").rename(folder / "adapter_model.safetensors")
+    with pytest.raises(laya_runtime.Unavailable, match = "has no MLX form"):
+        laya_runtime.select(tuned)
+    assert _put(client, device = "cpu").status_code == 200
+    settings = client.get("/api/settings/systemone").json()
+    assert not settings["mlx_available"] and settings["effective_backend"] is None
+    assert not any("MLX" in m["description"] for m in settings["models"])
+    assert "needs Apple Silicon" in settings["fallback_reason"] and _post(client).status_code == 400
+    plan = client.get("/api/settings/systemone/resolve", params = {"backend": "mlx"}).json()
+    assert (plan["repo"], plan["cached"]) == (None, False) and "needs Apple Silicon" in plan[
+        "error"
+    ]
+    assert _put(client, backend = "mlx-lm").status_code == 400
+
+
+def test_the_mlx_engine_asks_by_id_and_reports_what_it_refuses(home, client, engine):
+    assert _put(client, enabled = True, model = "julia-1").status_code == 200
+    questions = {"urgent": {"type": "noul"}, "late": {"type": "noul", "instructions": "Late?"}}
+    body = {"model": "default", "state": "s", "questions": questions}
+    assert client.post("/v1/systemone", json = body).status_code == 200
+    assert [q["instructions"] for q in engine.asked[0].values()] == ["urgent", "Late?"]
+    zoo = sys.modules["unsloth_zoo.mlx.decision"]
+    for error, status in ((zoo.DecisionRequestError, 422), (zoo.DecisionUnsupportedError, 501)):
+        engine.error = error
+        assert _post(client).status_code == status
+    engine.error, asked = None, len(engine.asked)
+    states = ("w " * 8000, "w " * 8193, "é" * 8193, ["é" * 8000], "s")
+    for state, status in zip(states, (200, 422, 422, 200, 422)):
+        questions["late"]["instructions"] = "w " * 8193 if state == "s" else "Late?"
+        body["state"] = state
+        assert client.post("/v1/systemone", json = body).status_code == status
+    assert len(engine.asked) == asked + 2
+
+
+def test_an_mlx_encoder_refuses_a_state_past_its_window(home, client, engine, tmp_path):
+    encoder = tmp_path / "julia-1" / "encoder"
+    encoder.mkdir(parents = True)
+    (encoder / "config.json").write_text('{"max_position_embeddings": 64}', encoding = "utf-8")
+    assert _put(client, enabled = True, model = "julia-1").status_code == 200
+    body = {"model": "default", "questions": {"urgent": {"type": "noul"}}}
+    # 64 positions less [cls], three [sep] and the question head (0 in this stand-in model).
+    for state, status in (("w" * 60, 200), ("w" * 61, 422)):
+        assert client.post("/v1/systemone", json = {**body, "state": state}).status_code == status
+    assert len(engine.asked) == 1
+
+
+def test_an_mlx_decoder_waits_for_the_gpu(home, client, engine, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    assert _put(client, enabled = True).status_code == 200
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    assert _post(client, "kev-4b").status_code == 409
+    assert _post(client, "julia-1").status_code == 200
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _post(client, "kev-4b").status_code == 200
+    agent = laya_runtime._agent
+    assert gpu_arbiter.current_owner() == gpu_arbiter.DECISIONS
+    # A chat load ends the idle decoder through the arbiter, and its weights go with it.
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT)
+    assert laya_runtime._agent is None and agent.model is None
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _post(client, "kev-4b").status_code == 200
+    laya_runtime.unload()
+    assert gpu_arbiter.current_owner() is None
+    # A load that loses the GPU to a training run gives its memory back before the claim.
+    freed = []
+    monkeypatch.setattr(laya_runtime, "_release_memory", lambda: freed.append(gpu_arbiter._owner))
+    engine.loaded.clear()
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: bool(engine.loaded))
+    assert _post(client, "kev-4b").status_code != 200
+    assert freed[-1] == gpu_arbiter.DECISIONS and gpu_arbiter.current_owner() is None
+
+
+def test_the_mlx_engine_needs_apple_silicon_and_the_gpu(home, client, engine, monkeypatch):
+    hardware = sys.modules["utils.hardware.hardware"]
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    assert _put(client, device = "cpu").status_code == 200
+    assert laya_runtime._mlx_target(kev) is None
+    assert _put(client, enabled = True, device = "gpu").status_code == 200
+    assert laya_runtime._mlx_target(kev) is not None
+    # While detection is still running the answer is no: a settings read never waits for it.
+    waited = []
+    hardware.DETECTION_COMPLETE.clear()
+    monkeypatch.setattr(hardware, "get_device", lambda: waited.append(1) or hardware.DeviceType.MLX)
+    assert laya_runtime._mlx_target(kev) is None and not waited
+    hardware.DETECTION_COMPLETE.set()
+    for apple in (False, True):
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: apple)
+        assert _post(client, "kev-4b").status_code == 200 and bool(waited) == apple
+    assert laya_runtime._mlx_target(kev) is not None
+    _spoof_device(monkeypatch, "cuda")
+    assert laya_runtime._mlx_target(kev) is None
+    _spoof_device(monkeypatch, "mlx")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", None)
+    assert laya_runtime._mlx_target(kev) is None
+
+
+def test_settings_report_mlx_as_detection_settles_and_where_it_runs(
+    home, client, engine, monkeypatch
+):
+    hardware = sys.modules["utils.hardware.hardware"]
+    assert _put(client, enabled = True, model = "kev-4b").status_code == 200
+    # No device stored: MLX takes the GPU, as llama.cpp does, and the response says so.
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["effective_backend"], settings["device"]) == ("mlx", "gpu")
+    # Detection finishing inside this read's own wait for it is seen by the MLX answers too.
+    hardware.DETECTION_COMPLETE.clear()
+    monkeypatch.setattr(
+        hardware,
+        "get_device",
+        lambda: hardware.DETECTION_COMPLETE.set() or hardware.DeviceType.MLX,
+    )
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["mlx_available"] and settings["effective_backend"] == "mlx"
+
+
+def test_mlx_sources_are_fetched_at_their_pinned_revisions(home, monkeypatch, tmp_path):
+    fetched = []
+
+    def download(repo, revision, allow_patterns, local_files_only, **kwargs):
+        folder = tmp_path / f"{repo.replace('/', '--')}@{revision}"
+        if local_files_only and not folder.is_dir():
+            raise FileNotFoundError(revision)
+        if not local_files_only:
+            fetched.append((repo, revision))
+            for name in allow_patterns:
+                (folder / name).parent.mkdir(parents = True, exist_ok = True)
+                (folder / name).touch()
+        return str(folder)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    monkeypatch.setattr(laya_runtime, "_engine_available", lambda: True)
+    kev = catalog.MLX_COMPANIONS["kev-4b"]
+    target = laya_runtime._mlx_target(catalog.CHECKPOINTS["kev-4b"])
+    plan = laya_runtime.download_plan(target)
+    assert (plan["repo"], plan["revision"]) == (kev.base.repo, kev.base.revision)
+    assert not plan["cached"] and not fetched
+    laya_runtime._repo_dir(kev.base, False)
+    plan = laya_runtime.download_plan(target)
+    assert plan == {**plan, "repo": kev.repo, "revision": kev.revision, "files": sorted(kev.files)}
+    folder, base = laya_runtime._mlx_dirs(target, local_only = False)
+    assert fetched == [(kev.base.repo, kev.base.revision), (kev.repo, kev.revision)]
+    assert (base / "config.json").is_file() and laya_runtime.is_cached(target)
+    # A settings download holds the repo's main: it serves, without another fetch, where the pinned revision is not complete.
+    (folder / "head.pt").unlink()
+    assert not laya_runtime.is_cached(target)
+    main = Path(download(kev.repo, None, kev.files, False))
+    del fetched[:]
+    assert laya_runtime.is_cached(target)
+    assert laya_runtime._mlx_dirs(target, local_only = False)[0] == main and not fetched
+    (main / "head.pt").unlink()
+    assert not laya_runtime.is_cached(target)
+
+
+def test_images_in_the_state_route_like_the_images_field(home, monkeypatch):
+    seen = []
+
+    def select(
+        checkpoint,
+        images = None,
+        questions = None,
+        preference = None,
+        state_images = False,
+    ):
+        seen.append(state_images and not images)
+        raise laya_runtime.Unavailable(400, "api_usage_error", "stop")
+
+    monkeypatch.setattr(laya_runtime, "select", select)
+    part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    chat = [{"role": "user", "content": [{"type": "text", "text": "hi"}, part]}]
+    cases = (
+        (chat, True),
+        ({"messages": chat}, True),
+        ([{"role": "user", "content": "hi"}], False),
+        ("s", False),
+    )
+    for state, routed in cases:
+        with pytest.raises(laya_runtime.Unavailable):
+            laya_runtime._route(catalog.CHECKPOINTS["kev-4b"], state, {"q": {"type": "noul"}}, None)
+        assert bool(seen[-1]) == routed
+
+
+def test_a_clef_with_its_vision_tower_reads_images_through_the_mlx_engine(
+    home, engine, monkeypatch
+):
+    served, folder = _clef_fine_tune(home, "clef_mlx_3"), home / "clef_mlx_3"
+    tuned, stock, kev = (
+        catalog.fine_tune(served),
+        catalog.CHECKPOINTS["clef-flash"],
+        catalog.CHECKPOINTS["kev-4b"],
+    )
+    zoo, image = sys.modules["unsloth_zoo.mlx.decision"], "data:image/png;base64,AA=="
+    vision = json.dumps({"vision_config": {}})
+
+    def reads(checkpoint):
+        try:
+            routed = laya_runtime.select(checkpoint, [image])[0].backend == "mlx"
+        except laya_runtime.Unavailable:
+            routed = False
+        assert routed == (laya_runtime.input_modalities(checkpoint) == ["text", "image"])
+        return routed
+
+    # An unsloth-zoo that reads no images, then one that does: a Clef needs its tower, and no other family reads them.
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    assert not reads(tuned) and not reads(stock)
+    zoo.ClefModel = SimpleNamespace()
+    assert not reads(tuned) and not reads(stock)
+    zoo.ClefModel = SimpleNamespace(takes_images = True)
+    assert reads(tuned) and reads(stock) and not reads(kev)
+    (folder / "processor_config.json").rename(folder / "preprocessor_config.json")
+    assert reads(tuned)
+    (folder / "preprocessor_config.json").rename(folder / "p.json")
+    assert not reads(tuned)
+    (folder / "p.json").rename(folder / "processor_config.json")
+    (folder / "config.json").write_text("{}", encoding = "utf-8")
+    assert not reads(tuned)
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    assert laya_runtime.select(tuned, [image], preference = "mlx")[0].backend == "mlx"
+    for refused in ((kev, [image], False), (tuned, None, True), (tuned, [image], True)):
+        with pytest.raises(
+            laya_runtime.Unavailable, match = "MLX runtime does not read these images"
+        ):
+            laya_runtime.select(refused[0], refused[1], preference = "mlx", state_images = refused[2])
+    (folder / "config.json").write_text("{}", encoding = "utf-8")
+    with pytest.raises(
+        laya_runtime.Unavailable, match = "does not read these images for clef-ft:clef_mlx_3"
+    ):
+        laya_runtime.select(tuned, [image], preference = "mlx")
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(laya_runtime, "mlx_ready", lambda checkpoint: False)
+        assert laya_runtime.input_modalities(tuned) == ["text"]
+
+    # A resident llama.cpp server keeps answering, except the images it has no vision projector for.
+    native = dataclasses.replace(tuned, backend = "llama.cpp")
+    with monkeypatch.context() as patch:
+        patch.setattr(laya_runtime, "_native_target", lambda checkpoint: native)
+        patch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+        patch.setattr(laya_runtime, "_loaded", native)
+        patch.setattr(laya_runtime, "_agent", object())
+        for projector, backends in (
+            (False, ["llama.cpp", "mlx"]),
+            (True, ["llama.cpp", "llama.cpp"]),
+        ):
+            patch.setattr(laya_runtime, "_native_reads_images", lambda native: projector)
+            routed = [laya_runtime.select(tuned, images)[0].backend for images in (None, [image])]
+            assert routed == backends
+
+    # The engine gets the images beside the state; a request without them is asked as before.
+    questions = {"q": {"type": "noul", "instructions": "i"}}
+    assert laya_runtime._route(tuned, "s", questions, [image])["_backend"] == "mlx"
+    assert engine.read == ("s", ([image],))
+    assert laya_runtime._route(tuned, "s", questions, None)["_backend"] == "mlx"
+    assert engine.read == ("s", ())
+
+
+def test_auto_keeps_images_in_the_state_off_mlx(home, engine, monkeypatch):
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: True)
+    assert laya_runtime.select(kev)[0].backend == "mlx"
+    assert laya_runtime.select(kev, state_images = True)[0].backend == "llama.cpp"

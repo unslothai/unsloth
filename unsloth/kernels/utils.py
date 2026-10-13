@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
+from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
@@ -361,6 +362,25 @@ def _has_active_dora_adapter(proj):
     return any(adapter in magnitude for adapter in adapters)
 
 
+def _has_non_lora_adapter(proj):
+    # VeRA, LoHa, LoKr, IA3, OFT and AdaLoRA layers from peft.get_peft_model hold no lora_A Linears (#1385).
+    modules = proj._modules
+    return "base_layer" in modules and not isinstance(modules.get("lora_A"), torch.nn.ModuleDict)
+
+
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
+
+
 def has_mxfp4_base(*projs):
     """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
     weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
@@ -382,6 +402,15 @@ def _packed_base(base_layer):
     if getattr(base_layer, "weight_fake_quantizer", None) is not None:
         return None
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _has_packed_qweight(proj):
+    # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
+    base_layer = proj._modules.get("base_layer", proj)
+    return (
+        not isinstance(getattr(base_layer, "weight", None), torch_Tensor)
+        and _packed_base(base_layer) is None
+    )
 
 
 def _is_packed_state(quant_state):
@@ -559,6 +588,13 @@ def _scratch(kind, device, numel, dtype):
     return buffer[:numel]
 
 
+def _nf4_kernels_supported():
+    # ptxas rejects their ld eviction hints below sm_70 (Maxwell, Pascal).
+    if DEVICE_TYPE == "hip":
+        return True
+    return all(torch.cuda.get_device_capability(i)[0] >= 7 for i in range(DEVICE_COUNT))
+
+
 # Fused NF4 kernels, traceable by torch.compile and on the live stream by construction.
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
@@ -569,6 +605,7 @@ if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
     and os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
+    and _nf4_kernels_supported()
 ):
     try:
         import triton
@@ -1389,7 +1426,13 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
-    if _has_multiple_active_adapters(proj) or _has_active_dora_adapter(proj):
+    if (
+        _has_non_lora_adapter(proj)
+        or _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+        or _has_packed_qweight(proj)
+    ):
         result = proj(X)
         return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)

@@ -152,6 +152,7 @@ function VariationsSlider({
         valueSize={2}
         disabled={disabled}
         onChange={onChange}
+        commitWhileDragging
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (

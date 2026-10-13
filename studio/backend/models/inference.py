@@ -61,6 +61,20 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Inference engine to use. 'auto' selects Studio's default backend; "
@@ -74,6 +88,8 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
+    # The catalog id a load by path should keep advertising (Open WebUI /models/load).
+    _advertised_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -215,7 +231,11 @@ class LoadRequest(BaseModel):
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. Ignored for non-GGUF models."
+            "still accepted. MLX models read 'auto', 'mtp', 'dflash', 'dspark', 'eagle3', "
+            "'ngram' and 'off'; every drafter kind also copies repeated text (n-gram), "
+            "so 'mtp+ngram' reads as 'mtp'. On MLX, 'auto' attaches the first "
+            "cached drafter (an MTP head or assistant, then DFlash2, DFlash, DSpark, EAGLE-3) that "
+            "costs no context, on loads served through mlx-vlm. Ignored for other non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(
@@ -228,7 +248,21 @@ class LoadRequest(BaseModel):
             "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
             "MTP quants, and the measured sweet spot for DFlash too). Only "
             "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
-            "'dspark' or 'dflash'."
+            "'dspark' or 'dflash'. On MLX, up to the drafter's trained depth (3 for "
+            "MTP heads and assistants) every step drafts exactly this many (or takes an "
+            "n-gram copy expected to yield more), even when "
+            "plain decoding would be faster; above it, or for n-gram copies alone, it "
+            "is a ceiling and the controller decides when to draft."
+        ),
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = (
+            "MLX only: a companion drafter (DFlash, DFlash2, DSpark, EAGLE-3 or Gemma "
+            "assistant) to speculate with, as a local directory or an already-cached "
+            "repo id; never downloaded. Tried before the model's own MTP head and the "
+            "cached companions discovery would pick."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -579,6 +613,20 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
@@ -737,6 +785,15 @@ class ValidateModelRequest(BaseModel):
 
     _reject_degenerate_tensor_split = field_validator("tensor_split")(
         LoadRequest._reject_degenerate_tensor_split.__func__
+    )
+
+
+class ManagedEngineOffer(BaseModel):
+    """Optional engines that can run a checkpoint the Default engine cannot."""
+
+    quantization: str = Field(..., description = "quant_method from the checkpoint's config.json")
+    engines: List[Literal["vllm", "sglang"]] = Field(
+        ..., description = "Engines this host can run, in the order to offer them"
     )
 
 
@@ -943,6 +1000,11 @@ class ValidateModelResponse(BaseModel):
         "loaded in place of the requested unsloth bnb-4bit repo (or of a LoRA's bnb base), "
         "because MLX cannot read bitsandbytes weights. None when the pick loads as asked.",
     )
+    managed_engine_offer: Optional[ManagedEngineOffer] = Field(
+        None,
+        description = "Set when the Default engine cannot run this checkpoint's quantization "
+        "but an optional engine can on this host; the UI offers to load it there.",
+    )
 
 
 class EstimateMemoryRequest(BaseModel):
@@ -993,6 +1055,11 @@ class EstimateMemoryRequest(BaseModel):
     ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
     speculative_type: Optional[str] = Field(
         None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "MLX companion drafter intended for the follow-up load, as on /load.",
     )
     spec_draft_n_max: Optional[int] = Field(
         None,
@@ -1082,6 +1149,28 @@ class Int8PrefillAvailabilityResponse(BaseModel):
         "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
         "'no_eligible_projections', 'probe_failed').",
     )
+
+
+class MlxDraftersRequest(BaseModel):
+    model_path: str = Field(..., description = "Model identifier or local path of the target")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class MlxDrafter(BaseModel):
+    repo_id: str = Field(..., description = "Cached Hugging Face repo, usable as spec_draft_model")
+    kind: str = Field(..., description = "'mtp', 'dflash', 'dspark' or 'eagle3'")
+    named: bool = Field(
+        True,
+        description = "Whether the repo is named for this model. False: it fits the model's "
+        "architecture only (another generation or a fine-tune), so Auto does not use it.",
+    )
+
+
+class MlxDraftersResponse(BaseModel):
+    """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
+
+    drafters: list[MlxDrafter] = Field(default_factory = list)
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1379,6 +1468,9 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_seed: Optional[int] = None
+    engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
@@ -1663,6 +1755,55 @@ class _InferenceRuntimeFields(BaseModel):
         description = (
             "Active --spec-draft-n-max for MTP or DSpark speculative decoding, or "
             "None when the platform default is in effect."
+        ),
+    )
+    spec_draft_model: Optional[str] = Field(
+        None,
+        description = "The companion drafter an MLX load was asked for; None elsewhere.",
+    )
+    spec_drafter_kind: Optional[str] = Field(
+        None,
+        description = (
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash' ('eagle3' or 'ngram' too on MLX, where 'mtp' also names a Gemma "
+            "assistant). Needed "
+            "because Auto resolves the kind itself, so speculative_type still "
+            "reads 'auto', and a fallback leaves the engaged type at 'default': "
+            "neither still says which file the UI should tell the user to fix."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a speculative drafter was disabled despite being requested. "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
+            "'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
+            "MLX loads report 'drafter_not_found' (no drafter of the requested kind "
+            "is cached), 'drafter_incompatible' (the named or found drafter does not "
+            "fit this model), 'drafter_no_memory' (its weights and cache leave no "
+            "context that fits), 'kv_quant' (KV cache quantization is on) or "
+            "'runtime_error' (the installed MLX packages cannot speculate, or cannot "
+            "load this model the way speculation needs), also when a later drafter "
+            "or n-gram copies stood in for the one asked for. Under auto an MLX load "
+            "reports no refusal; it reports 'auto_context_cost' (a found drafter would "
+            "shrink the fitted context) or the drafter codes above for a named or "
+            "unbuildable drafter. "
+            "None when the requested strategy engaged or was not requested."
         ),
     )
     tensor_parallel: bool = Field(
@@ -2043,40 +2184,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
-        ),
-    )
-    spec_drafter_kind: Optional[str] = Field(
-        None,
-        description = (
-            "Which drafter the resolution was about: 'mtp', 'dspark' or "
-            "'dflash'. Needed "
-            "because Auto resolves the kind itself, so speculative_type still "
-            "reads 'auto', and a fallback leaves the engaged type at 'default': "
-            "neither still says which file the UI should tell the user to fix."
-        ),
-    )
-    spec_fallback_reason: Optional[str] = Field(
-        None,
-        description = (
-            "Why a speculative drafter was disabled despite being requested. "
-            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
-            "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP or DSpark drafter could not be resolved; "
-            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
-            "GPU but the drafter's reserve does not, and Auto keeps the context "
-            "rather than shrink it; select the drafter in Settings to force it. "
-            "'mla_mtp_disabled' -> "
-            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
-            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
-            "used ngram-mod or spec-off instead -- updating won't help; choose "
-            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
-            "has an embedded Hybrid Mamba MTP head and the placement offloads "
-            "only part of it, where the recurrent rollback copies cost more "
-            "layers than the drafting wins back -- updating won't help; choose "
-            "MTP in Settings to force it. "
-            "None when the requested strategy engaged or was not requested."
         ),
     )
     spec_fallback_binary_changed: Optional[bool] = Field(
@@ -2784,6 +2891,14 @@ class ChatCompletionRequest(BaseModel):
             "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
+    deduplicate_tool_calls: Optional[bool] = Field(
+        True,
+        description = (
+            "[x-unsloth] When false, a tool call identical to one that already "
+            "succeeded in this response runs again instead of being answered "
+            "with a duplicate notice. Default on."
+        ),
+    )
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
@@ -2816,6 +2931,16 @@ class ChatCompletionRequest(BaseModel):
             "compaction fires, so the boundary can stay put for a stretch of turns. "
             "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
             "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
+    compact_context: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "a checkpoint on this request even when it still fits: older turns are "
+            "archived and searchable, and the model keeps the newest turn plus standing "
+            "instructions until the chat outgrows the window again. Needs "
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
         ),
     )
     studio_tool_history: Optional[bool] = Field(
@@ -2862,6 +2987,14 @@ class ChatCompletionRequest(BaseModel):
     thread_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
+    user_message_id: Optional[str] = Field(
+        None,
+        max_length = 256,
+        description = (
+            "[x-unsloth] The user message this turn answers. With thread_id it keys the chat's file "
+            "history, so /rewind can put back what this turn's tool calls changed."
+        ),
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -2979,7 +3112,11 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] The external model's context window, in tokens. When "
             "Unsloth drops the oldest turns for a compaction_threshold, the prompt "
             "also leaves room for max_tokens within it, and max_tokens is lowered "
-            "if it would leave the prompt less than half of the window."
+            "if it would leave the prompt less than half of the window. With "
+            "context_overflow=truncate_oldest and no compaction_threshold, three "
+            "quarters of this window is used as the threshold; when this field is "
+            "also omitted, a vLLM, llama.cpp or Custom connection uses the window "
+            "its server reports on /models."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
@@ -3327,6 +3464,14 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
+class BrowserActionResultRequest(BaseModel):
+    """What the chat tab's browser did for one ``browser_action`` (``state.browser_actions``)."""
+
+    session_id: Optional[str] = None
+    action_id: str = Field(min_length = 1, max_length = 64)
+    result: dict[str, Any]
+
+
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
@@ -3570,6 +3715,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -3771,8 +3917,16 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_namespace(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class ResponsesOutputCustomToolCall(BaseModel):
@@ -4297,7 +4451,9 @@ class DiffusionLoadRequest(BaseModel):
         "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
         "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
         "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
-        "the base repo then supplies only configs and tokenizers for these encoders.",
+        "the base repo then supplies only configs and tokenizers for these encoders. Unset on a local DiT "
+        "inside a ComfyUI models tree, the tree's text_encoders file that fits is used when exactly one is "
+        "best (UNSLOTH_DIFFUSION_COMFY_TEXT_ENCODERS=0 turns that off).",
     )
     vae_file: Optional[str] = Field(
         None,
@@ -4726,6 +4882,16 @@ class DiffusionGenerateRequest(BaseModel):
         "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
         "the loaded model or its quantisation can't apply ControlNet.",
     )
+    sampler: Optional[Literal["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"]] = Field(
+        None,
+        description = "Sampler for this generation, one of the loaded model's status `samplers` ids. "
+        "Omitted or 'default' keeps the model's shipped scheduler.",
+    )
+    schedule_type: Optional[Literal["automatic", "uniform", "karras", "exponential"]] = Field(
+        None,
+        description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
+        "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -4894,6 +5060,12 @@ class GalleryImage(BaseModel):
     localized_edit: Optional[str] = Field(
         None, description = "Localized edit convention used: annotate, paint or mask"
     )
+    sampler: Optional[str] = Field(
+        None, description = "Sampler id the image ran with; null = the model's shipped scheduler"
+    )
+    schedule_type: Optional[str] = Field(
+        None, description = "Schedule type the sampler ran with (resolved); null = the config's"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
@@ -5018,6 +5190,12 @@ class DiffusionResolvedControl(BaseModel):
         None,
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
         "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
+    )
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = "speed_mode only: the auto-optimizer's per-step audit for this load, in order, each "
+        '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
+        "error it failed with). Null on every other control.",
     )
 
 
@@ -5152,7 +5330,10 @@ class DiffusionStatusResponse(BaseModel):
         "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
-    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    engine: Optional[str] = Field(
+        None,
+        description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)",
+    )
     native_mode: Optional[str] = Field(
         None,
         description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
@@ -5161,6 +5342,11 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    mlx_fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
+        "MLX was not requested or is in use)",
     )
     supports_lora: bool = Field(
         False,
@@ -5182,11 +5368,22 @@ class DiffusionStatusResponse(BaseModel):
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
     )
+    samplers: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
+        "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
+        "models, the native and MLX engines, or nothing loaded.",
+    )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
+    )
+    generation_defaults: Optional[Dict[str, float]] = Field(
+        None,
+        description = "Default steps and guidance for the loaded model (file header before base repo); "
+        "null when unloaded or on an engine that does not report it.",
     )
 
 
@@ -6043,21 +6240,23 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
-    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
-    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    # Bounded so one request cannot buffer a multi-GB payload; ~32 MiB fits a 4096px source.
     first_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
-        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
-        "family that takes no keyframes.",
+        description = "Base64/data-URL image the clip starts from (image-to-video). With width "
+        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
+        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
+        "frame (status supports_first_frame).",
     )
     last_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
-        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
-        "follows the first and is centre cover-cropped onto the canvas.",
+        description = "Base64/data-URL image the clip ends on (MiniMax-H3 only, status "
+        "supports_last_frame). Valid on its own (generate up TO a frame) or with first_frame "
+        "(first-and-last-frame video), in which case it follows the first and is centre "
+        "cover-cropped onto the canvas.",
     )
 
     # Separate lists preserve the model's image, video, then audio packing order.
@@ -6309,6 +6508,12 @@ class VideoGenerationDefaults(BaseModel):
     canvas_max_pixels: Optional[int] = Field(
         None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
     )
+    canvas_from_presets: bool = Field(
+        False,
+        description = "True when a first frame without width/height takes the resolution preset "
+        "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
+        "canvas_short_edge rule",
+    )
     flow_shift: Optional[float] = Field(
         None,
         description = "Released video-schedule sigma shift, or null when the family does not "
@@ -6407,6 +6612,17 @@ class VideoStatusResponse(BaseModel):
         False,
         description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
         "(gates the image-to-video controls)",
+    )
+    supports_first_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a first_frame (image-to-video): "
+        "MiniMax-H3 keyframes, or a family's declared image-to-video pipeline (Wan2.2-TI2V-5B, "
+        "LTX-2 / LTX-2.3) built over the loaded components",
+    )
+    supports_last_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a last_frame. Only MiniMax-H3's "
+        "keyframe partition does; the image-to-video pipelines condition on a first frame alone",
     )
     supports_references: bool = Field(
         False,

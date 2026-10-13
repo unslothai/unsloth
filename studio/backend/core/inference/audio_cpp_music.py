@@ -26,7 +26,8 @@ logger = get_logger(__name__)
 
 _TIMEOUT_FLOOR = 300.0
 _TIMEOUT_CEILING = 4 * 3600.0
-_CPU_FACTOR = 10.0
+# Spec rtf values are CUDA timings; Metal and Vulkan run far slower (#13510).
+_BACKEND_FACTOR = {"cpu": 10.0, "metal": 10.0, "vulkan": 10.0}
 # MiDashengLM's spec caps seeds at 2**31 - 1.
 _SEED_LIMIT = 2**31 - 1
 
@@ -50,10 +51,13 @@ def seconds_text(value: float) -> str:
     return f"{float(value):.3f}".rstrip("0").rstrip(".")
 
 
-def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu: bool) -> float:
+def timeout_seconds(
+    family: Optional[str], seconds: float, variations: int, backend: Optional[str]
+) -> float:
     music = MUSIC_SPECS.get(str(family or ""))
-    rtf = music.rtf if music is not None else 4.0
-    work = rtf * max(0.0, float(seconds)) * max(1, int(variations)) * (_CPU_FACTOR if cpu else 1.0)
+    rtf = music.rtf * music.overrun if music is not None else 4.0
+    rtf *= _BACKEND_FACTOR.get(str(backend or "").lower(), 1.0)
+    work = rtf * max(0.0, float(seconds)) * max(1, int(variations))
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
 
 
@@ -192,9 +196,10 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # Length is the semantic token budget (25 fps); the default 200-frame floor outlasts short asks.
+        # Length caps the semantic tokens (25 fps); the default 200-frame floor outlasts short asks.
         frames = int(round(seconds * 25))
-        request_options["semantic_max_tokens"] = frames
+        overrun = MUSIC_SPECS["yue2"].overrun
+        request_options["semantic_max_tokens"] = int(round(seconds * overrun * 25))
         request_options["semantic_min_tokens"] = min(200, frames)
         return _finish(model, request, request_options, seed)
     if instrumental and music is not None and music.instrumental_lyrics is not None:

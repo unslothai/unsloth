@@ -29,6 +29,9 @@ export interface ApiModelOverride {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine?: "auto" | "vllm" | "sglang";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -46,6 +49,8 @@ export interface ApiModelOverride {
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  spec_draft_model?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -335,6 +340,13 @@ export function fromApiOverride(
     engineParallelism: override.engine_parallelism ?? local.engineParallelism ?? "tensor",
     enginePrecision:
       override.engine_precision ?? local.enginePrecision ?? "auto",
+    engineKvCacheDtype:
+      override.engine_kv_cache_dtype ?? local.engineKvCacheDtype ?? "auto",
+    engineSeed: override.engine_seed ?? local.engineSeed ?? null,
+    engineGpuMemoryUtilization:
+      override.engine_gpu_memory_utilization ??
+      local.engineGpuMemoryUtilization ??
+      null,
     customContextLength: serverStatesPin
       ? (override.custom_context_length ?? null)
       : local.customContextLength,
@@ -347,6 +359,7 @@ export function fromApiOverride(
       : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
+    specDraftModel: override.spec_draft_model ?? local.specDraftModel,
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
@@ -397,6 +410,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     engine: config.engine ?? "auto",
     engine_precision: config.enginePrecision ?? "auto",
     engine_parallelism: config.engineParallelism ?? "tensor",
+    engine_kv_cache_dtype: config.engineKvCacheDtype ?? "auto",
+    engine_seed: config.engineSeed ?? null,
+    engine_gpu_memory_utilization: config.engineGpuMemoryUtilization ?? null,
   };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
@@ -416,6 +432,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.specDraftNMax && config.specDraftNMax > 0) {
     payload.spec_draft_n_max = config.specDraftNMax;
+  }
+  if (config.specDraftModel) {
+    payload.spec_draft_model = config.specDraftModel;
   }
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
@@ -568,6 +587,8 @@ async function sendModelOverride(
       // can still predate.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_reasoning_budget: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_spec_draft_model: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
