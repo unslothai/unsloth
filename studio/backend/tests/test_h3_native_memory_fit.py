@@ -346,22 +346,45 @@ _V1_SWAP_ROOM = {
 }
 
 
+_ENFORCING_CHILD = {
+    "memory/p/c/memory.limit_in_bytes": str(28 * GIB),
+    "memory/p/c/memory.usage_in_bytes": str(8 * GIB),
+    "memory/p/c/memory.memsw.limit_in_bytes": str(100 * GIB),
+    "memory/p/c/memory.memsw.usage_in_bytes": str(8 * GIB),
+}
+
+
 @pytest.mark.parametrize(
     "swappiness, expected",
     [
-        ({"memory/p/c/memory.swappiness": "0"}, 0),
-        ({"memory/p/memory.swappiness": "0"}, 0),  # nearest ancestor that reports one
-        ({"memory/p/c/memory.swappiness": "60", "memory/p/memory.swappiness": "0"}, 10 * GIB),
-        ({"memory/p/c/memory.swappiness": "60"}, 10 * GIB),
+        # The child sets no limit: its value is irrelevant; the enforcing parent reports none.
+        ({"memory/p/c/memory.swappiness": "0"}, 10 * GIB),
+        # The enforcing parent's 0 governs its own limit reclaim whatever the child says.
+        ({"memory/p/memory.swappiness": "0"}, 0),
+        ({"memory/p/c/memory.swappiness": "60", "memory/p/memory.swappiness": "0"}, 0),
+        ({"memory/p/c/memory.swappiness": "60", "memory/p/memory.swappiness": "60"}, 10 * GIB),
+        # The process's own cgroup counts once it enforces.
+        ({**_ENFORCING_CHILD, "memory/p/c/memory.swappiness": "0"}, 0),
+        ({**_ENFORCING_CHILD, "memory/p/c/memory.swappiness": "60"}, 10 * GIB),
     ],
 )
-def test_cgroup_v1_swappiness_zero_admits_no_swap(tmp_path, swappiness, expected):
-    """https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v1/memory.html#swappiness: 0 keeps limit reclaim
-    from swapping at all. The process's own cgroup decides; an ancestor only when the cgroup reports none."""
+def test_cgroup_v1_swappiness_zero_on_an_enforcing_level_admits_no_swap(tmp_path, swappiness, expected):
+    """https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v1/memory.html#swappiness: 0 keeps a level's limit
+    reclaim from swapping. Any level with a finite limit counts; one without a limit reclaims nothing."""
     (tmp_path / "cg" / "memory" / "p" / "c").mkdir(parents = True)
     paths = _cgroup(tmp_path, {**_V1_SWAP_ROOM, **swappiness}, proc = "4:memory:/p/c\n")
     # RAM room 20 GiB, RAM+swap room 30 GiB: 10 GiB of swap unless swappiness forbids it.
     assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == expected
+
+
+def test_the_kill_switch_turns_off_the_per_render_overhead_guard(monkeypatch):
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (1 << 20, 0))
+    assert video_minimax_h3.h3_native_render_overhead_refusal()
+    monkeypatch.setenv(H3_NATIVE_FIT_ENV, "0")
+    assert video_minimax_h3.h3_native_render_overhead_refusal() is None
+    assert video_minimax_h3.h3_native_fit_check_enabled() is False
 
 
 def test_nested_cgroup_v1_pairs_the_tightest_combined_and_ram_headroom(tmp_path):

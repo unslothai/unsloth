@@ -1428,11 +1428,23 @@ def _h3_offloaded_render_flags(
         h3_native_offloaded_render_flags,
     )
 
+    from .video_minimax_h3 import h3_native_fit_check_enabled
+
     inputs = getattr(runtime, "fit_inputs", None)
+    if not h3_native_fit_check_enabled():
+        inputs = None  # UNSLOTH_H3_NATIVE_FIT_CHECK=0: no reading, no release, the committed flags as they are
     if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
         if inputs is not None:
-            # A resident render places its weights in VRAM, but still needs its per-render host RAM.
-            _h3_check_render_overhead()
+            # A resident render places its weights in VRAM, but still needs its per-render host RAM. A live server
+            # with other flags (an idle offloaded one holding pinned RAM) is replaced by get() anyway: free it first
+            # so it is not counted against this render.
+            slot = getattr(runtime, "server_slot", None)
+            live = slot.alive_signature() if slot is not None else None
+            hint = ""
+            if live is not None and tuple(live[2]) != tuple(render_flags):
+                if _release_h3_server_slot(slot, "a resident render needs its memory") == "pending":
+                    hint = H3_NATIVE_RENDER_RUNNING_HINT
+            _h3_check_render_overhead(hint)
         return h3_native_offloaded_render_flags(
             render_flags,
             render_resident = render_resident,
@@ -1480,8 +1492,10 @@ def _h3_launch_flags(
     from .sd_cpp_args import device_backend_flags
     from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_live_fit
 
+    from .video_minimax_h3 import h3_native_fit_check_enabled
+
     inputs = getattr(runtime, "fit_inputs", None)
-    if inputs is None:
+    if inputs is None or not h3_native_fit_check_enabled():
         return list(render_flags)
     if "--offload-to-cpu" not in render_flags:
         # A resident start: its weights go to VRAM (judged by the resident choice), its per-render RAM is checked.

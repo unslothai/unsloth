@@ -4728,6 +4728,75 @@ def test_a_resident_render_and_a_resident_start_check_their_host_ram(monkeypatch
     assert _h3_launch_flags(_render_runtime(), resident, "auto") == resident
 
 
+class _OffloadedSlot:
+    def __init__(self, busy):
+        self.busy = busy
+        self.alive = True
+        self.released = []
+
+    def alive_signature(self):
+        return ("bin", (), ("--offload-to-cpu", "--diffusion-fa"), ()) if self.alive else None
+
+    def release(self, reason):
+        self.released.append(reason)
+        if not self.busy:
+            self.alive = False
+        return True
+
+    def is_alive(self):
+        return self.alive
+
+
+def test_a_resident_render_frees_an_idle_offloaded_server_before_its_ram_check(monkeypatch):
+    """get() would replace that server on the signature change; its pinned RAM must not refuse the render."""
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    slot = _OffloadedSlot(busy = False)
+    monkeypatch.setattr(
+        video_minimax_h3, "h3_native_host_budgets", lambda: ((1 << 30) if slot.alive else (8 << 30), 0)
+    )
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), resident, render_resident = True, memory_mode = "auto"
+    ) == resident
+    assert slot.released
+
+
+def test_a_resident_render_behind_a_busy_offloaded_server_says_a_render_is_running(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    slot = _OffloadedSlot(busy = True)
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (1 << 30, 0))
+    with pytest.raises(H3NativeMemoryRefusal, match = "still running"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), ["--diffusion-fa"], render_resident = True, memory_mode = "auto"
+        )
+
+
+def test_the_kill_switch_turns_off_every_render_time_guard(monkeypatch):
+    from core.inference.video import _h3_launch_flags, _h3_offloaded_render_flags
+
+    monkeypatch.setenv("UNSLOTH_H3_NATIVE_FIT_CHECK", "0")
+    _live_gtt(monkeypatch, 0)
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3.h3_native_host_budgets", lambda: (1 << 20, 0)
+    )
+    slot = _OffloadedSlot(busy = False)
+    offloaded = ["--offload-to-cpu", "--diffusion-fa"]
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), list(offloaded), render_resident = False, memory_mode = "auto"
+    ) == offloaded
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), ["--diffusion-fa"], render_resident = True, memory_mode = "auto"
+    ) == ["--diffusion-fa"]
+    assert _h3_launch_flags(_render_runtime(), list(offloaded), "balanced") == offloaded
+    assert _h3_launch_flags(_render_runtime(), ["--diffusion-fa"], "auto") == ["--diffusion-fa"]
+    assert slot.released == []
+
+
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
     from core.inference.video import _h3_offloaded_render_flags
     from core.inference import video_minimax_h3

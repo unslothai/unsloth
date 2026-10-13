@@ -1399,6 +1399,12 @@ def _sysfs_pci_slot(device_dir: Path) -> Optional[str]:
     return name if name.count(":") == 2 else None
 
 
+def h3_native_fit_check_enabled(env: Optional[dict] = None) -> bool:
+    """The one kill switch for every H3 native memory guard (UNSLOTH_H3_NATIVE_FIT_CHECK=0 turns them all off)."""
+    environ = env if env is not None else os.environ
+    return str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() not in ("0", "false", "no", "off")
+
+
 def amdgpu_gtt_reading(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> "tuple[Optional[int], bool]":
@@ -1496,8 +1502,7 @@ def h3_native_memory_fit(
     """Fit offloaded sd-cli flags to the host: pinned weights must fit RAM alone (swap covers only CPU-run modules)
     and ``pinned_free_bytes`` (free GTT, None skips). ``auto`` may move the text encoder to the CPU; else refuse."""
     flags = tuple(flags)
-    environ = env if env is not None else os.environ
-    if str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+    if not h3_native_fit_check_enabled(env):
         return H3NativeFit(flags)
     if "--offload-to-cpu" not in flags:
         return H3NativeFit(flags)
@@ -1696,6 +1701,8 @@ def h3_native_render_overhead_refusal() -> Optional[str]:
     """Why a render that places no new weights (a reused server, or a resident render) cannot start: live
     available RAM (``h3_native_host_budgets``) below the per-render host overhead. None when it fits or RAM cannot
     be read. File reads only."""
+    if not h3_native_fit_check_enabled():
+        return None
     ram, _swap = h3_native_host_budgets()
     if ram is None or ram >= H3_NATIVE_HOST_OVERHEAD_BYTES:
         return None
