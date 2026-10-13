@@ -571,3 +571,13 @@ def test_cached_path_of_a_folder_skips_a_newer_snapshot_with_only_metadata(hub):
     acm.forget()
     got = _path(QWEN, "")
     assert Path(got["path"]) == hub / SNAPSHOT / "Qwen3-TTS-12Hz-0.6B-Base-GGUF"
+
+
+def test_cached_path_of_a_folder_finds_weights_with_an_uppercase_extension(hub):
+    older = _add_snapshot(hub, "0" * 40, {}, main = False)
+    (older / "Upper-GGUF").mkdir(parents = True)
+    (older / "Upper-GGUF" / "MODEL-Q8_0.GGUF").write_bytes(b"GGUF")
+    newer = hub / SNAPSHOT
+    (newer / "Upper-GGUF").mkdir()
+    (newer / "Upper-GGUF" / "README.md").write_text("card")
+    assert acm.folder_snapshot_dir(f"{AUDIO_CPP_REPO}/Upper-GGUF") == older / "Upper-GGUF"

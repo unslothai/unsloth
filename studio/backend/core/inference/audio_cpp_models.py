@@ -2652,7 +2652,7 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     folders = [s / ref.folder for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
     # The snapshot whose folder holds the weights, not a newer one that kept only its metadata.
     for folder in folders:
-        if next(folder.rglob("*.gguf"), None) is not None:
+        if any(p.suffix.lower() == ".gguf" for p in folder.rglob("*")):
             return folder
     return folders[0] if folders else None
 
