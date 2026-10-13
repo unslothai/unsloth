@@ -470,3 +470,23 @@ def test_a_drive_like_folder_id_names_nothing(hub, monkeypatch, folder):
             call()
         assert err.value.status_code == 404
     assert len(_left(hub)) == 3
+
+
+def test_a_bare_quant_two_cached_sizes_share_names_nothing(hub, monkeypatch):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    tiny = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
+    small = "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0"
+    files = {f"{tiny}.gguf": "moonshine_asr", f"{small}.gguf": "moonshine_asr"}
+    _add_snapshot(hub, "a" * 40, files, main = True)
+    acm.forget()
+    assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [])
+    assert acm.cached_folder_target(moon, "tiny/Q8_0") == (AUDIO_CPP_REPO, [tiny])
+    assert acm.cached_folder_target(moon, "small/Q8_0") == (AUDIO_CPP_REPO, [small])
+    assert sorted(acm.cached_folder_target(moon, None)[1]) == sorted([small, tiny])
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deletion.delete_cached_model_response(moon, "Q8_0"))
+    assert err.value.status_code == 404
+    assert len(_left(hub)) == 5

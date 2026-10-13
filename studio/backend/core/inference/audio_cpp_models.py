@@ -2609,11 +2609,17 @@ def _cached_variants_named(
 ) -> list[AudioCppVariant]:
     """The cached variants ``wanted`` names. The picker keys a multi-size folder's quants from the Hub
     listing (``tiny/Q8_0``) while a cache holding one size keys it ``Q8_0``, so scope words also
-    match the file path; a quant must still pick exactly one, never a fallback default."""
-    hit = match_variant(variants, wanted, folder)
-    if hit is not None:
-        return [hit]
-    parts = [p for p in wanted.lower().replace("\\", "/").split("/") if p]
+    match the file path; a quant must still pick exactly one, never a fallback default (``match_variant``
+    would rank a bare ``Q8_0`` onto one of ``tiny/Q8_0`` and ``small/Q8_0``)."""
+    low = wanted.strip().replace("\\", "/").lower()
+    exact = [
+        v
+        for v in variants
+        if v.key.lower() == low or v.main_file.lower() in (low, f"{folder}/{low}".lower())
+    ]
+    if exact:
+        return exact[:1]
+    parts = [p for p in low.split("/") if p]
     quants = {quant_label(v.main_file).lower() for v in variants}
     quant = parts[-1] if parts and parts[-1] in quants else None
     words = parts[:-1] if quant else parts
