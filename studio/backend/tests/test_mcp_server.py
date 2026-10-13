@@ -25,6 +25,10 @@ def test_studio_mcp_registers_control_plane_tools():
         "start_training",
         "stop_training",
         "list_training_runs",
+        "get_diffusion_training_status",
+        "start_diffusion_training",
+        "stop_diffusion_training",
+        "list_diffusion_training_runs",
         "validate_recipe",
         "get_recipe_job_status",
         "get_recipe_job_dataset",
@@ -341,6 +345,154 @@ def test_start_training_forwards_as_api_key_caller(monkeypatch):
     assert captured["current_subject"] == "mcp"
     assert captured["via_api_key"] is True
     assert result == {"status": "queued"}
+
+
+def test_start_diffusion_training_forwards_as_api_key_caller(monkeypatch):
+    captured = {}
+
+    class FakeDiffusionTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            captured["config"] = config
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        assert isinstance(request, FakeDiffusionTrainingStartRequest)
+        captured["current_subject"] = current_subject
+        captured["via_api_key"] = via_api_key
+        return {"job_id": "diff-1", "status": "running"}
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(
+        monkeypatch,
+        "models.training",
+        DiffusionTrainingStartRequest = FakeDiffusionTrainingStartRequest,
+    )
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_diffusion_training = fake_start)
+
+    config = {"base_model": "unsloth/sdxl", "data_dir": "cats", "output_dir": "cats-lora"}
+    result = asyncio.run(_get_tool("start_diffusion_training").fn(config = config))
+
+    assert captured["config"] == config
+    assert captured["current_subject"] == "mcp"
+    assert captured["via_api_key"] is True
+    assert result == {"job_id": "diff-1", "status": "running"}
+
+
+def test_stop_diffusion_training_forwards_save(monkeypatch):
+    captured = {}
+
+    class FakeStopRequest:
+        def __init__(self, save):
+            self.save = save
+
+    async def fake_stop(body, current_subject):
+        captured["save"] = body.save
+        captured["current_subject"] = current_subject
+        return {"status": "stopping"}
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(monkeypatch, "models.training", DiffusionTrainingStopRequest = FakeStopRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", stop_diffusion_training = fake_stop)
+
+    result = asyncio.run(_get_tool("stop_diffusion_training").fn(save = False))
+
+    assert captured == {"save": False, "current_subject": "mcp"}
+    assert result == {"status": "stopping"}
+
+
+def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
+    status = {
+        "active": True,
+        "output_dir": "/home/leo/.unsloth/outputs/cats-lora",
+        "lora_path": "/home/leo/.unsloth/outputs/cats-lora/pytorch_lora_weights.safetensors",
+        "ema_path": None,
+        "catalog_path": "/home/leo/.unsloth/studio/loras/diffusion/cats-lora",
+        "checkpoint_path": "C:\\Users\\leo\\.unsloth\\outputs\\cats-lora\\checkpoint-100",
+        "data_dir": "cats",
+        "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+    }
+    runs = {
+        "runs": [
+            {
+                "job_id": "diff-1",
+                "output_dir": "/home/leo/.unsloth/outputs/cats-lora",
+                "catalog_path": "/home/leo/.unsloth/studio/loras/diffusion/cats-lora",
+                "resume_blocked_reason": "Could not write /home/leo/.unsloth/outputs/cats-lora/checkpoint-5: Permission denied",
+            }
+        ]
+    }
+
+    async def fake_status(current_subject):
+        return dict(status)
+
+    async def fake_list_runs(limit, current_subject):
+        return runs
+
+    _stub_module(monkeypatch, "routes")
+    _stub_module(
+        monkeypatch,
+        "routes.training",
+        diffusion_training_status = fake_status,
+        list_diffusion_training_runs = fake_list_runs,
+    )
+
+    seen = asyncio.run(_get_tool("get_diffusion_training_status").fn())
+    assert seen["active"] is True and seen["data_dir"] == "cats" and seen["ema_path"] is None
+    assert seen["base_model"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    for key in ("output_dir", "checkpoint_path", "lora_path", "catalog_path"):
+        assert seen[key].startswith("ref:") and "leo" not in seen[key], (key, seen[key])
+    listed = asyncio.run(_get_tool("list_diffusion_training_runs").fn())
+    assert listed["runs"][0]["job_id"] == "diff-1"
+    for key in ("output_dir", "catalog_path"):
+        assert listed["runs"][0][key].startswith("ref:"), (key, listed["runs"][0][key])
+    reason = listed["runs"][0]["resume_blocked_reason"]
+    assert reason.startswith("Could not write") and "leo" not in reason, reason
+
+
+def test_start_diffusion_training_refusal_hides_host_paths(monkeypatch):
+    from fastapi import HTTPException
+
+    class FakeDiffusionTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        raise HTTPException(400, "data_dir is not a directory: /home/leo/.unsloth/datasets/cats")
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(
+        monkeypatch,
+        "models.training",
+        DiffusionTrainingStartRequest = FakeDiffusionTrainingStartRequest,
+    )
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_diffusion_training = fake_start)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(_get_tool("start_diffusion_training").fn(config = {}))
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail.startswith("data_dir is not a directory")
+    assert "leo" not in raised.value.detail
+
+
+def test_list_diffusion_training_runs_clamps_limit(monkeypatch):
+    captured = {}
+
+    async def fake_list_runs(limit, current_subject):
+        captured["limit"] = limit
+        return {"runs": []}
+
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", list_diffusion_training_runs = fake_list_runs)
+
+    asyncio.run(_get_tool("list_diffusion_training_runs").fn(limit = 10_000))
+
+    assert captured["limit"] == 200
 
 
 def test_list_training_runs_clamps_pagination(monkeypatch):
