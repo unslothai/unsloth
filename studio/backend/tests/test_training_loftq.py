@@ -64,19 +64,28 @@ def test_no_get_peft_model_call_passes_loftq_config_alone(path):
             ), f"{path.name}:{node.lineno} passes loftq_config without init_lora_weights"
 
 
-def test_every_worker_lora_site_asks_the_checkpoint_aware_helper():
+def test_no_worker_call_reads_the_toggle_directly():
     # The persisted toggle alone would rerun LoftQ on a resume saved before LoftQ applied.
-    for node in ast.walk(ast.parse(_WORKER.read_text(encoding = "utf-8"))):
-        if not isinstance(node, ast.Call):
+    tree = ast.parse(_WORKER.read_text(encoding = "utf-8"))
+    helper = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_lora_uses_loftq"
+    )
+    inside = {id(n) for n in ast.walk(helper)}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or id(node) in inside:
             continue
-        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        args = [k.value for k in node.keywords if k.arg == "use_loftq"]
-        if name == "_loftq_peft_kwargs":
-            args = list(node.args)
-        for arg in args:
-            assert (
-                getattr(getattr(arg, "func", None), "id", None) == "_lora_uses_loftq"
-            ), f"worker.py:{node.lineno} reads use_loftq without _lora_uses_loftq"
+        for value in [*node.args, *(k.value for k in node.keywords)]:
+            for sub in ast.walk(value):
+                reads_toggle = (
+                    isinstance(sub, ast.Call)
+                    and getattr(sub.func, "attr", None) == "get"
+                    and any(
+                        isinstance(a, ast.Constant) and a.value == "use_loftq" for a in sub.args
+                    )
+                )
+                assert (
+                    not reads_toggle
+                ), f"worker.py:{node.lineno} passes use_loftq on without _lora_uses_loftq"
 
 
 def test_the_fast_encoder_lora_config_forwards_the_initialization():
@@ -106,7 +115,10 @@ def _prepare(monkeypatch, quantized):
         )
         or (
             isinstance(n, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "_UNSET" for t in n.targets)
+            and any(
+                isinstance(t, ast.Name) and t.id in ("_UNSET", "LOFTQ_SKIPPED_ON_QUANTIZED")
+                for t in n.targets
+            )
         )
     ]
     adapter = Mock(return_value = SimpleNamespace(config = object()))

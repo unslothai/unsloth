@@ -5430,7 +5430,17 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
-            from core.training.trainer import _loftq_peft_kwargs
+            from core.training.trainer import (
+                LOFTQ_SKIPPED_ON_QUANTIZED,
+                _has_quantized_weights,
+                _loftq_peft_kwargs,
+            )
+
+            use_loftq = _lora_uses_loftq(config)
+            # The fast encoder prepares an intrinsically quantized repo for k-bit training, and LoftQ fails on it.
+            if use_loftq and _has_quantized_weights(model):
+                _send_status(event_queue, LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
 
             model = FastSentenceTransformer.get_peft_model(
                 model,
@@ -5444,7 +5454,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                **_loftq_peft_kwargs(_lora_uses_loftq(config)),
+                **_loftq_peft_kwargs(use_loftq),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

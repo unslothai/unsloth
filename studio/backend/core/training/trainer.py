@@ -411,6 +411,12 @@ def _tokenizer_is_empty(tokenizer) -> bool:
         return False
 
 
+LOFTQ_SKIPPED_ON_QUANTIZED = (
+    "LoftQ needs 16-bit weights and this model is loaded quantized, so it trains without LoftQ. "
+    "Choose LoRA (16-bit) to use LoftQ."
+)
+
+
 def _has_quantized_weights(model) -> bool:
     try:
         from unsloth.models._utils import _has_quantized_linears
@@ -1639,12 +1645,8 @@ class UnslothTrainer:
 
             if use_loftq and _has_quantized_weights(self.model):
                 # Unsloth refuses LoftQ on quantized weights; train as before rather than fail a QLoRA run or its resume.
-                message = (
-                    "LoftQ needs 16-bit weights and this model is loaded quantized, so it trains without "
-                    "LoftQ. Choose LoRA (16-bit) to use LoftQ."
-                )
-                logger.warning(message)
-                self._update_progress(status_message = message)
+                logger.warning(LOFTQ_SKIPPED_ON_QUANTIZED)
+                self._update_progress(status_message = LOFTQ_SKIPPED_ON_QUANTIZED)
                 use_loftq = False
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
