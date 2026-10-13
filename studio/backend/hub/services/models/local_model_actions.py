@@ -38,12 +38,20 @@ async def _listed_row(
         raise HTTPException(status_code = 400, detail = "path is required")
     wanted = _identity(path)
     listing = await local_inventory.list_local_models_response()
-    for row in listing.models:
-        if row.source in sources and row.path and _identity(row.path) == wanted:
-            # Ollama tags aliasing one blob share a path; the row id tells them apart.
-            if row_id is None or row_id in (row.id, row.load_id):
-                return row
-    raise HTTPException(status_code = 404, detail = "Model not found on device")
+    matches = [
+        row
+        for row in listing.models
+        if row.source in sources
+        and row.path
+        and _identity(row.path) == wanted
+        # Ollama tags aliasing one blob share a path; the row id tells them apart.
+        and (row_id is None or row_id in (row.id, row.load_id))
+    ]
+    if len(matches) > 1:
+        raise HTTPException(status_code = 400, detail = "Several models share this path; pass its id")
+    if not matches:
+        raise HTTPException(status_code = 404, detail = "Model not found on device")
+    return matches[0]
 
 
 def _hf_cache_roots() -> set[str]:
@@ -198,7 +206,13 @@ async def delete_local_model_response(path: str, row_id: str | None = None) -> d
     if blocks:
         raise HTTPException(status_code = 400, detail = blocks)
 
-    custom_folders = await local_inventory._load_custom_folders()
+    # Not _load_custom_folders, which reads a failure as "no folders": that would drop a scan
+    # root from the protected set and let its own row rmtree the folder.
+    try:
+        custom_folders = await asyncio.to_thread(local_inventory.list_scan_folders)
+    except Exception as e:  # noqa: BLE001 -- fail closed on any read error
+        logger.warning("Could not read scan folders for a local delete: %s", scrub_paths(e))
+        raise HTTPException(status_code = 503, detail = "Could not read the scanned folders; try again")
     protected = await asyncio.to_thread(_protected_roots, custom_folders)
     try:
         if ollama_ref:

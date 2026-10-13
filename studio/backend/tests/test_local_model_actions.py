@@ -46,10 +46,7 @@ def lm_root(tmp_path, monkeypatch):
     monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
 
-    async def folders():
-        return [{"path": str(folder)}]
-
-    monkeypatch.setattr(local_inventory, "_load_custom_folders", folders)
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [{"path": str(folder)}])
     monkeypatch.setattr(account_access, "require_installation_owner", lambda: None)
     monkeypatch.setattr(actions, "_load_state_blocks_delete", lambda paths: None)
     return root, model, folder
@@ -289,3 +286,25 @@ def test_local_sources_advertise_can_delete():
     from hub.services.models.common import _capabilities_for_format
     for source in ("lmstudio", "custom", "ollama", "hermes", "omlx", "models_dir", "hf_cache"):
         assert _capabilities_for_format("gguf", source).can_delete
+
+
+def test_path_shared_by_several_rows_needs_an_id(lm_root, monkeypatch):
+    _, model, _ = lm_root
+    _listing_of(monkeypatch, _row(model, "lmstudio"), _row(model, "lmstudio"))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(actions.delete_local_model_response(str(model)))
+    assert caught.value.status_code == 400
+    assert model.is_dir()
+
+
+def test_unreadable_scan_folders_fail_closed(lm_root, monkeypatch):
+    _, model, _ = lm_root
+
+    def broken():
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(local_inventory, "list_scan_folders", broken)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(actions.delete_local_model_response(str(model)))
+    assert caught.value.status_code == 503
+    assert model.is_dir()
