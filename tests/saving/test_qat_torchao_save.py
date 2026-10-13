@@ -216,6 +216,9 @@ def test_int8_int4_lora_rank_below_group_size():
     assert hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
     assert not hasattr(block.q_proj.lora_B["default"], "weight_fake_quantizer")
     assert _peft_untied_embedding_keys(peft_model) == ("embed_tokens.weight", "lm_head.weight")
+    lm_head = peft_model.base_model.model.lm_head
+    assert lm_head.weight.data_ptr() != peft_model.base_model.model.embed_tokens.weight.data_ptr()
+    assert not lm_head.weight.requires_grad
 
 
 @pytest.mark.parametrize("sharded", [False, True])
