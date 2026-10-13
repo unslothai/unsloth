@@ -110,3 +110,15 @@ test("Desktop reads the same server-document types the composer does", () => {
   ].map((match) => `.${match[1]}`);
   assert.deepEqual(rust.sort(), split(SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS).sort());
 });
+
+test("an extraction started by one account never settles in another's composer", () => {
+  const reader = readFileSync(
+    new URL("../src/features/chat/server-document.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(reader, /const epoch = getAuthSessionEpoch\(\);/);
+  // Retries refuse a changed account, and the answer is checked again before its text is used.
+  assert.match(reader, /await extractDocumentText\(file, sameAccount\);\s*sameAccount\(\);/);
+  const api = readFileSync(new URL("../src/features/rag/api/rag-api.ts", import.meta.url), "utf8");
+  assert.match(api, /\{ method: "POST", body: form \},\s*\{ beforeRetry \},/);
+});
