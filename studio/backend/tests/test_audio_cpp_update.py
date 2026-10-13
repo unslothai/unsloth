@@ -549,6 +549,19 @@ def test_a_rate_limit_gets_token_advice(run_env, monkeypatch):
         aupd.run_chained_phase(run_env.phase, lambda fraction: None)
 
 
+def test_an_unreachable_release_fails_the_update_and_says_the_install_was_kept(run_env):
+    tail = (
+        "installer exited 1: audio.cpp: unslothai/audio.cpp release lookup failed (network is unreachable)\n"
+        "error: no audio.cpp release lookup answered (unslothai/audio.cpp v0.9.1-unsloth.1: network is unreachable)\n"
+    )
+    run_env.installer(error = update_flow.InstallerExit(1, tail))
+    with pytest.raises(RuntimeError) as info:
+        aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert str(info.value) == (
+        "Could not reach the audio.cpp release on GitHub, so the existing install was kept. Try again later."
+    )
+
+
 def test_no_sidecar_coordination_fails_closed(run_env, monkeypatch):
     from core.inference import stt_audiocpp_sidecar
 

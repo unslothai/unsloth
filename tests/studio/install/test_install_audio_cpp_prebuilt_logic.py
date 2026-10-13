@@ -613,6 +613,27 @@ def test_a_lookup_that_cannot_answer_keeps_a_complete_install(monkeypatch, tmp_p
     assert _tree_digest(root) == before
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(M.urllib.error.URLError("network is unreachable"), id = "offline"),
+        pytest.param(M.GitHubRateLimited("rate limited"), id = "rate-limited"),
+    ],
+)
+def test_the_in_app_pin_never_keeps_the_old_tree_when_the_lookup_cannot_answer(
+    monkeypatch, tmp_path, capsys, exc
+):
+    # The in-app update installs the release it offered; exit 0 would report an update that never happened.
+    root = _installed_then_stale(monkeypatch, tmp_path)
+    before = _tree_digest(root)
+    _lookup_fails(monkeypatch, exc)
+    capsys.readouterr()
+    argv = ["--install-dir", str(root), "--published-release-tag", FORK_TAG]
+    assert M.main(argv) == M.EXIT_FAILED
+    assert M.KEPT_EXISTING_LINE not in capsys.readouterr().out
+    assert _tree_digest(root) == before
+
+
 def test_a_rate_limit_from_the_core_lookup_is_reported_as_one(monkeypatch):
     _lookup_fails(
         monkeypatch,

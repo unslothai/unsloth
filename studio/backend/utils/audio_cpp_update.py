@@ -282,6 +282,9 @@ def _failure_message(exc: _flow.InstallerExit, env: dict) -> str:
     if _flow.is_github_rate_limit_text(text):
         advice = _flow.github_rate_limit_advice(_flow.github_token_present(env))
         return f"Could not update audio.cpp: GitHub is rate-limiting release downloads. {advice}"
+    # The installer's ReleaseLookupUnavailable: the offered release was unreachable and the tree was never touched.
+    if "no audio.cpp release lookup answered" in text:
+        return "Could not reach the audio.cpp release on GitHub, so the existing install was kept. Try again later."
     # The installer's own verdict is its last "error:" line; the rest of the tail is download progress.
     errors = [line.strip() for line in text.splitlines() if line.strip().startswith("error: ")]
     return errors[-1][len("error: ") :] if errors else text
