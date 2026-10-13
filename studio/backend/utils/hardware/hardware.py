@@ -2652,10 +2652,50 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
     return devices
 
 
+# Multi-tile Intel GPUs (Data Center GPU Max): under FLAT each tile is its own device.
+_INTEL_MULTI_TILE_PCI_IDS = frozenset((
+    0x0BD0, 0x0BD4, 0x0BD5, 0x0BD6, 0x0BD7, 0x0BD8, 0x0BD9, 0x0BDA, 0x0BDB, 0x0B69, 0x0B6E,
+))  # fmt: skip
+
+
+def _intel_xpu_single_tile_host(root: str = "/sys/class/drm") -> bool:
+    """Whether every Intel GPU this Linux host has is known to be single-tile: an allowlisted Arc / Flex part that is not a Data Center GPU Max, or the integrated GPU at PCI 00:02.0. False with no Intel card, an unknown discrete part, or no sysfs (non-Linux)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return False
+    found = False
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                if fh.read().strip().lower() != "0x8086":
+                    continue
+            with open(os.path.join(device, "device"), encoding = "utf-8") as fh:
+                device_id = int(fh.read().strip(), 16)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return False
+        integrated = os.path.realpath(device).endswith(":00:02.0")
+        if device_id in _INTEL_MULTI_TILE_PCI_IDS:
+            return False
+        if not (integrated or _intel_pci_device_is_xpu_class(device)):
+            return False
+        found = True
+    return found
+
+
 def _xpu_hierarchy_is_composite() -> bool:
-    """True iff Level Zero runs in COMPOSITE device hierarchy, where numeric ZE_AFFINITY_MASK entries address root GPU IDs (tiles use N.M). Under FLAT, the oneAPI default and the assumption when ZE_FLAT_DEVICE_HIERARCHY is unset, entries address tile handles and mapping them back to root IDs is unsafe."""
-    hierarchy = (os.environ.get("ZE_FLAT_DEVICE_HIERARCHY") or "FLAT").strip().upper()
-    return hierarchy == "COMPOSITE"
+    """True iff numeric ZE_AFFINITY_MASK entries address root GPU IDs (tiles use N.M): COMPOSITE hierarchy, or the hierarchy left at the driver default on a host whose Intel GPUs are all single-tile, where the default is COMPOSITE and FLAT would be identical anyway (one tile per root). Otherwise, as on a Data Center GPU Max under FLAT, entries address tile handles and mapping them back to root IDs is unsafe."""
+    hierarchy = (os.environ.get("ZE_FLAT_DEVICE_HIERARCHY") or "").strip().upper()
+    if hierarchy == "COMPOSITE":
+        return True
+    return hierarchy == "" and _intel_xpu_single_tile_host()
 
 
 def _parse_ze_mask_roots(mask: str) -> list[int]:
@@ -4785,7 +4825,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                     "numeric_ids": list(range(get_physical_gpu_count())),
                     "supports_explicit_gpu_ids": True,
                 }
-            # FLAT (oneAPI default): ordinals are tile/device handles, not physical GPU IDs, so numeric_ids=None and telemetry uses relative ordinals; explicit selection needs ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
+            # FLAT with a multi-tile or unknown part: ordinals are tile/device handles, not physical GPU IDs, so numeric_ids=None and telemetry uses relative ordinals; explicit selection needs ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE.
             return {
                 "raw": None,
                 "numeric_ids": None,
