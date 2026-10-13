@@ -762,7 +762,7 @@ export function ReasoningTranscript({
   }, []);
 
   useLayoutEffect(() => {
-    // Only a streaming box shows its newest lines; a finished one shows its start, which mounts first.
+    // A finished box shows its start, which mounts first anyway.
     if (!bounded || !streaming || covered) return;
     let start = fragments.length;
     for (let height = 0; start > 0 && height < BOUNDED_TAIL_PX; )

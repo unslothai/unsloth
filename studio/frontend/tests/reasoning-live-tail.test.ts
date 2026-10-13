@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Thinking box (#11703): bounded under the `auto` setting however the block was opened, lifted
-// only by its own Expand toggle, and never an inner scroller (#11704 review).
+// The Thinking box (#11703): bounded under `auto`, lifted by its Expand toggle, never a scroller (#11704).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -45,13 +44,11 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
     reasoning,
     /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/,
   );
-  // The toggle stays mounted in both states, so Collapse is always reachable after Expand.
   assert.match(tail, /\{cappable && overflowing && \(/);
   assert.match(tail, /onClick=\{\(\) => onExpandedChange\(!expanded\)\}/);
   assert.match(tail, /aria-expanded=\{expanded\}/);
   assert.match(tail, /\{expanded \? "Collapse thinking" : "Expand thinking"\}/);
   assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
-  // A new round starts bounded again.
   assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
 });
 

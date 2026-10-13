@@ -330,7 +330,6 @@ function ReasoningText({
       data-slot="reasoning-text"
       data-streaming={streaming ? "" : undefined}
       className={cn(
-        // Trace ink, as the header above it, so it reads apart from the answer.
         "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-trace-foreground leading-relaxed",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         !virtualized &&
@@ -524,10 +523,8 @@ function ReasoningBody({
   );
 }
 
-// A trace in a fixed box (#11703): the newest lines while it streams, clipped at the top, and its start
-// once finished, clipped at the bottom. Not an inner scroller, which split the reading anchor across
-// two containers and wrote its own scroll (#11704).
-// Expand and Collapse toggle the box without opening the block for good, so the toggle never goes away.
+// A fixed box (#11703): the newest lines while streaming, the start once finished. Clipped, not an inner
+// scroller, which split the reading anchor across two containers (#11704).
 function ReasoningTail({
   cappable,
   expanded,
@@ -536,7 +533,6 @@ function ReasoningTail({
   children,
 }: {
   streaming: boolean;
-  /** The setting bounds this block; `expanded` lifts the bound by hand. */
   cappable: boolean;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -544,7 +540,7 @@ function ReasoningTail({
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const capped = cappable && !expanded;
-  // Sticky while expanded: unbounded, the box cannot measure against its cap, and a trace only grows.
+  // Sticky while expanded: an unbounded box cannot measure its cap, and a trace only grows.
   const [overflowing, setOverflowing] = useState(false);
   useLayoutEffect(() => {
     const box = boxRef.current;
@@ -597,7 +593,6 @@ function ReasoningTail({
           data-slot="reasoning-show-full"
           aria-expanded={expanded}
           onClick={() => onExpandedChange(!expanded)}
-          // An action, not more trace: the muted ink sits a step above the trace text it follows.
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {expanded ? "Collapse thinking" : "Expand thinking"}

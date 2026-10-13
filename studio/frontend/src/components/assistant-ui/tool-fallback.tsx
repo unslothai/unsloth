@@ -166,7 +166,7 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
-// A finished call shows what kind of tool ran, not a tick: "Used tool" already says it finished.
+// Not a tick: "Used tool" already says it finished.
 function completeToolIcon(name: string): ElementType {
   return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
 }
