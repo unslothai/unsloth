@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import diffusion_content as dc
+from core.inference import diffusion_multistage as MS
 from core.inference import video_ltx25 as v25
 from core.inference.video_families import (
     LTX25_FAMILY,
@@ -1269,7 +1270,7 @@ class _OffloadedPipe(_FakePipe):
 @pytest.mark.parametrize("fits", [True, False])
 def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_two_fits(monkeypatch, fits):
     # Stage 1's call ends by offloading every component; stage 2 then re-uploaded the whole DiT.
-    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: fits)
+    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
     assert len(pipe.calls) == 2
@@ -1278,7 +1279,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
     assert "maybe_free_model_hooks" not in pipe.__dict__
     # No model offload: nothing is patched or checked.
     plain = _FakePipe(SimpleNamespace(keep_tokens = None))
-    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda *a: pytest.fail("checked without offload"))
+    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda *a: pytest.fail("checked without offload"))
     v25.render(plain, _kwargs(), dev = False, upsampler = _Upsampler())
     assert plain.freed == 0
 
@@ -1287,7 +1288,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
 def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
     # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
     # when stage 2 would not fit beside the DiT.
-    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: fits)
+    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     cond = _FakePipe(pipe.scheduler)
     pipe._unsloth_ltx25_condition_pipe = cond
@@ -1299,7 +1300,7 @@ def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(mo
 def test_a_text_render_cancelled_between_stages_resets_the_offload_hooks(monkeypatch):
     import threading
 
-    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: True)
+    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: True)
     cancel = threading.Event()
 
     class _CancellingUpsampler(_Upsampler):
@@ -1314,13 +1315,14 @@ def test_a_text_render_cancelled_between_stages_resets_the_offload_hooks(monkeyp
     assert pipe.freed == 1 and len(pipe.calls) == 1
 
 
-def test_stage_two_fit_counts_the_connectors_and_the_upsampler(monkeypatch):
-    import torch
-
-    pipe = SimpleNamespace(transformer = torch.nn.Linear(2, 2), connectors = torch.nn.Linear(4, 4))
-    # Off CUDA (the DiT's parameters on the host) there is nothing to hold.
-    assert v25._stage_two_fits_beside_dit(pipe, None) is False
-    assert v25._module_bytes(torch.nn.Linear(4, 4)) == (16 + 4) * 4 and v25._module_bytes(None) == 0
+def test_the_hold_passes_the_connectors_and_the_upsampler_as_companions(monkeypatch):
+    seen = []
+    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: seen.append(companions) or True)
+    pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
+    pipe.connectors = object()
+    up = _Upsampler()
+    v25.render(pipe, _kwargs(), dev = False, upsampler = up)
+    assert seen and seen[0] == (pipe.connectors, up)
 
 
 class _EncodingPipe(_FakePipe):
@@ -2360,14 +2362,12 @@ def test_encoder_worker_starts_while_the_latch_is_clear(monkeypatch):
 
 def test_an_ltx25_image_render_counts_as_image_to_video_for_the_background_compile():
     # LTX-2.5 conditions through its own render, never the i2v swap, so the swap flag alone would let its per-token
-    # timesteps seed the background compile and leave an image-only session pending.
+    # timesteps seed the background compile and leave an image-only session pending. The check is family-agnostic.
     from core.inference import diffusion_bg_compile as bgc
     from core.inference.video import _bg_i2v_render, _settle_bg_compile
 
-    ltx25, ltx2 = SimpleNamespace(name = "ltx-2.5"), SimpleNamespace(name = "ltx-2")
-    assert _bg_i2v_render(ltx25, object(), False) is True
-    assert _bg_i2v_render(ltx25, None, False) is False
-    assert _bg_i2v_render(ltx2, object(), False) is False and _bg_i2v_render(ltx2, object(), True) is True
+    assert _bg_i2v_render(object(), False) is True and _bg_i2v_render(object(), True) is True
+    assert _bg_i2v_render(None, False) is False
     bg = bgc.BackgroundCompile(object())
-    _settle_bg_compile(bg, i2v = _bg_i2v_render(ltx25, object(), False))
+    _settle_bg_compile(bg, i2v = _bg_i2v_render(object(), False))
     assert not bg.pending() and bg.state == "failed"
