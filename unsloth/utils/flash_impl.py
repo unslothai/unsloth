@@ -5,7 +5,8 @@
 torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
 head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
 supported head dims, and a probe matching torch's bundled flash.
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100, FA3 then FA4 on sm90) | fa4 | fa3 | off.
+UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100; on sm90 FA3 then FA4, only for models with
+hidden_size >= _HOPPER_AUTO_MIN_HIDDEN) | fa4 | fa3 | off.
 """
 
 import contextlib
@@ -35,6 +36,10 @@ _DROPOUT_KEYS = (
 )
 _SUBCONFIG_KEYS = ("text_config", "vision_config", "audio_config", "encoder", "decoder")
 FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": set()}
+# H100, torch 2.14.1: FA3 / FA4 run faster kernels than torch's bundled flash but cost ~60 / ~110 us more host
+# time per forward call. Packed LoRA SFT at 8K tokens / step: hidden 1024 (Qwen3-0.6B) is launch bound and
+# 2 to 7% slower on FA3; hidden 2048 to 4096 (Llama-3.2-1B, Qwen3-1.7B / 4B / 8B, Mistral-7B) is 0.3 to 1.8% faster.
+_HOPPER_AUTO_MIN_HIDDEN = 2048
 _logger = logging.getLogger(__name__)
 
 
@@ -95,7 +100,7 @@ def _device_majors():
 
 
 def _candidates(requested, majors):
-    """auto: FA4 on sm100; FA3 (the mature Hopper kernel) then FA4 on sm90."""
+    """auto: FA4 on sm100; FA3 (the mature Hopper kernel) then FA4 on sm90, for wide models only."""
     if not majors or len(majors) != 1:
         return []
     major = next(iter(majors))
@@ -171,6 +176,12 @@ def _configs(model):
         if isinstance(sub, dict):
             stack.extend(getattr(cfg, key, None) for key in sub)
     return out
+
+
+def _hidden_size(model):
+    sizes = [getattr(cfg, "hidden_size", None) for cfg in _configs(model)]
+    sizes = [s for s in sizes if isinstance(s, int) and not isinstance(s, bool) and s > 0]
+    return max(sizes) if sizes else None
 
 
 def _ceil8(value):
@@ -396,6 +407,15 @@ def maybe_activate_flash_attention_impl(model = None):
         deactivate_flash_attention_impl()
         return None
     major = next(iter(majors))
+    if requested == "auto" and major == 9:
+        hidden = _hidden_size(model) if model is not None else None
+        if hidden is None or hidden < _HOPPER_AUTO_MIN_HIDDEN:
+            FLASH_IMPL_STATE["reason"] = (
+                f"auto keeps torch's bundled flash on sm90 below hidden_size {_HOPPER_AUTO_MIN_HIDDEN} "
+                f"(model: {hidden}); {_ENV}=fa3 or fa4 opts in"
+            )
+            deactivate_flash_attention_impl()
+            return None
     facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
     cases = _probe_cases(facts)
     # auto falls through to the next impl when one is missing, refuses this model or fails its probe.
