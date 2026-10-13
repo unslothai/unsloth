@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Popups dim what is behind them but never blur it: the shared overlays, every per-dialog
-// overlay override, the lightboxes and the titlebar layer that repeats the modal backdrop.
+// Popups dim what is behind them but never blur it, including the titlebar layer that repeats the backdrop.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
