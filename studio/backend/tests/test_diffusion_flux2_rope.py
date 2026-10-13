@@ -135,11 +135,35 @@ def test_teardown_and_load_wiring():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
-    assert "uninstall_flux2_rope()" in ast.unparse(teardown)
+    # The teardown restores the registry's fused-DiT group, which carries the FLUX.2 RoPE spec ...
+    assert "uninstall_group(GROUP_FUSED_DIT)" in ast.unparse(teardown)
+    from core.inference.diffusion_autoopt import patches as ap
+
+    spec = next(s for s in ap.specs(group = ap.GROUP_FUSED_DIT) if s.name == "flux2_rope")
+    assert spec.stage == ap.STAGE_LOAD and spec.backends == ("image",)
+    # ... and the load runs that stage for the pipe with its dtype / device / logger.
     load = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
     )
-    assert "install_flux2_rope(pipe, dtype, device, logger)" in ast.unparse(load)
+    assert "autoopt.STAGE_LOAD," in ast.unparse(load)
+    import types as _types
+
+    seen = []
+    orig_install, orig_uninstall = fr.install_for_pipe, fr.uninstall
+    try:
+        fr.install_for_pipe = lambda *a: seen.append(("install", a)) or False
+        fr.uninstall = lambda: seen.append(("uninstall",))
+        pipe = _types.SimpleNamespace(transformer = None)
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(pipe = pipe, dtype = "fp16", device = "cuda", logger = "log", speed_mode = "off"),
+        )
+        from core.inference import diffusion
+
+        diffusion._uninstall_fused_dit_patches()
+    finally:
+        fr.install_for_pipe, fr.uninstall = orig_install, orig_uninstall
+    assert ("install", (pipe, "fp16", "cuda", "log")) in seen and ("uninstall",) in seen
 
 
 def _case(shape, layout, freq_dtype):

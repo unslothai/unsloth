@@ -868,6 +868,12 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.

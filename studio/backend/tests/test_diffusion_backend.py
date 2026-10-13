@@ -7238,6 +7238,7 @@ def test_diffusion_status_response_carries_resolved():
             "reason": "blackwell",
             "artifact": None,
             "replaced": None,
+            "steps": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -7260,7 +7261,7 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None, "steps": None}
     }
 
 
