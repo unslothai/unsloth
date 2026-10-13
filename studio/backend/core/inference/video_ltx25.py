@@ -89,8 +89,8 @@ LTX25_WORKER_RESIDENT_GB = 1.0
 # rotated basis (group 256, per-row float32 scales), the rest bf16. The worker makes that same quantization from the
 # bf16 weights at load (video_ltx25_te_worker.quantize_int8_convrot_) when asked for ``int8``. It is NOT the unset
 # default: on the Diffusers pack encoder Studio loads, int8 renders scored LPIPS 0.310 vs bf16 over 4 clips, above the
-# 0.256 compile floor on 3 of them, and a host-resident (streamed) encoder peaked at 38.6 GB host RSS vs 25.9 GB for
-# bf16. Unset / ``none`` / ``off`` keep bf16; UNSLOTH_LTX25_TE_INT8=1 makes int8 the unset default.
+# 0.256 compile floor on 3 of them. A host-resident (streamed) int8 encoder peaks at 16.1 GB host RSS, under the 25.2 GB
+# of bf16. Unset / ``none`` / ``off`` keep bf16; UNSLOTH_LTX25_TE_INT8=1 makes int8 the unset default.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Encoder weights the worker holds with the int8 ConvRot projections, decimal GB: 12,424 MiB measured (13.03 GB; the
