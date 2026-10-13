@@ -64,7 +64,9 @@ def _snapshot() -> dict:
             repos.add(row[-1])
         for row in getattr(fam, "prequant_variant_repos", ()):
             repos.update((row[0], row[-1]))
-    repos.update(("unsloth/Qwen-Image-2.1-Turbo-FP8", "unsloth/qwen-image-2.1-turbo-fp8", "", "x/y"))
+    repos.update(
+        ("unsloth/Qwen-Image-2.1-Turbo-FP8", "unsloth/qwen-image-2.1-turbo-fp8", "", "x/y")
+    )
     repos = sorted(repos)
 
     per_family = {}
@@ -188,7 +190,7 @@ def _clean_env(monkeypatch):
 def test_family_data_resolves_identically(_clean_env):
     snapshot = json.loads(json.dumps(_snapshot()))
     if os.environ.get("UNSLOTH_FREEZE_UPDATE") == "1":
-        FIXTURE.write_text(json.dumps(snapshot, indent = 1, sort_keys = True) + "\n")
-    frozen = json.loads(FIXTURE.read_text())
+        FIXTURE.write_text(json.dumps(snapshot, indent = 1, sort_keys = True) + "\n", encoding = "utf-8")
+    frozen = json.loads(FIXTURE.read_text(encoding = "utf-8"))
     for section in sorted(set(frozen) | set(snapshot)):
         assert snapshot.get(section) == frozen.get(section), section

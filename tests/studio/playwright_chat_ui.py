@@ -2823,7 +2823,7 @@ with sync_playwright() as p:
                 os.kill(int(studio_pid), 0)
                 if Path("/proc/self").exists():  # Linux: exited but not yet reaped is done
                     try:
-                        stat = Path(f"/proc/{studio_pid}/stat").read_text()
+                        stat = Path(f"/proc/{studio_pid}/stat").read_text(encoding = "utf-8")
                     except FileNotFoundError:  # reaped between the probe and the read
                         raise ProcessLookupError from None
                     if stat.rsplit(")", 1)[1].split()[0] == "Z":
