@@ -19301,11 +19301,19 @@ def _check_signal_escape_patterns(code: str):
         for scope, (global_names, nonlocal_names) in declarations.items():
             imported, other = bindings[scope]
             for name in global_names:
-                if name in imported:
+                was_imported = name in imported
+                was_other = name in other
+                imported.discard(name)
+                other.discard(name)
+                if was_imported:
                     bindings[0][0].add(name)
-                if name in other:
+                if was_other:
                     bindings[0][1].add(name)
             for name in nonlocal_names:
+                was_imported = name in imported
+                was_other = name in other
+                imported.discard(name)
+                other.discard(name)
                 owner = parents[scope]
                 while owner not in (None, 0):
                     owner_root = roots[owner]
@@ -19318,9 +19326,9 @@ def _check_signal_escape_patterns(code: str):
                         and name in owner_imported | owner_other
                     ):
                         target_imported, target_other = bindings[owner]
-                        if name in imported:
+                        if was_imported:
                             target_imported.add(name)
-                        if name in other:
+                        if was_other:
                             target_other.add(name)
                         break
                     owner = parents[owner]
@@ -19559,6 +19567,7 @@ def _check_signal_escape_patterns(code: str):
             self.local_databases: "tuple[frozenset, frozenset] | None" = None
             self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]] | None" = None
             self.local_database_scopes: "dict[int, ast.AST] | None" = None
+            self.local_database_class_imports: "dict[int, dict[str, list[tuple[int, int]]]]" = {}
             # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
             self.literal_names = _collect_literal_names(nodes) if network_possible else {}
@@ -19944,7 +19953,7 @@ def _check_signal_escape_patterns(code: str):
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
 
-        def _names_local_database(self, owner) -> bool:
+        def _names_local_database(self, owner, at) -> bool:
             if not isinstance(owner, ast.Name):
                 return False
             if self.local_databases is None:
@@ -19970,6 +19979,32 @@ def _check_signal_escape_patterns(code: str):
                 if owner.id in other:
                     return False
                 if owner.id in imported:
+                    if isinstance(root, ast.ClassDef):
+                        if scope not in self.local_database_class_imports:
+                            direct_imports: dict[str, list[tuple[int, int]]] = {}
+                            for statement in root.body:
+                                if not isinstance(statement, ast.Import):
+                                    continue
+                                where = (
+                                    getattr(statement, "lineno", 0),
+                                    getattr(statement, "col_offset", 0),
+                                )
+                                for alias in statement.names:
+                                    module = alias.name.partition(".")[0]
+                                    if module in _LOCAL_DATABASE_MODULES:
+                                        direct_imports.setdefault(alias.asname or module, []).append(
+                                            where
+                                        )
+                            self.local_database_class_imports[scope] = direct_imports
+                        call_position = (
+                            getattr(at, "lineno", 0),
+                            getattr(at, "col_offset", 0),
+                        )
+                        if not any(
+                            where < call_position
+                            for where in self.local_database_class_imports[scope].get(owner.id, ())
+                        ):
+                            continue
                     return True
             return False
 
@@ -20696,7 +20731,7 @@ def _check_signal_escape_patterns(code: str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
                     if not (
-                        self._names_local_database(node.func.value)
+                        self._names_local_database(node.func.value, node)
                         and _is_local_database_target(a0.value.lower())
                     ):
                         host_lit = a0.value
