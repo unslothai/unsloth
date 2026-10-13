@@ -19193,6 +19193,14 @@ def _check_signal_escape_patterns(code: str):
             return False
         if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
             return False
+        if (
+            len(target) >= 3
+            and target[0].isascii()
+            and target[0].isalpha()
+            and target[1] == ":"
+            and target[2] in "/\\"
+        ):
+            return True
         return "://" not in target
 
     def _local_database_aliases(node):
@@ -19397,7 +19405,7 @@ def _check_signal_escape_patterns(code: str):
                         not isinstance(owner_root, ast.ClassDef)
                         and name not in owner_global
                         and name not in owner_nonlocal
-                        and name in owner_imported | owner_other
+                        and (name in owner_imported | owner_other or name in aliases[owner])
                     ):
                         target_imported, target_other = bindings[owner]
                         if was_imported:

@@ -201,6 +201,7 @@ class TestLocalDatabaseFileIsNotAHost:
             'import sqlite3 as db\ntuple(db for db in ())\ndb.connect("sales.db")',
             'import sqlite3\ndb = sqlite3\ndb.connect("sales.db")',
             'import sqlite3\ndb = sqlite3\nother = db\nother.connect("sales.db")',
+            'import sqlite3\nsqlite3.connect("C://Users/me/sales.db")',
             (
                 'def load():\n    import sqlite3\n    db = sqlite3\n'
                 '    return db.connect("sales.db")\nload()'
@@ -287,6 +288,11 @@ class TestLocalDatabaseFileIsNotAHost:
             (
                 'import sqlite3\nimport ftplib\nsqlite3 = ftplib.FTP()\n'
                 'db = sqlite3\ndb.connect("evil.example")'
+            ),
+            (
+                "import ftplib\ndef load():\n    import sqlite3\n    db = sqlite3\n"
+                "    def configure():\n        nonlocal db\n        db = ftplib.FTP()\n"
+                '    configure()\n    return db.connect("evil.example")\nload()'
             ),
         ],
     )
