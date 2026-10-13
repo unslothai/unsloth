@@ -1579,6 +1579,38 @@ def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dic
     return folder
 
 
+LAUNCH_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def register_launch_scan_folders(raw: Optional[str] = None) -> list[str]:
+    """Add the ``unsloth studio --models-dir`` folders (os.pathsep-joined) as Custom Folders.
+    Re-launching with the same folder is a no-op; a rejected folder is logged, never fatal."""
+    if raw is None:
+        raw = os.environ.get(LAUNCH_MODELS_DIRS_ENV, "")
+    added: list[str] = []
+    for path in (p.strip() for p in raw.split(os.pathsep)):
+        if not path:
+            continue
+        try:
+            folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
+        except ValueError as e:
+            logger.warning(
+                "--models-dir folder skipped: %s (path=%s)",
+                scrub_paths(e),
+                short_path_for_log(path),
+            )
+            continue
+        if inserted:
+            added.append(folder["path"])
+            logger.info(
+                "Scan folder added from --models-dir: %s", short_path_for_log(folder["path"])
+            )
+    if added:
+        from core.inference.local_model_resolver import invalidate_index
+        invalidate_index()
+    return added
+
+
 def remove_scan_folder_response(folder_id: int) -> dict:
     removed = remove_scan_folder(folder_id)
     if removed:

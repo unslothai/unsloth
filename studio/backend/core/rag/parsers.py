@@ -1085,6 +1085,11 @@ def parse(path: str, *, want_images: bool = False):
         pages = _office_document(path, ext)
         return (pages, []) if want_images else pages
 
+    # .dot/.pot are Graphviz and gettext text too; only an OLE compound file is a Word/PowerPoint template.
+    if ext in _OFFICE_TEMPLATE_EXTS and _is_compound_file(path):
+        pages = _office_document(path, _OFFICE_TEMPLATE_EXTS[ext])
+        return (pages, []) if want_images else pages
+
     if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
@@ -1101,6 +1106,15 @@ def parse(path: str, *, want_images: bool = False):
     raise ValueError(f"unsupported file type: {ext}")
 
 
+_OFFICE_TEMPLATE_EXTS = {".dot": ".doc", ".pot": ".ppt"}
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _is_compound_file(path: str) -> bool:
+    with open(path, "rb") as f:
+        return f.read(len(_OLE_MAGIC)) == _OLE_MAGIC
+
+
 def _html_bytes_text(raw: bytes) -> str:
     return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
 
@@ -1115,8 +1129,8 @@ def _office_document(path: str, ext: str) -> list[Page]:
 
     readers = {
         ".doc": office.doc,
-        ".xls": office.xls,
-        ".ppt": office.ppt,
+        **dict.fromkeys((".xls", ".xlt"), office.xls),
+        **dict.fromkeys((".ppt", ".pps"), office.ppt),
         ".rtf": office.rtf,
         ".epub": lambda p: office.epub(p, _html_bytes_text),
         ".msg": lambda p: office.msg(p, _html_bytes_text),

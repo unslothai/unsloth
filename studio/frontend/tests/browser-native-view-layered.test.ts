@@ -150,6 +150,37 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.equal(section.vars.get("--native-hole-bg"), "oklch(0.2 0 0)");
 
+    // a split drag pins the page at its old width while the panel shrinks past it: the app covers
+    // the overflow by cutting the hole no wider than the panel, and the page view isn't resized,
+    // which would relayout the page every frame
+    let panelLeft = 650;
+    const panelBody = { getBoundingClientRect: () => rect(panelLeft, 0, 1000 - panelLeft, 800), closest: () => null };
+    // the pinned outer page box keeps its old rect, the page's own
+    const outerPage: { parentElement: object; closest: () => unknown; getBoundingClientRect: () => unknown } = {
+      parentElement: panelBody,
+      closest: () => outerPage,
+      getBoundingClientRect: () => rect(500, 100, 500, 600),
+    };
+    const innerPage = { parentElement: outerPage, closest: () => innerPage };
+    const unpinned = placeholder.closest;
+    Object.assign(placeholder, { closest: () => innerPage });
+    const showsBeforeDrag = calls.filter(({ command }) => command === "browser_view_show").length;
+    for (const left of [650, 700, 750]) {
+      panelLeft = left;
+      await frame();
+      assert.equal(section.vars.get("--native-hole-x"), `${left}px`);
+      assert.equal(section.vars.get("--native-hole-w"), `${1000 - left}px`);
+    }
+    assert.equal(calls.filter(({ command }) => command === "browser_view_show").length, showsBeforeDrag, "the page view keeps its frame");
+    // input over the covered strip goes to the app, not the page view still under it
+    assert.deepEqual(lastInput(), {
+      blocked: false,
+      exclude: [{ x: 500, y: 100, width: 250, height: 600, viewportWidth: 1000 }],
+    });
+    Object.assign(placeholder, { closest: unpinned });
+    await frame();
+    assert.equal(section.vars.get("--native-hole-x"), "500px", "released: the whole page again");
+
     const shows = calls.filter(({ command }) => command === "browser_view_show").length;
     blocking.push(overlay(rect(900, 100, 100, 200)));
     await frame();

@@ -18,6 +18,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
@@ -93,6 +94,7 @@ __all__ = [
     "_get_inference_mode_context_manager",
     "hf_login",
     "maybe_prefetch_hf_snapshot",
+    "resolve_vllm_model_path",
     "is_moe_model",
     "install_block_swap",
     "offload_embedding_if_tight",
@@ -552,7 +554,13 @@ _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
 # gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
 # flex would also pull its 25 sliding layers off unsloth_zoo's faster gemma4_flash_sliding router,
 # which is registered under "sdpa".
-_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = (
+    "gemma2",
+    "gemma4",
+    "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+)
 # Interface dispatch, and a BlockMask from create_causal_mask rather than a hand-built 4D mask.
 _FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
 _FLEX_SUPPORT_FORCED = set()
@@ -3012,37 +3020,49 @@ def maybe_prefetch_hf_snapshot(
     weights_at_root = False,
     variant = None,
     gguf_file = None,
+    return_path = False,
 ):
-    """Warm the HF cache for a remote repo before the in-process load. Xet can hang on a blob with no progress or exception and a blocked native Xet thread cannot be killed in-process, so pull the snapshot first in a killable subprocess that falls back Xet -> HTTP on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit. Returns True iff warmed (caller can clear force_download), else False. Only a both-transports-stalled DownloadStallError is raised; other failures are left for from_pretrained to surface."""
+    """Warm the HF cache for a remote repo before the in-process load. Xet can hang on a blob with no progress or exception and a blocked native Xet thread cannot be killed in-process, so pull the snapshot first in a killable subprocess that falls back Xet -> HTTP on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit. Returns the snapshot directory when return_path is set, otherwise whether the cache was warmed. Only a both-transports-stalled DownloadStallError is raised; return_path also surfaces other download errors because its caller cannot fall back to a tokenless remote load."""
+    snapshot_download_with_xet_fallback = None
+    DownloadStallError = ()
     try:
         from unsloth_zoo.hf_xet_fallback import (
             snapshot_download_with_xet_fallback,
             DownloadStallError,
         )
     except Exception:
-        return False  # older unsloth_zoo without the helper: load normally
+        if not return_path:
+            return False  # older unsloth_zoo without the helper: load normally
 
     if not isinstance(model_name, str) or not model_name:
-        return False
+        return model_name if return_path else False
     # Local path: nothing to download. Expand ~ first, which os.path.exists does not.
     model_path = os.path.expanduser(model_name)
     if os.path.isdir(model_path) or os.path.exists(model_path):
-        return False
+        return model_path if return_path else False
     # Looks local but is not yet on disk (an uncreated output dir): not a Hub repo id, so leave it for from_pretrained.
     if (
         os.path.isabs(model_path)
         or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
         or "\\" in model_name
     ):
-        return False
-    if local_files_only:  # cache-only: never reach out
-        return False
-    if any(
+        return model_name if return_path else False
+    offline = any(
         os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
         for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
-    ):
-        return False
-    if fast_inference:  # vLLM has its own download path
+    )
+    if local_files_only or offline:  # cache-only: never reach out
+        if not return_path:
+            return False
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            repo_id = model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = True,
+        )
+    if fast_inference and not return_path:  # vLLM has its own download path
         return False
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
@@ -3109,26 +3129,56 @@ def maybe_prefetch_hf_snapshot(
         if not st_module_paths:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
-        snapshot_download_with_xet_fallback(
-            model_name,
-            token = token,
-            revision = revision,
-            cache_dir = cache_dir,
-            allow_patterns = allow_patterns,
-            ignore_patterns = ignore_patterns,
-            force_download = force_download,
-            variant = variant,
-        )
-        return True
+        if snapshot_download_with_xet_fallback is not None:
+            path = snapshot_download_with_xet_fallback(
+                model_name,
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                allow_patterns = allow_patterns,
+                ignore_patterns = ignore_patterns,
+                force_download = force_download,
+                variant = variant,
+            )
+        else:
+            from huggingface_hub import snapshot_download
+            path = snapshot_download(
+                repo_id = model_name,
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                allow_patterns = allow_patterns,
+                ignore_patterns = ignore_patterns,
+                force_download = force_download,
+            )
+        return path if return_path else True
     except DownloadStallError:
         # Both transports stalled: surface a clear network error, not a silent in-process hang.
         raise
     except Exception as exception:
+        if return_path:
+            raise
         logger.warning_once(
             f"Unsloth: Could not pre-download {model_name} "
             f"({type(exception).__name__}: {exception}); continuing with the normal load."
         )
         return False
+
+
+def resolve_vllm_model_path(
+    model_name,
+    token = None,
+    **kwargs,
+):
+    """Give tokenless vLLM integrations a credential-free local snapshot path."""
+    if not isinstance(token, str) or not token:
+        return model_name
+    return maybe_prefetch_hf_snapshot(
+        model_name,
+        token = token,
+        return_path = True,
+        **kwargs,
+    )
 
 
 class HideLoggingMessage(logging.Filter):
@@ -3834,7 +3884,7 @@ try:
             "Then confirm if it's correctly installed by running:\n"
             "python -m xformers.info\n\n"
             "Longer error message:\n" + str(error)
-        )
+        ) from error
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
@@ -3846,6 +3896,20 @@ except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
         print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
         print(str(e))
+    elif DEVICE_TYPE == "cuda" and str(e).startswith("Unsloth:") and e.__cause__ is None:
+        # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
+        print(str(e))
+    elif DEVICE_TYPE == "cuda":
+        # xformers' own warning is silenced above; usually PyPI's cu128 wheel beside a cu130 torch (#4381).
+        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
+        print(
+            "Unsloth: xformers is installed but cannot load with torch "
+            f"{torch_version}{f' (it was built for {_built_for.group(1)})' if _built_for else ''}, "
+            "so PyTorch attention is used instead.\n"
+            "To install a matching xformers, run `unsloth install-kernels xformers`, "
+            "or `pip uninstall xformers` to hide this. UNSLOTH_ENABLE_LOGGING=1 shows the full error."
+        )
+        del _built_for
     xformers = None
     xformers_attention = None
     xformers_version = None
@@ -4557,6 +4621,28 @@ def _mark_forced_float32(model, forced):
         model._unsloth_forced_float32 = bool(forced)
     except Exception:
         pass
+    return model
+
+
+def _drop_float16_overflowing_attention_dropout(model, dtype):
+    """Granite 3.0-3.2 dense ship attention_dropout = 0.1 (3.3+ ship 0). Dropping the attention sink in training pushes the last layer's SwiGLU past float16's 65504 (85k measured in bfloat16), so float16 training NaNs (#3002)."""
+    if dtype != torch.float16:
+        return model
+    changed = False
+    for module in model.modules():
+        dropout = getattr(module, "attention_dropout", None)
+        if (
+            type(module).__name__ == "GraniteAttention"
+            and isinstance(dropout, (int, float))
+            and dropout > 0
+        ):
+            module.attention_dropout = 0.0
+            changed = True
+    if changed:
+        print(
+            "Unsloth: Granite's attention dropout overflows float16 during training and makes the loss NaN, "
+            "so it is turned off for this float16 load. Use bfloat16 to keep it."
+        )
     return model
 
 
@@ -7458,22 +7544,52 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     return torch.inference_mode()
 
 
-def hf_login(token: Optional[str] = None) -> Optional[str]:
-    if token is None:
-        try:
-            from huggingface_hub import get_token
-            token = get_token()
-            if token is None:
-                return None
-        except:
-            return None
+_HF_TOKEN_LOGIN_LOCK = threading.RLock()
+
+
+def _saved_hf_token_without_oidc() -> Optional[str]:
+    """Read persistent Hub credentials without resolving a workflow OIDC identity."""
     try:
-        from huggingface_hub import login
-        login(token = token)
+        from huggingface_hub.utils import _auth
+    except Exception:
+        return None
+
+    getters = [getattr(_auth, "_get_token_from_environment", None)]
+    getters.append(
+        getattr(_auth, "_get_token_from_file_refreshed", None)
+        or getattr(_auth, "_get_token_from_file", None)
+    )
+    getters.append(getattr(_auth, "_get_token_from_google_colab", None))
+    for getter in getters:
+        if getter is None:
+            continue
+        try:
+            saved_token = getter()
+        except Exception:
+            continue
+        if saved_token is not None:
+            return saved_token
+    return None
+
+
+def hf_login(token: Optional[str] = None) -> Optional[str]:
+    with _HF_TOKEN_LOGIN_LOCK:
+        if token is False:
+            return token
+        if token is None:
+            try:
+                from huggingface_hub import get_token
+                return get_token()
+            except:
+                return None
+        saved_token = _saved_hf_token_without_oidc()
+        if saved_token is None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except Exception as e:
+                logger.info(f"Failed to login to huggingface using token with error: {e}")
         return token
-    except Exception as e:
-        logger.info(f"Failed to login to huggingface using token with error: {e}")
-    return token
 
 
 def _check_block_swap(model_or_config):

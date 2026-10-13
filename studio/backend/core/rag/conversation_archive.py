@@ -925,8 +925,8 @@ _EMPTY_TOOL_RESULT = '{"result":""}'
 # legitimately be called `web_search`, so the marker or a Gemini native part has to be there too, as the frontend also
 # requires.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
-# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
-_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
+_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 # `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode, so `http\u017f://` would
 # match where JavaScript's `/i` does not.

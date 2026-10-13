@@ -1612,6 +1612,102 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     assert render["kwargs"]["preserve_thinking"] is True
 
 
+def _byte_level_mlx_backend(monkeypatch, pieces):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = None,
+        ),
+        raising = True,
+    )
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id in range(len(pieces)):
+            yield SimpleNamespace(token = token_id)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _ByteLevelTokenizer:
+        chat_template = "x"
+        all_special_ids = []
+
+        def decode(self, ids, **_kwargs):
+            return b"".join(pieces[int(i)] for i in ids).decode("utf-8", "replace")
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _ByteLevelTokenizer()
+    backend._is_vlm = False
+    return backend
+
+
+def _delivered(snapshots):
+    # What the chat routes stream: each snapshot's growth past the previous one's length.
+    text = prev = ""
+    for snapshot in snapshots:
+        text += snapshot[len(prev) :]
+        prev = snapshot
+    return text
+
+
+@pytest.mark.parametrize(
+    "pieces, expected",
+    [
+        # 🎉 and ✨ are byte-fallback pairs in Qwen3's vocab (unslothai/unsloth#8594).
+        (
+            [b"Party ", b"\xf0\x9f\x8e", b"\x89", b" sparkle ", b"\xe2\x9c", b"\xa8", b" done"],
+            "Party \U0001f389 sparkle \u2728 done",
+        ),
+        ([b"\xf0\x9f", b"\x8e", b"\x89"], "\U0001f389"),
+        # A turn cut mid-character still delivers what it decoded to.
+        ([b"ok ", b"\xf0\x9f\x8e"], "ok \ufffd"),
+    ],
+)
+def test_mlx_plain_stream_keeps_characters_split_across_tokens(monkeypatch, pieces, expected):
+    _install_fake_mlx(monkeypatch)
+    backend = _byte_level_mlx_backend(monkeypatch, pieces)
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "emoji please"}],
+            max_new_tokens = len(pieces),
+        )
+    )
+    assert _delivered(snapshots) == expected
+
+
+@pytest.mark.parametrize(
+    "pieces, expected",
+    [
+        ([b"Party ", b"\xf0\x9f\x8e", b"\x89", b" done"], "Party \U0001f389 done"),
+        ([b"ok ", b"\xf0\x9f\x8e"], "ok \ufffd"),
+    ],
+)
+def test_mlx_batched_row_keeps_characters_split_across_tokens(monkeypatch, pieces, expected):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    stream = mlx_inference._RowStream(
+        decode = lambda ids: b"".join(pieces[i] for i in ids).decode("utf-8", "replace"),
+    )
+    snapshots = [snap for i in range(len(pieces)) for snap in stream.feed(token = i)]
+    snapshots += stream.settle()
+    assert _delivered(snapshots) == expected
+
+
 def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference

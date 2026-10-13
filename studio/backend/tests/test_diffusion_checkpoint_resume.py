@@ -402,6 +402,19 @@ def test_non_finite_progress_is_dropped_from_the_manifest(run_dir):
     assert dc.load_checkpoint(run_dir / "checkpoint-2").running_loss == 0.0
 
 
+def test_the_fp16_loss_scaler_state_round_trips_through_progress(run_dir):
+    import torch
+
+    scaler = torch.amp.GradScaler("cuda", init_scale = 1024.0, enabled = True)
+    state = scaler.state_dict()
+    _Run(run_dir).save(2, progress = {"running_loss": 1.0, "grad_scaler": state})
+    restored = dc.load_checkpoint(run_dir / "checkpoint-2").progress["grad_scaler"]
+    assert restored == state
+    fresh = torch.amp.GradScaler("cuda", enabled = True)
+    fresh.load_state_dict(restored)
+    assert fresh.state_dict() == state
+
+
 def test_save_total_limit_keeps_only_the_newest_bundles(run_dir):
     run = _Run(run_dir, save_total_limit = 2)
     for step in (1, 2, 3, 4):
@@ -1996,7 +2009,7 @@ def test_the_identity_covers_the_input_stream(run_dir):
         ("cache_latents", False, "latent caching"),
         ("cache_variants", 8, "cached crop variants"),
         ("center_crop", True, "centre cropping"),
-        ("random_flip", False, "random flipping"),
+        ("random_flip", True, "random flipping"),
     ):
         changed_cfg = dataclasses.replace(base.cfg, **{field: value})
         reason = dc.identity_for_config(base.cfg).mismatch_reason(
@@ -2009,8 +2022,9 @@ def test_the_identity_covers_the_input_stream(run_dir):
         assert older is not None
         assert older.mismatch_reason(dc.identity_for_config(changed_cfg)) is None, field
     # False is a VALUE, not an unknown: the flags are recorded as on/off for exactly that.
-    flipped = dataclasses.replace(base.cfg, random_flip = False)
-    assert dc.identity_for_config(flipped).random_flip == "off"
+    assert dc.identity_for_config(base.cfg).random_flip == "off"
+    flipped = dataclasses.replace(base.cfg, random_flip = True)
+    assert dc.identity_for_config(flipped).random_flip == "on"
 
 
 def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):

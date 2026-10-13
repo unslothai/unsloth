@@ -409,7 +409,9 @@ def test_runtime_requirements_match_the_installer():
 
     from core.inference.mlx_diffusion_convert import MFLUX_VERSION
 
-    source = (Path(__file__).resolve().parents[2] / "install_python_stack.py").read_text()
+    source = (Path(__file__).resolve().parents[2] / "install_python_stack.py").read_text(
+        encoding = "utf-8"
+    )
     literals = {
         node.targets[0].id if isinstance(node, ast.Assign) else node.target.id: node.value
         for node in ast.parse(source).body
