@@ -205,9 +205,8 @@ def test_video_roles(tmp_path):
     )
 
     moe = _fam("wan2.2-t2v-a14b")
-    assert (
-        dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan)) is None
-    )  # one expert only
+    # a first-expert-only checkpoint is a complete single denoiser (video._transformer_names)
+    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(2.84)
     _component(wan, "transformer_2", 5.68, "F32")
     assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(
         5.68
@@ -518,12 +517,8 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
         dcs.video_components_gb(fam, "someone/finetune", allow_hub = True) == fam.bf16_components_gb
     )
     assert dcs.video_required_roles(fam) == ("transformer", "text_encoder", "vae")
-    assert dcs.video_required_roles(_fam("wan2.2-t2v-a14b")) == (
-        "transformer",
-        "transformer_2",
-        "text_encoder",
-        "vae",
-    )
+    # the second expert is loaded only when shipped (present or in the manifest), so never required
+    assert dcs.video_required_roles(_fam("wan2.2-t2v-a14b")) == ("transformer", "text_encoder", "vae")
     assert dcs.video_required_roles(_fam("ltx-2.5"))[-1] == "audio_vae"
     # optional folders are still counted when present
     ltx = _fam("ltx-2.5")
@@ -1262,3 +1257,90 @@ def test_index_fetch_is_bounded_by_the_deadline_while_a_peer_trickles():
     assert _time.monotonic() - start < 5  # the whole fetch, not one 30 s read
     assert resp.closed  # interrupted (no urllib3 raw here, so closed)
     release.set()
+
+
+# ---- review round 8 ----
+
+
+def test_ltx_bundled_connector_tensors_leave_the_denoiser_term(tmp_path):
+    fam = _fam("ltx-2.5")
+    _stub_for_table(tmp_path, fam)
+    clean = dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))[0]
+    # a variant whose transformer/ also carries the connector tensors (single-file style keys, both prefixes)
+    _write_header(
+        tmp_path / "transformer" / "diffusion_pytorch_model.safetensors",
+        {
+            "w": ("BF16", int(round(fam.bf16_components_gb[0] * _GB / 2))),
+            "video_embeddings_connector.x": ("BF16", 1_000_000_000),
+            "model.diffusion_model.text_embedding_projection.y": ("BF16", 500_000_000),
+            "connectors.z": ("F32", 250_000_000),
+        },
+    )
+    size = dcs.local_component_sizes(tmp_path).get("transformer")
+    assert size.bundled_connector_float_params == 1_750_000_000
+    assert dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(clean)
+    # the same split for LTX-2; a non-LTX family keeps every tensor
+    assert dcs.video_header_terms(_fam("ltx-2"), dcs.local_component_sizes(tmp_path))[0] == pytest.approx(clean)
+    wan = dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[0]
+    assert wan == pytest.approx(clean + 3.5)
+    # base plans are unchanged: the table still answers for the base repo
+    from unittest import mock
+
+    with mock.patch.object(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path):
+        assert dcs.video_components_gb(fam) == fam.bf16_components_gb
+
+
+def test_latent_upsampler_is_loaded_only_when_attached(tmp_path, monkeypatch):
+    import shutil
+
+    from core.inference import video_ltx25
+
+    fam = _fam("ltx-2.5")
+    _stub_for_table(tmp_path, fam)
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: True)
+    assert "latent_upsampler" in dcs.video_loaded_roles(fam)
+    assert "latent_upsampler" not in dcs.video_loaded_roles(fam, dev = True)
+    shutil.rmtree(tmp_path / "latent_upsampler")
+    sizes = dcs.local_component_sizes(tmp_path)
+    # two-stage distilled: the absent upsampler makes the term unknown; dev: it is not loaded, the term is known
+    assert dcs.video_header_terms(fam, sizes)[2] is None
+    assert dcs.video_header_terms(fam, sizes, dev = True)[2] is not None
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: False)
+    assert "latent_upsampler" not in dcs.video_loaded_roles(fam)
+    assert dcs.video_header_terms(fam, sizes)[2] is not None
+    # the dev plan subtracts nothing for an upsampler its header term never counted
+    from core.inference.video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
+
+    detail = {"sources": ("table", "table", "header"), "sizes": sizes, "counted": frozenset({"vae"})}
+    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == 0.0
+
+
+def test_load_pipeline_passes_the_dev_flag():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend.load_pipeline)
+    call = src[src.index("components = video_components_gb(") :]
+    call = call[: call.index("\n        )")]
+    assert "dev = _ltx25_dev_load(" in call
+
+
+def test_moe_second_expert_is_optional_unless_shipped(tmp_path):
+    moe = _fam("wan2.2-t2v-a14b")
+    _component(tmp_path, "transformer", 28.6)
+    _component(tmp_path, "text_encoder", 11.4, stem = "model")
+    _component(tmp_path, "vae", 0.254, "F32")
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert "transformer_2" not in dcs.video_loaded_roles(moe, sizes)
+    assert dcs.video_header_terms(moe, sizes)[0] == pytest.approx(28.6)  # the known first expert is kept
+    # named by the manifest but absent: loaded, so the snapshot is incomplete and the term unknown
+    (tmp_path / "model_index.json").write_text(json.dumps({"transformer": ["d", "W"], "transformer_2": ["d", "W"]}))
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert "transformer_2" in dcs.video_loaded_roles(moe, sizes)
+    assert dcs.video_header_terms(moe, sizes)[0] is None
+    # present: both experts count
+    _component(tmp_path, "transformer_2", 28.6)
+    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(57.2)
+    # a non-MoE family never counts a stray transformer_2
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[0] == pytest.approx(28.6)

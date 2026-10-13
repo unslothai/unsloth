@@ -97,6 +97,10 @@ class ComponentSize:
     nonfloat_bytes: int
     bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory=tuple)
     files: tuple[str, ...] = field(default_factory=tuple)
+    # Of the totals above: tensors under the LTX loader's connector key prefixes bundled into a denoiser folder. The
+    # loader splits them off (video_ltx2._checkpoint_group) and the pack prices them as its own connectors/ folder.
+    bundled_connector_float_params: int = 0
+    bundled_connector_nonfloat_bytes: int = 0
 
     @property
     def params(self) -> int:
@@ -105,6 +109,11 @@ class ComponentSize:
     def resident_bytes(self, itemsize: int = 2) -> int:
         """Bytes on device after every float tensor is cast to ``itemsize`` bytes (non-float tensors as stored)."""
         return self.float_params * int(itemsize) + self.nonfloat_bytes
+
+    def resident_bytes_without_bundled_connectors(self, itemsize: int = 2) -> int:
+        return self.resident_bytes(itemsize) - (
+            self.bundled_connector_float_params * int(itemsize) + self.bundled_connector_nonfloat_bytes
+        )
 
     def resident_gb(self, itemsize: int = 2) -> float:
         return self.resident_bytes(itemsize) / _GB
@@ -138,6 +147,8 @@ def _accumulate(
     name: str, headers: Iterable[tuple[str, Optional[dict]]]
 ) -> Optional[ComponentSize]:
     stored = float_params = nonfloat = 0
+    conn_params = conn_nonfloat = 0
+    connector_group = _connector_key_matcher() if str(name).startswith("transformer") else None
     by_dtype: dict[str, int] = {}
     files: list[str] = []
     seen: set = set()
@@ -156,12 +167,18 @@ def _accumulate(
             except Exception:  # noqa: BLE001
                 return None
             stored += nbytes
+            bundled = connector_group is not None and connector_group(tname)
             if dtype in FLOAT_BITS:
                 bits = FLOAT_BITS[dtype]
-                float_params += numel if bits >= 8 else (nbytes * 8) // bits
+                params = numel if bits >= 8 else (nbytes * 8) // bits
+                float_params += params
                 by_dtype[dtype] = by_dtype.get(dtype, 0) + nbytes
+                if bundled:
+                    conn_params += params
             else:
                 nonfloat += nbytes
+                if bundled:
+                    conn_nonfloat += nbytes
     if not files or stored <= 0:
         return None
     return ComponentSize(
@@ -171,7 +188,19 @@ def _accumulate(
         nonfloat_bytes=nonfloat,
         bytes_by_dtype=tuple(sorted(by_dtype.items())),
         files=tuple(files),
+        bundled_connector_float_params=conn_params,
+        bundled_connector_nonfloat_bytes=conn_nonfloat,
     )
+
+
+def _connector_key_matcher() -> Optional[Callable[[str], bool]]:
+    """Whether a tensor key is a connector tensor, by the LTX loader's own grouping; None if it cannot load."""
+    try:
+        from .video_ltx2 import _checkpoint_group
+
+        return lambda key: _checkpoint_group(key)[0] == "connectors"
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # The loader's default weight stems (diffusion.py _DEFAULT_PIPELINE_WEIGHT_RE), safetensors only.
@@ -771,32 +800,65 @@ def table_mismatches() -> dict:
 
 
 def _role_loaded(fam: Any, manifest: Optional[frozenset], name: str) -> bool:
-    """Whether a load of ``fam`` uses folder ``name``: a Studio-attached extra (LTX-2.5's latent_upsampler), a
-    family rule, or model_index.json naming it."""
-    if name in VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "") or ""), ()):
-        return True
+    """Whether a load of ``fam`` uses folder ``name``: a family rule, or model_index.json naming it (Studio-attached
+    extras are decided by ``attached_extras``)."""
     rule = VIDEO_COMPANION_RULES.get(name)
     if rule is not None and rule(fam):
         return True
     return manifest is not None and name in manifest
 
 
-def video_loaded_roles(fam: Any, sizes: Optional[ComponentSizes] = None) -> tuple[str, ...]:
-    """Every folder this load reads: the required roles plus each optional one the family, Studio or the snapshot's
-    manifest loads. A cached snapshot missing any of them is incomplete."""
+# When Studio attaches each extra: LTX-2.5's latent upsampler only on the two-stage distilled recipe.
+def _upsampler_attached(dev: bool) -> bool:
+    try:
+        from .video_ltx25 import ltx25_uses_upsampler
+
+        return bool(ltx25_uses_upsampler(bool(dev)))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+VIDEO_EXTRA_ATTACHED: dict[str, Callable[[bool], bool]] = {"latent_upsampler": _upsampler_attached}
+
+
+def attached_extras(fam: Any, dev: bool = False) -> tuple[str, ...]:
+    """The Studio-attached extras this load actually holds (``dev``: an LTX-2.5 dev / single-stage load)."""
+    return tuple(
+        n
+        for n in VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "") or ""), ())
+        if VIDEO_EXTRA_ATTACHED.get(n, lambda _dev: True)(dev)
+    )
+
+
+def _second_expert_loaded(fam: Any, sizes: Optional[ComponentSizes]) -> bool:
+    """video._transformer_names: an MoE's second expert loads only when the checkpoint ships it (present, or named
+    by model_index.json); a first-expert-only checkpoint is a complete single denoiser."""
+    if not bool(getattr(fam, "is_moe", False)) or sizes is None:
+        return False
+    return sizes.get("transformer_2") is not None or "transformer_2" in sizes.unknown or (
+        sizes.manifest is not None and "transformer_2" in sizes.manifest
+    )
+
+
+def video_loaded_roles(
+    fam: Any, sizes: Optional[ComponentSizes] = None, dev: bool = False
+) -> tuple[str, ...]:
+    """Every folder this load reads: the required roles plus each optional one the family, Studio (when attached) or
+    the snapshot's manifest loads. A cached snapshot missing any of them is incomplete."""
     manifest = sizes.manifest if sizes is not None else None
-    optional = (*VIDEO_ROLE_TEXT[1:], *VIDEO_ROLE_VAE, *VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "") or ""), ()))
     roles = list(video_required_roles(fam))
-    roles += [n for n in optional if _role_loaded(fam, manifest, n)]
+    if _second_expert_loaded(fam, sizes):
+        roles.append("transformer_2")
+    roles += [n for n in (*VIDEO_ROLE_TEXT[1:], *VIDEO_ROLE_VAE) if _role_loaded(fam, manifest, n)]
+    roles += list(attached_extras(fam, dev))
     return tuple(dict.fromkeys(roles))
 
 
 def video_required_roles(fam: Any) -> tuple[str, ...]:
     """Connectors, vocoder, upsampler, a second text encoder are optional: never a reason to go to the Hub."""
     denoiser = getattr(fam, "denoiser_attr", None) or "transformer"
+    # an MoE's second expert is not required: see _second_expert_loaded
     roles = [denoiser]
-    if bool(getattr(fam, "is_moe", False)):
-        roles.append("transformer_2")
     roles += ["text_encoder", "vae"]
     if bool(getattr(fam, "has_audio", False)):
         roles.append("audio_vae")
@@ -804,21 +866,30 @@ def video_required_roles(fam: Any) -> tuple[str, ...]:
 
 
 def video_header_terms(
-    fam: Any, sizes: Optional[ComponentSizes]
+    fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
 ) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """None for a term with a missing required folder (e.g. a ``.bin`` text encoder)."""
     if sizes is None:
         return (None, None, None)
     name = str(getattr(fam, "name", "") or "")
-    moe = bool(getattr(fam, "is_moe", False))
     primary = getattr(fam, "denoiser_attr", None) or "transformer"
-    denoiser_names = tuple(dict.fromkeys((primary, "transformer_2") if moe else (primary,)))
+    denoiser_names = tuple(
+        dict.fromkeys((primary, "transformer_2") if _second_expert_loaded(fam, sizes) else (primary,))
+    )
+    ltx = name.startswith("ltx")
     denoiser = (
-        sizes.resident_gb(denoiser_names)
+        sum(
+            # LTX: connector tensors bundled into transformer/ are split off by the loader and priced as connectors/
+            sizes.components[n].resident_bytes_without_bundled_connectors(2)
+            if ltx
+            else sizes.components[n].resident_bytes(2)
+            for n in denoiser_names
+        )
+        / _GB
         if all(sizes.get(n) is not None for n in denoiser_names)
         else None
     )
-    loaded = set(video_loaded_roles(fam, sizes))
+    loaded = set(video_loaded_roles(fam, sizes, dev))
 
     def _loaded_unknown(names: Iterable[str]) -> bool:
         # a folder this load reads whose size is not known (unreadable, or absent from the snapshot): the term is
@@ -840,7 +911,7 @@ def video_header_terms(
         if sizes.get("text_encoder") is not None and not _loaded_unknown(VIDEO_ROLE_TEXT)
         else None
     )
-    vae_names = VIDEO_ROLE_VAE + VIDEO_EXTRA_VAE_ROLE.get(name, ())
+    vae_names = VIDEO_ROLE_VAE + attached_extras(fam, dev)
     vae_ok = (
         sizes.get("vae") is not None
         and (not bool(getattr(fam, "has_audio", False)) or sizes.get("audio_vae") is not None)
@@ -929,10 +1000,12 @@ def video_components_gb(
     allow_hub: bool = False,
     token: Any = None,
     details: Optional[dict] = None,
+    dev: bool = False,
 ) -> Optional[tuple[float, float, float]]:
     """Header sizes reconciled with ``fam.bf16_components_gb``. Never raises; None when neither answers.
     ``details`` (filled when given): ``sizes`` (the snapshot the answer came from) and ``sources``, per term
-    "header" or "table", so a caller pricing a part of a term reads it from the same answer."""
+    "header" or "table", so a caller pricing a part of a term reads it from the same answer. ``dev``: an LTX-2.5 dev
+    (single-stage) load, which attaches no latent upsampler."""
     table = getattr(fam, "bf16_components_gb", None)
     if details is not None:
         details.update(sizes=None, sources=("table",) * 3)
@@ -952,11 +1025,11 @@ def video_components_gb(
         sizes = component_sizes(
             target,
             components=wanted,
-            required=lambda local: video_loaded_roles(fam, local),
+            required=lambda local: video_loaded_roles(fam, local, dev),
             allow_hub=allow_hub and (table is None or not is_base),
             token=token,
         )
-        header = video_header_terms(fam, sizes)
+        header = video_header_terms(fam, sizes, dev)
         result = reconcile_with_table(
             header, table, is_base=is_base, key=(getattr(fam, "name", None), str(target))
         )
@@ -965,7 +1038,8 @@ def video_components_gb(
                 "table" if table is not None and float(r) == float(t) else "header"
                 for r, t in zip(result, table or (None,) * 3)
             )
-            details.update(sizes=sizes, sources=sources)
+            counted = frozenset(video_loaded_roles(fam, sizes, dev)) if sizes is not None else frozenset()
+            details.update(sizes=sizes, sources=sources, counted=counted)
         return result
     except Exception:  # noqa: BLE001 - sizing aid: the table stands
         return table
@@ -973,9 +1047,12 @@ def video_components_gb(
 
 def term_part_gb(details: Optional[dict], term: int, folder: str, table_gb: float) -> float:
     """The share of term ``term`` that ``folder`` holds, from the SAME answer the term came from: its header size
-    when the term is header-derived, else the table's constant for it."""
+    when the term is header-derived (0 when that term did not count the folder, e.g. a dev load's upsampler), else
+    the table's constant for it."""
     try:
         if details and details.get("sources", ())[term] == "header":
+            if folder not in details.get("counted", frozenset()):
+                return 0.0
             size = details["sizes"].get(folder) if details.get("sizes") is not None else None
             if size is not None:
                 return size.resident_gb(2)

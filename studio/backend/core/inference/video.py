@@ -6333,6 +6333,8 @@ class VideoBackend:
             details = components_detail,
             allow_hub = not local_files_only,
             token = hf_token,
+            # a dev (single-stage) LTX-2.5 load attaches no latent upsampler, so it is not a loaded role
+            dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id),
         )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its encoder PRE-CAST from
