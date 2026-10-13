@@ -342,3 +342,36 @@ test("a synchronous XHR, which can't wait for the panel, stays the browser's", (
   assert.equal(t.posted.length, 0);
   assert.deepEqual(xhr.calls.at(-1), ["send", undefined]);
 });
+
+test("a fetch's redirect mode reaches the panel, and manual stops at an opaque redirect", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const request = t.window.fetch("/login", { redirect: "manual" } as RequestInit);
+  await tick();
+  assert.equal(t.posted[0].redirect, "manual");
+  t.reply(t.posted[0].id, { ...ok(""), opaqueRedirect: true, status: 0, headers: [], url: "https://site.test/login" });
+  const response = await request;
+  assert.equal(response.type, "opaqueredirect");
+  assert.equal(response.status, 0);
+  assert.equal(response.url, "https://site.test/login");
+  assert.equal([...response.headers].length, 0);
+});
+
+test("a response a redirect brought from another site reads as a CORS one", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const request = t.window.fetch("/download");
+  await tick();
+  t.reply(t.posted[0].id, ok("{}", { url: "https://cdn.test/file" }));
+  const response = await request;
+  assert.equal(response.type, "cors");
+  assert.equal(response.redirected, true);
+  assert.equal(response.url, "https://cdn.test/file");
+});
+
+test("an XHR always follows redirects, as the browser's does", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  xhr.open("GET", "/api");
+  xhr.send();
+  await tick();
+  assert.equal(t.posted[0].redirect, "follow");
+});

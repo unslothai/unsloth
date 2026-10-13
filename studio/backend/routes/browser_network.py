@@ -61,19 +61,25 @@ BROWSER_NETWORK_JS = r"""
         const bodiless = (method) => method === "GET" || method === "HEAD";
         const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
         const withoutHash = (url) => url.split("#")[0];
-        // What a same-origin response has and a constructed one lacks, kept through clone().
-        const asSameOrigin = (response, url, redirected) => {
+        // What a fetched response has and a constructed one lacks, kept through clone(): "basic" on
+        // the page's origin, "cors" when a redirect led to another site.
+        const asFetched = (response, url, redirected, type) => {
           const clone = response.clone;
           return Object.defineProperties(response, {
             url: { value: url },
             redirected: { value: redirected },
-            type: { value: "basic" },
-            clone: { value: () => asSameOrigin(clone.call(response), url, redirected) },
+            type: { value: type },
+            clone: { value: () => asFetched(clone.call(response), url, redirected, type) },
           });
         };
         const relayFetch = async (request) => {
           const body = bodiless(request.method) ? null : await request.arrayBuffer();
-          const reply = await relay({ url: request.url, method: request.method, headers: [...request.headers], body }, request.signal);
+          const reply = await relay(
+            { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect },
+            request.signal,
+          );
+          // redirect: "manual" stopped at a redirect, which a page sees only as an opaque one.
+          if (reply.opaqueRedirect === true) return asFetched(Response.error(), withoutHash(request.url), false, "opaqueredirect");
           const headers = new Headers();
           for (const [name, value] of reply.headers) try { headers.append(name, value); } catch {}
           const content = request.method === "HEAD" || NULL_BODY_STATUSES.has(reply.status) ? null : reply.body;
@@ -82,7 +88,7 @@ BROWSER_NETWORK_JS = r"""
           try { response = new Response(content, { status: reply.status, statusText: reply.statusText, headers }); }
           catch { response = new Response(content, { status: reply.status, headers }); }
           const url = withoutHash(reply.url);
-          return asSameOrigin(response, url, url !== withoutHash(request.url));
+          return asFetched(response, url, url !== withoutHash(request.url), ownSite(url) ? "basic" : "cors");
         };
         window.fetch = (input, init) => {
           const done = track();
@@ -182,7 +188,7 @@ BROWSER_NETWORK_JS = r"""
               return request.arrayBuffer();
             })();
             bytes
-              .then((content) => relay({ url: state.url, method: state.method, headers: state.headers, body: content }, controller.signal))
+              .then((content) => relay({ url: state.url, method: state.method, headers: state.headers, body: content, redirect: "follow" }, controller.signal))
               .then((reply) => {
                 if (relayed.get(this) !== state || state.readyState !== undefined) return;
                 clearTimeout(timer);

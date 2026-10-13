@@ -33,7 +33,17 @@ export type FrameMessage =
   | { type: "request"; id: string; request: PageRequest | null }
   | { type: "requestAbort"; id: string };
 
-export type PageRequest = { url: string; method: string; headers: Array<[string, string]>; body: ArrayBuffer | null };
+export type RedirectMode = "follow" | "error" | "manual";
+
+export type PageRequest = {
+  url: string;
+  method: string;
+  headers: Array<[string, string]>;
+  body: ArrayBuffer | null;
+  redirect: RedirectMode;
+};
+
+const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -145,7 +155,9 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   const body = message.body;
   if (!url || !method || !/^[A-Za-z]+$/.test(method) || !headers) return null;
   if (body !== null && !(body instanceof ArrayBuffer && body.byteLength <= MAX_REQUEST_BODY_BYTES)) return null;
-  return { url, method, headers, body };
+  const redirect = message.redirect ?? "follow";
+  if (!REDIRECT_MODES.has(redirect)) return null;
+  return { url, method, headers, body, redirect: redirect as RedirectMode };
 }
 
 /** A message from a page, checked field by field: pages can post anything. */

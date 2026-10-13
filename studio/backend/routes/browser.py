@@ -75,6 +75,10 @@ _FORBIDDEN_REQUEST_HEADERS = frozenset(
     "connection content-length cookie cookie2 date dnt expect host keep-alive origin referer "
     "set-cookie te trailer transfer-encoding upgrade user-agent via".split()
 )
+# What a page reads of a CORS response besides the headers it names in Access-Control-Expose-Headers.
+_CORS_SAFELISTED_RESPONSE_HEADERS = frozenset(
+    "cache-control content-language content-length content-type expires last-modified pragma".split()
+)
 # Unreadable by any page (Set-Cookie) or about the hop, not the response. Content-Length and
 # Content-Encoding stay: browsers show them with a decoded body too.
 _HIDDEN_RESPONSE_HEADERS = frozenset(
@@ -1599,6 +1603,8 @@ class BrowserPageRequest(BaseModel):
     headers: list[tuple[str, str]] = Field(default_factory = list, max_length = 64)
     # Base64.
     body: Optional[str] = Field(default = None, max_length = 4 * (_MAX_PAGE_REQUEST_BODY // 3 + 1))
+    # Fetch's redirect mode: "error" fails at a redirect, "manual" stops there (an opaque redirect).
+    redirect: Literal["follow", "error", "manual"] = "follow"
 
 
 def _origin(url: str) -> Optional[tuple[str, str, int]]:
@@ -1665,9 +1671,12 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     page_headers = {**added, **own}
     # Whether every hop so far stayed on the page's origin. Once one leaves it, the page's headers
     # (Authorization among them) are not sent again, as Fetch strips them on an origin change.
-    hops = {"same_origin": True}
+    hops = {"same_origin": True, "stopped": False}
 
     def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
+        if request.redirect != "follow":
+            hops["stopped"] = True
+            return "Redirected, and the request asked not to follow."
         if _origin(url) == origin and hops["same_origin"]:
             return None
         hops["same_origin"] = False
@@ -1695,25 +1704,51 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         any_status = True,
         on_redirect = on_redirect,
     )
+    # "manual" gets an opaque redirect: no status, headers or body reach the page.
+    if hops["stopped"] and request.redirect == "manual":
+        return {
+            "opaqueRedirect": True,
+            "status": 0,
+            "statusText": "",
+            "url": request.url,
+            "headers": [],
+            "body": "",
+        }
     status = meta.get("status")
     if not isinstance(status, int) or not isinstance(raw, bytes):
         raise HTTPException(status_code = 502, detail = error or "The request failed.")
     if not 200 <= status <= 599:
         raise HTTPException(status_code = 502, detail = f"HTTP {status}.")
     final_url = meta.get("url") or request.url
-    # Redirected to another site, it is a CORS request from an opaque origin, as in a browser.
-    allow_origin = (meta.get("allow_origin") or "").strip()
-    if _origin(final_url) != origin and allow_origin not in ("*", "null"):
-        raise HTTPException(status_code = 502, detail = "Redirected to another site.")
+    headers = [
+        (name, value)
+        for name, value in meta.get("headers") or []
+        if name.lower() not in _HIDDEN_RESPONSE_HEADERS
+    ]
+    # Redirected to another site, it is a CORS request from an opaque origin, as in a browser: read
+    # only with that site's consent, and only the headers it exposes.
+    if _origin(final_url) != origin:
+        allow_origin = (meta.get("allow_origin") or "").strip()
+        if allow_origin not in ("*", "null"):
+            raise HTTPException(status_code = 502, detail = "Redirected to another site.")
+        exposed = {
+            name.strip().lower()
+            for header, value in headers
+            if header.lower() == "access-control-expose-headers"
+            for name in value.split(",")
+        }
+        # Credentials are never sent, so "*" exposes every header.
+        if "*" not in exposed:
+            headers = [
+                (name, value)
+                for name, value in headers
+                if name.lower() in _CORS_SAFELISTED_RESPONSE_HEADERS or name.lower() in exposed
+            ]
     return {
         "status": status,
         "statusText": meta.get("reason") or "",
         "url": final_url,
-        "headers": [
-            [name, value]
-            for name, value in meta.get("headers") or []
-            if name.lower() not in _HIDDEN_RESPONSE_HEADERS
-        ],
+        "headers": [[name, value] for name, value in headers],
         "body": base64.b64encode(raw).decode("ascii"),
     }
 

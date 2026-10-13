@@ -225,6 +225,72 @@ def test_a_redirect_to_a_site_that_allows_any_origin_is_read(monkeypatch):
     assert base64.b64decode(answer["body"]) == b"public"
 
 
+@pytest.mark.parametrize(
+    "expose, readable",
+    [
+        (None, {"Content-Type"}),
+        ("X-Request-Id", {"Content-Type", "X-Request-Id"}),
+        ("*", {"Content-Type", "X-Request-Id", "X-Internal-Token"}),
+    ],
+)
+def test_a_response_from_another_site_shows_only_the_headers_it_exposes(
+    monkeypatch, expose, readable
+):
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "text/plain",
+        "X-Request-Id": "r1",
+        "X-Internal-Token": "secret",
+    }
+    if expose:
+        headers["Access-Control-Expose-Headers"] = expose
+    _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": "https://cdn.test/data"}),
+            "cdn.test/data": (200, b"public", headers),
+        },
+    )
+    shown = {name for name, _value in _request(url = "https://site.test/go")["headers"]}
+    assert shown - {"Access-Control-Allow-Origin", "Access-Control-Expose-Headers"} == readable
+
+
+def test_a_same_origin_redirect_still_shows_every_header(monkeypatch):
+    _serve(
+        monkeypatch,
+        {
+            "site.test/old": (301, b"", {"Location": "/new"}),
+            "site.test/new": (200, b"", {"X-Internal-Token": "mine"}),
+        },
+    )
+    assert ["X-Internal-Token", "mine"] in _request(url = "https://site.test/old")["headers"]
+
+
+def test_redirect_error_fails_at_the_redirect(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        {"site.test/a": (302, b"", {"Location": "/b"}), "site.test/b": (200, b"", {})},
+    )
+    with pytest.raises(HTTPException) as raised:
+        _request(url = "https://site.test/a", redirect = "error")
+    assert raised.value.status_code == 502
+    assert [hop["url"] for hop in sent] == ["site.test/a"]
+
+
+def test_redirect_manual_stops_at_an_opaque_redirect(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/a": (302, b"", {"Location": "/b", "X-Secret": "1"}),
+            "site.test/b": (200, b"", {}),
+        },
+    )
+    answer = _request(url = "https://site.test/a", redirect = "manual")
+    assert answer["opaqueRedirect"] is True
+    assert answer["status"] == 0 and answer["headers"] == [] and answer["body"] == ""
+    assert [hop["url"] for hop in sent] == ["site.test/a"]
+
+
 @pytest.mark.parametrize("target", ["https://site.test:8443/data", "http://site.test/data"])
 def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, target):
     # Same host, another port or scheme: another origin, so Authorization is not forwarded.

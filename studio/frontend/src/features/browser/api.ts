@@ -101,6 +101,8 @@ export type PageResponse = {
   url: string;
   headers: Array<[string, string]>;
   body: ArrayBuffer;
+  /** A redirect the request said to stop at ("manual"): the page gets an opaque redirect. */
+  opaqueRedirect?: boolean;
 };
 
 function toBase64(bytes: Uint8Array): string {
@@ -126,6 +128,7 @@ export async function requestForPage(page: string, request: PageRequest, signal:
       url: request.url,
       method: request.method,
       headers: request.headers,
+      redirect: request.redirect,
       body: request.body ? toBase64(new Uint8Array(request.body)) : null,
     }),
     signal,
