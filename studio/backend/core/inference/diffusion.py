@@ -4822,12 +4822,11 @@ class DiffusionBackend:
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
         """A half load narrows only a file stored wider throughout (a mixed file pins its fp32 norms)."""
+        from .diffusion_component_sizes import read_safetensors_header
         try:
-            with open(path, "rb") as fh:
-                length = int.from_bytes(fh.read(8), "little")
-                if length > 100_000_000:
-                    return None
-                header = json.loads(fh.read(length))
+            header = read_safetensors_header(path, max_bytes = 100_000_000)
+            if header is None:
+                return None
             tensors = []
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
@@ -5142,10 +5141,11 @@ class DiffusionBackend:
     def _safetensors_param_count(path: Path) -> int:
         """Total tensor elements in a safetensors file, read from its JSON header without touching
         the tensor data. 0 on any read/parse failure."""
+        from .diffusion_component_sizes import read_safetensors_header
         try:
-            with open(path, "rb") as fh:
-                header_len = int.from_bytes(fh.read(8), "little")
-                header = json.loads(fh.read(header_len))
+            header = read_safetensors_header(path)
+            if header is None:
+                return 0
             total = 0
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
@@ -10526,14 +10526,11 @@ def _pipeline_components_from_index(
         if not isinstance(payload, dict):
             raise ValueError(f"{repo_id}/model_index.json is not an object")
         if explicit_components is None:
+            from .diffusion_component_sizes import manifest_entry_loaded
+
+            # the same predicate the size planner reads the manifest with
             selected = {
-                str(name)
-                for name, spec in payload.items()
-                if not str(name).startswith("_")
-                and isinstance(spec, (list, tuple))
-                and len(spec) >= 2
-                and spec[0] is not None
-                and spec[1] is not None
+                str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)
             }
         else:
             selected = {str(name) for name in explicit_components}

@@ -597,6 +597,12 @@ def effective_request_strength(
     return pipe_default_strength if isinstance(pipe_default_strength, (int, float)) else None
 
 
+def auto_step_cache_mode(steps: int) -> Optional[str]:
+    """The cache mode an AUTO decision runs for ``steps`` (before the runner check): FBCache at
+    ``FBCACHE_MIN_STEPS``+, else uncached. The single rule ``maybe_toggle_step_cache`` applies."""
+    return TC_FBCACHE if int(steps) >= FBCACHE_MIN_STEPS else None
+
+
 def maybe_toggle_step_cache(
     pipe: Any,
     *,
@@ -612,7 +618,7 @@ def maybe_toggle_step_cache(
     if transformer is None:
         return None
     engaged = getattr(transformer, "_unsloth_step_cache", None)
-    want = int(steps) >= FBCACHE_MIN_STEPS
+    want = auto_step_cache_mode(steps) is not None
     if want and not engaged:
         return apply_step_cache(
             pipe,

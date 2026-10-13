@@ -2134,6 +2134,16 @@ def _openai_llama_admission_reserve(
     return reservation, config
 
 
+def _replay_preserve_thinking(llama_backend, payload, messages):
+    """The preserve_thinking generation will render with, so counts price the same prompt."""
+    resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
+    if resolver is None:
+        return payload.preserve_thinking
+    return resolver(
+        payload.preserve_thinking, messages, payload.enable_thinking, payload.reasoning_effort
+    )
+
+
 def _count_gguf_admission_prompt(
     llama_backend,
     payload,
@@ -2156,7 +2166,9 @@ def _count_gguf_admission_prompt(
             strict = True,
             prefer_native = images == 0,
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
-                payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+                payload.enable_thinking,
+                payload.reasoning_effort,
+                _replay_preserve_thinking(llama_backend, payload, messages),
             ),
             continue_final_message = _continue_final_message(payload, thought = True)
             and trailing_assistant_resume_kind(messages) is not None,
@@ -21144,6 +21156,14 @@ def _stt_sidecar_for(engine: str):
     return stt_registry.sidecar_for(engine)
 
 
+def _stt_resident_model(engine: str) -> Optional[str]:
+    """The model an engine holds right now, or None when that cannot be read."""
+    try:
+        return _stt_sidecar_for(engine).loaded_model
+    except Exception:  # noqa: BLE001 - a broken sidecar holds nothing we can report
+        return None
+
+
 def _stt_lifecycle() -> tuple:
     """Uses stt_registry directly if no orchestrator exists; building one blocks on hardware detection."""
     from core.inference import stt_registry
@@ -21692,6 +21712,12 @@ async def stt_unload(
                 f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
             )
         ]
+    from core.inference.stt_registry import STT_ENGINES
+
+    targets = list(STT_ENGINES if engines is None else engines)
+    before = {name: _stt_resident_model(name) for name in targets}
+    # Every engine is attempted even if one raises, so failing to free one never
+    # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
     # expected_model by keyword: the registry unload takes it keyword-only.
     failed: list[str] = await asyncio.to_thread(
@@ -21702,7 +21728,12 @@ async def stt_unload(
             status_code = 500,
             detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
         )
-    return JSONResponse(content = {"loaded_model": None, "device": None})
+    # The sidecar keeps a model it does not recognise as the claimed one (or one
+    # mid-request under wait=false, or one swapped in before its lock), so report
+    # whether an engine that held a model is actually empty now.
+    held = [name for name, model_id in before.items() if model_id is not None]
+    released = not held or any(_stt_resident_model(name) is None for name in held)
+    return JSONResponse(content = {"loaded_model": None, "device": None, "released": released})
 
 
 async def _transcribe_audio_bytes(
@@ -27120,6 +27151,7 @@ async def produce_openai_chat_completions(
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                    compact_context = getattr(payload, "compact_context", None) is True,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -27336,7 +27368,12 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args", "skill_load"):
+                        if event["type"] in (
+                            "tool_output",
+                            "tool_args",
+                            "skill_load",
+                            "tool_model_note",
+                        ):
                             if (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
@@ -27905,6 +27942,7 @@ async def produce_openai_chat_completions(
                 context_overflow = _rolling_context_policy(payload),
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                compact_context = getattr(payload, "compact_context", None) is True,
                 thread_id = payload.thread_id,
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
@@ -29045,6 +29083,7 @@ async def produce_openai_chat_completions(
                 context_overflow = _sf_fit_overflow,
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                compact_context = getattr(payload, "compact_context", None) is True,
             )
 
         _sf_tool_sentinel = object()
@@ -29662,6 +29701,7 @@ async def produce_openai_chat_completions(
                 context_overflow = _sf_fit_overflow,
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                force_reset = getattr(payload, "compact_context", None) is True,
                 max_tokens = effective_max_tokens,
                 thread_id = payload.thread_id,
                 cancel_event = cancel_event,
@@ -35473,13 +35513,16 @@ async def chat_count_tokens(
     _count_messages = payload.messages
     if _folds_studio_tool_history(payload, llama_backend):
         _count_messages = _folded_studio_tool_messages(_count_messages)
-    # Awaited: stripping parses the whole envelope and this runs every turn.
+    _count_dumped = [m.model_dump(exclude_none = True) for m in _count_messages]
+    if not _takes_passthrough:
+        from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+        # As generation sends them; off the loop since restoring may parse an envelope.
+        _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
+    # Awaited: stripping parses the whole envelope, and this recount runs in the
+    # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in _count_messages]
-            )
-        ),
+        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(_count_dumped)),
         # Never as pixels: /apply-template prices a media marker, not the image.
         vision = False,
     )
@@ -35595,7 +35638,12 @@ async def chat_count_tokens(
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
-        payload.preserve_thinking,
+        # Off the loop: first use probes the template.
+        payload.preserve_thinking
+        if _takes_passthrough
+        else await asyncio.to_thread(
+            _replay_preserve_thinking, llama_backend, payload, openai_messages
+        ),
     )
 
     # Another tab's load can swap the tokenizer unseen by the caller's guard, so report the id.
@@ -35803,6 +35851,17 @@ async def anthropic_count_tokens(
 
     # Thinking/reasoning_effort/preserve_thinking change the rendered prompt on switchable templates.
     _reasoning_args = _anthropic_reasoning_args(payload)
+    _count_preserve = _reasoning_args["preserve_thinking"]
+    _resolve_preserve = getattr(llama_backend, "_replay_preserve_thinking", None)
+    if _resolve_preserve is not None and not _count_client_tools:
+        # Off the loop: first use probes the template.
+        _count_preserve = await asyncio.to_thread(
+            _resolve_preserve,
+            _count_preserve,
+            openai_messages,
+            _reasoning_args["enable_thinking"],
+            _reasoning_args["reasoning_effort"],
+        )
     try:
         count = await asyncio.to_thread(
             lambda: llama_backend.count_chat_tokens(
@@ -35814,7 +35873,7 @@ async def anthropic_count_tokens(
                     llama_backend,
                     _reasoning_args["enable_thinking"],
                     _reasoning_args["reasoning_effort"],
-                    _reasoning_args["preserve_thinking"],
+                    _count_preserve,
                 ),
             )
         )
@@ -38319,12 +38378,22 @@ def _openai_messages_for_gguf_chat(
     is_vision: bool,
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
-    """Keeps every per-turn image_url part, since llama-server takes multimodal parts directly."""
-    # Coalesce only on the GGUF chat path (strict Jinja); passthrough forwards verbatim.
+    """Build llama-server messages for the standard GGUF chat path.
+
+    llama-server accepts OpenAI multimodal content parts directly. Preserve all
+    per-turn ``image_url`` parts so multi-image chat history keeps each image
+    attached to its original turn.
+    """
+    from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+    # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
+    # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
     messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(
             _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in payload.messages]
+                restore_replayed_tool_results(
+                    [m.model_dump(exclude_none = True) for m in payload.messages]
+                )
             )
         )
     )

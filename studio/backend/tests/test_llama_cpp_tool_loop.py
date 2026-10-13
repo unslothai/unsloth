@@ -1582,7 +1582,10 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     )
 
     assert len(payloads) == 2
-    assert "tools" not in payloads[1]
+    # The final pass may not call tools, but re-renders the same catalogue so the cached
+    # prompt prefix still matches.
+    assert payloads[1]["tool_choice"] == "none"
+    assert payloads[1]["tools"] == payloads[0]["tools"]
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
     final_user_messages = [
         m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
@@ -1781,7 +1784,8 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
         "call_search_1"
     ]
     assert len(payloads) == 4
-    assert "tools" not in payloads[-1]
+    assert payloads[-1]["tool_choice"] == "none"
+    assert payloads[-1]["tools"] == payloads[-2]["tools"]
     assert any(
         event.get("type") == "content" and event.get("text") == "Final answer from first search."
         for event in events
@@ -1956,7 +1960,9 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
         and event.get("type") in {"tool_start", "tool_end"}
     ]
     assert len(payloads) == 2
-    assert "tools" not in payloads[1]
+    # No more calls, but the same catalogue keeps the cached prompt prefix.
+    assert payloads[1]["tool_choice"] == "none"
+    assert payloads[1]["tools"] == payloads[0]["tools"]
     render_feedback = [
         message
         for message in payloads[1]["messages"]
@@ -5218,8 +5224,9 @@ def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_lo
         )
     )
 
-    # Guard against a vacuous pass.
-    assert not payloads[-1].get("tools")
+    # Assert the scenario really happened rather than letting the check pass vacuously: the
+    # loop ended without offering tools again, and it did produce exactly one notice.
+    assert payloads[-1]["tool_choice"] == "none"
     messages = payloads[-1]["messages"]
     notices = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
     assert len(notices) == 1
@@ -5355,7 +5362,9 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
 
     assert len(calls) == 2, calls
     assert len(payloads) == 3, len(payloads)
-    assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
+    # The final pass may not call tools (it keeps the schemas for the cache). Its controller feedback stays in
+    # the latest tool result rather than opening a newer user turn.
+    assert payloads[2]["tool_choice"] == "none", payloads[2].get("tool_choice")
     assert any(
         m.get("role") == "tool" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
@@ -6919,3 +6928,174 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
     assert calls == [
         ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
     ]
+
+
+def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
+    # The template renders tools at the top of the system prompt. Dropping them on the final
+    # pass changed the prompt from its first tokens, so llama-server re-processed the whole
+    # conversation on that pass and again on the next turn.
+    first = [_tool_call_sse("web_search", {"query": "flappy bird"}, "call_1"), _done()]
+    final_stream = [_sse({"content": "Summary."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first, final_stream])
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 1,
+    )
+
+    assert len(payloads) == 2
+    assert payloads[1]["tools"] == payloads[0]["tools"]
+    assert payloads[1]["tool_choice"] == "none"
+    assert any(e.get("type") == "content" and e.get("text") == "Summary." for e in events)
+
+
+def test_replayed_failed_tool_result_carries_the_nudge_the_model_saw(monkeypatch):
+    from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+    failed = "Exit code 1\nerror: aborting due to previous error"
+    history = [
+        {"role": "user", "content": "build it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_old", "name": "web_search", "content": failed},
+        {"role": "assistant", "content": "It failed."},
+        {"role": "user", "content": "show me"},
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "Here."}), _done()]])
+
+    _run_tool_loop(backend, copy.deepcopy(history), [_web_search_tool()])
+
+    tool_messages = [m for m in payloads[0]["messages"] if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_messages] == [failed + TOOL_ERROR_NUDGE]
+
+
+def test_parallel_batch_tool_events_share_one_round_id(monkeypatch):
+    # The frontend groups a round's cards into one assistant message by provenance round_id;
+    # without it a batch replayed as separate assistant/tool pairs and broke the cached prefix.
+    batch = [
+        _tool_call_sse("web_search", {"query": "a"}, "call_a", index = 0),
+        _tool_call_sse("web_search", {"query": "b"}, "call_b", index = 1),
+        _done(),
+    ]
+    second = [_tool_call_sse("web_search", {"query": "c"}, "call_c"), _done()]
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [batch, second, final_stream])
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 3,
+    )
+
+    rounds = {
+        e["tool_call_id"]: e["provenance"]["round_id"]
+        for e in events
+        if e.get("type") == "tool_end"
+    }
+    assert set(rounds) == {"call_a", "call_b", "call_c"}
+    assert rounds["call_a"] == rounds["call_b"] != rounds["call_c"]
+    batch_assistant = [m for m in payloads[1]["messages"] if m.get("tool_calls")]
+    assert [len(m["tool_calls"]) for m in batch_assistant] == [2]
+
+
+def test_budget_notice_folded_into_a_result_is_reported_for_replay(monkeypatch):
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+    from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+    first = [_tool_call_sse("web_search", {"query": "flappy bird"}, "call_1"), _done()]
+    final_stream = [_sse({"content": "Summary."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first, final_stream])
+    _record_tool_calls(monkeypatch, "Exit code 1\nboom")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 1,
+    )
+
+    notes = [e for e in events if e.get("type") == "tool_model_note"]
+    tool_end = next(e for e in events if e.get("type") == "tool_end")
+    assert notes == [
+        {
+            "type": "tool_model_note",
+            "tool_call_id": tool_end["tool_call_id"],
+            "suffix": f"\n\n{BUDGET_EXHAUSTED_NUDGE}",
+        }
+    ]
+    # What the client sends back next turn renders exactly what the final pass sent.
+    replayed = {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "web_search",
+        "content": tool_end["result"],
+        "extra_content": {"studio_model_suffix": notes[0]["suffix"]},
+    }
+    sent = [m for m in payloads[1]["messages"] if m.get("role") == "tool"][-1]
+    assert restore_replayed_tool_results([replayed])[0]["content"] == sent["content"]
+
+
+def test_restored_replay_is_the_branch_the_tools_are_given(monkeypatch):
+    # Restored results are new dicts and the live branch is accumulated by identity, so seeding it
+    # from the unrestored messages handed a tool the same replayed result twice.
+    history = [
+        {"role": "user", "content": "build it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_old",
+            "name": "web_search",
+            "content": "Error: offline",
+        },
+        {"role": "assistant", "content": "It failed."},
+        {"role": "user", "content": "try again"},
+    ]
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_tool_call_sse("web_search", {"query": "y"}, "call_new"), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    branches: list[list[dict]] = []
+
+    def execute_tool(
+        name,
+        arguments,
+        conversation_branch = None,
+        **_kwargs,
+    ):
+        branches.append(list(conversation_branch or ()))
+        return "sunny"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    _run_tool_loop(backend, copy.deepcopy(history), [_web_search_tool()])
+
+    assert branches
+    replayed = [m for m in branches[0] if m.get("tool_call_id") == "call_old"]
+    assert len(replayed) == 1

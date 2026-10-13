@@ -352,6 +352,8 @@ def fit_checkpoint_context(
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
     # Signature compatibility with `fit_rolling_context`.
     headroom_ratio: Optional[float] = None,
+    force_reset: bool = False,
+    sticky_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """can_reset=False blocks new epochs (unsearchable reset loses data) but still replays one in force."""
     if context_length <= 1:
@@ -359,7 +361,7 @@ def fit_checkpoint_context(
 
     prompt_target = prompt_budget(context_length, max_tokens)
     initial_tokens = count_tokens(list(messages))
-    if initial_tokens <= prompt_target and sticky_dropped <= 0:
+    if initial_tokens <= prompt_target and sticky_dropped <= 0 and not force_reset:
         return messages, None
 
     budget = min(MAX_TOKENS, max(0, int(prompt_target * MAX_FRACTION)))
@@ -395,7 +397,7 @@ def fit_checkpoint_context(
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
-    if sticky_dropped > 0 and initial_tokens > prompt_target:
+    if sticky_dropped > 0 and (initial_tokens > prompt_target or sticky_manual) and not force_reset:
         candidate, replayed = truncate_oldest_messages(
             fitted,
             1.0,
@@ -411,7 +413,9 @@ def fit_checkpoint_context(
     current_tokens = count_tokens(projected)
     measured = projected
 
-    if current_tokens > prompt_target and _resolved(can_reset):
+    # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
+    # primitive itself protects system, developer, final and newest user groups.
+    if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
             messages,
             0.0,
@@ -462,4 +466,6 @@ def fit_checkpoint_context(
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),
+        # Explicit on a new epoch: the client merges a reply's fits, and a stale True would outlive it.
+        **({"manual": force_reset} if is_new_epoch else {"manual": True} if sticky_manual else {}),
     }

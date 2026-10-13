@@ -2862,6 +2862,16 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    compact_context: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "a checkpoint on this request even when it still fits: older turns are "
+            "archived and searchable, and the model keeps the newest turn plus standing "
+            "instructions until the chat outgrows the window again. Needs "
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
+        ),
+    )
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (

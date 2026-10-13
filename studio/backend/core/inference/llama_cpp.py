@@ -239,6 +239,9 @@ def _fit_context(messages, **kwargs):
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
+    # /compact: only a checkpoint reset can honour it, since only its turns are archived.
+    force_reset = bool(kwargs.pop("force_reset", False))
+    sticky_manual = bool(kwargs.pop("sticky_manual", False))
     try:
         from core.inference import checkpoint
 
@@ -252,7 +255,11 @@ def _fit_context(messages, **kwargs):
             # No reset allowed: replay the epoch and keep the block (rolling would drop the instruction).
             # Falls through to rolling below if the replay cannot fit.
             fitted, truncation = checkpoint.fit_checkpoint_context(
-                messages, can_reset = False, searchable = False, **kwargs
+                messages,
+                can_reset = False,
+                searchable = False,
+                sticky_manual = sticky_manual,
+                **kwargs,
             )
             if truncation is not None and truncation.get("fits"):
                 return fitted, truncation
@@ -272,6 +279,8 @@ def _fit_context(messages, **kwargs):
                 messages,
                 can_reset = lambda: not _is_degraded(),
                 searchable = lambda: recall_offered and not _is_degraded(),
+                force_reset = force_reset,
+                sticky_manual = sticky_manual,
                 **kwargs,
             )
             # can_reset=False has no phase two; a refusal falls through to rolling.
@@ -380,6 +389,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -1564,9 +1574,44 @@ def _sticky_compaction_state(
     can_reset: bool = True,
     compaction_headroom_ratio: Optional[float] = None,
 ) -> tuple[int, bool]:
-    """Mixed provenance counts as rolling so the recall still runs; a checkpoint read would skip it."""
+    """`_sticky_compaction_details` without the manual flag."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[:2]
+
+
+def _sticky_compaction_details(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> tuple[int, bool, bool]:
+    """How many leading messages this thread last compacted away, who compacted them, and
+    whether the user asked for it (/compact), which replays even while the prompt fits.
+
+    The provenance decides which fitter may consume the count. A rolling boundary handed
+    to `fit_checkpoint_context` reads as an epoch already in force, so the fit returns
+    `checkpoint_started` false and `_archive_and_recall` skips the recall the rolling
+    fallback would have run. Mixed provenance across surviving rows counts as rolling:
+    `min(boundaries)` below may pick either row, so the safe reading is the one that still
+    recalls.
+
+    The fit is otherwise stateless: the client re-sends the whole transcript each request,
+    so "keep the newest N tokens" slides forward every turn, which tells the user nothing
+    useful and throws away llama-server's prefix cache each time the head moves. Reading
+    the boundary back makes compaction an occasional event.
+
+    Read from the thread's newest assistant turn, which already persists this number for
+    the UI, so nothing new is stored and it survives a restart. Never raises: no history,
+    a non-persisting API client, or a storage error all mean "no boundary".
+    """
     if not thread_id:
-        return 0, False
+        return 0, False, False
     requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
         from storage import studio_db
@@ -1574,32 +1619,56 @@ def _sticky_compaction_state(
         stored = list(studio_db.list_chat_messages(thread_id) or [])
         states = _compaction_branch_states(stored, branch_messages)
         if not states:
-            return 0, False
+            return 0, False, False
 
         boundaries = []
         origins = []
+        manual = []
         branch_wire = _archive_as_wire(branch_messages)
         for state in states:
             truncation = state.truncation
             recorded = state.recorded
             if truncation is None:
-                return 0, False
+                return 0, False, False
+            # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
-                return 0, False
+                return 0, False, False
             # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
             # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
             # original turns without retaining their summary.
             if truncation.get("summarized") is True:
-                return 0, False
-            # Checkpoint boundaries are valid only under a reset fit, so a rolling turn must not
-            # keep one.
+                return 0, False, False
+            # A boundary is valid only under the fit that will consume it, and the two
+            # directions fail differently.
+            #
+            # A checkpoint boundary is the depth of a RESET, affordable only because the
+            # block is rebuilt on every replay. Under rolling nothing rebuilds it, so the
+            # depth replays with nothing handed back (18 evicted where rolling picks 6).
+            # Refused HERE, not at the fit: `boundary_messages` is re-recorded every turn,
+            # so a rolling turn that inherited 18 would persist it with no `checkpoint` key
+            # and make the reset-sized window permanent.
+            #
+            # The other way, a rolling boundary reaching `fit_checkpoint_context` reads as
+            # an epoch already in force, so the reset returns `checkpoint_started` false
+            # and the automatic recall never runs. That only happens where the request may
+            # actually reset; `_can_reset_epoch` false means the fit stays rolling whatever
+            # the process policy says, and there the rolling boundary is the right one to
+            # replay. Rejecting it there instead let the boundary slide every turn for any
+            # model whose template cannot render tools.
             recorded_checkpoint = bool(truncation.get("checkpoint"))
             effective_checkpoint = _request_uses_checkpoint(context_policy)
             if recorded_checkpoint and not effective_checkpoint:
-                return 0, False
+                return 0, False, False
             if not recorded_checkpoint and effective_checkpoint and can_reset:
-                return 0, False
-            # Phase one replays the stored count, so a boundary cut under a different ratio must recompute.
+                return 0, False, False
+            # Changing the extra trim has to change something. Phase one of
+            # `fit_rolling_context` re-applies this count before anything else and stops
+            # once the result fits, so a boundary cut under a DIFFERENT ratio never reaches
+            # the phase that reads the new one, in either direction: measured on a
+            # 121-message transcript at context_length 1600, a stored boundary of 86 gave
+            # `dropped 86` whether the request asked for 0.05 or 0.25. Refusing it makes
+            # the fit recompute, which is the only place the new ratio is read. Absent on
+            # rows saved before the ratio was recorded, which keep replaying as they did.
             if not recorded_checkpoint:
                 recorded_ratio = truncation.get("boundary_headroom_ratio")
                 try:
@@ -1607,10 +1676,14 @@ def _sticky_compaction_state(
                         recorded_ratio is not None
                         and abs(float(recorded_ratio) - requested_ratio) > 1e-9
                     ):
-                        return 0, False
+                        return 0, False, False
                 except (TypeError, ValueError):
-                    return 0, False
-            # Re-derive the count from the anchor on this branch; only ever downward.
+                    return 0, False, False
+            # A count is only valid against the transcript it was counted on. Deleting an
+            # already-evicted turn shortens the front, and replaying the count then evicts
+            # that many LIVE messages instead. Re-derive it from the anchor's position on
+            # this request's own branch. Only ever downward: an anchor that has moved back
+            # (a repeated text, an edited turn) must not deepen the cut.
             anchor = truncation.get("boundary_anchor")
             if isinstance(anchor, str) and anchor:
                 for index, branch_message in enumerate(_branch_non_system(branch_wire)):
@@ -1619,11 +1692,29 @@ def _sticky_compaction_state(
                         break
             boundaries.append(recorded)
             origins.append(recorded_checkpoint)
+            manual.append(recorded_checkpoint and truncation.get("manual") is True)
         if not boundaries:
-            return 0, False
-        return min(boundaries), all(origins)
+            return 0, False, False
+        return min(boundaries), all(origins), all(manual)
     except Exception:
-        return 0, False
+        return 0, False, False
+
+
+def _sticky_compaction_manual(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> bool:
+    """Whether the epoch `_sticky_compaction_state` replays was started by /compact."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[2]
 
 
 def _sticky_compaction_boundary(
@@ -7221,6 +7312,94 @@ class LlamaCppBackend:
                 {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
+
+    def _replay_preserve_thinking(
+        self,
+        preserve_thinking: Optional[bool],
+        messages,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Optional[bool]:
+        """True for a thinking-off follow-up with no reasoning in its history, where the template proves
+        that only preserve_thinking replays each answer's empty think block as generated."""
+        if preserve_thinking is not False or not getattr(
+            self, "_supports_preserve_thinking", False
+        ):
+            return preserve_thinking
+        mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
+        if mode.get("enable_thinking") is not False:
+            return preserve_thinking
+        answered = False
+        for message in messages or ():
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            answered = True
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return preserve_thinking
+            # Inline reasoning counts too.
+            content = message.get("content")
+            parts = content if isinstance(content, list) else [content]
+            if any(
+                "</think>" in (part.get("text") if isinstance(part, dict) else part)
+                for part in parts
+                if isinstance(part, str)
+                or (isinstance(part, dict) and isinstance(part.get("text"), str))
+            ):
+                return preserve_thinking
+        if not answered:
+            return preserve_thinking
+        return True if self._empty_think_replays_with_preserve() else preserve_thinking
+
+    def _empty_think_replays_with_preserve(self) -> bool:
+        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
+        key = (
+            getattr(self, "base_url", None),
+            id(getattr(self, "_chat_template", None)),
+            id(getattr(self, "_chat_template_override", None)),
+        )
+        cached = getattr(self, "_empty_think_preserve_probe", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = False
+        try:
+            off = dict(self._request_reasoning_kwargs(False, None, None) or {})
+            answer = "Studio replay probe answer."
+            first = [{"role": "user", "content": "Studio replay probe question."}]
+            history = first + [
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Studio replay probe follow-up."},
+            ]
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+
+                def _render(msgs, preserve):
+                    r = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = {
+                            "messages": msgs,
+                            "chat_template_kwargs": {**off, "preserve_thinking": preserve},
+                        },
+                    )
+                    prompt = r.json().get("prompt") if r.status_code == 200 else None
+                    return prompt if isinstance(prompt, str) else None
+
+                generated = _render(first, False)
+                kept = _render(history, True)
+                dropped = _render(history, False)
+            if generated is None or kept is None or dropped is None:
+                return False  # Unanswered: not cached, so the next request asks again.
+            result = kept.startswith(generated + answer) and not dropped.startswith(
+                generated + answer
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the caller's setting
+            return False
+        self._empty_think_preserve_probe = (key, result)
+        return result
 
     def _request_reasoning_kwargs(
         self,
@@ -28884,10 +29063,14 @@ class LlamaCppBackend:
         tools_withheld: bool = False,
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
+        compact_context: bool = False,
     ) -> Generator[Union[str, dict], None, None]:
         """Uses /v1/chat/completions so llama-server applies the chat template and vision natively."""
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -28951,7 +29134,7 @@ class LlamaCppBackend:
                     _backend_supports_tools(self),
                     tools_withheld = tools_withheld,
                 )
-                _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
+                _sticky, _sticky_is_checkpoint, _sticky_manual = _sticky_compaction_details(
                     thread_id,
                     _before_fit,
                     context_policy = context_policy,
@@ -28977,6 +29160,8 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
+                    sticky_manual = _sticky_manual,
+                    force_reset = compact_context,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
                     recall_offered = False,
@@ -29092,6 +29277,7 @@ class LlamaCppBackend:
                 # tools as the first attempt was.
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
+                compact_context = compact_context,
                 _allow_respawn_retry = False,
             )
 
@@ -29301,9 +29487,24 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
+        compact_context: bool = False,
     ) -> Generator[dict, None, None]:
-        """permission_mode: ask prompts every call, auto only unsafe ones, off never; unknown acts
-        as ask."""
+        """
+        Agentic loop: let the model call tools, execute them, and continue.
+
+        permission_mode: "ask" confirms every call (with confirm_tool_calls),
+        "auto" only pauses calls detected as potentially unsafe, "off" never
+        pauses (sandbox stays on), "full" is the same as bypass_permissions.
+        Unset/unknown behaves as "ask".
+
+        Yields dicts:
+          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
+          {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
+          {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
+        """
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -29345,7 +29546,8 @@ class LlamaCppBackend:
             messages = note_attached_image(
                 messages, mcp_image_targets(_gguf_active_tool_names(tools))
             )
-        conversation = list(messages)
+        conversation = restore_replayed_tool_results(messages)
+        # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # Recall once per request, or each refit stacks more recalled turns.
         _conversation_recall_done = False
@@ -29353,11 +29555,19 @@ class LlamaCppBackend:
         _sticky_boundary_applied = False
         # Estimator misses the tool catalogue and template framing; the offset corrects it.
         _prompt_token_offset: Optional[int] = None
-        # Archive holds the whole DAG; recall needs the live branch.
-        _request_branch: list[dict] = list(messages)
-        # Accumulated so recall can return this run's own evicted tool results.
-        _live_branch: list[dict] = list(messages)
-        _live_branch_ids: set[int] = {id(message) for message in messages}
+        # The branch this request is on, kept aside before anything is evicted from or
+        # injected into `conversation`. The archive is keyed by thread and the stored rows
+        # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
+        # has to be told which branch is live, and the client's messages are the answer.
+        # Restored dicts are new; both branch lists match by identity.
+        _request_branch: list[dict] = list(conversation)
+        # ...and everything this request adds to it. A long agent run can evict its own
+        # earlier tool exchange, which is archived; filtered against the messages the
+        # client sent, that document looks like an abandoned branch and is refused, so the
+        # model cannot get back a tool result it still needs to answer. Accumulated rather
+        # than read off `conversation`, which has already lost what earlier fits evicted.
+        _live_branch: list[dict] = list(conversation)
+        _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
             for message in current:
@@ -29371,6 +29581,10 @@ class LlamaCppBackend:
                 _rolling_anchor_ids.add(id(message))
                 break
 
+        _tool_card_by_message: dict[int, str] = {}
+        # Feedback folded in after tool_end, reported so the client replays it.
+        _model_note_events: list[dict] = []
+
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
             if not conversation or conversation[-1].get("role") != "tool":
@@ -29378,8 +29592,21 @@ class LlamaCppBackend:
             content = conversation[-1].get("content")
             if not isinstance(content, str):
                 return False
-            # Replace, not mutate: the dicts may be the caller's history.
-            conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
+            # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
+            # /v1/messages passes a caller's own history through, which may end on a tool
+            # result. An in-place edit would leave the nudge there and re-send it next turn.
+            previous = conversation[-1]
+            conversation[-1] = {**previous, "content": f"{content}\n\n{feedback}"}
+            card_id = _tool_card_by_message.pop(id(previous), None)
+            if card_id:
+                _tool_card_by_message[id(conversation[-1])] = card_id
+                _model_note_events.append(
+                    {
+                        "type": "tool_model_note",
+                        "tool_call_id": card_id,
+                        "suffix": f"\n\n{feedback}",
+                    }
+                )
             return True
 
         # Forced first-pass RAG; skipped only in ask mode, where retrieval would prompt.
@@ -29705,11 +29932,17 @@ class LlamaCppBackend:
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
         _prompt_sent = False
+        # Resent on the final pass with tool_choice "none": tools head the system prompt.
+        _last_sent_tools = None
         iteration = -1
         # Cap is across the whole conversation, seeded with already promoted images.
         loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
                 try:
                     on_conversation_grew(conversation)
@@ -29780,10 +30013,12 @@ class LlamaCppBackend:
                         _backend_supports_tools(self),
                         tools_withheld = _memory_tool_withheld(thread_id, tools),
                     )
-                    _iteration_sticky, _iteration_sticky_is_checkpoint = (
-                        (0, True)
+                    # The saved boundary and /compact both apply once, to the loop's first fit.
+                    _iteration_force_reset = compact_context and not _sticky_boundary_applied
+                    _iteration_sticky, _iteration_sticky_is_checkpoint, _iteration_sticky_manual = (
+                        (0, True, False)
                         if _sticky_boundary_applied
-                        else _sticky_compaction_state(
+                        else _sticky_compaction_details(
                             thread_id,
                             _request_branch,
                             context_policy = context_policy,
@@ -29819,6 +30054,8 @@ class LlamaCppBackend:
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
+                        sticky_manual = _iteration_sticky_manual,
+                        force_reset = _iteration_force_reset,
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     _sticky_boundary_applied = True
@@ -29906,6 +30143,7 @@ class LlamaCppBackend:
             if safe_tools:
                 payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
+                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             if thinking_budget_tokens is not None:
@@ -31194,6 +31432,8 @@ class LlamaCppBackend:
                                 provisional = provisional_match,
                                 allowed_tool_names = {forced_name} if forced_name else None,
                             )
+                    # The frontend groups a parallel batch into one assistant message by this.
+                    decision.provenance["round_id"] = iteration
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -31806,8 +32046,13 @@ class LlamaCppBackend:
                     _last_reprompt_text = ""
                     _turn_executed_real_tool = True
                     _forced_choice_resolved = True
-                    yield completion.tool_end_event()
+                    _tool_end = completion.tool_end_event()
+                    yield _tool_end
                     conversation.append(completion.tool_message())
+                    if _tool_end.get("tool_call_id"):
+                        _tool_card_by_message[id(conversation[-1])] = _tool_end["tool_call_id"]
+                    # Parsed only for a result that carries them and a model that will
+                    # be shown them; the marker test first, so a text result never asks.
                     _completion_images = (
                         completion.mcp_images()
                         if mcp_images_mentioned_in(completion.result or "") and self.is_vision
@@ -32020,9 +32265,13 @@ class LlamaCppBackend:
                 else:
                     conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
+        while _model_note_events:
+            yield _model_note_events.pop(0)
+        # Clear status.
         yield {"type": "status", "text": ""}
 
         # Final streaming pass with the full conversation context.
+        _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
         _reasoning_kw = self._request_reasoning_kwargs(
@@ -32039,7 +32288,11 @@ class LlamaCppBackend:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
-                # Withheld: the final pass sends no tools, so no new epoch may start here.
+                # Withheld, not `tools`: this is the synthesised final answer and
+                # `stream_payload` below sends tool_choice "none", so the request's
+                # catalogue answers a question it does not pose and would let a NEW epoch
+                # start on the one pass that can never call `search_conversation`.
+                # Replaying an epoch already in force is unaffected.
                 _final_can_reset = _can_reset_epoch(
                     thread_id, _backend_supports_tools(self), tools_withheld = True
                 )
@@ -32063,7 +32316,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -32084,7 +32337,7 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline: no tools array, so a forged tool role breaks strict templates.
+                        # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
                         force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = _conversation_recall_done or not truncation["fits"],
@@ -32100,7 +32353,7 @@ class LlamaCppBackend:
                                 self.markup_profile,
                             ),
                             None,
-                            None,
+                            _final_tools,
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
@@ -32149,6 +32402,9 @@ class LlamaCppBackend:
         }
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
+        if _final_tools:
+            stream_payload["tools"] = llama_grammar_tools(_final_tools)
+            stream_payload["tool_choice"] = "none"
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:
@@ -32208,7 +32464,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -32219,6 +32475,7 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
+                        # The final pass again, so again tool_choice is "none".
                         tools_withheld = True,
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
@@ -32261,7 +32518,7 @@ class LlamaCppBackend:
                                 break
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
-                            None,
+                            _final_tools,
                             stream_payload.get("chat_template_kwargs"),
                             _refit_continue,
                             _refit_protect,
@@ -32326,7 +32583,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     messages_without_unpriced_media(candidate_messages),
                     None,
-                    None,
+                    _final_tools,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -32522,7 +32779,7 @@ class LlamaCppBackend:
                         if _next_cap != 0 and not _served:
                             _evicted_f = _evict_until_it_fits(
                                 _candidate_messages,
-                                None,
+                                _final_tools,
                                 stream_payload.get("chat_template_kwargs"),
                                 True,
                             )
@@ -32620,7 +32877,7 @@ class LlamaCppBackend:
                             )
                             if _next_cap_r != 0 and not _served_r:
                                 _evicted_r = _evict_until_it_fits(
-                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                    _candidate_r, _final_tools, _off_kw, False, _recovery_protect
                                 )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw

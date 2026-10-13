@@ -882,6 +882,30 @@ def _check_mlx_effective_targets(
     raise ValueError(_NOTHING_TO_TRAIN)
 
 
+def _fetch_spark_tts_repo(trainer, event_queue: Any, model_name: str) -> None:
+    """Spark-TTS encodes its dataset with the BiCodec weights in the model repo, so the repo is fetched before the
+    dataset step (#13458), under the model-load lifecycle so a stalled Xet download still respawns over HTTP."""
+    from utils.hf_xet_fallback import start_watchdog
+
+    _send_status(event_queue, "Loading model...")
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    # The download lands under the resolved repo, not the "Spark-TTS-0.5B/LLM" alias.
+    watchdog_stop = start_watchdog(
+        repo_ids = list(dict.fromkeys([model_name, trainer.spark_tts_hub_repo()])),
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        trainer.resolve_spark_tts_repo(
+            on_model_resolved = lambda repo_id: event_queue.put(
+                {"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()}
+            ),
+        )
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
+
+
 def _reload_dataset_with_remote_model_tokenizer(
     trainer,
     config: dict,
@@ -4272,6 +4296,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "instead of resuming to size it for this machine\n"
                 )
         max_train_rows = resumed_rows
+
+        if getattr(trainer, "_audio_type", None) == "bicodec":
+            _fetch_spark_tts_repo(trainer, event_queue, model_name)
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+                return
 
         _send_status(event_queue, "Loading and formatting dataset...")
         dataset, eval_dataset = _load_training_dataset()

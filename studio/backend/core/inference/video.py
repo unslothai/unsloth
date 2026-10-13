@@ -1803,9 +1803,16 @@ def _video_seed_stays_resident(
     text_encoder_quant: Optional[str],
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
+    hf_token: Optional[str] = None,
+    ltx25_dev: bool = False,
 ) -> bool:
-    """True when the plan keeps the denoiser resident; scheme=None needs a measured budget for bf16."""
-    components = getattr(fam, "bf16_components_gb", None)
+    """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
+
+    ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
+    ``_auto_keeps_resident_bf16``)."""
+    from .diffusion_component_sizes import video_components_gb
+
+    components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev)
     if not components:
         return scheme is not None
     import torch
@@ -2255,11 +2262,16 @@ def video_offload_shortfall_message(
     height: Optional[int] = None,
     frames: Optional[int] = None,
     decode_floor_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
+    ``measured_extra_mib``: a recorded peak (above the request's start) of a completed request at least this large
+    under the same load; it replaces the estimated headroom when it asks for less (margin and slack as the Wan
+    residency fit uses).
     Denoise and VAE decode are separate phases: the decoded-clip share is held only beside the weights still on the
     device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT."""
     headroom = DEFAULT_BASE_OVERHEAD_MIB
+    full_floor_mib = int(floor_mib)
     required = int(floor_mib) + headroom
     if width and height and frames:
         clip_mib = max(
@@ -2273,6 +2285,14 @@ def video_offload_shortfall_message(
         if decode_floor + headroom + clip_mib > required:
             floor_mib, headroom = decode_floor, headroom + clip_mib
             required = decode_floor + headroom
+    if measured_extra_mib is not None and measured_extra_mib > 0:
+        from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
+
+        measured_headroom = int(measured_extra_mib * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB
+        measured_floor = full_floor_mib
+        if measured_floor + measured_headroom < required:
+            floor_mib, headroom = measured_floor, measured_headroom
+            required = measured_floor + measured_headroom
     if int(available_mib) >= required:
         return None
     shape = f" for {width}x{height} at {frames} frames" if width and height and frames else ""
@@ -2289,7 +2309,40 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
 
 
-# Wan2.2-A14B is a dual-expert MoE; helpers act on pipe.transformer, so proxy the second DiT.
+# dual-DiT (Wan2.2-A14B MoE) helpers.
+
+
+# ── dual-DiT (Wan2.2-A14B MoE) helpers ──────────────────────────────────────── The optimisation helpers and the
+# quantiser all act on ``pipe.transformer``. Wan2.2-A14B is a dual-expert MoE (transformer = high-noise, transformer_2 =
+# low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
+# ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
+def _calibration_revision(state: Any) -> Optional[str]:
+    """The exact weights this pipeline holds (cache snapshot commit / local fingerprint, plus the companion base for a
+    GGUF / single-file load), read once per pipeline."""
+    pipe = getattr(state, "pipe", None)
+    cached = getattr(pipe, "_unsloth_calibration_revision", None)
+    if cached is not None:
+        return cached or None
+    from .diffusion_component_sizes import checkpoint_fingerprint
+
+    revision = checkpoint_fingerprint(
+        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    )
+    if getattr(state, "kind", "pipeline") != "pipeline":
+        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
+        base = getattr(state, "base_repo", None)
+        revision = (
+            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
+            if base
+            else revision
+        )
+    try:
+        pipe._unsloth_calibration_revision = revision or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return revision
+
+
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
     """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
     ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
@@ -3061,6 +3114,7 @@ class VideoBackend:
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 hf_token = kwargs.get("hf_token"),
+                ltx25_dev = ltx25_dev,
             )
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
@@ -4088,6 +4142,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
         hf_token: Optional[str] = None,
+        ltx25_dev: bool = False,
     ) -> Optional[str]:
         """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
         try:
@@ -4130,6 +4185,8 @@ class VideoBackend:
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
                     reclaimable_mib = reclaimable,
+                    hf_token = hf_token,
+                    ltx25_dev = ltx25_dev,
                 ):
                     # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
                     return None
@@ -4144,6 +4201,8 @@ class VideoBackend:
                         getattr(resident, "pipe", None),
                         ordinal = _target_ordinal(target),
                     ),
+                    hf_token = hf_token,
+                    ltx25_dev = ltx25_dev,
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
@@ -4779,6 +4838,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             hf_token = hf_token,
+            ltx25_dev = ltx25_dev,
         )
         if video_planned == DENOISER_SEED_DECLINED:
             video_planned = None
@@ -5568,7 +5628,18 @@ class VideoBackend:
 
         # Settled memory, so the previous pipeline's cached-but-free buffers do not read as used.
         device_memory = settled_snapshot_device_memory(target)
-        components = fam.bf16_components_gb
+        from .diffusion_component_sizes import video_components_gb
+
+        components = video_components_gb(
+            fam,
+            # a GGUF / single-file load takes its companions from the resolved base (a caller-supplied base_repo
+            # included), not the family default
+            repo_id if kind == "pipeline" else base,
+            allow_hub = not local_files_only,
+            token = hf_token,
+            # a dev (single-stage) LTX-2.5 load attaches no latent upsampler, so it is not a loaded role
+            dev = _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id),
+        )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # A hosted fp8 encoder makes the bf16 entry overstate by ~11 GB; VAE is never quantised.
         from .diffusion_te_prequant import te_prequant_budget_scale
@@ -5710,20 +5781,12 @@ class VideoBackend:
             # vae_force_fp32 VAE is already counted at fp32; scaling it double-counts (2.8 GB on Wan TI2V-5B).
             vae_gb = components[2] if components is not None else 0.0
             if components is not None and fam.name == "ltx-2.5":
-                from .video_ltx25 import (
-                    LTX25_LATENT_UPSAMPLER_GB,
-                    LTX25_WORKER_RESIDENT_GB,
-                    ltx25_uses_upsampler,
-                )
+                from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
                 # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
-                # resident on every tier, even when its weights are off the card.
+                # resident on every tier, even when its weights are off the card. The latent upsampler a dev (single
+                # stage) load never attaches is already out of components[2] (video_components_gb(dev=...)).
                 vae_gb += LTX25_WORKER_RESIDENT_GB
-                # The table's companions include the latent upsampler, which a dev (single stage) load never attaches.
-                if not ltx25_uses_upsampler(
-                    _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
-                ):
-                    vae_gb -= LTX25_LATENT_UPSAMPLER_GB
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
@@ -8772,12 +8835,60 @@ class VideoBackend:
                     )
                     from . import video_stream_residency
 
-                    if video_stream_residency.applies(
+                    residency_fit = video_stream_residency.applies(
                         fam.name,
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
-                    ):
+                    )
+                    # The step-cache mode THIS request runs: an AUTO decision is re-taken per request below
+                    # (maybe_toggle_step_cache), so the key uses the same rule now and is corrected after the
+                    # runner-aware toggle if that disagrees.
+                    if state.cache_auto:
+                        from .diffusion_cache import auto_step_cache_mode
+                        request_cache_mode = auto_step_cache_mode(steps)
+                    else:
+                        request_cache_mode = getattr(state, "transformer_cache", None)
+                    # This request's peak sizes the next request of its size (refusal below, Wan residency fit).
+                    calibration = video_stream_residency.calibration_key(
+                        fam.name,
+                        getattr(state, "repo_id", None),
+                        state.offload_policy,
+                        device_obj,
+                        # the exact weights: a mutable repo updated and reloaded must not reuse old peaks
+                        revision = _calibration_revision(state),
+                        kind = getattr(state, "kind", None),
+                        gguf_filename = getattr(state, "gguf_filename", None),
+                        variant_id = getattr(state, "variant_id", None),
+                        h3_task = getattr(state, "h3_task", None),
+                        dtype = getattr(state, "dtype", None),
+                        attention_backend = getattr(state, "attention_backend", None),
+                        speed_mode = getattr(state, "speed_mode", None),
+                        speed_optims = tuple(getattr(state, "speed_optims", ()) or ()),
+                        transformer_cache = request_cache_mode,
+                        vae_tiling = getattr(state, "vae_tiling", None),
+                        memory_mode = getattr(state, "memory_mode", None),
+                        transformer_quant = getattr(state, "transformer_quant", None),
+                        text_encoder_quant = getattr(state, "text_encoder_quant", None),
+                        # fps (audio length), keyframes / references (extra latents) and CFG all move the peak
+                        fps = out_fps if getattr(fam, "has_audio", False) else None,
+                        conditioning = conditioning,
+                        first_frame = first_pil is not None,
+                        last_frame = last_pil is not None,
+                        references = len(references or ()),
+                        cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
+                    )
+                    # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
+                    video_stream_residency.arm_request(
+                        state.pipe,
+                        key = calibration,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        device = device_obj,
+                        rearm = False,
+                    )
+                    if residency_fit:
                         # Resident groups are allocated, so the reserved term below still counts them as available.
                         video_stream_residency.fit_for_request(
                             state.pipe,
@@ -8787,6 +8898,16 @@ class VideoBackend:
                             height = height,
                             frames = frames,
                             logger = logger,
+                        )
+                    else:
+                        # the fit arms its own measurement; every other family is armed here
+                        video_stream_residency.arm_request(
+                            state.pipe,
+                            key = calibration,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            device = device_obj,
                         )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
@@ -8803,6 +8924,9 @@ class VideoBackend:
                         height = height,
                         frames = frames,
                         decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
+                        measured_extra_mib = video_stream_residency.measured_extra_mib(
+                            calibration, int(width) * int(height) * int(frames)
+                        ),
                     )
                     if shortfall is not None:
                         raise RuntimeError(shortfall)
@@ -9108,6 +9232,10 @@ class VideoBackend:
                             threshold = state.cache_threshold,
                             logger = logger,
                         )
+                    from . import video_stream_residency
+
+                    # the peak this request records belongs to the cache mode that actually runs
+                    video_stream_residency.retag(state.pipe, "transformer_cache", toggled)
                     if toggled != state.transformer_cache:
                         # _VideoLoadState is frozen; record the pipe-level toggle so status() is truthful.
                         object.__setattr__(state, "transformer_cache", toggled)

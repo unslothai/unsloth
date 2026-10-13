@@ -69,6 +69,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -563,12 +564,23 @@ def run_safetensors_tool_loop(
         from core.inference.mcp_image import note_attached_image
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
-    conversation = list(messages)
-    # Caller's attachment is never dropped; the route trims replay to limit - 1 for its slot.
+    conversation = restore_replayed_tool_results(messages)
+    # Where the caller's own attachment sits in the seeded sink. The cap is about what
+    # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
+    # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
+    # let the prompt carry a second full allowance. The route reserves the attachment's
+    # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # Stored rows are the whole DAG (Retry keeps replaced responses): filter to this branch.
-    _live_branch = list(messages)
-    # Plus loop replies/tool results, not the loop's own user-turn notices.
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    # Restored dicts are new; the branch matches by identity.
+    _live_branch = list(conversation)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
     _live_branch_ids = {id(message) for message in _live_branch}
 
     def _extend_live_branch(current: list) -> list:

@@ -906,8 +906,7 @@ class GgmlSttSidecar:
         path = _cached_model_path(model_id)
         if path is None:
             raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' (GGUF) is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
+                f"STT model '{model_id}' (GGUF) is not downloaded yet."
             )
         return path
 
