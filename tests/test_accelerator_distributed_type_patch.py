@@ -25,7 +25,6 @@ import ast
 import pathlib
 import subprocess
 import sys
-import textwrap
 
 import pytest
 
