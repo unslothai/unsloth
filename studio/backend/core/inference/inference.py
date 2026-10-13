@@ -84,23 +84,77 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
-def _load_offloading_when_too_big(load, **kwargs):
-    """Retry a single-GPU load the card cannot hold with offload_layers = "auto", which keeps large token tables (and decoder layers if needed) in host RAM, as training does (#13388). Loads that fit never take the retry."""
-    try:
-        return load(**kwargs)
-    except ValueError as e:
-        text = str(e)
-        spilled = "does not fit in GPU memory" in text or text.startswith(
-            "Some modules are dispatched on the CPU or the disk"
-        )
-        if not spilled or kwargs.get("device_map") != "sequential" or not torch.cuda.is_available():
-            raise
-    logger.info("Model does not fit in GPU memory; retrying with offload_layers='auto'")
-    import gc
+# A checkpoint past this share of free VRAM leaves no room to run; "auto" then plans the load.
+_OFFLOAD_FIT_FRACTION = 0.9
 
-    gc.collect()
-    torch.cuda.empty_cache()
-    return load(offload_layers = "auto", **kwargs)
+
+def _loader_repo(path: str, load_in_4bit: bool) -> str:
+    """The repo Unsloth's mapper loads for `path` (its bnb-4bit twin for a 4-bit load), else `path`."""
+    try:
+        from unsloth.models import loader, loader_utils
+
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        table = (
+            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        )
+        # Unknown names would fetch the remote mapper.
+        if path.lower() not in table or path.lower() in loader_utils.BAD_MAPPINGS:
+            return path
+        return loader_utils.get_model_name(path, load_in_4bit = load_in_4bit) or path
+    except Exception:
+        return path
+
+
+def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
+    """Bytes of the top-level safetensors `name` holds: a local folder, the HF cache, then the Hub."""
+    folder = Path(name)
+    if not folder.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            folder = Path(snapshot_download(name, local_files_only = True, allow_patterns = ["*.json"]))
+        except Exception:
+            folder = None
+    if folder is not None:
+        local = sum(f.stat().st_size for f in folder.glob("*.safetensors"))
+        if local:
+            return local
+    if Path(name).is_dir():
+        return None
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(name, token = hf_token, files_metadata = True)
+        total = sum(
+            s.size or 0
+            for s in info.siblings or ()
+            if s.rfilename.endswith(".safetensors") and "/" not in s.rfilename
+        )
+        return total or None
+    except Exception:
+        return None
+
+
+def _offload_kwargs_for_fit(
+    name: str,
+    device_map,
+    load_in_4bit: bool,
+    hf_token = None,
+) -> dict:
+    """offload_layers = "auto" for a single-GPU load whose checkpoint nearly fills free VRAM (#13388): Gemma 4 E2B in 4-bit is 8.1 GB, 4.4 GB of it one bf16 token table, so an 8 GB card cannot hold it. The planner then keeps large tables (and decoder layers if needed) in host RAM, and loads everything onto the GPU when it fits after all. Multi-GPU maps go through Unsloth's balanced planner instead, which cannot load into host RAM."""
+    if device_map != "sequential" or not torch.cuda.is_available():
+        return {}
+    try:
+        free = sum(torch.cuda.mem_get_info(i)[0] for i in range(torch.cuda.device_count()))
+    except Exception:
+        return {}
+    size = _checkpoint_bytes(_loader_repo(name, load_in_4bit), hf_token)
+    if not size or size < _OFFLOAD_FIT_FRACTION * free:
+        return {}
+    logger.info(
+        f"Checkpoint is {size / 2**30:.2f} GiB with {free / 2**30:.2f} GiB free; loading with offload_layers='auto'"
+    )
+    return {"offload_layers": "auto"}
 
 
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
@@ -914,9 +968,11 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
+            offload_kwargs = _offload_kwargs_for_fit(
+                load_path, device_map, load_in_4bit, _hf_token_for_loader(hf_token)
+            )
             if config.is_vision:
-                model, processor = _load_offloading_when_too_big(
-                    FastVisionModel.from_pretrained,
+                model, processor = FastVisionModel.from_pretrained(
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -925,6 +981,7 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -965,8 +1022,7 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                model, tokenizer = _load_offloading_when_too_big(
-                    FastLanguageModel.from_pretrained,
+                model, tokenizer = FastLanguageModel.from_pretrained(
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -975,6 +1031,7 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastLanguageModel.for_inference(model)
