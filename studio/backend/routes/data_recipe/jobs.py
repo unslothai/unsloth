@@ -190,6 +190,11 @@ ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 def _resolve_local_v1_endpoint(request: Request) -> str:
     """The /v1 URL of this process's own backend, at the address it is bound to. Port order:
     ``server_port`` (survives proxies/tunnels), the request scope, ``base_url``."""
+    from utils.studio_tls import loopback_http_port
+
+    loopback_port = loopback_http_port(request.app.state)
+    if loopback_port is not None:
+        return f"http://127.0.0.1:{loopback_port}/v1"
     server = request.scope.get("server")
     port: Any = getattr(request.app.state, "server_port", None)
     if not isinstance(port, int) or port <= 0:

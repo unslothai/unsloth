@@ -55,6 +55,7 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+_served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
 
 
 def _positive_int(value: Any) -> Optional[int]:
@@ -846,6 +847,30 @@ def _apply_mistral_reasoning_controls(
 _REASONING_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 _DEEPSEEK_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
 _LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"}
+# vLLM 0.21.0 widened chat-completions reasoning_effort to none | minimal | low | medium | high | xhigh | max; older
+# servers 400 on the extra levels (vllm/entrypoints/openai/chat_completion/protocol.py at v0.20.0 vs v0.21.0).
+_VLLM_FULL_EFFORT_RELEASE = "0.21.0"
+
+
+def _vllm_takes_full_effort(version: Any) -> bool:
+    """A pre-release or unparsable version keeps the low | medium | high subset."""
+    from packaging.version import InvalidVersion, Version
+    try:
+        return isinstance(version, str) and Version(version) >= Version(_VLLM_FULL_EFFORT_RELEASE)
+    except InvalidVersion:
+        return False
+
+
+def _vllm_reasoning_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """vLLM 0.17+ reads a past turn's thinking from `reasoning` alone, 0.12-0.14 from `reasoning_content`
+    (chat_utils.py), so both go out and either server version keeps it."""
+    out = []
+    for message in messages:
+        thought = message.get("reasoning_content") if isinstance(message, dict) else None
+        if message.get("role") == "assistant" and isinstance(thought, str) and thought:
+            message = {**message, "reasoning": thought}
+        out.append(message)
+    return out
 
 
 def _apply_deepseek_reasoning_controls(
@@ -861,6 +886,27 @@ def _apply_deepseek_reasoning_controls(
         return
     if enable_thinking is True:
         body["thinking"] = {"type": "enabled"}
+
+
+_KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+
+
+def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
+    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+
+
+def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
+    """kimi-k3 always reasons and has no `thinking` field; effort is low | high | max (server default max), output
+    is capped by `max_completion_tokens`, and its fixed sampling (presence_penalty incl.) is to be omitted.
+    https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"""
+    body.pop("thinking", None)
+    body.pop("presence_penalty", None)
+    if "max_tokens" in body:
+        body["max_completion_tokens"] = body.pop("max_tokens")
+    effort = (reasoning_effort or "").strip().lower()
+    effort = _KIMI_K3_EFFORT_ALIASES.get(effort, effort)
+    if effort in ("low", "high", "max"):
+        body["reasoning_effort"] = effort
 
 
 def _apply_qwen_reasoning_controls(body: dict[str, Any], enable_thinking: Optional[bool]) -> None:
@@ -1721,6 +1767,7 @@ class ExternalProviderClient:
                 messages,
                 model,
                 max_tokens,
+                reasoning_effort,
             ):
                 yield line
             return
@@ -1736,7 +1783,9 @@ class ExternalProviderClient:
 
         body: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _vllm_reasoning_turns(messages)
+            if self.provider_type == "vllm"
+            else messages,
             "stream": stream,
             "temperature": temperature,
             "presence_penalty": presence_penalty,
@@ -1770,12 +1819,14 @@ class ExternalProviderClient:
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
-        if self.provider_type == "llama_cpp" and preserve_thinking is not None:
+        if self.provider_type in ("llama_cpp", "vllm") and preserve_thinking is not None:
             body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always on (ignore the toggle); kimi-k2.6
         # defaults on, can be disabled. `keep: all` preserves every chunk for the UI panel.
-        if self.provider_type == "kimi" and enable_thinking is not None:
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
+        elif self.provider_type == "kimi" and enable_thinking is not None:
             if model == "kimi-k2-thinking":
                 # Always on; ignore client toggle to avoid an API-level reject.
                 pass
@@ -1797,7 +1848,13 @@ class ExternalProviderClient:
             # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
             # on "none".
             effort = (reasoning_effort or "").strip().lower()
-            effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+            if effort in _LOCAL_SERVER_EFFORT_ALIASES:
+                if self.provider_type != "vllm":
+                    effort = _LOCAL_SERVER_EFFORT_ALIASES[effort]
+                elif not await self.served_vllm_takes_full_effort():
+                    # The ladder is the template's own (Qwen3.8 rejects "high"), so a level an older vLLM cannot
+                    # carry falls back to the template default rather than a neighbour it may refuse.
+                    effort = ""
             thinking = False if effort == "none" else enable_thinking
             if thinking is not None:
                 tpl_kw = body.get("chat_template_kwargs")
@@ -1805,7 +1862,7 @@ class ExternalProviderClient:
                     tpl_kw = {}
                 tpl_kw["enable_thinking"] = bool(thinking)
                 body["chat_template_kwargs"] = tpl_kw
-            if effort in ("low", "medium", "high"):
+            if effort in ("minimal", "low", "medium", "high", "xhigh", "max"):
                 body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
@@ -2124,7 +2181,11 @@ class ExternalProviderClient:
             )
 
     async def _stream_kimi_web_search(
-        self, messages: list[dict[str, Any]], model: str, max_tokens: Optional[int]
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: Optional[int],
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Kimi $web_search round-trip, per https://platform.kimi.ai/docs/guide/use-web-search: POST
         messages with tools=[{type: "builtin_function", function: {name: "$web_search"}}] and
@@ -2157,6 +2218,8 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+        if _is_kimi_k3(self.provider_type, model):
+            _apply_kimi_k3_controls(body, reasoning_effort)
 
         tool_call_id = "kimi_web_search"
         synthetic_id = f"chatcmpl-{self.provider_type}-synthetic"
@@ -2178,6 +2241,8 @@ class ExternalProviderClient:
         )
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
+        # A reasoning model's tool-call turn is replayed whole, reasoning included, or the follow-up is rejected.
+        reasoning_parts: list[str] = []
         try:
             async with _client().stream(
                 "POST",
@@ -2222,6 +2287,8 @@ class ExternalProviderClient:
                             if not isinstance(choice, dict):
                                 continue
                             delta = choice.get("delta") or {}
+                            if isinstance(delta.get("reasoning_content"), str):
+                                reasoning_parts.append(delta["reasoning_content"])
                             for tc in delta.get("tool_calls") or []:
                                 if not isinstance(tc, dict):
                                     continue
@@ -2365,6 +2432,8 @@ class ExternalProviderClient:
             "content": "",
             "tool_calls": list(tool_calls_acc.values()),
         }
+        if reasoning_parts:
+            assistant_msg["reasoning_content"] = "".join(reasoning_parts)
         tool_msgs = [
             {
                 "role": "tool",
@@ -7560,6 +7629,35 @@ class ExternalProviderClient:
         body = props.json()
         settings = body.get("default_generation_settings") if isinstance(body, dict) else None
         return _positive_int(settings.get("n_ctx") if isinstance(settings, dict) else None)
+
+    async def served_vllm_takes_full_effort(self) -> bool:
+        """Read GET /version once a minute; an unreadable answer keeps the low | medium | high subset."""
+        if self.provider_type != "vllm":
+            return False
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        cached = _served_versions.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        full = False
+        try:
+            response = await _client().get(
+                f"{self.base_url.removesuffix('/v1')}/version",
+                headers = self._auth_headers(),
+                timeout = _SERVED_WINDOW_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            body = response.json()
+            full = _vllm_takes_full_effort(body.get("version") if isinstance(body, dict) else None)
+        except httpx.ConnectError as exc:
+            logger.info("No vLLM version from %s: %s", self.base_url, exc)
+            return False
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("No vLLM version from %s: %r", self.base_url, exc)
+        for stale in [k for k, (expiry, _) in _served_versions.items() if expiry <= now]:
+            del _served_versions[stale]
+        _served_versions[key] = (now + _SERVED_WINDOW_TTL_S, full)
+        return full
 
     async def served_context_window(self, model: str) -> Optional[int]:
         """cache served windows and missing results for one minute to limit silent-server reads."""

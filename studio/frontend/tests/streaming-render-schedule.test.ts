@@ -1143,3 +1143,18 @@ test("a live reference pair inside a list or quote still holds as one document",
     assert.equal(isFullDocumentMode(cache), true, definition);
   }
 });
+
+test("the animation-free plugin list keeps its identity across Streamdown's rebuilds", () => {
+  const animation = () => undefined;
+  const other = () => undefined;
+  const tuple = [other, { depth: 1 }] as const;
+  const animatePlugin = { rehypePlugin: animation } as never;
+  const streaming = [other, [tuple[0], tuple[1]], animation] as never;
+  const settled = [other, [tuple[0], tuple[1]]] as never;
+  const first = withoutStreamdownAnimationPlugin(streaming, animatePlugin);
+  const second = withoutStreamdownAnimationPlugin(settled, animatePlugin);
+  assert.equal(first, second, "the same plugins in the same order are one list, so blocks keep their memoised render");
+  assert.equal(withoutStreamdownAnimationPlugin(streaming, animatePlugin), first, "and a repeated input is a cache hit");
+  const different = [other] as never;
+  assert.notEqual(withoutStreamdownAnimationPlugin(different, animatePlugin), first, "a different list is a different identity");
+});

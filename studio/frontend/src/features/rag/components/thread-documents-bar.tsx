@@ -32,11 +32,7 @@ import {
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
 import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import {
-  MAX_DOCUMENT_PREVIEW_BYTES,
-  documentKind,
-  isMarkdown,
-} from "@/components/file-viewer";
+import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -45,7 +41,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
   PENDING_CHAT_ATTACHMENT_KEY,
@@ -62,8 +58,8 @@ import {
   annotationsOfFile,
   attachmentFileKind,
   isPastedTextFile,
-  isTextAttachment,
   isThreadIncognito,
+  subscribeChatHistoryUpdated,
 } from "@/features/chat";
 import {
   useNativeAttachmentTargetKey,
@@ -80,10 +76,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   announceProjectSourcesUpdated,
-  getDocumentFileUrl,
   invalidateProjectSources,
   listKnowledgeBases,
-  listLinkedFolders,
   subscribeKnowledgeBasesChanged,
   listProjectDocuments,
   listThreadDocuments,
@@ -111,6 +105,7 @@ import {
   SUPPORTED_SOURCES_HINT,
   isSupportedSourceName,
 } from "./source-drop-policy";
+import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
   type RagUploadItem,
@@ -119,6 +114,8 @@ import {
   useRagDocuments,
 } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
+import { useUploadQueue } from "./use-upload-queue";
+import { groupByLinkedFolder, useLinkedFolderNames } from "./linked-folder-groups";
 
 // Refetched after any KB mutation so a rename shows at once.
 function useKnowledgeBaseName(kbId: string | null): string | null {
@@ -184,43 +181,57 @@ function useThreadProjectId(
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [resolved, setResolved] = useState<{
     threadId: string;
-    // The activeProjectId this answer was produced for. A change means the chat
-    // may have moved, so the old answer stops counting until the re-read lands.
-    trigger: string | null;
     projectId: string | null;
+    editedAt: number;
   } | null>(null);
 
-  // activeProjectId is a trigger, not the answer: moving the open chat updates
-  // its row and this value without changing the thread id.
   useEffect(() => {
     if (!threadId || isThreadIncognito(threadId)) {
       return;
     }
     let cancelled = false;
+    let announced = false;
+    const record = (projectId: string | null, editedAt: number) =>
+      setResolved((previous) =>
+        previous?.threadId === threadId
+        && (previous.editedAt > editedAt
+          || (previous.editedAt === editedAt
+            && previous.projectId === projectId))
+          ? previous
+          : { threadId, projectId, editedAt },
+      );
+    const unsubscribe = subscribeChatHistoryUpdated(({ thread }) => {
+      if (!thread || thread.id !== threadId) return;
+      announced = true;
+      record(thread.projectId ?? null, thread.modifiedAt ?? 0);
+    });
     void (async () => {
       // A failed read is not proof of no project, and recording one would file
       // the next attachment into the chat. Retry, then leave it unresolved:
-      // nothing re-runs this until the chat or the open project changes.
+      // nothing re-runs this until the chat changes or its row is announced.
       for (let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt += 1) {
         try {
           const thread = await getStoredChatThread(threadId);
-          if (cancelled) return;
+          if (cancelled || announced) return;
           // No row yet: initialize() does not await the write, so the composer's
           // project is the answer that row is about to record.
-          const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
-          setResolved({ threadId, trigger: activeProjectId, projectId });
+          const projectId = thread
+            ? (thread.projectId ?? null)
+            : useChatRuntimeStore.getState().activeProjectId;
+          record(projectId, thread?.modifiedAt ?? 0);
           return;
         } catch {
-          if (cancelled) return;
+          if (cancelled || announced) return;
           await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-          if (cancelled) return;
+          if (cancelled || announced) return;
         }
       }
     })();
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, [threadId, activeProjectId]);
+  }, [threadId]);
 
   // A chat with no id yet is the one being composed, so it belongs to whatever
   // project the composer is in.
@@ -230,60 +241,13 @@ function useThreadProjectId(
   if (isThreadIncognito(threadId)) {
     return null;
   }
-  return resolved?.threadId === threadId && resolved.trigger === activeProjectId
-    ? resolved.projectId
-    : undefined;
+  return resolved?.threadId === threadId ? resolved.projectId : undefined;
 }
 
 function isRagIndexable(file: File): boolean {
   // Pasted text and annotations are not documents.
   if (isPastedTextFile(file) || annotationsOfFile(file)) return false;
   return isSupportedSourceName(file.name);
-}
-
-/** Display names of a project's linked folders, read once per set of folder ids. */
-function useLinkedFolderNames(
-  projectId: string | null,
-  folderIds: string,
-): ReadonlyMap<string, string> {
-  const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map());
-  useEffect(() => {
-    if (!projectId || !folderIds) return;
-    let cancelled = false;
-    listLinkedFolders({ type: "project", id: projectId })
-      .then((folders) => {
-        if (cancelled) return;
-        setNames(new Map(folders.map((f) => [f.id, f.displayName])));
-      })
-      .catch(() => {
-        // The card falls back to a generic label.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, folderIds]);
-  return names;
-}
-
-/** Splits project documents into loose files and per-folder groups. A linked folder can
- * hold thousands of files, so it is drawn as one card rather than one card per file. */
-function groupByLinkedFolder(docs: TrackedDocument[]): {
-  loose: TrackedDocument[];
-  folders: [string, TrackedDocument[]][];
-} {
-  const loose: TrackedDocument[] = [];
-  const folders = new Map<string, TrackedDocument[]>();
-  for (const doc of docs) {
-    const folderId = doc.linkedFolderId;
-    if (!folderId) {
-      loose.push(doc);
-      continue;
-    }
-    const group = folders.get(folderId);
-    if (group) group.push(doc);
-    else folders.set(folderId, [doc]);
-  }
-  return { loose, folders: [...folders] };
 }
 
 function isProcessing(doc: TrackedDocument): boolean {
@@ -361,37 +325,8 @@ function forgetThumbnail(id: string): void {
   thumbnailSizes.delete(id);
 }
 
-/** The stored source as a File, or null past `maxBytes` (0 = no cap). */
-async function fetchSourceFile(
-  doc: TrackedDocument,
-  maxBytes: number,
-): Promise<File | null> {
-  const response = await fetch(await getDocumentFileUrl(doc.id));
-  if (!response.ok) return null;
-  if (maxBytes && Number(response.headers.get("content-length")) > maxBytes) {
-    void response.body?.cancel();
-    return null;
-  }
-  const blob = await response.blob();
-  if (blob.size === 0 || (maxBytes && blob.size > maxBytes)) return null;
-  // Linked-folder documents are named by their relative path.
-  const name = doc.filename.split("/").pop() ?? doc.filename;
-  // Most types are served as octet-stream; an empty type lets the extension decide the kind.
-  const type = blob.type === "application/octet-stream" ? "" : blob.type;
-  return new File([blob], name, { type });
-}
-
 const fetchThumbnailFile = (doc: TrackedDocument) =>
   fetchSourceFile(doc, MAX_THUMBNAIL_BYTES);
-
-/** Whether the attachment viewer can show this source: pages, markdown or text. */
-function isViewableSource(name: string): boolean {
-  return (
-    documentKind(name) !== null ||
-    isMarkdown(name) ||
-    isTextAttachment(name, undefined)
-  );
-}
 
 function loadThumbnailFile(doc: TrackedDocument): Promise<File | null> {
   const cached = thumbnailFiles.get(doc.id);
@@ -477,10 +412,12 @@ function DocumentCard({
   doc,
   shared,
   onRemove,
+  onRetry,
 }: {
   doc: TrackedDocument;
   shared: boolean;
   onRemove?: () => void;
+  onRetry?: () => void;
 }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const kind = attachmentFileKind(doc.filename, undefined);
@@ -521,10 +458,7 @@ function DocumentCard({
     const file =
       thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
     if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
-    const textual =
-      documentKind(file.name, file.type) === null && !isMarkdown(file.name, file.type);
-    // Served as octet-stream: the viewer reads text only when the type says so.
-    return textual ? new File([file], file.name, { type: "text/plain" }) : file;
+    return asViewerFile(file);
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, thumbnailFile]);
@@ -603,6 +537,16 @@ function DocumentCard({
         card
       )}
       {shared ? <ProjectBadge /> : null}
+      {failed && onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          aria-label={`Retry ${doc.filename}`}
+          className="absolute bottom-9 left-1/2 -translate-x-1/2 rounded-full bg-foreground px-2.5 py-0.5 text-ui-11 text-background shadow-sm"
+        >
+          Retry
+        </button>
+      ) : null}
       {onRemove && !processing ? (
         <button
           type="button"
@@ -994,6 +938,8 @@ export function ThreadDocumentsBar({
     loading: threadListLoading,
     upload,
     remove,
+    retry,
+    canRetry,
   } = useRagDocuments(
     effectiveThreadId && ragEnabled && ragSource.type === "thread"
       ? { type: "thread", threadId: effectiveThreadId }
@@ -1015,6 +961,8 @@ export function ThreadDocumentsBar({
     loading: projectListLoading,
     upload: uploadToProject,
     remove: removeFromProject,
+    retry: retryProject,
+    canRetry: canRetryProject,
   } = useRagDocuments(
     projectId ? { type: "project", projectId } : null,
     projectLister,
@@ -1110,6 +1058,14 @@ export function ThreadDocumentsBar({
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
 
+  // Keyed by the list item id, stable while a new chat materializes, so only a real switch drops the queue.
+  const threadItemId = useAuiState(({ threadListItem }) => threadListItem.id);
+  const { enqueue: queueAttach, queued } = useUploadQueue<RagUploadItem>(
+    attach,
+    uploading || projectUploading,
+    `${threadItemId}:${projectId ?? ""}`,
+  );
+
   // Only files added or dropped here are indexed; composer attachments stay with the message.
   const attachIndexable = useCallback(
     (files: File[]) => {
@@ -1123,9 +1079,11 @@ export function ThreadDocumentsBar({
           { description: SUPPORTED_SOURCES_HINT },
         );
       }
-      if (indexable.length > 0) attach(indexable);
+      if (indexable.length > 0) {
+        queueAttach(indexable.map((file) => ({ kind: "file" as const, file })));
+      }
     },
-    [attach],
+    [queueAttach],
   );
   const pickFiles = useCallback(() => {
     openFilePicker(RAG_SOURCE_UPLOAD_ACCEPT, attachIndexable);
@@ -1327,14 +1285,13 @@ export function ThreadDocumentsBar({
     );
   }
 
-  // block attachments until the chat's project is known to avoid guessing their scope.
-  const busy = uploading || projectUploading || projectUnresolved;
+  // Block attachments until the chat's project is known; the scope stays locked until the queue drains.
+  const busy = projectUnresolved;
+  const scopeLocked = busy || uploading || projectUploading || queued > 0;
   // Still claim a drop while busy, or it falls through and attaches to the message instead.
-  const busyReason = !busy
-    ? undefined
-    : projectUnresolved
-      ? "Still loading this chat's project. Try again in a moment."
-      : "Still uploading. Drop the files again once it finishes.";
+  const busyReason = busy
+    ? "Still loading this chat's project. Try again in a moment."
+    : undefined;
 
   return (
     <>
@@ -1346,7 +1303,7 @@ export function ThreadDocumentsBar({
         titleSuffix="(RAG)"
         count={countSuffix}
         info="Add or drop documents, spreadsheets, slides, e-books, email or code. The model searches them as you chat and cites what it uses."
-        onDropItems={attach}
+        onDropItems={queueAttach}
         dropDisabledReason={busyReason}
         onClose={() => setRagEnabled(false)}
         closeLabel="Stop chatting with files"
@@ -1365,7 +1322,7 @@ export function ThreadDocumentsBar({
             {/* Only a project chat has two scopes to choose between. */}
             {projectId ? (
               <AttachmentTargetMenu
-                disabled={busy}
+                disabled={scopeLocked}
                 sharesWithProject={sharesWithProject}
                 onSelect={(target) =>
                   setThreadProjectAttachmentTarget(effectiveThreadId, target)
@@ -1400,9 +1357,23 @@ export function ThreadDocumentsBar({
               doc={doc}
               shared={true}
               onRemove={
-                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                isLinkedFolderManaged(doc) ||
+                (doc.id.startsWith("pending_") && doc.status !== "failed")
                   ? undefined
-                  : () => setRemovingShared(doc)
+                  : doc.status === "failed"
+                    ? // Never indexed, so no other chat loses anything: no confirmation.
+                      () => void removeFromProject(doc.id)
+                    : () => setRemovingShared(doc)
+              }
+              onRetry={
+                canRetryProject(doc.id)
+                  ? () => {
+                      if (projectId) invalidateProjectSources(projectId);
+                      void retryProject(doc.id).finally(() => {
+                        if (projectId) announceProjectSourcesUpdated(projectId);
+                      });
+                    }
+                  : undefined
               }
             />
           </div>
@@ -1416,10 +1387,11 @@ export function ThreadDocumentsBar({
               doc={doc}
               shared={false}
               onRemove={
-                doc.id.startsWith("pending_")
+                doc.id.startsWith("pending_") && doc.status !== "failed"
                   ? undefined
                   : () => void remove(doc.id)
               }
+              onRetry={canRetry(doc.id) ? () => void retry(doc.id) : undefined}
             />
           </div>
         ))}

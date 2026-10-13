@@ -88,6 +88,55 @@ _SUBAGENT_DESCRIPTION = (
     "Local coding subagent powered by Unsloth for debugging, implementation, and codebase "
     "research. Use when the user asks to spawn an Unsloth or local agent."
 )
+_AUTO_ROUTE_DESCRIPTION = (
+    "Local coding subagent powered by Unsloth. In this session it is the only way to reach "
+    "files and the shell: {blocked}. "
+    "Give it the complete task in one message (codebase search, reading or summarizing files, "
+    "running tests or commands, mechanical edits with a clear spec) and review its result "
+    "before answering. Keep talking with the user and planning and design decisions to "
+    "yourself."
+)
+_SUBAGENT_AUTO_ROUTE_DESCRIPTION = _AUTO_ROUTE_DESCRIPTION.format(
+    blocked = (
+        "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls "
+        "are blocked"
+    )
+)
+# Without tools of its own the parent cannot check a small model's answer except by asking for the evidence.
+_AUTO_ROUTE_VERIFY = (
+    " It is a small local model and can be wrong: ask it for the raw command output behind an "
+    "answer you rely on, such as a search that found nothing or an edit, and say so if you "
+    "cannot confirm it."
+)
+_AUTO_ROUTE_CHECK = (
+    _AUTO_ROUTE_VERIFY + " If it fails, tell the user plainly; you cannot do the step yourself."
+)
+_OPENCODE_AUTO_ROUTE_DESCRIPTION = (
+    _AUTO_ROUTE_DESCRIPTION.format(
+        blocked = "your own read, grep, glob, list, lsp, bash and edit tools are blocked"
+    )
+    + _AUTO_ROUTE_VERIFY
+    + " If it fails, do that step with your own read and bash if they work, or else tell the "
+    "user plainly that it was not done."
+)
+_OPENCODE_PLAN_SUBAGENT_NAME = "unsloth-plan"
+_OPENCODE_AUTO_ROUTE_PLAN_DESCRIPTION = (
+    "Read-only local coding subagent powered by Unsloth for planning and codebase research. "
+    "In plan mode it is the only way to read files: your own read, grep, glob, list, lsp and "
+    "bash tools are blocked. Give it the complete question in one message."
+)
+_OPENCODE_HIDDEN_TOOLS = ("grep", "glob", "list", "lsp")
+# OpenCode's free tier refuses a request without read or bash, so on V1 the route plugin blocks their calls instead of a permission rule removing them.
+_OPENCODE_ROUTED_TOOLS = ("read", "bash")
+_OPENCODE_ROUTE_PLUGIN = "unsloth-auto-route.js"
+_SUBAGENT_AUTO_ROUTE_INSTRUCTIONS = (
+    "Files and the shell in this session are reachable only through the unsloth_agent tool; "
+    "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls are "
+    "blocked by a hook. Give the "
+    "tool the complete task in one message, with the paths and commands it needs, and review "
+    "its result before answering. Keep talking with the user and planning and design "
+    "decisions to yourself. In plan mode call unsloth_plan_agent instead."
+)
 _SUBAGENT_INSTRUCTIONS = (
     "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "
     "use the available tools when useful, verify your work, and return a concise result to the "
@@ -104,6 +153,9 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
+_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV = "UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE"
+_CLAUDE_SUBAGENT_FALLBACK_ENV = "UNSLOTH_CLAUDE_SUBAGENT_FALLBACK"
+_CLAUDE_ROUTE_FALLBACK_FILE = "local-agent-failed"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -123,6 +175,21 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
     "subagents for other delegation requests."
 )
+_CODEX_AUTO_ROUTE_TOOL_DESCRIPTION = (
+    _AUTO_ROUTE_DESCRIPTION.format(blocked = "your own shell is disabled") + _AUTO_ROUTE_CHECK
+)
+_CODEX_AUTO_ROUTE_INSTRUCTIONS = (
+    "Your own shell is disabled in this session, so files and commands are reachable only "
+    "through the spawn_local_agent MCP tool. Call it without being asked for codebase search, "
+    "reading or summarizing files, running tests or commands, and mechanical edits, with the "
+    "complete task in one message, and review its result before answering. Keep talking with "
+    "the user and planning and design decisions to yourself." + _AUTO_ROUTE_CHECK
+)
+_CODEX_AUTO_ROUTE_FLAGS = [
+    arg
+    for feature in ("shell_tool", "multi_agent", "view_image")
+    for arg in ("-c", f"features.{feature}=false")
+]
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 _PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
 _PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
@@ -132,6 +199,7 @@ _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -395,6 +463,13 @@ _AS_SUBAGENT_OPTION = typer.Option(
     rich_help_panel = _PANEL_SESSION,
     help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
+_AUTO_ROUTE_OPTION = typer.Option(
+    False,
+    "--auto-route",
+    rich_help_panel = _PANEL_SESSION,
+    help = "Keep the agent's current model and let it hand routine, self-contained work to a "
+    "local Unsloth subagent without being asked.",
+)
 _APP_OPTION = typer.Option(
     False,
     "--app",
@@ -451,20 +526,7 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command() -> tuple[str, bool]:
-    resolved_v2 = _which_with_install_dirs("opencode2")
-    if resolved_v2:
-        return resolved_v2, True
-    return "opencode", False
-
-
-def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if Path(command).stem.lower() == "opencode2":
-        return True
-    executable = _which_with_install_dirs(command)
-    if executable is None:
-        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
-        return True
+def _opencode_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -476,11 +538,30 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _OPENCODE_NATIVE_AUTO_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    # Distro packages (Arch extra, opencode-beta) ship V2 as plain `opencode`, which rejects V1's --model flag.
+    resolved = _which_with_install_dirs("opencode")
+    version = _opencode_version(resolved) if resolved else None
+    return "opencode", bool(version) and version[0] >= 2
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
+        return True
+    version = _opencode_version(executable)
+    return bool(version) and version >= _OPENCODE_NATIVE_AUTO_MIN_VERSION
 
 
 def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
@@ -878,6 +959,12 @@ def _reject_as_subagent(agent: str, args: list) -> None:
     # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
+    _reject_auto_route(agent, args)
+
+
+def _reject_auto_route(agent: str, args: list) -> None:
+    if any(arg == "--auto-route" or arg.startswith("--auto-route=") for arg in args):
+        _fail(f"--auto-route is not supported for {agent}.")
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -2492,7 +2579,7 @@ _QUANT_LABEL_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)"
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
@@ -3091,6 +3178,10 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
+        output = opencode_output_limit(int(window))
+        if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
     if extra_body:
         env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
@@ -3271,6 +3362,7 @@ def write_codex_subagent_bridge(
     *,
     yolo: bool,
     reasoning_effort: Optional[str] = None,
+    auto_route: bool = False,
 ) -> Path:
     """Write private config for an explicit local Codex child launched through MCP."""
     child_home = home / "child"
@@ -3282,12 +3374,13 @@ def write_codex_subagent_bridge(
             "api_key": key,
             "codex_home": str(child_home),
             "bypass_permissions": yolo,
+            **({"auto_route": True} if auto_route else {}),
         },
     )
     return path
 
 
-def _wsl_windows_user_profile(executable: str) -> Path:
+def _wsl_windows_user_profile(executable: str, app: str = "Codex") -> Path:
     """Return the Windows user profile as a path accessible from WSL."""
     profile = os.environ.get("USERPROFILE", "").strip()
     if not profile:
@@ -3303,13 +3396,13 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             ).strip()
         except UnicodeDecodeError as exc:
             _fail(
-                f"Could not read the Windows user profile for Codex ({exc}); "
+                f"Could not read the Windows user profile for {app} ({exc}); "
                 "set USERPROFILE in the WSL environment, for example through WSLENV."
             )
         except (OSError, subprocess.CalledProcessError) as exc:
-            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+            _fail(f"Could not find the Windows user profile for {app}: {exc}")
     if not profile or profile == "%USERPROFILE%":
-        _fail("Could not find the Windows user profile for Codex.")
+        _fail(f"Could not find the Windows user profile for {app}.")
     if profile.startswith("/"):
         return Path(profile)
     try:
@@ -3403,7 +3496,7 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
     return result.returncode == 0
 
 
-def write_codex_parent_overlay(overlay: Path) -> Path:
+def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
 
@@ -3490,6 +3583,8 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
     if other.is_file() or other.is_symlink():
         other.unlink()
     routing = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
+    if auto_route:
+        routing = f"{routing}\n\n{_CODEX_AUTO_ROUTE_INSTRUCTIONS}"
     combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
     _write_private_text(overlay / instruction_name, combined)
     return overlay
@@ -3500,11 +3595,49 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
+_OPENCODE_ROUTE_PLUGIN_SCRIPT = """\
+const LOCAL = new Set(%(local)s);
+const ROUTED = new Set(%(routed)s);
+const HIDDEN = new Set(["title", "summary", "compaction"]);
+const agents = new Map();
+// Set when a local run fails, so the parent can do that step itself until the next local run succeeds.
+let failed = false;
+
+export const UnslothAutoRoute = async () => ({
+  "chat.params": async ({ sessionID, agent }) => {
+    if (!HIDDEN.has(agent)) agents.set(sessionID, agent);
+  },
+  event: async ({ event }) => {
+    const { sessionID, error } = event.properties ?? {};
+    if (event.type === "session.error" && LOCAL.has(agents.get(sessionID)) && error?.name !== "MessageAbortedError") failed = true;
+  },
+  "tool.execute.after": async ({ tool, args }) => {
+    if (tool === "task" && LOCAL.has(args?.subagent_type)) failed = false;
+  },
+  "tool.execute.before": async ({ tool, sessionID }) => {
+    const agent = agents.get(sessionID);
+    if (failed || !ROUTED.has(tool) || LOCAL.has(agent)) return;
+    throw new Error(
+      "Blocked by Unsloth --auto-route: files and the shell are only reachable through the local " +
+        "agent. Hand the complete task to the @" + (agent === "plan" ? %(plan)s : %(build)s) +
+        " subagent with the task tool instead.",
+    );
+  },
+});
+""" % {
+    "local": json.dumps([_SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME]),
+    "routed": json.dumps(list(_OPENCODE_ROUTED_TOOLS)),
+    "plan": json.dumps(_OPENCODE_PLAN_SUBAGENT_NAME),
+    "build": json.dumps(_SUBAGENT_NAME),
+}
+
+
 def _opencode_subagent_inline_config(
     path: Path,
     permission: dict,
     command: str = "opencode",
     v2: bool = False,
+    auto_route: bool = False,
 ) -> dict:
     """Keep the local provider visible without hiding the parent's allowed providers."""
     inline: dict = {}
@@ -3592,6 +3725,42 @@ def _opencode_subagent_inline_config(
         )
     if permission:
         inline["permission"] = permission
+    plugin = path.parent / _OPENCODE_ROUTE_PLUGIN
+    if auto_route and not v2:
+        _write_private_text(plugin, _OPENCODE_ROUTE_PLUGIN_SCRIPT)
+        # OpenCode adds each layer's plugins to the others', so only an inherited inline list needs keeping.
+        plugins = inline.get("plugin")
+        inline["plugin"] = [
+            *(plugins if isinstance(plugins, list) else []),
+            _agent_config_path(plugin, [command]),
+        ]
+    else:
+        # A persisted session dir may still hold the plugin from an earlier --auto-route run.
+        plugin.unlink(missing_ok = True)
+    if auto_route:
+        # The V2 CLI has no tool hooks, so there read and bash fall back to permission rules.
+        denied = _OPENCODE_HIDDEN_TOOLS + (_OPENCODE_ROUTED_TOOLS if v2 else ())
+        permission = {
+            **dict.fromkeys((*denied, "edit"), "deny"),
+            "task": {"*": "deny", _SUBAGENT_NAME: "allow"},
+        }
+        # Plan keeps its own edit rules (it may write only its plan file) and reaches the read-only agent.
+        plan_permission = {
+            **dict.fromkeys(denied, "deny"),
+            "task": {"*": "deny", _OPENCODE_PLAN_SUBAGENT_NAME: "allow"},
+        }
+        # An agent's own permission outranks the global one, so restrict by name every agent a user can be in (an @mention skips the task rule).
+        agents = _subdict(inline, "agent")
+        configured = effective.get("agent")
+        names = {
+            "build",
+            "general",
+            "explore",
+            *(configured if isinstance(configured, dict) else ()),
+        }
+        for name in names - {"plan", _SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME}:
+            _subdict(_subdict(agents, name), "permission").update(permission)
+        _subdict(_subdict(agents, "plan"), "permission").update(plan_permission)
     return inline
 
 
@@ -3619,6 +3788,39 @@ if mode == "plan":
     }}))
 sys.exit(0)
 '''
+
+_CLAUDE_ROUTE_GATE_SCRIPT = """\
+import json, os, sys
+
+# The local agent server leaves this file after a failed run, so the parent can do that step itself.
+if os.path.exists(os.path.join(os.path.dirname(__file__), "local-agent-failed")):
+    sys.exit(0)
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": (
+        "Blocked by Unsloth --auto-route: files and the shell are only reachable through "
+        "the local agent. Call the unsloth_agent tool with the complete task instead."
+    ),
+}}))
+sys.exit(0)
+"""
+# PowerShell is the shell on Windows without Git Bash, Monitor runs commands too, and Agent (Task before Claude Code 2) would hand the same work to a cloud subagent.
+_CLAUDE_ROUTE_GATE_MATCHER = "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
+
+
+def _claude_hook(gate: Path) -> dict:
+    return {
+        "type": "command",
+        # Run through runpy rather than handing the path to the interpreter: a missing gate is then an ordinary traceback (exit 1, fails open) instead of exit 2, which Claude treats as a blocking error and would deny the tool in every mode. The path is base64'd because this string goes through a shell: a temp root holding $(..) or a backtick expands under sh, %VAR% under cmd, and the gate then silently fails open. base64's alphabet has no metacharacter in either.
+        "command": (
+            f'"{sys.executable}" -c '
+            f'"import base64,runpy; runpy.run_path('
+            f"base64.b64decode('{_b64_path(gate)}').decode())\""
+        ),
+        # A hook with no timeout stalls the parent for as long as it hangs; measured unbounded past 400s.
+        "timeout": 10,
+    }
 
 
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
@@ -3659,6 +3861,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                 *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
             ),
         )
+    auto_route = server_env.get(_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV) == "1"
+    fallback = plugin / "hooks" / _CLAUDE_ROUTE_FALLBACK_FILE
+    if auto_route and command != "wsl.exe":
+        mcp_env[_CLAUDE_SUBAGENT_FALLBACK_ENV] = str(fallback)
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
         {
@@ -3683,43 +3889,35 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     )
     # Claude already refuses the editing tool in plan mode, since it advertises readOnlyHint false. This PreToolUse hook replaces that dead end with a reason naming the read-only tool to call instead. Skipped under the WSL bridge, where the gate is a Linux path but the hook would run beside the Windows claude.
     gate = plugin / "hooks" / "plan_gate.py"
+    route_gate = plugin / "hooks" / "route_gate.py"
+    # A persisted plugin dir may still hold gates, or a failure left by an earlier session.
+    fallback.unlink(missing_ok = True)
+    if command == "wsl.exe" or not auto_route:
+        route_gate.unlink(missing_ok = True)
     if command == "wsl.exe":
-        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
         for stale in (gate, plugin / "hooks" / "hooks.json"):
             stale.unlink(missing_ok = True)
     else:
         _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
-        _write_private_json(
-            plugin / "hooks" / "hooks.json",
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": _CLAUDE_SUBAGENT_TOOL,
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    # Run through runpy rather than handing the path to the interpreter: a missing gate is then an ordinary traceback (exit 1, fails open) instead of exit 2, which Claude treats as a blocking error and would deny the tool in every mode. The path is base64'd because this string goes through a shell: a temp root holding $(..) or a backtick expands under sh, %VAR% under cmd, and the gate then silently fails open. base64's alphabet has no metacharacter in either.
-                                    "command": (
-                                        f'"{sys.executable}" -c '
-                                        f'"import base64,runpy; runpy.run_path('
-                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
-                                    ),
-                                    # A hook with no timeout stalls the parent for as long as it hangs; measured unbounded past 400s.
-                                    "timeout": 10,
-                                }
-                            ],
-                        }
-                    ]
-                }
-            },
-        )
+        entries = [{"matcher": _CLAUDE_SUBAGENT_TOOL, "hooks": [_claude_hook(gate)]}]
+        if auto_route:
+            _write_private_text(route_gate, _CLAUDE_ROUTE_GATE_SCRIPT)
+            entries.append(
+                {"matcher": _CLAUDE_ROUTE_GATE_MATCHER, "hooks": [_claude_hook(route_gate)]}
+            )
+        _write_private_json(plugin / "hooks" / "hooks.json", {"hooks": {"PreToolUse": entries}})
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    when = (
+        "Use it for routine, self-contained work (codebase search, reading files, running "
+        "tests or commands, mechanical edits) without being asked, and whenever the user asks "
+        "for an Unsloth or local agent."
+        if auto_route
+        else "Use when the user asks to spawn an Unsloth agent or local agent."
+    )
     skill.write_text(
         "---\n"
-        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
-        "user asks to spawn an Unsloth agent or local agent.\n"
+        f"description: Delegate a task to the local agent powered by Unsloth. {when}\n"
         "---\n\n"
         "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
         "the read-only Unsloth plan agent instead. Return its result to the user without "
@@ -5740,7 +5938,12 @@ def _app_api_key(target: _AppTarget, base: str, explicit: Optional[str], state: 
     return answer["key"], answer["api_key"]["id"]
 
 
-def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str]) -> tuple:
+def _open_app_config(
+    target: _AppTarget,
+    base: str,
+    explicit_key: Optional[str],
+    parse = _parse_app_config,
+) -> tuple:
     if not is_loopback_url(base) and not explicit_key:
         _fail(
             f"{base} isn't on this machine. --app saves the key in your {target.label} "
@@ -5751,7 +5954,7 @@ def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str])
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
-    _parse_app_config(target.path, text)
+    parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
 
@@ -6133,6 +6336,229 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
     return _AppTarget("hermes", "Hermes app", path, updates)
 
 
+_VSCODE_GROUP = "Unsloth"
+_VSCODE_DEFAULT_CONTEXT = 32768
+# Copilot's Agent prompt (instructions + tool schemas) does not fit in a smaller window.
+_VSCODE_AGENT_MIN_CONTEXT = 32768
+
+
+def _vscode_models_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        code = _wsl_windows_executable(["code"])
+        if code and not any((root / app / "User").is_dir() for app in ("Code", "Code - Insiders")):
+            # Under WSL, Windows VS Code reads its own user dir, not the distro's.
+            root = _wsl_windows_user_profile(code, "VS Code") / "AppData" / "Roaming"
+    app = "Code"
+    if not (root / "Code" / "User").is_dir() and (root / "Code - Insiders" / "User").is_dir():
+        app = "Code - Insiders"
+    return root / app / "User" / "chatLanguageModels.json"
+
+
+def _vscode_groups(path: Path, text: Optional[str]) -> list:
+    if text is None or not text.strip():
+        return []
+    try:
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
+    return data
+
+
+def _is_unsloth_vscode_group(group: object) -> bool:
+    return (
+        isinstance(group, dict)
+        and group.get("vendor") == "customendpoint"
+        and group.get("name") == _VSCODE_GROUP
+    )
+
+
+def _vscode_models_text(
+    text: Optional[str],
+    path: Path,
+    base: str,
+    key: str,
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    replaced: frozenset = frozenset(),
+    thinking: bool = False,
+) -> Optional[str]:
+    groups = _vscode_groups(path, text)
+    window = int(
+        entry.get("context_length") or entry.get("max_context_length") or _VSCODE_DEFAULT_CONTEXT
+    )
+    output = _agent_output_limit(window, max_tokens)
+    model = {
+        "id": entry["id"],
+        "name": entry["id"],
+        "url": f"{base}/v1/chat/completions",
+        "apiType": "chat-completions",
+        # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
+        "toolCalling": tool_calling,
+        "vision": vision,
+        # Without it VS Code drops reasoning_content when it replays an agent tool round.
+        "thinking": thinking,
+        "contextWindow": window,
+        "maxInputTokens": window - output,
+        "maxOutputTokens": output,
+        # A raw apiKey is read as a secret-storage reference and dropped, so the key rides here.
+        "requestHeaders": {"Authorization": f"Bearer {key}"},
+    }
+    index = next((i for i, g in enumerate(groups) if _is_unsloth_vscode_group(g)), None)
+    updated = list(groups)
+    if index is None:
+        updated.append({"name": _VSCODE_GROUP, "vendor": "customendpoint", "models": [model]})
+    else:
+        # Replace only the models this command wrote; the rest of the group is the user's.
+        group = dict(groups[index])
+        drop = replaced | {entry["id"]}
+        kept = [
+            m
+            for m in group.get("models") or []
+            if not (isinstance(m, dict) and m.get("id") in drop)
+        ]
+        group["models"] = [*kept, model]
+        updated[index] = group
+    if updated == groups:
+        return text
+    return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
+
+
+def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
+    # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
+    try:
+        query = urlencode({"model": entry["id"]})
+        status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
+    except Exception:
+        status = {}
+    resident = any(
+        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+        for status_id in (status.get("active_model"), status.get("model_identifier"))
+        if status_id
+    )
+    if not resident:
+        # Only a status about this model can vouch for it; an older server reports nothing.
+        return True, False, False
+    return (
+        status.get("supports_tools") is not False,
+        status.get("is_vision") is True,
+        status.get("supports_reasoning") is True,
+    )
+
+
+def _vscode_over_ssh(path: Path) -> bool:
+    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+        return False
+    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+    return any(os.environ.get(name) for name in remote)
+
+
+def _add_vscode_provider(
+    base: str,
+    explicit_key: Optional[str],
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    thinking: bool = False,
+) -> None:
+    target = _AppTarget("vscode", "VS Code", _vscode_models_path())
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(
+            target, base, explicit_key, _vscode_groups
+        )
+        remote = _vscode_over_ssh(target.path)
+        new_text = _vscode_models_text(
+            None if remote else text,
+            target.path,
+            base,
+            key,
+            entry,
+            max_tokens,
+            tool_calling,
+            vision,
+            frozenset(state.get("models") or ()),
+            thinking,
+        )
+        new_state = {
+            "path": str(target.path),
+            "base": base,
+            "key": key,
+            "key_id": key_id,
+            "models": [entry["id"]],
+        }
+        if remote:
+            # Keep the key in state so a re-run reuses it; a file here would never be read.
+            _save_app_config(target, state_path, state, new_state, None, None)
+        else:
+            _save_app_config(target, state_path, state, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    if remote:
+        url = urlparse(base)
+        port = url.port or (443 if url.scheme == "https" else 80)
+        reach = (
+            f"forward port {port} to the same port on your machine (for example: "
+            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            if is_loopback_url(base)
+            else f"make sure your machine can reach {base}"
+        )
+        typer.echo(
+            "This is a remote session (SSH or a container) with no VS Code user dir here, so "
+            "nothing was written. VS Code does not list these models in remote windows yet "
+            f"(microsoft/vscode#332085), so {reach}. Then, in a local VS Code window, run "
+            "Chat: Manage Language Models, open chatLanguageModels.json and add:"
+        )
+        typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
+        _app_server_notice(base)
+        return
+    typer.echo(
+        f"Added {entry['id']} from Unsloth at {base} to VS Code. In the Copilot Chat model "
+        f"picker, pick it under {_VSCODE_GROUP} (Manage Models if it is hidden; run "
+        "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
+        "extension; no Copilot plan is required."
+    )
+    if os.environ.get("WSL_DISTRO_NAME") and target.path.parts[:2] == ("/", "mnt"):
+        typer.echo(
+            "Use it from a local VS Code window: VS Code does not list these models in remote "
+            "(WSL, SSH, container) windows yet (microsoft/vscode#332085)."
+        )
+    if not tool_calling:
+        typer.echo(
+            f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
+            "not Agent mode."
+        )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if tool_calling and window and int(window) < _VSCODE_AGENT_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for Copilot's Agent mode, which sends about 20,000 tokens of instructions before "
+            "your message. Load it with --context-length "
+            f"{_VSCODE_AGENT_MIN_CONTEXT} and re-run unsloth start vscode.",
+            err = True,
+        )
+    if key_id is not None:
+        typer.echo(
+            f"It uses its own API key, '{target.label}', which you can revoke in "
+            "Unsloth → Settings → API."
+        )
+    typer.echo("After loading another model, re-run: unsloth start vscode")
+    _app_server_notice(base)
+
+
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -6159,10 +6585,15 @@ def claude(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    # The route gate is a hook the Windows claude cannot run from WSL, so its own tools would stay on.
+    if auto_route and _wsl_windows_executable(["claude"]):
+        _fail("--auto-route needs claude installed inside WSL, not the Windows claude.")
+    as_subagent = as_subagent or auto_route
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
         if os.name == "nt"
@@ -6217,6 +6648,8 @@ def claude(
             server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
         if server_options.request_body():
             server_env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(server_options.request_body())
+        if auto_route:
+            server_env[_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV] = "1"
         with _session_config("claude-subagent", launch, persist = persist) as config:
             plugin = write_claude_subagent_plugin(config, server_env)
             command = [
@@ -6230,7 +6663,11 @@ def claude(
             ]
             typer.echo(
                 "Unsloth is available as a local agent. "
-                "Ask Claude to spawn an Unsloth or local agent."
+                + (
+                    "Claude hands routine work to it on its own."
+                    if auto_route
+                    else "Ask Claude to spawn an Unsloth or local agent."
+                )
             )
             _run(
                 base,
@@ -6289,11 +6726,13 @@ def codex(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
     app: bool = _CODEX_APP_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     running = _recover_codex_app()
     if app and running is not None:
@@ -6353,17 +6792,23 @@ def codex(
                 home,
                 yolo = yolo,
                 reasoning_effort = codex_effort,
+                auto_route = auto_route,
             )
-            parent_home = write_codex_parent_overlay(home / "parent")
+            parent_home = write_codex_parent_overlay(home / "parent", auto_route = auto_route)
             command = [
                 "codex",
                 *_codex_subagent_flags(bridge_config),
+                *(_CODEX_AUTO_ROUTE_FLAGS if auto_route else []),
                 *_yolo_command_flags("codex", yolo),
                 *ctx.args,
             ]
             typer.echo(
                 "Unsloth is available as a local agent. "
-                "Ask Codex to spawn an Unsloth or local agent."
+                + (
+                    "Codex hands routine work to it on its own."
+                    if auto_route
+                    else "Ask Codex to spawn an Unsloth or local agent."
+                )
             )
             _run(
                 base,
@@ -6526,11 +6971,13 @@ def opencode(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
     app: bool = _APP_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
@@ -6572,7 +7019,9 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
-            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+            yolo
+            and (opencode_v2 or _opencode_supports_native_auto(command_name))
+            and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6602,16 +7051,32 @@ def opencode(
                 session_permission,
                 command = command_name,
                 v2 = opencode_v2,
+                auto_route = auto_route,
             )
             # A project opencode.json outranks the session file and could field-merge its own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
-            inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
-                "description": _SUBAGENT_DESCRIPTION,
+            agents = inline_config.setdefault("agent", {})
+            agents[_SUBAGENT_NAME] = {
+                "description": (
+                    _OPENCODE_AUTO_ROUTE_DESCRIPTION if auto_route else _SUBAGENT_DESCRIPTION
+                ),
                 "mode": "subagent",
                 "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
                 "prompt": _SUBAGENT_INSTRUCTIONS,
             }
+            if auto_route:
+                # A task subagent does not inherit the parent agent's rules, so both keep their tools.
+                agents[_OPENCODE_PLAN_SUBAGENT_NAME] = {
+                    "description": _OPENCODE_AUTO_ROUTE_PLAN_DESCRIPTION,
+                    "mode": "subagent",
+                    "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
+                    "prompt": _SUBAGENT_PLAN_INSTRUCTIONS,
+                    "permission": {"edit": "deny", "bash": "deny"},
+                }
             env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
-            typer.echo("Unsloth is available as @unsloth and in /models.")
+            typer.echo(
+                "Unsloth is available as @unsloth and in /models."
+                + (" OpenCode hands routine work to it on its own." if auto_route else "")
+            )
             _run(
                 base,
                 subagent_model,
@@ -6624,7 +7089,7 @@ def opencode(
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
+    route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6789,6 +7254,7 @@ def pi(
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_auto_route("pi", ctx.args)
     install_hint = _npm_install_hint(
         "@earendil-works/pi-coding-agent",
         ignore_scripts = True,
@@ -7046,3 +7512,64 @@ def vibe(
             request_body = {**request_body, "temperature": recommended}
     env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
     _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+_VSCODE_LAUNCH_OPTION = typer.Option(True, "--launch/--no-launch", hidden = True)
+
+
+@start_app.command("vscode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vscode(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _VSCODE_LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
+    serve: bool = _SERVE_OPTION,
+):
+    """Add the model Unsloth is serving to VS Code's Copilot Chat model picker."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    if ctx.args:
+        _fail("unsloth start vscode only edits VS Code's settings, so it takes no extra arguments.")
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
+    # Remote: the key _connect accepted. Local: never an explicit key it rejected for a fresh server.
+    explicit = key if not is_loopback_url(base) else api_key if key == api_key else None
+    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)

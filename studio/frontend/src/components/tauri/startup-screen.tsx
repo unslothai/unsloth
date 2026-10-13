@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -446,6 +447,7 @@ function StartupSurface({ children }: { children: ReactNode }) {
  * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
  */
 export function ClosingScreen() {
+  useDocumentFlag("data-blocking-screen-open", true);
   return (
     // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
     // <body> while any modal layer is open, and a quit raised from the window controls,
