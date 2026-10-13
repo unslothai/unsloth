@@ -168,6 +168,16 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     assert dict_args._unsloth_mlx_max_seq_length_explicit is True
 
 
+def test_mlx_training_arguments_accept_the_cuda_loraplus_name():
+    """loraplus_lr_ratio (the CUDA name) should drive MLX's lora_plus_ratio."""
+    unsloth = _import_mlx_unsloth()
+
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = 16.0).lora_plus_ratio == 16.0
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = None).lora_plus_ratio == 0.0
+    both = unsloth.UnslothTrainingArguments(lora_plus_ratio = 8.0, loraplus_lr_ratio = 16.0)
+    assert both.lora_plus_ratio == 8.0
+
+
 def test_mlx_training_arguments_preserve_explicit_positive_warmup_steps():
     """Explicit warmup_steps should take precedence over warmup_ratio."""
     unsloth = _import_mlx_unsloth()
@@ -457,7 +467,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
-    assert args.optim == "adamw"
+    assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321

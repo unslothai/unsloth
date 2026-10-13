@@ -1,0 +1,834 @@
+{
+ "lock_sha256": "24629a84a947fbf4023be494e8ce399a2a8dc37891e8a3b1fe9dd869bf6b00bf",
+ "requires": {
+  "agent-detector": [
+   ">=1.1.0"
+  ],
+  "aiohappyeyeballs": [
+   ">=2.5.0"
+  ],
+  "aiohttp": [
+   ">=3.13.3"
+  ],
+  "aiosignal": [
+   ">=1.4.0"
+  ],
+  "annotated-doc": [
+   ">=0.0.2"
+  ],
+  "annotated-types": [
+   ">=0.6.0"
+  ],
+  "anthropic": [
+   ">=0.71.0"
+  ],
+  "anyio": [
+   "<5,>=4.0.0",
+   "<5,>=4.1.0",
+   "<5,>=4.10.0",
+   ">=3.0.0",
+   ">=4.10",
+   ">=4.7.0",
+   ">=4.9"
+  ],
+  "apache-tvm-ffi": [
+   "!=0.1.8,!=0.1.8.post0,<0.2,>=0.1.6",
+   "<0.2,>=0.1.6",
+   "<=0.1.11,>=0.1.10",
+   "<=0.1.11,>=0.1.5",
+   "==0.1.11",
+   ">=0.1.11"
+  ],
+  "attrs": [
+   ">=17.3.0",
+   ">=22.2.0"
+  ],
+  "certifi": [
+   ">=2023.5.7"
+  ],
+  "cffi": [
+   ">=2.0.0"
+  ],
+  "charset-normalizer": [
+   "<4,>=2"
+  ],
+  "click": [
+   "<9.0.0,>=8.4.2",
+   ">=7.0",
+   ">=8.1.7"
+  ],
+  "compressed-tensors": [
+   "==0.17.0"
+  ],
+  "cryptography": [
+   ">=3.4.0"
+  ],
+  "cuda-bindings": [
+   "<14,>=13.0.3",
+   "~=13.4.1"
+  ],
+  "cuda-core": [
+   "~=1.0",
+   "~=1.2.0"
+  ],
+  "cuda-pathfinder": [
+   "<2.0.0,>=1.5.4",
+   ">=1.4.2",
+   "~=1.1"
+  ],
+  "cuda-python": [
+   ">=12.0",
+   ">=12.8"
+  ],
+  "cuda-tile": [
+   ">=1.4.0"
+  ],
+  "cuda-toolkit": [
+   "==13.0.3"
+  ],
+  "depyf": [
+   "==0.20.0"
+  ],
+  "detect-installer": [
+   ">=0.1.0"
+  ],
+  "dnspython": [
+   ">=2.0.0"
+  ],
+  "docstring-parser": [
+   "<1,>=0.15"
+  ],
+  "email-validator": [
+   ">=2.0.0"
+  ],
+  "fastapi": [
+   "<0.137.0,>=0.133.0"
+  ],
+  "fastapi-cli": [
+   ">=0.0.8"
+  ],
+  "fastapi-cloud-cli": [
+   ">=0.1.1"
+  ],
+  "fastar": [
+   ">=0.10.0",
+   ">=0.9.0"
+  ],
+  "fastsafetensors": [
+   ">=0.3.3"
+  ],
+  "filelock": [
+   ">=3.10.0",
+   ">=3.16.1"
+  ],
+  "flashinfer-python": [
+   "==0.6.18.post1"
+  ],
+  "frozenlist": [
+   ">=1.1.0",
+   ">=1.1.1"
+  ],
+  "fsspec": [
+   ">=0.8.5",
+   ">=2023.5.0"
+  ],
+  "googleapis-common-protos": [
+   "~=1.52",
+   "~=1.57"
+  ],
+  "grpcio": [
+   "<2.0.0,>=1.66.2"
+  ],
+  "h11": [
+   ">=0.16",
+   ">=0.8"
+  ],
+  "hf-xet": [
+   "<2.0.0,>=1.6.0"
+  ],
+  "httpcore": [
+   "==1.*"
+  ],
+  "httpcore2": [
+   "==2.13.1"
+  ],
+  "httptools": [
+   ">=0.8.0"
+  ],
+  "httpx": [
+   "<1,>=0.23.0",
+   "<1.0.0,>=0.23.0",
+   ">=0.27.0"
+  ],
+  "httpx2": [
+   "<3,>=2.0.0",
+   "<3,>=2.12.0",
+   ">=2.5.0"
+  ],
+  "huggingface-hub": [
+   "<2.0,>=0.16.4",
+   "<2.0,>=1.5.0",
+   ">=1.31.0"
+  ],
+  "humming-kernels": [
+   "==0.1.12"
+  ],
+  "idna": [
+   "<4,>=2.5",
+   ">=2.0",
+   ">=2.0.0",
+   ">=2.8",
+   ">=3.18"
+  ],
+  "instanttensor": [
+   ">=0.1.9"
+  ],
+  "interegular": [
+   ">=0.3.2"
+  ],
+  "jinja2": [
+   ">=3.1.5"
+  ],
+  "jiter": [
+   "<1,>=0.16.0",
+   "<1,>=0.4.0"
+  ],
+  "jsonschema": [
+   ">=4.20.0",
+   ">=4.21.1",
+   ">=4.23.0"
+  ],
+  "jsonschema-specifications": [
+   ">=2023.03.6"
+  ],
+  "lark": [
+   "==1.2.2"
+  ],
+  "llguidance": [
+   "<1.8.0,>=1.7.0"
+  ],
+  "llvmlite": [
+   "<0.48,>=0.47.0dev0"
+  ],
+  "lm-format-enforcer": [
+   "==0.11.3"
+  ],
+  "markdown-it-py": [
+   ">=2.2.0"
+  ],
+  "markupsafe": [
+   ">=2.0"
+  ],
+  "mcp": [
+   "<3.0.0,>=2.0.0"
+  ],
+  "mcp-types": [
+   "==2.2.0"
+  ],
+  "mdurl": [
+   "~=0.1"
+  ],
+  "mistral-common": [
+   ">=1.11.6"
+  ],
+  "model-hosting-container-standards": [
+   "<1.0.0,>=0.1.14"
+  ],
+  "mpmath": [
+   "<1.4,>=1.1.0"
+  ],
+  "multidict": [
+   "<7.0,>=4.5",
+   ">=4.0"
+  ],
+  "nccl4py": [
+   ">=0.3.1"
+  ],
+  "networkx": [
+   ">=2.5.1"
+  ],
+  "numba": [
+   "==0.65.0"
+  ],
+  "numpy": [
+   "<2.5,>=1.22",
+   ">=1.17",
+   ">=1.22",
+   ">=1.23.5",
+   ">=1.25",
+   ">=2",
+   ">=2.0.0",
+   ">=2.1.0"
+  ],
+  "nvidia-cublas": [
+   "==13.1.1.3.*"
+  ],
+  "nvidia-cuda-cupti": [
+   "==13.0.85.*"
+  ],
+  "nvidia-cuda-nvdisasm": [
+   "<14,>=13.3"
+  ],
+  "nvidia-cuda-nvrtc": [
+   "==13.0.88.*"
+  ],
+  "nvidia-cuda-runtime": [
+   "==13.0.96.*"
+  ],
+  "nvidia-cudnn-cu13": [
+   "==9.20.0.48"
+  ],
+  "nvidia-cudnn-frontend": [
+   ">=1.19.1",
+   ">=1.25.0"
+  ],
+  "nvidia-cufft": [
+   "==12.0.0.61.*"
+  ],
+  "nvidia-cufile": [
+   "==1.15.1.6.*"
+  ],
+  "nvidia-curand": [
+   "==10.4.0.35.*"
+  ],
+  "nvidia-cusolver": [
+   "==12.0.4.66.*"
+  ],
+  "nvidia-cusparse": [
+   "==12.6.3.3.*"
+  ],
+  "nvidia-cusparselt-cu13": [
+   "==0.8.1"
+  ],
+  "nvidia-cutlass-dsl": [
+   "==4.7.1",
+   ">=4.6.2",
+   ">=4.6.2a0",
+   ">=4.7"
+  ],
+  "nvidia-cutlass-dsl-libs-base": [
+   "==4.7.1"
+  ],
+  "nvidia-cutlass-dsl-libs-core": [
+   "==4.7.1"
+  ],
+  "nvidia-cutlass-dsl-libs-cu13": [
+   "==4.7.1"
+  ],
+  "nvidia-nccl-cu13": [
+   "==2.29.7"
+  ],
+  "nvidia-nvjitlink": [
+   "<14,>=13.0.88"
+  ],
+  "nvidia-nvshmem-cu13": [
+   "==3.4.5"
+  ],
+  "nvidia-nvtx": [
+   "==13.0.85.*"
+  ],
+  "nvtx": [
+   "==0.2.15"
+  ],
+  "openai": [
+   ">=2.25.0"
+  ],
+  "openai-harmony": [
+   ">=0.0.3"
+  ],
+  "opencv-python-headless": [
+   ">=4.0.0",
+   ">=4.13.0"
+  ],
+  "opentelemetry-api": [
+   "==1.45.0",
+   ">=1.27.0",
+   ">=1.28.0",
+   "~=1.15"
+  ],
+  "opentelemetry-exporter-http-transport": [
+   "==0.66b0"
+  ],
+  "opentelemetry-exporter-otlp": [
+   ">=1.27.0"
+  ],
+  "opentelemetry-exporter-otlp-common": [
+   "==0.66b0"
+  ],
+  "opentelemetry-exporter-otlp-proto-common": [
+   "==1.45.0"
+  ],
+  "opentelemetry-exporter-otlp-proto-grpc": [
+   "==1.45.0"
+  ],
+  "opentelemetry-exporter-otlp-proto-http": [
+   "==1.45.0"
+  ],
+  "opentelemetry-proto": [
+   "==1.45.0"
+  ],
+  "opentelemetry-sdk": [
+   "<2,>=1.38.0",
+   ">=1.27.0",
+   "~=1.45.0"
+  ],
+  "opentelemetry-semantic-conventions": [
+   "==0.66b0",
+   ">=0.59b0"
+  ],
+  "opentelemetry-semantic-conventions-ai": [
+   ">=0.4.1"
+  ],
+  "outlines-core": [
+   "==0.2.14"
+  ],
+  "packaging": [
+   ">=20.0",
+   ">=20.9",
+   ">=24.2"
+  ],
+  "pillow": [
+   "!=8.3.*,>=5.3.0",
+   ">=10.3.0"
+  ],
+  "prometheus-client": [
+   "<1.0.0,>=0.8.0",
+   ">=0.18.0"
+  ],
+  "prometheus-fastapi-instrumentator": [
+   ">=8.0.0"
+  ],
+  "propcache": [
+   ">=0.2.0",
+   ">=0.2.1"
+  ],
+  "protobuf": [
+   "!=6.30.*,!=6.31.*,!=6.32.*,!=6.33.0.*,!=6.33.1.*,!=6.33.2.*,!=6.33.3.*,!=6.33.4.*,>=5.29.6",
+   "<8.0,>=5.0",
+   "<8.0.0,>=6.33.5",
+   ">=4.21.12"
+  ],
+  "pycountry": [
+   ">=23"
+  ],
+  "pydantic": [
+   "!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,<3,>=1.10.13",
+   "<3,>=1.10.0",
+   "<3.0,>=2.7",
+   ">=1.10.8",
+   ">=2.0",
+   ">=2.11.7",
+   ">=2.12.0",
+   ">=2.5.2",
+   ">=2.7.0",
+   ">=2.8.0",
+   ">=2.9.0"
+  ],
+  "pydantic-core": [
+   "==2.46.5"
+  ],
+  "pydantic-extra-types": [
+   ">=2.0.0",
+   ">=2.10.5"
+  ],
+  "pydantic-settings": [
+   ">=2.0.0"
+  ],
+  "pygments": [
+   "<3.0.0,>=2.13.0"
+  ],
+  "pyjwt": [
+   ">=2.10.1"
+  ],
+  "pynvvideocodec": [
+   "==2.0.4"
+  ],
+  "python-dotenv": [
+   ">=0.13",
+   ">=0.21.0"
+  ],
+  "python-multipart": [
+   ">=0.0.18",
+   ">=0.0.9"
+  ],
+  "pyyaml": [
+   ">=5.1"
+  ],
+  "pyzmq": [
+   ">=25.0.0"
+  ],
+  "quack-kernels": [
+   "==0.6.5"
+  ],
+  "referencing": [
+   ">=0.28.4",
+   ">=0.31.0"
+  ],
+  "regex": [
+   ">=2025.10.22"
+  ],
+  "requests": [
+   ">=2.0.0",
+   ">=2.26.0"
+  ],
+  "rich": [
+   ">=13.7.1",
+   ">=13.8.0"
+  ],
+  "rich-toolkit": [
+   ">=0.14.8",
+   ">=0.20.5"
+  ],
+  "rignore": [
+   ">=0.5.1"
+  ],
+  "rpds-py": [
+   ">=0.25.0",
+   ">=0.7.0"
+  ],
+  "safetensors": [
+   ">=0.4.3",
+   ">=0.6.2"
+  ],
+  "sentry-sdk": [
+   ">=2.20.0"
+  ],
+  "setuptools": [
+   "<81.0.0,>=77.0.3",
+   ">=77.0.3"
+  ],
+  "shellingham": [
+   ">=1.3.0"
+  ],
+  "six": [
+   ">=1.16.0"
+  ],
+  "sniffio": [
+   "<2,>=1"
+  ],
+  "sse-starlette": [
+   ">=3.0.0"
+  ],
+  "starlette": [
+   "<2.0.0,>=1.0.0",
+   ">=0.27",
+   ">=0.46.0",
+   ">=0.49.1",
+   ">=1.0.1"
+  ],
+  "supervisor": [
+   ">=4.2.0"
+  ],
+  "sympy": [
+   ">=1.13.3"
+  ],
+  "tiktoken": [
+   ">=0.6.0",
+   ">=0.7.0"
+  ],
+  "tilelang": [
+   "==0.1.12"
+  ],
+  "tokenizers": [
+   "<=0.23.0,>=0.22.0",
+   ">=0.21.1"
+  ],
+  "tokenspeed-mla": [
+   "==0.1.8"
+  ],
+  "tokenspeed-triton": [
+   ">=3.7.10.post20260531"
+  ],
+  "torch": [
+   "<3,>=2.3",
+   "==2.13.0",
+   ">=1.10.0",
+   ">=2.10.0",
+   ">=2.7",
+   ">=2.8.0"
+  ],
+  "torchaudio": [
+   "==2.11.0"
+  ],
+  "torchcodec": [
+   ">=0.14"
+  ],
+  "torchvision": [
+   "==0.28.0"
+  ],
+  "tqdm": [
+   ">=4.42.1",
+   ">=4.60",
+   ">=4.62.3"
+  ],
+  "transformers": [
+   ">=4.38.0",
+   ">=4.45.0",
+   ">=5.10.4"
+  ],
+  "triton": [
+   "==3.7.1"
+  ],
+  "truststore": [
+   ">=0.10"
+  ],
+  "typer": [
+   ">=0.16.0",
+   ">=0.26.1",
+   ">=0.9.0"
+  ],
+  "typing-extensions": [
+   "<5,>=4.14",
+   ">=4.1.0",
+   ">=4.10",
+   ">=4.10.0",
+   ">=4.11.0",
+   ">=4.12.2",
+   ">=4.13.0",
+   ">=4.14.1",
+   ">=4.15.0",
+   ">=4.16.0",
+   ">=4.5",
+   ">=4.5.0",
+   ">=4.6.0",
+   ">=4.8.0",
+   ">=4.9.0",
+   "~=4.12"
+  ],
+  "typing-inspection": [
+   ">=0.4.0",
+   ">=0.4.1",
+   ">=0.4.2"
+  ],
+  "urllib3": [
+   "<3,>=1.26",
+   ">=1.26",
+   ">=1.26.11"
+  ],
+  "uvicorn": [
+   ">=0.12.0",
+   ">=0.15.0",
+   ">=0.17.6",
+   ">=0.31.1"
+  ],
+  "uvloop": [
+   ">=0.15.1"
+  ],
+  "watchfiles": [
+   ">=0.20"
+  ],
+  "websockets": [
+   ">=13.0"
+  ],
+  "xgrammar": [
+   "<1.0.0,>=0.2.1"
+  ],
+  "yarl": [
+   "<2.0,>=1.17.0"
+  ],
+  "z3-solver": [
+   "<4.15.5,>=4.13.0"
+  ]
+ },
+ "sizes": {
+  "agent-detector": 9352,
+  "aiohappyeyeballs": 15038,
+  "aiohttp": 1789289,
+  "aiosignal": 7490,
+  "annotated-doc": 5302,
+  "annotated-types": 13427,
+  "anthropic": 1681654,
+  "anyio": 132079,
+  "apache-tvm-ffi": 2697683,
+  "astor": 27488,
+  "attrs": 67548,
+  "bitsandbytes": 60651714,
+  "blake3": 382499,
+  "cachetools": 16918,
+  "cbor2": 460420,
+  "certifi": 136983,
+  "cffi": 221824,
+  "charset-normalizer": 254660,
+  "click": 125251,
+  "cloudpickle": 22228,
+  "compressed-tensors": 211714,
+  "cryptography": 4752576,
+  "cuda-bindings": 6929124,
+  "cuda-core": 6563684,
+  "cuda-pathfinder": 62551,
+  "cuda-python": 7594,
+  "cuda-tile": 382172,
+  "cuda-toolkit": 2512,
+  "depyf": 39381,
+  "detect-installer": 5371,
+  "dill": 120019,
+  "dnspython": 331094,
+  "docstring-parser": 22484,
+  "einops": 65638,
+  "email-validator": 35604,
+  "fastapi": 117481,
+  "fastapi-cli": 14670,
+  "fastapi-cloud-cli": 108653,
+  "fastar": 807587,
+  "fastsafetensors": 2096038,
+  "filelock": 109665,
+  "flashinfer-python": 18348022,
+  "frozenlist": 234391,
+  "fsspec": 221738,
+  "googleapis-common-protos": 307737,
+  "grpcio": 7159572,
+  "h11": 37515,
+  "hf-xet": 4464663,
+  "httpcore": 78784,
+  "httpcore2": 83423,
+  "httptools": 486447,
+  "httpx": 73517,
+  "httpx2": 95597,
+  "huggingface-hub": 846435,
+  "humming-kernels": 322656,
+  "idna": 69583,
+  "ijson": 149857,
+  "instanttensor": 6150222,
+  "interegular": 23635,
+  "jinja2": 134899,
+  "jiter": 344990,
+  "jmespath": 20419,
+  "jsonschema": 90630,
+  "jsonschema-specifications": 18437,
+  "lark": 111036,
+  "llguidance": 3074809,
+  "llvmlite": 56275178,
+  "lm-format-enforcer": 45418,
+  "loguru": 61595,
+  "markdown-it-py": 91687,
+  "markupsafe": 22980,
+  "mcp": 365656,
+  "mcp-types": 69106,
+  "mdurl": 9979,
+  "mistral-common": 6580267,
+  "ml-dtypes": 410169,
+  "model-hosting-container-standards": 125666,
+  "mpmath": 536198,
+  "msgspec": 230472,
+  "multidict": 336213,
+  "nccl4py": 3688146,
+  "networkx": 2142205,
+  "ninja": 183365,
+  "numba": 3809537,
+  "numpy": 16633220,
+  "nvidia-cublas": 423138758,
+  "nvidia-cuda-cccl": 3120526,
+  "nvidia-cuda-crt": 134086,
+  "nvidia-cuda-cupti": 10715597,
+  "nvidia-cuda-nvcc": 37384532,
+  "nvidia-cuda-nvdisasm": 5203296,
+  "nvidia-cuda-nvrtc": 90215200,
+  "nvidia-cuda-runtime": 2243632,
+  "nvidia-cudnn-cu13": 366173588,
+  "nvidia-cudnn-frontend": 8797818,
+  "nvidia-cufft": 214085489,
+  "nvidia-cufile": 1223672,
+  "nvidia-curand": 59544258,
+  "nvidia-cusolver": 200941980,
+  "nvidia-cusparse": 145942937,
+  "nvidia-cusparselt-cu13": 170148586,
+  "nvidia-cutlass-dsl": 10460,
+  "nvidia-cutlass-dsl-libs-base": 2832969,
+  "nvidia-cutlass-dsl-libs-core": 1235214,
+  "nvidia-cutlass-dsl-libs-cu13": 88260292,
+  "nvidia-ml-py": 58132,
+  "nvidia-nccl-cu13": 205976000,
+  "nvidia-nvjitlink": 42452378,
+  "nvidia-nvshmem-cu13": 60412546,
+  "nvidia-nvtx": 148047,
+  "nvidia-nvvm": 61601415,
+  "nvtx": 782575,
+  "openai": 2090965,
+  "openai-harmony": 2953260,
+  "opencv-python-headless": 61204038,
+  "opentelemetry-api": 60020,
+  "opentelemetry-exporter-http-transport": 12156,
+  "opentelemetry-exporter-otlp": 6728,
+  "opentelemetry-exporter-otlp-common": 12387,
+  "opentelemetry-exporter-otlp-proto-common": 15394,
+  "opentelemetry-exporter-otlp-proto-grpc": 19492,
+  "opentelemetry-exporter-otlp-proto-http": 22260,
+  "opentelemetry-proto": 72486,
+  "opentelemetry-sdk": 140132,
+  "opentelemetry-semantic-conventions": 206277,
+  "opentelemetry-semantic-conventions-ai": 11250,
+  "outlines-core": 2341051,
+  "packaging": 129956,
+  "partial-json-parser": 10877,
+  "pillow": 6937129,
+  "prometheus-client": 64494,
+  "prometheus-fastapi-instrumentator": 19649,
+  "propcache": 234316,
+  "protobuf": 343223,
+  "psutil": 155560,
+  "py-cpuinfo": 22335,
+  "pybase64": 95718,
+  "pycountry": 8044600,
+  "pycparser": 48172,
+  "pydantic": 472589,
+  "pydantic-core": 2066633,
+  "pydantic-extra-types": 79526,
+  "pydantic-settings": 69413,
+  "pygments": 1250147,
+  "pyjwt": 33860,
+  "pynvvideocodec": 43176124,
+  "python-dotenv": 23266,
+  "python-json-logger": 14988,
+  "python-multipart": 30042,
+  "pyyaml": 801626,
+  "pyzmq": 872258,
+  "quack-kernels": 729615,
+  "referencing": 26766,
+  "regex": 807902,
+  "requests": 73075,
+  "rich": 310654,
+  "rich-toolkit": 39370,
+  "rignore": 928035,
+  "rpds-py": 365678,
+  "safetensors": 516040,
+  "sentencepiece": 1397593,
+  "sentry-sdk": 534254,
+  "setproctitle": 33284,
+  "setuptools": 1064234,
+  "shellingham": 9755,
+  "six": 11050,
+  "sniffio": 10235,
+  "sse-starlette": 17407,
+  "starlette": 78980,
+  "supervisor": 320736,
+  "sympy": 6299353,
+  "tabulate": 39814,
+  "tiktoken": 1203884,
+  "tilelang": 50501074,
+  "tokenizers": 3274982,
+  "tokenspeed-mla": 755827,
+  "tokenspeed-triton": 99900581,
+  "torch": 526602329,
+  "torch-c-dlpack-ext": 755004,
+  "torchao": 3206172,
+  "torchaudio": 1771992,
+  "torchcodec": 9973287,
+  "torchvision": 7674669,
+  "tqdm": 80199,
+  "transformers": 11150587,
+  "triton": 197729241,
+  "truststore": 18660,
+  "typer": 123130,
+  "typing-extensions": 45571,
+  "typing-inspection": 14750,
+  "urllib3": 135717,
+  "uvicorn": 87427,
+  "uvloop": 4480449,
+  "vllm": 314883777,
+  "watchfiles": 458353,
+  "websockets": 224611,
+  "xgrammar": 1311293,
+  "yarl": 117012,
+  "z3-solver": 29268352
+ }
+}

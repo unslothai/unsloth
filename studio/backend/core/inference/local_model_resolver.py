@@ -426,13 +426,18 @@ def _local_gguf_entry(
         # and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
-        # Rank the ROOT checkpoints alone when there are any. A plain local load resolves through non-recursive
-        # detect_gguf_model and so always takes the repo root, while preferred_quant ranks on the key text and would
-        # hand a bare id an equally-good ``distilled/...`` row that sorts earlier -- the same id serving different
-        # weights depending on which resolver answered it. The qualified rows stay advertised; they are not what a bare
-        # id means.
-        unqualified = tuple(q for q in quants if "/" not in q)
-        best = preferred_quant(unqualified or quants)
+        # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
+        from hub.utils.gguf import default_gguf_scope
+
+        best = preferred_quant(
+            default_gguf_scope(
+                quants,
+                getattr(info, "id", None),
+                getattr(info, "model_id", None),
+                loader_id,
+                str(cache_repo_dir) if cache_repo_dir is not None else None,
+            )
+        )
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(
@@ -866,6 +871,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             found += _scan_lmstudio_dir(lm_dir)
     except Exception as exc:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
+    try:
+        from utils.paths import omlx_model_dirs
+        for omlx_dir in omlx_model_dirs():
+            found += _scan_hf_once(omlx_dir) + _scan_lmstudio_dir(omlx_dir, source = "omlx")
+    except Exception as exc:
+        logger.debug("auto-switch: oMLX scan failed: %s", exc)
     # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
     # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
     try:
@@ -888,12 +899,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                custom_found += dedupe_custom_gguf_rows(
+                rows = (
                     _scan_models_dir(fp, limit = 200)
                     + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
                     + _scan_lmstudio_dir(fp)
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
+                if folder.get("recursive"):
+                    from routes.models import _scan_nested_compat_rows
+                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
+                custom_found += dedupe_custom_gguf_rows(rows)
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)
@@ -1328,6 +1343,31 @@ def _resolve_from_index(
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
+
+
+def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:
+    """The on-disk quant ``repo:VARIANT`` pins, by current label or legacy alias, else None.
+
+    Unlike :func:`resolve_local_gguf`, a suffix naming no quant (``:latest``) never falls back to the
+    repo's preferred one. ``allow_scan=False`` answers from the last built index, never rebuilding it.
+    """
+    base, sep, wanted = requested.rpartition(":")
+    if not sep:
+        return None
+    try:
+        entry = (_index() if allow_scan else _snapshot()[1]).get(base.strip().lower())
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    wanted = wanted.strip().lower()
+    for variant in entry.variants:
+        if variant.lower() == wanted:
+            return variant
+    for legacy, current in entry.aliases:
+        if legacy == wanted:
+            return current
+    return None
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:

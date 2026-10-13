@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AudioWave01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
   Download01Icon,
@@ -10,15 +9,15 @@ import {
   FlimSlateIcon,
   Folder01Icon,
   Image03Icon,
-  InternetIcon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -41,10 +40,10 @@ const ITEM_META: Record<
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
-  audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
+  audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
-  api: { icon: InternetIcon, labelKey: "shell.navigation.api" },
+  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

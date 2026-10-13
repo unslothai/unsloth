@@ -80,7 +80,6 @@ __INT_TO_FLOAT_MAPPER = \
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ),
     "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
-        "unsloth/mistral-7b-instruct-v0.1",
         "mistralai/Mistral-7B-Instruct-v0.1",
     ),
     "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
@@ -335,7 +334,6 @@ __INT_TO_FLOAT_MAPPER = \
         "NousResearch/Hermes-3-Llama-3.1-8B",
     ),
     "unsloth/Hermes-3-Llama-3.1-70B-bnb-4bit" : (
-        "unsloth/Hermes-3-Llama-3.1-70B",
         "NousResearch/Hermes-3-Llama-3.1-70B",
     ),
     "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
@@ -568,7 +566,6 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen2-VL-7B",
     ),
     "unsloth/Qwen2-VL-72B-bnb-4bit" : (
-        "unsloth/Qwen2-VL-72B",
         "Qwen/Qwen2-VL-72B",
     ),
     "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit" : (
@@ -611,7 +608,6 @@ __INT_TO_FLOAT_MAPPER = \
         "allenai/Llama-3.1-Tulu-3-8B",
     ),
     "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit" : (
-        "unsloth/Llama-3.1-Tulu-3-70B",
         "allenai/Llama-3.1-Tulu-3-70B",
     ),
     "unsloth/QwQ-32B-Preview-bnb-4bit" : (
@@ -699,7 +695,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
     ),
     "unsloth/OpenThinker-7B-unsloth-bnb-4bit" : (
-        "unsloth/OpenThinker-7B",
         "open-thoughts/OpenThinker-7B",
         "unsloth/OpenThinker-7B-bnb-4bit",
     ),

@@ -24,6 +24,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    wait_for_smoke_page,
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5419"))
@@ -198,6 +199,52 @@ def check_counting(page, engine: str, mode: str, mod: str) -> None:
         f"{counter(page)!r} != {shown!r}",
     )
     close_bar(page)
+
+
+def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> None:
+    search_page = new_page(page.context)
+    try:
+        for outer_scroll in (False, True):
+            search_page.evaluate("outer => window.__findSmoke.setOuterScroll(outer)", outer_scroll)
+            origin = search_page.locator("[data-find-scope] .mx-auto > .rounded-xl").first
+            origin.evaluate("element => { element.tabIndex = 0; }")
+            for dismiss in ("Escape", "button"):
+                origin.focus()
+                open_bar(search_page, mod)
+                field = search_page.locator('[role="search"] input')
+                field.fill("")
+                search_page.wait_for_function("() => !window.__findSmoke.counter()")
+                field.fill("unsloth")
+                search_page.wait_for_function("() => !!window.__findSmoke.counter()")
+                for _ in range(10):
+                    field.press("Enter")
+                search_page.wait_for_timeout(300)
+                before = search_page.evaluate("() => window.__findSmoke.scrollTop()")
+                if dismiss == "Escape":
+                    close_bar(search_page)
+                else:
+                    search_page.get_by_role("button", name = "Close find", exact = True).click()
+                search_page.wait_for_function("() => !window.__findSmoke.state().open")
+                search_page.evaluate(
+                    "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+                )
+                after = search_page.evaluate("() => window.__findSmoke.scrollTop()")
+                layout = "outer scroller" if outer_scroll else "chat scroller"
+                check(
+                    engine,
+                    mode,
+                    f"{dismiss} preserves the search position in the {layout}",
+                    before > 500 and abs(after - before) <= 1,
+                    f"scrollTop {before} -> {after}",
+                )
+                check(
+                    engine,
+                    mode,
+                    f"{dismiss} restores focus in the {layout}",
+                    origin.evaluate("element => document.activeElement === element"),
+                )
+    finally:
+        search_page.close()
 
 
 def check_walk(page, engine: str, mode: str, mod: str) -> None:
@@ -702,6 +749,7 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
 
 def run_page(page, engine: str, mode: str, mod: str) -> None:
     for probe in (
+        check_close_preserves_position,
         check_chord,
         check_counting,
         check_walk,
@@ -1107,6 +1155,7 @@ def main() -> int:
 
     server = start_vite(PORT)
     try:
+        wait_for_smoke_page(URL, "smoke-find-in-page-main.tsx", proc = server)
         with sync_playwright() as pw:
             for engine in ENGINES:
                 run_engine(pw, engine)

@@ -250,3 +250,85 @@ def test_post_hook_always_clears_flag_after_forward_and_on_exception():
     with pytest.raises(RuntimeError):
         dit()
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
+
+
+def _t2v_kwargs(device = "cpu"):
+    return {
+        "image_embeds": torch.zeros(1, 5, 3, device = device),
+        "encoder_hidden_states": torch.arange(8.0, device = device).reshape(1, 4, 2),
+        "encoder_attention_mask": torch.tensor([[1, 1, 0, 0]], device = device),
+        "encoder_hidden_states_2": torch.arange(3.0, device = device).reshape(1, 3, 1),
+        "encoder_attention_mask_2": torch.tensor([[1, 0, 0]], device = device),
+    }
+
+
+def test_trim_pre_hook_plans_once_per_input_tensors_and_matches_the_stock_trim():
+    # A pipeline hands the same prompt tensors to every step: the decisions (host reads) are made once and reused.
+    dit = _fake_dit()
+    base = _t2v_kwargs()
+    first = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+    second = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+    for key in base:
+        assert torch.equal(first[key], second[key])
+    want_s, want_m, _ = att._trim_stream(
+        base["encoder_hidden_states"], base["encoder_attention_mask"]
+    )
+    assert torch.equal(second["encoder_hidden_states"], want_s) and torch.equal(
+        second["encoder_attention_mask"], want_m
+    )
+    assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 1
+    # an edited mask (version bump) or a new tensor plans afresh
+    base["encoder_attention_mask"][0, 2] = 1
+    third = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+    assert third["encoder_hidden_states"].shape == (1, 3, 2)
+    assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_trim_pre_hook_makes_no_host_wait_after_the_first_step():
+    import warnings
+
+    dit = _fake_dit()
+    base = _t2v_kwargs("cuda")
+    att._hunyuan_trim_pre_hook(dit, (), dict(base))  # step 0 reads the host
+    torch.cuda.synchronize()
+    prev = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("warn")
+    try:
+        with warnings.catch_warnings(record = True) as caught:
+            warnings.simplefilter("always")
+            out = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+    finally:
+        torch.cuda.set_sync_debug_mode(prev)
+    assert not [w for w in caught if "synchroniz" in str(w.message).lower()]
+    assert out["encoder_hidden_states"].shape == (1, 2, 2)
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
+
+
+def test_the_null_mask_flag_keys_the_cuda_graph():
+    # The flag picks the attention branch inside the forward: the graph layer keys on it (GRAPH_KEY_EXTRA_ATTR).
+    import core.inference.diffusion_cuda_graph as cg
+
+    dit = _fake_dit()
+    dit.transformer_blocks[0].attn.processor = None
+    assert att._hunyuan_null_mask_state(dit) is False
+    att._set_hunyuan_null_mask(dit, True)
+    assert att._hunyuan_null_mask_state(dit) is True
+    assert cg.GRAPH_KEY_EXTRA_ATTR == "_unsloth_graph_key_extra"
+
+
+def test_trim_pre_hook_trims_and_plans_once_for_inference_tensors():
+    # Renders run under torch.inference_mode: an inference tensor has no version counter (reading one raises), and
+    # the hook must still trim (not fall back to the untrimmed inputs) and reuse its plan.
+    dit = _fake_dit()
+    with torch.inference_mode():
+        base = _t2v_kwargs()
+        out = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+        again = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
+    assert out["image_embeds"].shape == (1, 0, 3)
+    assert out["encoder_hidden_states"].shape == (1, 2, 2) and out[
+        "encoder_hidden_states_2"
+    ].shape == (1, 1, 1)
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
+    assert torch.equal(out["encoder_hidden_states"], again["encoder_hidden_states"])
+    assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 1

@@ -20,6 +20,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { COMPOSER_INPUT_SELECTOR } from "@/features/settings";
 import {
   Tooltip,
   TooltipContent,
@@ -52,6 +53,8 @@ type PromptQueueListProps = {
 };
 
 /** The queue engine owns dispatch and validates every mutation against live IDs. */
+const MENU_OR_TRIGGER = "[data-slot='dropdown-menu-content'], [data-queue-menu]";
+
 export function PromptQueueList({
   entry,
   items,
@@ -72,6 +75,17 @@ export function PromptQueueList({
   const composingRef = useRef(false);
   const composingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editFromMenuRef = useRef(false);
+  const pointerDownRef = useRef<{ target: EventTarget | null; at: number }>({
+    target: null,
+    at: 0,
+  });
+  useEffect(() => {
+    const note = (event: PointerEvent) => {
+      pointerDownRef.current = { target: event.target, at: event.timeStamp };
+    };
+    document.addEventListener("pointerdown", note, true);
+    return () => document.removeEventListener("pointerdown", note, true);
+  }, []);
   const instructionsId = useId();
   const editingItem = items.find(
     (item) => item.id === editingId && item.canEdit,
@@ -129,7 +143,7 @@ export function PromptQueueList({
     const id = editingId;
     setEditingId(null);
     setDraft("");
-    // The editor replaces its row controls. Restore focus once they return.
+    // restore focus after the editor's row controls return.
     requestAnimationFrame(() => {
       const row = Array.from(
         listRef.current?.querySelectorAll<HTMLElement>(
@@ -141,7 +155,7 @@ export function PromptQueueList({
   }
 
   function saveEditing() {
-    if (!editingItem || !draft.trim()) return;
+    if (!editingItem || (!draft.trim() && !editingItem.attachmentNames?.length)) return;
     if (onEdit(editingItem.id, draft)) {
       setAnnouncement(t("promptQueue.announceUpdated"));
       finishEditing();
@@ -151,8 +165,7 @@ export function PromptQueueList({
   }
 
   return (
-    // Browsers paint the scrollbar outside the scroller's own radius, so the
-    // rounding and the clip live on this frame instead.
+    // browsers paint scrollbars outside scroller radii, so this frame owns rounding and clipping.
     <div
       data-queue-frame=""
       className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
@@ -191,7 +204,7 @@ export function PromptQueueList({
                 aria-label={t("promptQueue.itemLabel", {
                   position,
                   total: items.length,
-                  prompt: item.prompt,
+                  prompt: [item.prompt, ...(item.attachmentNames ?? [])].filter(Boolean).join(" · "),
                 })}
                 className={cn(
                   "group relative rounded-lg transition-colors",
@@ -292,7 +305,7 @@ export function PromptQueueList({
                       type="button"
                       size="sm"
                       className="focus-visible:bg-primary/80"
-                      disabled={!draft.trim()}
+                      disabled={!draft.trim() && !item.attachmentNames?.length}
                       onClick={saveEditing}
                     >
                       {t("promptQueue.save")}
@@ -341,6 +354,12 @@ export function PromptQueueList({
                     />
                     <span className="min-w-0 flex-1 truncate px-1.5 text-sm text-foreground/80">
                       {item.prompt}
+                      {item.attachmentNames?.length ? (
+                        <span title={item.attachmentNames.join(", ")}>
+                          {item.prompt ? " · " : ""}
+                          {item.attachmentNames.join(", ")}
+                        </span>
+                      ) : null}
                     </span>
                     {index === 0 && entry.paused && (
                       <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">
@@ -397,6 +416,29 @@ export function PromptQueueList({
                       className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
+                      // A queued send focuses the composer: stay open and take focus back, or Escape lands there.
+                      // Any other focus move, or one a pointer just caused, dismisses as before.
+                      onFocusOutside={(event) => {
+                        const { target, relatedTarget, timeStamp } =
+                          event.detail.originalEvent;
+                        const down = pointerDownRef.current;
+                        const byPointer =
+                          timeStamp - down.at < 1000 &&
+                          down.target instanceof Element &&
+                          !down.target.closest(MENU_OR_TRIGGER);
+                        if (
+                          byPointer ||
+                          !(target instanceof Element) ||
+                          !target.matches(COMPOSER_INPUT_SELECTOR)
+                        )
+                          return;
+                        event.preventDefault();
+                        if (
+                          relatedTarget instanceof HTMLElement &&
+                          relatedTarget.closest(MENU_OR_TRIGGER)
+                        )
+                          relatedTarget.focus({ preventScroll: true });
+                      }}
                       onCloseAutoFocus={(event) => {
                         if (!editFromMenuRef.current) return;
                         event.preventDefault();

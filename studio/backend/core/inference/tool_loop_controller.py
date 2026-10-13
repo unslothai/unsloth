@@ -20,8 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import split_images as split_mcp_images
+from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
 # is trusted on.
@@ -48,6 +49,15 @@ UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 _JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
+    raise ValueError(f"{name} is not JSON")
+
+
+# Built once: `json.loads` with any keyword constructs a fresh decoder per call.
+_STRICT_JSON_DECODER = json.JSONDecoder(parse_constant = _reject_json_constant)
+
+
 def _looks_like_broken_json(raw: str) -> bool:
     """Whether this text was MEANT to be a JSON object and stopped before finishing.
 
@@ -64,7 +74,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     if not text.startswith(("{", "[")):
         return False
     try:
-        json.loads(text)
+        _STRICT_JSON_DECODER.decode(text)
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
@@ -81,6 +91,9 @@ def _looks_like_broken_json(raw: str) -> bool:
             return False
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
+    except (ValueError, RecursionError):
+        # Digit cap, recursion limit or NaN/Infinity: unreadable is as broken as cut off.
+        return True
     return False
 
 
@@ -338,13 +351,13 @@ class ToolCallCompletion:
         return message
 
     def mcp_images(self) -> list[dict]:
-        """Images this call returned, and only for a call an MCP server served.
+        """Images returned by an MCP server or the sandbox image viewer.
 
         The envelope is a plain suffix, so any tool whose output happens to end in
         one -- terminal output, a fetched page -- would otherwise have its bytes
         decoded and attached as model image input.
         """
-        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+        if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
         return split_mcp_images(self.result)[1]
 
@@ -703,12 +716,14 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
-            parsed = json.loads(raw_args)
+            # NaN/Infinity would replay as JSON no provider parses.
+            parsed = _STRICT_JSON_DECODER.decode(raw_args)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
                     coerce_arguments_by_schema(parsed, properties, repair = heal), False
                 )
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, RecursionError):
+            # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
             # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
@@ -811,6 +826,8 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "view_image":
+        return "Viewing image: " + str(arguments.get("path") or "")[:80]
     if tool_name == "edit_file":
         # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
@@ -842,6 +859,65 @@ def awaiting_approval_status(tool_name: str) -> str:
 
 def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
+
+
+TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
+
+
+def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
+    """Replayed tool results as the model saw them (error nudge, folded feedback from
+    ``extra_content``, no citation map), so the cached prefix holds. Idempotent."""
+    out = list(messages)
+    for i, message in enumerate(out):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        # The source map is the card's; the live loop never showed it.
+        if message.get("name") in _SOURCE_MAP_TOOLS and "\n__RAG_SOURCES__:" in content:
+            content = _strip_rag_sources_sentinel(content)
+        extra = message.get("extra_content")
+        suffix = extra.get(TOOL_MODEL_SUFFIX_KEY) if isinstance(extra, dict) else None
+        suffix = suffix if isinstance(suffix, str) else ""
+        # `in`: restored output may carry feedback after the nudge.
+        nudge = (
+            TOOL_ERROR_NUDGE if is_tool_error(content) and TOOL_ERROR_NUDGE not in content else ""
+        )
+        restored = {**message, "content": content}
+        if nudge or suffix:
+            # Before any envelope, as live: text after the image array breaks its parse.
+            from core.inference.tools import _split_frontend_suffix
+            body, envelope = _split_frontend_suffix(content, message.get("name"))
+            restored["content"] = body + nudge + suffix + envelope
+        if isinstance(extra, dict) and TOOL_MODEL_SUFFIX_KEY in extra:
+            rest = {k: v for k, v in extra.items() if k != TOOL_MODEL_SUFFIX_KEY}
+            if rest:
+                restored["extra_content"] = rest
+            else:
+                restored.pop("extra_content", None)
+        if restored != message:
+            out[i] = restored
+    return out
+
+
+def _strip_mcp_ui_suffix(result: str) -> str:
+    """The payload is one JSON line, so the scan stops there; images may follow."""
+    marker = "\n__MCP_UI__:"
+    start = result.rfind(marker)
+    if start == -1:
+        return result
+    payload_start = start + len(marker)
+    end = result.find("\n", payload_start)
+    if end == -1:
+        end = len(result)
+    try:
+        payload = json.loads(result[payload_start:end])
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
+        return result
+    return (result[:start] + result[end:]).rstrip()
 
 
 def _strip_files_sentinel(result: str) -> str:
@@ -943,6 +1019,11 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
+# edit_file emits it too, for a file it created.
+_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+
+# Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
+_MCP_TOOL_PREFIX = "mcp__"
 
 # Same rule for the other two envelopes. The image one is emitted by the sandbox tools
 # through `_created_file_sentinels` and by Gemini's hosted code_execution through the
@@ -952,7 +1033,14 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
+_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
+
+
+def _reruns_after_new_work(tool_name: Any) -> bool:
+    """An MCP tool can change state too (`list, create, list`), so it follows the workspace rerun rule (#10348)."""
+    return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
 
 
 # `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
@@ -998,7 +1086,10 @@ def strip_result_for_model(
     # never be shown them as text. Provenance decides whether they become IMAGE
     # input, which is a separate question answered in mcp_images._promote.
     result = split_mcp_images(result)[0]
-    if tool_name is None or tool_name in _SANDBOX_TOOLS:
+    # After the image strip, which leaves the UI envelope as the tail.
+    if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
+        result = _strip_mcp_ui_suffix(result)
+    if tool_name is None or tool_name in _FILE_SENTINEL_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
         result = _strip_images_sentinel(result)
@@ -1116,15 +1207,21 @@ class ToolLoopController:
         *,
         tools: Sequence[Mapping[str, Any]] | None,
         auto_heal_tool_calls: bool = True,
+        deduplicate_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
+        self._session_id = session_id
+        self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._auto_heal_tool_calls = auto_heal_tool_calls
+        self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
@@ -1176,7 +1273,11 @@ class ToolLoopController:
             tool_name = tool_name,
             tool_schemas = self._tools,
         )
-        key = canonical_tool_call_key(tool_name, coerced.arguments)
+        arguments = coerced.arguments
+        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
+            from core.inference.tools import canonicalize_web_search_arguments
+            arguments = canonicalize_web_search_arguments(arguments)
+        key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
@@ -1196,26 +1297,60 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif key in self._successful_keys:
+        elif (
+            self._deduplicate_tool_calls
+            and key in self._successful_keys
+            and tool_name not in BROWSER_TOOL_NAMES
+        ):
+            # Not the browser tools: each acts on or reads the page as it is now, so a second
+            # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 
         return ToolCallDecision(
             action = action,
             tool_name = tool_name,
-            arguments = coerced.arguments,
+            arguments = arguments,
             tool_call_id = str(tool_call.get("id") or ""),
             card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
-            status_text = status_for_tool(tool_name, coerced.arguments),
+            status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
         )
+
+    def reprepare_call(
+        self,
+        decision: ToolCallDecision,
+        *,
+        forced: bool = False,
+        provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
+    ) -> ToolCallDecision:
+        """Reclassify a call after a pre-execution normalizer changed its arguments.
+
+        The decision's replay, status and duplicate key must all describe the arguments that
+        execute. A second preparation keeps the ordinary controller rules as the source of truth.
+        """
+        tool_call = decision.as_assistant_tool_call()
+        if decision.card_call_id:
+            tool_call["card_id"] = decision.card_call_id
+        refreshed = self.prepare_call(
+            tool_call,
+            forced = forced,
+            provisional = provisional,
+            allowed_tool_names = allowed_tool_names,
+        )
+        # The second pass receives an argument mapping, so retain provenance from the first parse,
+        # notably whether a local model's bare argument was healed.
+        refreshed.provenance.update(decision.provenance)
+        return refreshed
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,
@@ -1227,14 +1362,17 @@ class ToolLoopController:
         # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
-        if decision.tool_name in _WORKSPACE_TOOLS:
-            if decision.key not in self._workspace_ran:
+        if _reruns_after_new_work(decision.tool_name):
+            if (
+                decision.tool_name not in _WORKSPACE_READ_TOOLS
+                and decision.key not in self._workspace_ran
+            ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {
                 key
                 for key in self._successful_keys
-                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                if _reruns_after_new_work(key.partition(":")[0])
                 and self._workspace_novel_at.get(key, 0) < self._workspace_novel
             }
             self._successful_keys -= stale
@@ -1251,6 +1389,25 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _cap_result(self, text: str, tool_name: str | None) -> str:
+        """The card and the model get the same capped body; the frontend envelope stays whole."""
+        from core.inference.tools import (  # noqa: PLC0415 -- import cycle
+            _hard_cap_chars,
+            _split_frontend_suffix,
+            cap_tool_text,
+        )
+
+        if len(text) <= _hard_cap_chars():
+            return text
+        body, suffix = _split_frontend_suffix(text, tool_name)
+        capped = cap_tool_text(
+            body,
+            session_id = self._session_id,
+            thread_id = self._thread_id,
+            readers = frozenset(self._allowed_tool_names),
+        )
+        return text if capped is body else capped + suffix
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""

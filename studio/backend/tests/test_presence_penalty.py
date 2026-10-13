@@ -434,7 +434,12 @@ def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_i
     worker_source = (
         Path(__file__).resolve().parents[1] / "core" / "inference" / "worker.py"
     ).read_text(encoding = "utf-8")
-    assert '("is_audio", "audio_type", "has_audio_input", "has_video_input")' in worker_source
+    import re
+
+    mirrored = re.search(r'for k in \(\s*("is_audio",[^)]*)\)', worker_source)
+    assert mirrored, "the worker's mirrored classification keys moved"
+    for key in ("is_audio", "audio_type", "has_audio_input", "has_video_input"):
+        assert f'"{key}"' in mirrored.group(1)
 
 
 def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():

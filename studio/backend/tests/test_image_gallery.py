@@ -540,3 +540,55 @@ def test_thumbnail_is_a_downscaled_webp_of_the_png():
     with Image.open(io.BytesIO(data)) as im:
         assert im.format == "WEBP"
         assert im.size == (16, 8)
+
+
+def _noisy(size = 128):
+    # Incompressible-ish content so the deflate level changes the encoded bytes.
+    import random
+    rng = random.Random(1234)
+    return Image.frombytes(
+        "RGB", (size, size), bytes(rng.randrange(256) for _ in range(size * size * 3))
+    )
+
+
+def _encode(image, level):
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    info.add_text("unsloth", _json.dumps(_meta()))
+    info.add_text("parameters", gallery._params_text(_meta()))
+    buf = io.BytesIO()
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = level)
+    return buf.getvalue()
+
+
+def test_gallery_png_uses_fast_deflate_by_default(monkeypatch):
+    # The gallery encode is on the request path after the last denoise step; the default level must be the fast one.
+    monkeypatch.delenv(gallery.PNG_COMPRESS_LEVEL_ENV, raising = False)
+    image = _noisy()
+    data = gallery._png_bytes(image, _meta())
+    assert data == _encode(image, 1)
+    assert data != _encode(image, 6)
+
+
+def test_gallery_png_level_kill_switch_restores_pillow_default(monkeypatch):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, "6")
+    image = _noisy()
+    assert gallery._png_bytes(image, _meta()) == _encode(image, 6)
+
+
+@pytest.mark.parametrize("raw", ["", "fast", "-1", "10"])
+def test_gallery_png_level_rejects_invalid_values(monkeypatch, raw):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, raw)
+    assert gallery.png_compress_level() == 1
+
+
+@pytest.mark.parametrize("level", ["0", "1", "6", "9"])
+def test_gallery_png_is_lossless_at_any_level(monkeypatch, level):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, level)
+    image = _noisy(64)
+    record = gallery.save(image, _meta())
+    raw = base64.b64decode(gallery.image_b64(record["id"]))
+    with Image.open(io.BytesIO(raw)) as im:
+        assert im.convert("RGB").tobytes() == image.tobytes()
+        assert _json.loads(im.text["unsloth"])["seed"] == 7

@@ -399,6 +399,51 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     )
 
 
+def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkeypatch, tmp_path):
+    """#12860: the plan skips the dense shards a pre-cast encoder replaces, so a failed pre-cast load
+    (os error 1455 on Windows) must stop with a clear error, not fall back to shards that are not there."""
+    pytest.importorskip("torch")
+    import json
+
+    import core.inference.diffusion_precision as precision
+    import core.inference.prequant_safetensors as prequant_safetensors
+
+    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),), base_repo = str(tmp_path))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    ckpt = tmp_path / "te.safetensors"
+    ckpt.write_bytes(b"")
+    monkeypatch.setattr(tpq, "_resolve_checkpoint_path", lambda *a, **k: str(ckpt))
+
+    def out_of_commit(*a, **k):
+        raise OSError(
+            "The paging file is too small for this operation to complete. (os error 1455)"
+        )
+
+    monkeypatch.setattr(prequant_safetensors, "load_plain_prequant_safetensors", out_of_commit)
+    encoder = tmp_path / "text_encoder"
+    encoder.mkdir()
+    (encoder / "config.json").write_text("{}")
+    shard = "model-00001-of-00001.safetensors"
+    (encoder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": shard}}))
+
+    def load(dense_source):
+        return te_prequant_pipe_kwargs(
+            fam,
+            str(tmp_path),
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+            dense_source = dense_source,
+        )
+
+    # assembly that can still fetch the shards keeps the dense fallback
+    assert load(None) == {}
+    with pytest.raises(RuntimeError, match = r"text_encoder .*\(os error 1455\).*Dense \(bf16\)"):
+        load(str(tmp_path))
+    (encoder / shard).write_bytes(b"")
+    assert load(str(tmp_path)) == {}
+
+
 def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
     """A family hosting several TE components (flux.1: T5 as text_encoder_2) gets each
     one injected under its own attr; unhosted components stay dense."""
@@ -985,13 +1030,17 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
 
     def unreachable(**kw):
         asked.append(kw["filename"])
+        online.append(not kw.get("local_files_only"))
         raise LocalEntryNotFoundError("Hub unreachable")
 
+    online: list = []
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
-    # ONLINE: surfaces as itself, and the second candidate is never attempted.
-    with pytest.raises(LocalEntryNotFoundError):
+    # ONLINE: surfaces as itself, and the second candidate is never fetched: only looked up in the cache, which
+    # costs no network attempt (a cached fallback is still usable during an outage).
+    with pytest.raises(LocalEntryNotFoundError, match = "Hub unreachable"):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
+    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
+    assert online == [True, False], online
 
     # OFFLINE: a cache miss is the only verdict there is, so the chain is walked.
     asked.clear()
@@ -1048,15 +1097,17 @@ def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
     default load, which is the opposite of why the field exists. Catches a family opting in
     before its artifact is published, and a scheme/component pair that does not line up."""
     from core.inference.diffusion_families import _FAMILIES
-    from core.inference.diffusion_te_prequant import family_te_prequant_repo
+    from core.inference.diffusion_te_prequant import resolve_te_prequant_source
 
     offenders = []
     for fam in _FAMILIES:
         scheme = getattr(fam, "te_quant_auto", None)
         if scheme is None:
             continue
+        # The resolver, not the fp8 table alone: a hosted int8 encoder (TE_INT8_CONVROT_FILES) lists the family's fp8
+        # file behind it, so the default never costs a dense download.
         if not any(
-            family_te_prequant_repo(fam, scheme, component)
+            resolve_te_prequant_source(fam, component, scheme)
             for component in tpq.TE_PREQUANT_COMPONENTS
         ):
             offenders.append(
@@ -1067,16 +1118,22 @@ def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
     )
 
 
-def test_qwen_image_2_1_defaults_to_the_hosted_fp8_encoder():
+def test_qwen_image_2_1_defaults_to_a_hosted_encoder():
     """The family this was built for. Its encoder (Qwen3-VL-8B, 16.33 GiB dense) is bigger than
     its INT8 denoiser (6.76 GiB), so leaving it dense is what made a quantised pick still cost
     ~26 GB. Named rather than covered only by the sweep above, because the whole change is
-    pointless if this one row regresses."""
+    pointless if this one row regresses. The default is the int8 ConvRot encoder, with the fp8
+    one behind it in the same repo."""
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_te_prequant import resolve_te_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1")
-    assert fam.te_quant_auto == "fp8"
+    assert fam.te_quant_auto == "int8"
+    source = resolve_te_prequant_source(fam, "text_encoder", "int8")
+    assert source is not None and source.kind == "repo"
+    assert source.location == "unsloth/Qwen-Image-2.1-FP8"
+    assert source.filename == "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
+    assert source.fallback_filenames[0] == "Qwen-Image-2.1-text_encoder-FP8.safetensors"
     source = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert source is not None and source.kind == "repo"
     assert source.location == "unsloth/Qwen-Image-2.1-FP8"

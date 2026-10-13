@@ -227,15 +227,93 @@ def test_linux_arm64_has_no_prebuilt():
     assert _resolve("Linux", "aarch64") is None
 
 
-# ── Windows ─────────────────────────────────────────────────────────────────
-
-
 def test_windows_auto_picks_avx2():
     assert _resolve("Windows", "AMD64") == "sd-master-8caa3f9-bin-win-avx2-x64.zip"
 
 
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_windows_cpu_selection_with_unsloth_vulkan_asset(accelerator, reverse):
+    cpu = "sd-master-813-bfbef5b-u1d02858-bin-win-cpu-x64.zip"
+    vulkan = "sd-master-813-bfbef5b-u1d02858-bin-win-vulkan-x64.zip"
+    assets = [cpu, vulkan]
+    if reverse:
+        assets.reverse()
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        == cpu
+    )
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("gpu", ["cuda12", "vulkan", "rocm", "sycl", "musa"])
+def test_windows_cpu_selection_never_uses_accelerator_build(accelerator, gpu):
+    assets = [f"sd-master-test-bin-win-{gpu}-avx2-x64.zip"]
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        is None
+    )
+    cpu = "sd-master-test-bin-win-cpu-x64.zip"
+    assert (
+        resolve_release_asset(
+            [*assets, cpu], system = "Windows", machine = "AMD64", accelerator = accelerator
+        )
+        == cpu
+    )
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+def test_windows_cpu_selection_keeps_upstream_avx2_preference(accelerator):
+    avx2 = "sd-master-test-bin-win-avx2-x64.zip"
+    assets = ["sd-master-test-bin-win-cpu-x64.zip", avx2]
+    assert (
+        resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
+        == avx2
+    )
+
+
 def test_windows_cuda_picks_cuda12():
     assert _resolve("Windows", "AMD64", "cuda") == "sd-master-8caa3f9-bin-win-cuda12-x64.zip"
+
+
+_CUDA_SPLIT = [
+    "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+    "sd-x-bin-win-cuda12-x64.zip",
+    "sd-x-bin-win-cuda13-x64.zip",
+    "sd-x-bin-win-cpu-x64.zip",
+]
+
+
+@pytest.mark.parametrize(
+    "system, machine, major, want",
+    [
+        ("Linux", "x86_64", "13", "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip"),
+        ("Linux", "x86_64", "12", "sd-x-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip"),
+        ("Windows", "AMD64", "13", "sd-x-bin-win-cuda13-x64.zip"),
+        ("Windows", "AMD64", "12", "sd-x-bin-win-cuda12-x64.zip"),
+        ("Windows", "AMD64", None, "sd-x-bin-win-cuda12-x64.zip"),
+    ],
+)
+def test_cuda_bundles_follow_the_host_runtime_major(system, machine, major, want):
+    assert (
+        resolve_release_asset(
+            _CUDA_SPLIT, system = system, machine = machine, accelerator = "cuda", cuda_major = major
+        )
+        == want
+    )
+
+
+def test_a_release_without_the_hosts_cuda_major_still_offers_its_cuda_build():
+    for system, machine in (("Linux", "x86_64"), ("Windows", "AMD64")):
+        got = resolve_release_asset(
+            [n for n in _CUDA_SPLIT if "cuda13" not in n],
+            system = system,
+            machine = machine,
+            accelerator = "cuda",
+            cuda_major = "13",
+        )
+        assert got is not None and "cuda12" in got
 
 
 def test_windows_vulkan_picks_vulkan():
@@ -1362,6 +1440,42 @@ def test_upstream_fallback_asks_for_the_translated_pin_not_latest(monkeypatch):
     # The raw fork tag is never sent upstream, and no unpinned latest is ever requested.
     assert (sdmod.UPSTREAM_FALLBACK_REPO, "master-813-bfbef5b-u13b9d92") not in seen
     assert not any(tag is None for _repo_name, tag in seen)
+
+
+def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_2_1(monkeypatch):
+    """#12470: the previous pin's upstream base (master-813) predated Qwen-Image-2.1, so hosts the mirror skips got a build the router refuses."""
+    monkeypatch.delenv("UNSLOTH_SD_CPP_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.setattr(sdmod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sdmod.platform, "machine", lambda: "AMD64")
+    seen = []
+
+    def fake_fetch(
+        tag = None,
+        *,
+        repo = None,
+        token = None,
+        timeout = 30.0,
+        allow_latest = True,
+    ):
+        seen.append((repo, tag))
+        if repo == sdmod.DEFAULT_REPO and tag == DEFAULT_TAG:
+            return {"tag_name": tag, "assets": [{"name": f"sd-{tag}-bin-win-cpu-x64.zip"}]}
+        if repo == sdmod.UPSTREAM_FALLBACK_REPO and tag:
+            short = tag.rsplit("-", 1)[-1]
+            return {
+                "tag_name": tag,
+                "assets": [{"name": f"sd-master-{short}-bin-win-cuda12-x64.zip"}],
+            }
+        raise urllib.error.HTTPError(f"https://api/{repo}", 404, "not found", None, None)
+
+    monkeypatch.setattr(sdmod, "_fetch_release", fake_fetch)
+    repo, release, chosen = sdmod._resolve_with_fallback("cuda", None)
+    assert repo == sdmod.UPSTREAM_FALLBACK_REPO
+    assert chosen.endswith("-win-cuda12-x64.zip")
+    assert release["tag_name"] == upstream_tag_for(DEFAULT_TAG)
+    # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896.
+    assert int(release["tag_name"].split("-")[1]) >= 896
 
 
 # ── mirror -> upstream fallback in install() ─────────────────────────────────
@@ -3110,6 +3224,45 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
     assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
     assert installs == []
+
+
+def test_an_old_pin_legacy_server_is_not_reinstalled_over_a_serverless_current_pin(
+    tmp_path, monkeypatch
+):
+    """A legacy server for the RIGHT accelerator but an older pin is superseded once the current root holds the
+    current pin's serverless bundle: not handed back after the upgrade, and not reinstalled on every later load."""
+    bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_AUTO_UPGRADE", raising = False)
+    old_server = legacy / "sd-bin" / _SERVER
+    old_server.write_bytes(b"old-pin-build")
+    (legacy / sdmod.INSTALL_RECORD).write_text(
+        json.dumps({"accelerator": "cuda", "repo": "r", "tag": "master-1-0000000-u0000000"}),
+        encoding = "utf-8",
+    )
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    installs: list[dict] = []
+
+    def _install(**kw):
+        installs.append(kw)
+        sdmod._write_install_record(
+            current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
+        )
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_failed_pin_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert len(installs) == 1
 
 
 def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):

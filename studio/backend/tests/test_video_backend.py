@@ -8,6 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
+import json
 import dataclasses
 import functools
 import inspect
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
@@ -138,14 +140,26 @@ def _shared_setup_12(_download, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _roomy_host_ram(monkeypatch):
+    """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    from utils import host_memory
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+
+
+@pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
     """A checkpoint only deserializes where torchao is importable, which here it may not be. These
     tests are about the load/plan decisions; the capability is covered in
     test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(
         _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
+    video_module._video_family_capabilities.cache_clear()
+    yield
+    video_module._video_family_capabilities.cache_clear()
 
 
 class _FakeDtype:
@@ -631,6 +645,14 @@ def _load_h3_modular(backend, *, hf_token = None):
     return _FakeModularPipeline.instance
 
 
+class _FakeLtx25Encoder:
+    def wait_ready(self, cancel = None):
+        return {}
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -659,6 +681,11 @@ def fake_runtime(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "diffusers", diffusers)
     monkeypatch.setattr("core.inference.video.clear_gpu_cache", lambda: None)
+    # LTX-2.5's Gemma 4 encoder is a spawned worker on the transformers sidecar: never start one here.
+    monkeypatch.setattr(
+        "core.inference.video_ltx25.start_text_encoder", lambda **_kw: _FakeLtx25Encoder()
+    )
+    monkeypatch.setattr("core.inference.video_ltx25.attach_to_pipeline", lambda *_a, **_kw: None)
     # MP4 encode needs real frames + PyAV; the contract under test is the byte handoff, so stub the encoder.
     monkeypatch.setattr(
         VideoBackend, "_encode_mp4", staticmethod(lambda frames, fps, audio, pipe: b"MP4")
@@ -859,6 +886,15 @@ def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def _write_pipeline(root, class_name, cls, **extra):
+    index = extra.pop("index", "model_index.json")
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", cls], **extra}
+    (root / index).write_text(json.dumps(manifest))
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+
+
 def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     backend = VideoBackend()
     d = tmp_path / "ltx-local"
@@ -867,10 +903,47 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     # A local dir missing model_index.json is not a loadable pipeline; it must fail preflight BEFORE eviction.
     with pytest.raises(ValueError, match = "model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # With a model_index.json it is a valid local pipeline pick and passes preflight.
     (d / "model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(d), family_override = "ltx-2")
+    _write_pipeline(d, "LTX2Pipeline", "LTX2VideoTransformer3DModel")
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
+
+
+def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
+    backend = VideoBackend()
+    root = tmp_path / "opaque-h3"
+    _write_pipeline(root, "LTX2Pipeline", "LTX2Transformer")
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    # The manifest is checked before diffusers is imported.
+    with monkeypatch.context() as no_diffusers:
+        no_diffusers.delitem(sys.modules, "diffusers")
+        no_diffusers.setattr(builtins, "__import__", _no_diffusers_import)
+        with pytest.raises(ValueError, match = "modular_model_index.json"):
+            backend.validate_load_request(str(root), family_override = "minimax-h3")
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
+    (root / "modular_model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid modular_model_index.json"):
+        backend.validate_load_request(str(root), family_override = "minimax-h3")
+    _write_pipeline(
+        root,
+        "ModularPipeline",
+        "MiniMaxH3Transformer3DModel",
+        index = "modular_model_index.json",
+        _blocks_class_name = "HunyuanVideo15PipelineBlocks",
+    )
+    fam = backend.validate_load_request(str(root), family_override = "minimax-h3")
+    assert fam.name == "minimax-h3"
 
 
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
@@ -894,8 +967,15 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
-    (bad_base / "model_index.json").write_text("{}")
+    _write_pipeline(
+        bad_base,
+        "LTX2Pipeline",
+        "LTX2VideoTransformer3DModel",
+        scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+    )
+    (bad_base / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    (bad_base / "scheduler").mkdir()
+    (bad_base / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",
@@ -903,6 +983,9 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
         base_repo = str(bad_base),
     )
     assert fam.name == "ltx-2"
+
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(bad_base), model_kind = "pipeline", family_override = "ltx-2")
 
 
 def test_validate_rejects_gguf_repo_as_pipeline():
@@ -927,6 +1010,14 @@ def test_detect_load_family_filename_fallback():
     fam = _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "ltxv")
     assert fam is not None and fam.name == "ltx-2"
     assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
+
+
+def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
+    fam = _detect_load_family("/cache/snapshots/deadbeef", None, None, "MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    # The logical id outranks a family token in the physical path.
+    fam = _detect_load_family("/cache/wan2.2/snapshots/deadbeef", None, None, "Lightricks/LTX-2")
+    assert fam is not None and fam.name == "ltx-2"
 
 
 def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
@@ -1652,6 +1743,7 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        display_repo_id = "Org/pinned-hv15",
         model_kind = "pipeline",
     )
     assert status["family"] == "hunyuanvideo-1.5"
@@ -1669,6 +1761,23 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     assert pipe.scheduler.calls == 4
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
     assert result["num_frames"] == 9 and result["has_audio"] is False
+    assert result["repo_id"] == "Org/pinned-hv15"
+
+
+def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_runtime, tmp_path):
+    snapshot = tmp_path / "deadbeef"
+    _write_pipeline(snapshot, "LTXPipeline", "LTXVideoTransformer3DModel")
+    status = VideoBackend().load_pipeline(
+        str(snapshot),
+        display_repo_id = "Lightricks/LTX-2-Distilled",
+        model_kind = "pipeline",
+    )
+
+    assert status["family"] == "ltx-2"
+    assert status["repo_id"] == str(snapshot)
+    assert status["display_repo_id"] == "Lightricks/LTX-2-Distilled"
+    assert status["defaults"]["steps"] == 8
+    assert status["defaults"]["guidance"] == 1.0
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
@@ -2022,6 +2131,24 @@ def test_video_auto_toggle_not_armed_when_the_dit_cannot_cache(fake_runtime, tmp
     backend.unload()
 
 
+def test_video_gguf_status_does_not_call_a_bf16_gguf_quantized(fake_runtime, tmp_path):
+    # unsloth/LTX-2.5-GGUF also ships a dense BF16 GGUF: the reason names the file's quant, not "quantized weights".
+    filename = "ltx-2.3-22b-distilled-1.1-BF16.gguf"
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert status["gguf_variant"] == "BF16"
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert reason == "not engaged (GGUF DiT (BF16) loaded; the file's own weights are used as is)"
+    assert "quantized" not in reason
+    backend.unload()
+
+
 def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     fake_runtime, tmp_path
 ):
@@ -2037,6 +2164,13 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     )
 
     assert status["gguf_variant"] == "Q4_K_M"
+    # The DiT is the GGUF's own quantized weights, not a dense bf16 one.
+    quant = status["resolved"]["transformer_quant"]
+    assert (quant["value"], quant["source"]) == ("off", "auto")
+    assert (
+        quant["reason"]
+        == "not engaged (GGUF DiT (Q4_K_M) loaded; the file's own weights are used as is)"
+    )
     assert backend.unload()["gguf_variant"] is None
     # A pipeline load has no checkpoint quant to name.
     assert (
@@ -2046,6 +2180,31 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
         is None
     )
     backend.unload()
+
+
+def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    available = (
+        types.SimpleNamespace(name = "ltx-2", modular_workflow = False),
+        types.SimpleNamespace(name = "minimax-h3", modular_workflow = True),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "pipeline_available_video_families",
+        lambda *, device: calls.append(device) or available,
+    )
+    resolves = []
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: resolves.append(1) or types.SimpleNamespace(device = "cpu"),
+    )
+    backend = VideoBackend()
+
+    assert backend.status()["supported_families"] == ["ltx-2", "minimax-h3"]
+    assert backend.status()["modular_families"] == ["minimax-h3"]
+    assert calls == ["cpu"]
+    assert resolves == [1]
 
 
 def test_video_status_response_carries_gguf_variant():
@@ -2090,12 +2249,12 @@ def test_wan_frame_snapping_4k_plus_1(fake_runtime):
 
 
 def test_wan_ti2v_defaults_applied(fake_runtime):
-    # No steps/guidance passed -> the Wan pipeline defaults (50 / 5.0).
+    # No steps/guidance passed -> ComfyUI's TI2V-5B template defaults (20 / 5.0).
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     backend.generate(prompt = "a sloth")
     call = backend._state.pipe.last_kwargs
-    assert call["num_inference_steps"] == 50
+    assert call["num_inference_steps"] == 20
     assert call["guidance_scale"] == 5.0
 
 
@@ -2415,14 +2574,20 @@ def test_wan_validate_trusted_repos(fake_runtime):
         )
 
 
-def test_wan_a14b_refuses_single_file_loads(fake_runtime):
-    # A single checkpoint carries only one of the A14B experts and the other would load dense outside the memory plan, so validate refuses it.
+def test_wan_a14b_refuses_unpaired_single_file_loads(fake_runtime):
+    # A checkpoint whose name pairs no partner expert covers one of the two A14B experts, so validate refuses it; a
+    # high/low noise expert name loads the pair (test_video_moe_pair.py).
     backend = VideoBackend()
     with pytest.raises(ValueError, match = "dual-expert"):
         backend.validate_load_request(
             "QuantStack/Wan2.2-T2V-A14B-GGUF",
-            gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+            gguf_filename = "Wan2.2-T2V-A14B-Q4_K_M.gguf",
         )
+    fam = backend.validate_load_request(
+        "QuantStack/Wan2.2-T2V-A14B-GGUF",
+        gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+    )
+    assert fam.name == "wan2.2-t2v-a14b"
     # The single-DiT 5B family still accepts GGUF.
     fam = backend.validate_load_request(
         "unsloth/Wan2.2-TI2V-5B-GGUF",
@@ -2466,6 +2631,87 @@ _LTX2_SIBLINGS = [
     _sibling("tokenizer/chat_template.jinja", 1),
     _sibling("assets/example.mp4", 500),
 ]
+
+
+@pytest.mark.parametrize("picked", ["high", "low"])
+def test_wan_a14b_gguf_pair_loads_high_as_transformer_and_low_as_transformer_2(
+    fake_runtime, tmp_path, monkeypatch, picked
+):
+    # Either expert of a pair loads both, and the high-noise one always serves the early (transformer) steps.
+    high = tmp_path / "HighNoise" / "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf"
+    low = tmp_path / "LowNoise" / "Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf"
+    for path in (high, low):
+        path.parent.mkdir(parents = True)
+        path.write_bytes(b"weights")
+    loaded = []
+
+    def _from_single_file(path, **kwargs):
+        loaded.append((Path(path).name, kwargs["subfolder"], kwargs.get("quantization_config")))
+        return f"dit:{Path(path).name}"
+
+    monkeypatch.setattr(_FakeTransformer, "from_single_file", staticmethod(_from_single_file))
+    pick = high if picked == "high" else low
+    VideoBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = str(pick.relative_to(tmp_path)),
+        base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        family_override = "wan2.2-t2v-a14b",
+    )
+    assert [(name, sub) for name, sub, _ in loaded] == [
+        (high.name, "transformer"),
+        (low.name, "transformer_2"),
+    ]
+    assert all(q is not None for _, _, q in loaded)
+    last = _FakeWanPipelineSingle.last
+    assert last["transformer"] == f"dit:{high.name}"
+    assert last["transformer_2"] == f"dit:{low.name}"
+
+
+def test_wan_a14b_comfy_pair_offloaded_reprices_both_experts(fake_runtime, tmp_path, monkeypatch):
+    # An offloaded ComfyUI-quantized pair reprices both experts at their offload size before the build.
+    import core.inference.video as vid
+    from core.inference.diffusion_comfy_quant import ComfyQuantScan
+
+    names = [
+        "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+        "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"weights")
+    priced = []
+
+    def _resident_mib(
+        fam,
+        base,
+        target,
+        path,
+        scan,
+        *,
+        keep = True,
+        keep_key = None,
+        offload = False,
+    ):
+        priced.append((Path(path).name, offload))
+        return 2 if offload else 1
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*args, **kwargs):
+        raise _Stop
+
+    monkeypatch.setattr(vid, "refuse_comfy_quant", lambda path: ComfyQuantScan())
+    monkeypatch.setattr(vid, "_video_comfy_resident", lambda *args: False)
+    monkeypatch.setattr(vid, "_video_comfy_resident_mib", _resident_mib)
+    monkeypatch.setattr(vid, "raise_on_unified_memory_shortfall", _stop)
+    with pytest.raises(_Stop):
+        VideoBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = names[1],
+            base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            family_override = "wan2.2-t2v-a14b",
+        )
+    assert sorted(name for name, offload in priced if offload) == sorted(names)
 
 
 def test_base_download_files_scopes_pipeline_pull():
@@ -3536,6 +3782,21 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
 
 
+def test_direct_h3_native_load_hands_speed_mode_to_the_sd_cpp_path(monkeypatch):
+    backend = VideoBackend()
+    calls = []
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: calls.append(kwargs))
+    backend.load_pipeline(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+        speed_mode = "max",
+    )
+    assert calls and calls[0]["speed_mode"] == "max"
+
+
 def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
     # asset_repos stops the delete-cached guard dropping the H3 companion repos mid-load, and the
     # preflight can spend minutes installing the sd-cli prebuilt. A delete admitted in that window
@@ -3904,6 +4165,10 @@ def _load_h3_native_offload(
     help_text,
     accelerator = True,
     memory_mode = None,
+    speed_mode = None,
+    devices = None,
+    installed_accelerator = None,
+    backend = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -3931,8 +4196,13 @@ def _load_h3_native_offload(
         lambda *, allow_install, accelerator: "/existing/sd-cli",
     )
     # One probe helper serves both --list-devices and --help, so the ggml device line rides along or the CPU case is unreachable.
-    devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
+    if devices is None:
+        devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices + help_text)
+    if installed_accelerator is not None:
+        monkeypatch.setattr(
+            sd_cpp_backend, "_installed_accelerator_of", lambda _binary: installed_accelerator
+        )
 
     class _Engine:
         def __init__(self, binary):
@@ -3951,7 +4221,7 @@ def _load_h3_native_offload(
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
-    backend = VideoBackend()
+    backend = backend or VideoBackend()
     fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
     assert fam is not None
     backend._run_load_h3_native(
@@ -3961,6 +4231,7 @@ def _load_h3_native_offload(
         repo_id = "leejet/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
         memory_mode = memory_mode,
+        speed_mode = speed_mode,
     )
     assert backend._state is not None
     return backend._state, list(backend._state.pipe.offload_flags)
@@ -3992,6 +4263,15 @@ def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_
     assert "0" not in offload
 
 
+def test_h3_native_preserves_vram_headroom_on_current_builds(monkeypatch, tmp_path):
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _H3_HELP + "  --max-vram <string> VRAM budget\n"
+    )
+    assert "--offload-to-cpu" in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
+
+
 def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
     """fast keeps the params resident on the device, and upstream only honours --stream-layers when
     the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.
@@ -4002,6 +4282,881 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
     assert "--offload-to-cpu" not in offload
     assert offload[-2:] == ["--max-vram", "-1"]
     assert "--stream-layers" not in offload
+
+
+_AMD_VULKAN = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
+
+
+def _tiny_gtt(
+    monkeypatch,
+    *,
+    encoder_fits: bool,
+    free_vram = 1,
+):
+    """A GTT pool sized against the harness's one-byte files: denoiser 1 + VAEs 2 + encoder 1 bytes past the
+    1 GiB margin. ``encoder_fits=False`` holds everything but the encoder. ``free_vram`` is what the card reports,
+    1 byte by default so Auto can never render resident."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    limit = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + (4 if encoder_fits else 3)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (limit, True))
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+
+
+def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(
+    monkeypatch, tmp_path
+):
+    """radv keeps every GPU-run module of an offloaded H3 in GTT (31.35 GiB at Q4, measured), past half of a 48 GB
+    host: the render dies on "Not enough memory for command submission". Auto runs the encoder on the CPU, but
+    only for a render that is offloaded: the committed flags stay the ones a resident render is derived from."""
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert "--offload-to-cpu" in offload and "--clip-on-cpu" not in offload
+    fitted = list(state.pipe.offloaded_flags)
+    assert "--clip-on-cpu" in fitted and "te=Vulkan0" not in " ".join(fitted)
+    assert state.pipe.offload_refusal is None
+    assert "GTT" in state.resolved["memory_mode"]["reason"]
+
+
+def test_h3_native_detects_an_unowned_vulkan_build_from_its_device_listing(monkeypatch, tmp_path):
+    """SD_CLI_PATH at a user Vulkan build: no install record, and the request was not vulkan."""
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, devices = _AMD_VULKAN
+    )
+    assert "--clip-on-cpu" in state.pipe.offloaded_flags
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        "Vulkan0\tIntel(R) Arc(tm) A770 Graphics (DG2)\n",
+        "Vulkan0\tNVIDIA GeForce RTX 4070 Ti\n",
+    ],
+)
+def test_h3_native_gtt_pool_binds_only_an_amd_vulkan_device(monkeypatch, tmp_path, devices):
+    """An unrelated AMD iGPU's GTT says nothing about an Intel or NVIDIA Vulkan device."""
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, devices = devices
+    )
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
+
+
+def test_h3_native_leaves_a_vulkan_gtt_pool_that_fits_alone(monkeypatch, tmp_path):
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
+
+
+def _no_gtt_room(monkeypatch, free_vram):
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+
+
+def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(
+    monkeypatch, tmp_path
+):
+    _no_gtt_room(monkeypatch, free_vram = 1)
+    with pytest.raises(RuntimeError, match = "GTT"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_VULKAN,
+            installed_accelerator = "vulkan",
+        )
+
+
+def test_h3_native_auto_defers_the_gtt_refusal_when_a_resident_render_fits(monkeypatch, tmp_path):
+    _no_gtt_room(monkeypatch, free_vram = 1 << 50)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert "--clip-on-cpu" not in offload
+    assert "GTT" in state.pipe.offload_refusal
+
+
+def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatch, tmp_path):
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    with pytest.raises(RuntimeError, match = "Low VRAM"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            memory_mode = "balanced",
+            devices = _AMD_VULKAN,
+            installed_accelerator = "vulkan",
+        )
+
+
+def test_h3_native_host_ram_check_ignores_studios_own_rss(monkeypatch, tmp_path):
+    """sd-cli is its own process: the diffusers guard's add-back of Studio's RssAnon / RssShmem must not admit it."""
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda: 1)
+    monkeypatch.setattr(host_memory, "cgroup_swap_allowance_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(video_minimax_h3, "h3_process_held_host_bytes", lambda: 1 << 50)
+    with pytest.raises(RuntimeError, match = "system RAM"):
+        _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+
+
+def _loaded_with_slot(monkeypatch, tmp_path, slot):
+    """A backend holding a committed native H3 model whose sd-server slot is ``slot``."""
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (1 << 50, True))
+    backend = VideoBackend()
+    _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    backend._state = dataclasses.replace(
+        backend._state, pipe = dataclasses.replace(backend._state.pipe, server_slot = slot)
+    )
+    return backend
+
+
+class _ReleasableSlot:
+    def __init__(self):
+        self.released = []
+
+    def release(self, reason):
+        self.released.append(reason)
+        return True
+
+    def is_alive(self):
+        return self.busy
+
+    busy = False
+
+    def stop(self, reason = "stopped"):
+        pass
+
+
+def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(
+    monkeypatch, tmp_path
+):
+    """A cached H3 model's sd-server in its keepalive window holds the GTT this load measures; the teardown would free
+    it, so the load releases it and measures again instead of refusing until the idle timer fires."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    roomy = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 100
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "amdgpu_gtt_reading",
+        lambda *a, **k: (roomy if slot.released else 0, True),
+    )
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert slot.released and "--clip-on-cpu" not in offload
+    assert state.pipe.offloaded_flags is None and state.pipe.offload_refusal is None
+
+
+def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, tmp_path):
+    """Mid-render the release is only pending: nothing is freed yet, so no fresh reading is taken, and the refusal
+    says a render is still running rather than blaming the host."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    slot.busy = True
+    readings = []
+
+    def gtt(*_a, **_k):
+        readings.append(1)
+        return 0, True
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", gtt)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    with pytest.raises(RuntimeError, match = "still running"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_VULKAN,
+            installed_accelerator = "vulkan",
+            backend = backend,
+        )
+    assert slot.released and len(readings) == 1
+
+
+def _render_runtime(
+    *,
+    base = ("--offload-to-cpu", "--diffusion-fa"),
+    slot = None,
+    snapshot_refusal = None,
+):
+    from core.inference.video_minimax_h3 import H3NativeFitInputs
+    inputs = H3NativeFitInputs(
+        base_flags = base,
+        accelerator = "vulkan",
+        check_gtt = True,
+        gtt_pci_slot = "0000:03:00",
+        dit_bytes = 1,
+        te_bytes = 1,
+        vae_bytes = 2,
+        device_name = "Vulkan0",
+    )
+    return types.SimpleNamespace(
+        fit_inputs = inputs,
+        server_slot = slot,
+        offloaded_flags = None,
+        offload_refusal = snapshot_refusal,
+    )
+
+
+def _live_gtt(monkeypatch, value):
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (value, True))
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_available_bytes", lambda: 1 << 50)
+    monkeypatch.setattr(host_memory, "cgroup_swap_allowance_bytes", lambda *a, **k: 0)
+
+
+def test_an_offloaded_auto_render_catches_pressure_since_the_load(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    _live_gtt(monkeypatch, 0)
+    with pytest.raises(H3NativeMemoryRefusal, match = "GTT"):
+        _h3_offloaded_render_flags(
+            _render_runtime(),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
+        )
+
+
+def test_an_offloaded_auto_render_lifts_a_refusal_once_memory_is_free(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    # Room for everything but the encoder: the live fit moves it to the CPU and re-pins it there.
+    _live_gtt(monkeypatch, video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 3)
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(snapshot_refusal = "refused at load"),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
+    )
+    assert "--clip-on-cpu" in flags
+    assert flags[-2:] == ["--backend", "diffusion=Vulkan0,te=cpu,vae=Vulkan0"]
+
+
+def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    def boom(*_a, **_k):
+        raise AssertionError("must not re-read with the server's own weights placed")
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_live_fit", boom)
+    running = ("--offload-to-cpu", "--diffusion-fa", "--clip-on-cpu")
+    slot = types.SimpleNamespace(alive_signature = lambda: ("bin", (), running, ()))
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
+    ) == list(running)
+
+
+class _ResidentSlot:
+    """A live resident sd-server: ``busy`` keeps it alive through a release (it stops at its render's end)."""
+
+    def __init__(self, busy):
+        self.busy = busy
+        self.alive = True
+        self.released = []
+
+    def alive_signature(self):
+        return ("bin", (), ("--diffusion-fa", "--max-vram", "-1"), ()) if self.alive else None
+
+    def release(self, reason):
+        self.released.append(reason)
+        if not self.busy:
+            self.alive = False
+        return True
+
+    def is_alive(self):
+        return self.alive
+
+
+def test_an_offloaded_render_frees_an_idle_resident_server_before_its_reading(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    slot = _ResidentSlot(busy = False)
+    _live_gtt(monkeypatch, 0)
+    roomy = 1 << 50
+    monkeypatch.setattr(
+        video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0 if slot.alive else roomy, True)
+    )
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(slot = slot),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
+    )
+    assert slot.released and "--clip-on-cpu" not in flags
+
+
+def test_an_offloaded_render_behind_a_busy_resident_server_says_a_render_is_running(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    slot = _ResidentSlot(busy = True)
+    _live_gtt(monkeypatch, 0)
+    with pytest.raises(H3NativeMemoryRefusal, match = "still running"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
+        )
+    assert slot.released
+
+
+def test_a_new_process_never_reuses_a_live_servers_unchecked_flags(monkeypatch):
+    """Reference video / audio (or a server that could not serve) runs a fresh sd-cli: the live offloaded server is
+    released and the launch is fitted on live readings."""
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    running = ("--offload-to-cpu", "--diffusion-fa")
+    state = {"alive": True}
+    slot = types.SimpleNamespace(
+        alive_signature = lambda: ("bin", (), running, ()) if state["alive"] else None,
+        release = lambda reason: state.update(alive = False) or True,
+        is_alive = lambda: state["alive"],
+    )
+    _live_gtt(monkeypatch, 0)
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+    ) == list(running)
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot),
+            list(running),
+            render_resident = False,
+            memory_mode = "auto",
+            reuse_live_server = False,
+        )
+    assert state["alive"] is False
+
+
+def test_the_one_shot_sd_cli_launch_is_fitted_afresh():
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod.VideoBackend._generate_h3_native)
+    fallback = source[source.index("if generated is None:") :]
+    assert fallback.index("reuse_live_server = False") < fallback.index(
+        "runtime.engine.generate_video("
+    )
+
+
+BALANCED_FLAGS = [
+    "--offload-to-cpu",
+    "--diffusion-fa",
+    "--backend",
+    "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0",
+]
+
+
+def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    runtime = _render_runtime()
+    _live_gtt(monkeypatch, 1 << 50)
+    assert (
+        _h3_offloaded_render_flags(
+            runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
+        )
+        == BALANCED_FLAGS
+    )
+    # Room for the encoder-on-CPU set only: Auto would move it, an explicit mode is refused instead.
+    _live_gtt(monkeypatch, video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 3)
+    with pytest.raises(H3NativeMemoryRefusal, match = "Low VRAM"):
+        _h3_offloaded_render_flags(
+            runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
+        )
+
+
+def _host_ram(monkeypatch, ram):
+    from core.inference import video_minimax_h3
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (ram, 1 << 50))
+
+
+def test_a_reused_server_still_needs_its_per_render_host_ram(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    running = ("--offload-to-cpu", "--diffusion-fa", "--clip-on-cpu")
+    slot = types.SimpleNamespace(alive_signature = lambda: ("bin", (), running, ()))
+    _host_ram(monkeypatch, 1 << 30)
+    with pytest.raises(H3NativeMemoryRefusal, match = "frames, audio and CPU buffers"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+        )
+    # Swap does not count; enough RAM lets the reuse through without a full fit.
+    _host_ram(monkeypatch, 4 << 30)
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+    ) == list(running)
+
+
+def test_a_resident_render_and_a_resident_start_check_their_host_ram(monkeypatch):
+    from core.inference.video import _h3_launch_flags, _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    _host_ram(monkeypatch, 1 << 30)
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_offloaded_render_flags(
+            _render_runtime(), resident, render_resident = True, memory_mode = "auto"
+        )
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_launch_flags(_render_runtime(), resident, "auto")
+    _host_ram(monkeypatch, 4 << 30)
+    assert _h3_launch_flags(_render_runtime(), resident, "auto") == resident
+
+
+class _OffloadedSlot:
+    def __init__(self, busy):
+        self.busy = busy
+        self.alive = True
+        self.released = []
+
+    def alive_signature(self):
+        return ("bin", (), ("--offload-to-cpu", "--diffusion-fa"), ()) if self.alive else None
+
+    def release(self, reason):
+        self.released.append(reason)
+        if not self.busy:
+            self.alive = False
+        return True
+
+    def is_alive(self):
+        return self.alive
+
+
+def test_a_resident_render_frees_an_idle_offloaded_server_before_its_ram_check(monkeypatch):
+    """get() would replace that server on the signature change; its pinned RAM must not refuse the render."""
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    slot = _OffloadedSlot(busy = False)
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "h3_native_host_budgets",
+        lambda: ((1 << 30) if slot.alive else (8 << 30), 0),
+    )
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), resident, render_resident = True, memory_mode = "auto"
+        )
+        == resident
+    )
+    assert slot.released
+
+
+def test_a_resident_render_behind_a_busy_offloaded_server_says_a_render_is_running(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    slot = _OffloadedSlot(busy = True)
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (1 << 30, 0))
+    with pytest.raises(H3NativeMemoryRefusal, match = "still running"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), ["--diffusion-fa"], render_resident = True, memory_mode = "auto"
+        )
+
+
+def test_the_kill_switch_turns_off_every_render_time_guard(monkeypatch):
+    from core.inference.video import _h3_launch_flags, _h3_offloaded_render_flags
+
+    monkeypatch.setenv("UNSLOTH_H3_NATIVE_FIT_CHECK", "0")
+    _live_gtt(monkeypatch, 0)
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3.h3_native_host_budgets", lambda: (1 << 20, 0)
+    )
+    slot = _OffloadedSlot(busy = False)
+    offloaded = ["--offload-to-cpu", "--diffusion-fa"]
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), list(offloaded), render_resident = False, memory_mode = "auto"
+        )
+        == offloaded
+    )
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), ["--diffusion-fa"], render_resident = True, memory_mode = "auto"
+    ) == ["--diffusion-fa"]
+    assert _h3_launch_flags(_render_runtime(), list(offloaded), "balanced") == offloaded
+    assert _h3_launch_flags(_render_runtime(), ["--diffusion-fa"], "auto") == ["--diffusion-fa"]
+    assert slot.released == []
+
+
+def test_a_resident_render_is_never_re_fitted(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_live_fit", lambda *a, **k: 1 / 0)
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(), resident, render_resident = True, memory_mode = "auto"
+        )
+        == resident
+    )
+
+
+def test_h3_native_keeps_the_outgoing_server_when_the_load_fits(monkeypatch, tmp_path):
+    from core.inference import video as video_mod
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert slot.released == []
+
+
+def test_h3_native_explicit_modes_keep_their_fit_inputs(monkeypatch, tmp_path):
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        memory_mode = "balanced",
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.fit_inputs is not None
+
+
+def test_h3_native_names_no_gtt_slot_when_the_vulkan_pin_did_not_resolve(monkeypatch, tmp_path):
+    """Unpinned, sd.cpp picks its own Vulkan device, so the torch card's slot may name another card."""
+    from core.inference import video as video_mod
+
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    monkeypatch.setattr(video_mod, "_torch_pci_slot", lambda *_a: "0000:03:00")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.fit_inputs.device_name is None
+    assert state.pipe.fit_inputs.gtt_pci_slot is None
+
+
+def test_h3_native_replacing_an_in_process_model_defers_the_refusal_to_the_launch(
+    monkeypatch, tmp_path
+):
+    """The outgoing diffusers model's memory is freed by the commit's teardown, before any native process starts;
+    the load does not refuse on a reading that still counts it, and the pre-launch live fit decides."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    backend = _loaded_with_slot(monkeypatch, tmp_path, None)
+    backend._state = dataclasses.replace(backend._state, engine = "diffusers")
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        memory_mode = "balanced",
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert state.engine == "sd_cpp" and state.pipe.fit_inputs is not None
+
+
+def test_h3_native_gtt_pool_is_not_a_cuda_build_concern(monkeypatch, tmp_path):
+    _tiny_gtt(monkeypatch, encoder_fits = False)
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+    assert "--clip-on-cpu" not in offload and state.pipe.offloaded_flags is None
+
+
+_SAGE_HELP = _GRAPH_CUT_HELP + "  --sage-attn           use native CUDA SageAttention\n"
+
+
+def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
+    """SageAttention is lossy (INT8 QK^T), so it rides only on an explicit speed_mode="max"."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert offload[-1] == "--sage-attn"
+    assert state.attention_backend == "sage"
+    assert state.speed_mode == "max" and state.resolved["speed_mode"]["value"] == "max"
+    for mode in (None, "default", "off"):
+        state, offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
+        assert "--sage-attn" not in offload, mode
+        assert state.attention_backend == "flash"
+        assert state.speed_mode == "off"
+
+
+def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatch, tmp_path):
+    """An older prebuilt (u13b9d92) has no --sage-attn, and sd-cli exits on an unknown option."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
+
+
+def _cuda_devices(*caps):
+    """sd-cli --list-devices on a CUDA build: ggml_cuda_init's stderr lines, then the device table."""
+    lines = [f"ggml_cuda_init: found {len(caps)} CUDA devices (Total VRAM: 1 MiB):"]
+    lines += [
+        f"  Device {i}: NVIDIA Card {i}, compute capability {cc}, VMM: yes, VRAM: 1 MiB"
+        for i, cc in enumerate(caps)
+    ]
+    lines += [f"CUDA{i}\tNVIDIA Card {i}" for i in range(len(caps))]
+    return "\n".join(lines) + "\n"
+
+
+_BF16 = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+
+
+def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
+    """With the capability unreadable (no ggml_cuda_init lines), the older rule holds: speed_mode=max
+    hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH, every other mode launches with no extra env."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert dict(state.pipe.env) == _BF16
+    for mode in (None, "default", "off"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
+        assert state.pipe.env == (), mode
+    # The veto that drops sage drops this too, and a value the user exported (0 included) is never overridden.
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert state.pipe.env == ()
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert state.pipe.env == ()
+
+
+@pytest.mark.parametrize("cc", ["8.0", "8.6", "8.9", "9.0", "10.0", "12.0"])
+def test_h3_native_bf16_cublas_is_the_default_on_sm80_plus(monkeypatch, tmp_path, cc):
+    """A CUDA card the build reports as sm80+ takes the BF16 cuBLAS path in every speed mode, sage or not."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "default", "off", "max"):
+        state, offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode, devices = _cuda_devices(cc)
+        )
+        assert dict(state.pipe.env) == _BF16, (cc, mode)
+        assert ("--sage-attn" in offload) == (mode == "max")
+    # Vetoing sage no longer drops the matmul path: they are separate levers now.
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max", devices = _cuda_devices(cc)
+    )
+    assert "--sage-attn" not in offload and dict(state.pipe.env) == _BF16
+
+
+@pytest.mark.parametrize("value", ["0", "1024", "4096"])
+def test_h3_native_bf16_cublas_user_value_wins(monkeypatch, tmp_path, value):
+    """An exported GGML_CUDA_QUANT_CUBLAS_MIN_BATCH (0 = MMQ) is inherited untouched, never overridden."""
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", value)
+    for mode in (None, "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _SAGE_HELP,
+            speed_mode = mode,
+            devices = _cuda_devices("10.0"),
+        )
+        assert state.pipe.env == (), (value, mode)
+
+
+@pytest.mark.parametrize("cc", ["7.5", "7.0", "6.1"])
+def test_h3_native_bf16_cublas_skipped_below_sm80(monkeypatch, tmp_path, cc):
+    """The fork never takes the route below sm80 (no BF16 tensor cores), so those cards launch unchanged in
+    every mode, max included."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "default", "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode, devices = _cuda_devices(cc)
+        )
+        assert state.pipe.env == (), (cc, mode)
+
+
+def test_h3_native_bf16_cublas_reads_the_pinned_card(monkeypatch, tmp_path):
+    """Mixed host: the gate reads the card the load is pinned to, not the first or the best one."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    text = _cuda_devices("12.0", "7.5")
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: text)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA0") == (12, 0)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA1") == (7, 5)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA7") is None
+    # No pin: sd.cpp picks a card itself, so the lowest decides.
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", None) == (7, 5)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "Vulkan0") is None
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability(None, "CUDA0") is None
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        # HIP build: ggml_cuda_init says ROCm, device names are ROCm<i>.
+        "ggml_cuda_init: found 1 ROCm devices:\n  Device 0: AMD Radeon Graphics, gfx1151 (0x1151), "
+        "compute capability 11.5, VMM: no\nROCm0\tAMD Radeon Graphics\n",
+        "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n",
+        "MTL0\tApple M3 Max\n",
+    ],
+)
+def test_h3_native_bf16_cublas_never_on_non_cuda_builds(monkeypatch, tmp_path, devices):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", None) is None
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "ROCm0") is None
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, devices = devices
+    )
+    assert state.pipe.env == ()
+
+
+def test_h3_native_bf16_cublas_never_on_the_cpu_build(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, accelerator = False, speed_mode = mode
+        )
+        assert state.pipe.env == (), mode
+
+
+def test_h3_native_status_names_the_matmul_route(monkeypatch, tmp_path):
+    """The speed_mode reason says BF16 cuBLAS exactly when sd-cli gets a nonzero value for it."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+
+    def reason(**kw):
+        state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, **kw)
+        return state.resolved["speed_mode"]["reason"]
+
+    assert reason(devices = _cuda_devices("10.0")) == "sd.cpp BF16 cuBLAS matmuls"
+    assert (
+        reason(devices = _cuda_devices("10.0"), speed_mode = "max")
+        == "sd.cpp SageAttention + BF16 cuBLAS"
+    )
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
+    assert reason(devices = _cuda_devices("7.5"), speed_mode = "max") == "sd.cpp SageAttention"
+    assert reason(accelerator = False) == "sd.cpp exact kernels"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    assert reason(devices = _cuda_devices("10.0"), speed_mode = "max") == "sd.cpp SageAttention"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "2048")
+    assert reason(devices = _cuda_devices("8.6")) == "sd.cpp BF16 cuBLAS matmuls"
+    # The fork never takes the route below sm80, whatever the user exported.
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
+
+
+def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
+    import dataclasses
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state = dataclasses.replace(
+        backend._state,
+        pipe = dataclasses.replace(
+            backend._state.pipe, env = (("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "1024"),)
+        ),
+    )
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    calls.clear()
+    backend._state = dataclasses.replace(
+        backend._state, pipe = dataclasses.replace(backend._state.pipe, env = ())
+    )
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] is None
+
+
+def test_h3_native_sage_attention_never_on_the_cpu_build(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, accelerator = False, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
 
 
 def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
@@ -4724,6 +5879,44 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     assert plan["total_bytes"] == ckpt["bytes"] + base["bytes"]
 
 
+def test_download_plan_stages_the_companions_of_a_cached_checkpoints_content_variant(
+    monkeypatch, tmp_path
+):
+    # A cached checkpoint whose weights are dev under a distilled name stages the dev companions the load reads.
+    import core.inference.video as vid
+    import core.inference.video_ltx2 as ltx2
+
+    _plan_api_ltx23(monkeypatch)
+    cached = tmp_path / "ltx-2.3-22b-distilled.gguf"
+    monkeypatch.setattr(vid, "_cached_checkpoint_file", lambda repo_id, filename: cached)
+    monkeypatch.setattr(
+        ltx2, "ltx23_checkpoint_variant", lambda path: "dev" if Path(str(path)) == cached else None
+    )
+
+    plan = _ltx23_download_plan()
+
+    files = {e["repo_id"]: e for e in plan["entries"]}["unsloth/LTX-2.3-GGUF"]["files"]
+    assert "vae/ltx-2.3-22b-dev_video_vae.safetensors" in files
+    assert "vae/ltx-2.3-22b-distilled_video_vae.safetensors" not in files
+
+
+def test_wan_a14b_local_base_excludes_both_experts(fake_runtime, monkeypatch):
+    # A paired pick replaces transformer and transformer_2, so a local base needs neither expert's weights.
+    import core.inference.diffusion as diffusion
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion,
+        "_assert_local_base_is_pipeline",
+        lambda base, *, excluded_components = (), **kw: seen.append(tuple(excluded_components)),
+    )
+    VideoBackend().validate_load_request(
+        "QuantStack/Wan2.2-T2V-A14B-GGUF",
+        gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+    )
+    assert seen and set(seen[-1]) == {"transformer", "transformer_2"}
+
+
 def _cuda_bf16_target(monkeypatch):
     """Pretend the box can run layerwise fp8, so the pre-cast encoder resolves off-GPU."""
     import torch
@@ -4865,6 +6058,27 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
     # A local path override is the injection's business (allowlist), and nothing is fetched for it.
     local = types.SimpleNamespace(kind = "path", location = "/tmp/x.pt", filename = None)
     assert backend._fetch_te_prequant({"text_encoder": local}, None) == ()
+
+
+def test_fetch_te_prequant_takes_a_mirrored_encoder_without_the_hub(monkeypatch, tmp_path):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    backend = VideoBackend()
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/LTX-2-FP8", filename = "LTX-2-text_encoder-FP8.safetensors"
+    )
+    (tmp_path / "unsloth" / "LTX-2-FP8").mkdir(parents = True)
+    (tmp_path / "unsloth" / "LTX-2-FP8" / "LTX-2-text_encoder-FP8.safetensors").write_bytes(b"x")
+    monkeypatch.setenv(te_prequant.TE_PREQUANT_MIRROR_ENV, str(tmp_path))
+
+    def _no_hub(*_a, **_k):
+        raise AssertionError("the Hub was asked")
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _no_hub)
+    for offline in (False, True):
+        assert backend._fetch_te_prequant(
+            {"text_encoder": source}, None, local_files_only = offline
+        ) == ("text_encoder",)
 
 
 def test_load_pipeline_tops_up_the_dense_encoder_when_injection_fails(fake_runtime, tmp_path):
@@ -6029,10 +7243,12 @@ def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
+    object.__setattr__(backend._state, "display_repo_id", "Org/pinned-h3")
 
     result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
 
     state = backend._state
+    assert result["repo_id"] == "Org/pinned-h3"
     assert result["model_kind"] == state.kind == "gguf"
     assert result["gguf_filename"] == state.gguf_filename
     assert result["memory_mode"] == state.memory_mode
@@ -6127,13 +7343,203 @@ def test_a_cfg_free_family_records_the_guidance_it_actually_ran(monkeypatch):
 def test_keyframes_are_refused_by_a_family_that_has_none(fake_runtime, tmp_path):
     # Silently dropping the image would render a text-only clip with nothing to do with it.
     backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
     with pytest.raises(ValueError, match = "no first or last frame"):
         backend.begin_generate(prompt = "a sloth", first_frame = _data_url(64, 64))
     with pytest.raises(ValueError, match = "no first or last frame"):
         backend.generate(prompt = "a sloth", last_frame = _data_url(64, 64))
     # The refusal must not leave the busy flag set, or every later generation 409s.
     assert backend.generate_progress()["active"] is False
+    status = backend.status()
+    assert status["supports_first_frame"] is False and status["supports_last_frame"] is False
+
+
+def test_a_first_frame_only_family_refuses_a_last_frame(fake_runtime, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    with pytest.raises(ValueError, match = "first frame only"):
+        backend.begin_generate(prompt = "a sloth", last_frame = _data_url(64, 64))
+    with pytest.raises(ValueError, match = "first frame only"):
+        backend.generate(
+            prompt = "a sloth", first_frame = _data_url(64, 64), last_frame = _data_url(64, 64)
+        )
+    assert backend.generate_progress()["active"] is False
+
+
+# ── image-to-video through a declared i2v pipeline (video_i2v) ───────────────────────────────────
+
+
+class _FakeWanI2VPipe(_FakeWanPipeBase):
+    """WanImageToVideoPipeline fake. Constructed only as the template the swap reads its own
+    instance state from; the render then runs this __call__ on the LOADED pipe object."""
+
+    calls: list = []
+
+    def __init__(
+        self,
+        transformer = None,
+        vae = None,
+        image_encoder = None,
+        image_processor = None,
+    ):
+        self.transformer = transformer
+        self.vae = vae
+        self.image_encoder = image_encoder
+        self.image_processor = image_processor
+        self.video_processor = "i2v-video-processor"
+
+    def __call__(
+        self,
+        *,
+        image = None,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        generator = None,
+        callback_on_step_end = None,
+        explode = False,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "image": image,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            "guidance_scale": guidance_scale,
+            **kwargs,
+        }
+        _FakeWanI2VPipe.calls.append(
+            {
+                "self": self,
+                "class": type(self).__name__,
+                "video_processor": getattr(self, "video_processor", None),
+                "image_size": getattr(image, "size", None),
+            }
+        )
+        if explode:
+            raise RuntimeError("i2v render failed")
+        return self._finish(num_inference_steps, num_frames, callback_on_step_end)
+
+
+class _FakeLTX2I2VPipe(_FakePipe):
+    def __init__(self, vae = None):
+        self.vae = vae
+        self.video_processor = "bilinear"
+
+    def __call__(
+        self,
+        *,
+        image = None,
+        image_crf = None,
+        prompt = None,
+        num_frames = None,
+        frame_rate = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {"image": image, "image_crf": image_crf, "class": type(self).__name__}
+        frames = [[object() for _ in range(int(num_frames or 1))]]
+        return types.SimpleNamespace(frames = frames, audio = None)
+
+
+@pytest.fixture
+def fake_i2v(fake_runtime):
+    diffusers = sys.modules["diffusers"]
+    diffusers.WanImageToVideoPipeline = _FakeWanI2VPipe
+    diffusers.LTX2ImageToVideoPipeline = _FakeLTX2I2VPipe
+    _FakeWanI2VPipe.calls = []
+    yield
+
+
+def test_wan_first_frame_runs_the_i2v_pipeline_over_the_loaded_one(fake_i2v):
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["supports_first_frame"] is True
+    assert status["supports_last_frame"] is False
+    assert status["supports_keyframes"] is False  # the H3 contract older frontends read
+    pipe = backend._state.pipe
+    t2v_cls = type(pipe)
+    keys_before = set(pipe.__dict__)
+
+    result = backend.generate(prompt = "a car", steps = 2, first_frame = _data_url(1920, 1080))
+
+    call = _FakeWanI2VPipe.calls[-1]
+    # The loaded object ran the i2v __call__ with the i2v instance state, then got its own class back.
+    assert call["self"] is pipe and call["class"] == "_FakeWanI2VPipe"
+    assert call["video_processor"] == "i2v-video-processor"
+    assert type(pipe) is t2v_cls
+    assert "image_encoder" not in pipe.__dict__ and "video_processor" not in pipe.__dict__
+    assert set(pipe.__dict__) - keys_before <= {"last_kwargs"}
+    assert (result["width"], result["height"]) == (1280, 704)
+    assert call["image_size"] == (1280, 704)
+    assert result["conditioning"] == "i2va"
+
+    _FakeWanI2VPipe.calls.clear()
+    backend.generate(prompt = "a car", steps = 2)
+    assert _FakeWanI2VPipe.calls == []
+    assert "image" not in pipe.last_kwargs
+
+
+def test_wan_portrait_first_frame_takes_the_portrait_preset(fake_i2v):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    result = backend.generate(prompt = "p", steps = 2, first_frame = _data_url(832, 1104))
+    assert (result["width"], result["height"]) == (704, 1280)
+    result = backend.generate(
+        prompt = "p", steps = 2, width = 1280, height = 704, first_frame = _data_url(832, 1104)
+    )
+    assert (result["width"], result["height"]) == (1280, 704)
+    assert _FakeWanI2VPipe.calls[-1]["image_size"] == (1280, 704)
+
+
+def test_the_swap_is_undone_when_the_i2v_render_fails(fake_i2v, monkeypatch):
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    pipe = backend._state.pipe
+    t2v_cls = type(pipe)
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "video_i2v_call_kwargs", lambda fam, *ids: {"explode": True})
+    with pytest.raises(RuntimeError, match = "i2v render failed"):
+        backend.generate(prompt = "p", steps = 2, first_frame = _data_url(64, 64))
+    assert type(pipe) is t2v_cls
+    assert "image_encoder" not in pipe.__dict__
+    assert backend.generate_progress()["active"] is False
+
+
+def test_ltx23_first_frame_carries_comfyui_image_crf(fake_i2v, tmp_path):
+    backend = VideoBackend()
+    (tmp_path / "ltx-2.3-22b-distilled-Q4_K_M.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    pipe = backend._state.pipe
+    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(1920, 1080))
+    assert pipe.last_kwargs["class"] == "_FakeLTX2I2VPipe"
+    assert pipe.last_kwargs["image_crf"] == 18
+    assert pipe.last_kwargs["image"].size == (1216, 704)
+    assert type(pipe) is _FakePipe
+
+
+def test_ltx2_first_frame_keeps_the_pipeline_crf_default(fake_i2v, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    pipe = backend._state.pipe
+    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(512, 768))
+    assert pipe.last_kwargs["class"] == "_FakeLTX2I2VPipe"
+    assert pipe.last_kwargs["image_crf"] is None
+    assert pipe.last_kwargs["image"].size == (512, 768)
+    backend.generate(prompt = "p", steps = 2)
+    assert "image" not in pipe.last_kwargs and "class" not in pipe.last_kwargs
 
 
 def test_begin_generate_rejects_an_undecodable_keyframe(monkeypatch):
@@ -6182,6 +7588,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
         torch = torch,
         fam = fam,
         repo_id = "MiniMaxAI/MiniMax-H3",
+        display_repo_id = "MiniMaxAI/MiniMax-H3",
         base = fam.base_repo,
         kind = "pipeline",
         dtype = torch.bfloat16,
@@ -6195,6 +7602,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
     assert "workflow" not in seen["from_pretrained"]
     assert seen["load_components"]["workflow"] == "fl2va"
     assert status["supports_keyframes"] is True
+    assert status["display_repo_id"] == "MiniMaxAI/MiniMax-H3"
     assert status["defaults"]["canvas_short_edge"] == 768
 
 
@@ -8198,8 +9606,12 @@ def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime,
             continue
         calls.clear()
         VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        # LTX-2.5's encoder runs in a second process; its CUDA context is priced on top of the table.
+        from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
+
+        extra_gb = LTX25_WORKER_RESIDENT_GB if fam.name == "ltx-2.5" else 0.0
         assert calls[0]["model_dense_mib"] == int(
-            sum(fam.bf16_components_gb) * _MIB_PER_GB
+            (sum(fam.bf16_components_gb) + extra_gb) * _MIB_PER_GB
         ), fam.name
 
 
@@ -8339,7 +9751,7 @@ def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch)
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
-    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    local = "/models/ltx/minimax_h3_fl2va-Q4_K_M.gguf"
     backend._state = dataclasses.replace(backend._state, repo_id = local)
 
     # Precondition: the identifier really does resolve to a different family's guidance, so the
@@ -8581,8 +9993,11 @@ def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime
     # ALREADY (the family comment says so) and assembly pins that VAE to fp32 whatever the
     # promotion does, so doubling it counts 2.8 GB twice on TI2V-5B. Against a hard refusal that
     # is a load rejected over bytes it never allocates.
+    from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
     from core.inference.video_families import detect_video_family
 
+    # TI2V-5B keeps fp16 by default (fp16_guard "native"); the kill switch restores the promotion under test.
+    monkeypatch.setenv(FP16_GUARD_ENV, "0")
     _fp32_promoted_cuda_target(monkeypatch)
     transformer_gb, te_gb, vae_gb = detect_video_family(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
@@ -8594,6 +10009,20 @@ def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime
     assert calls[0]["model_dense_mib"] == int(
         ((transformer_gb + te_gb) * 2.0 + vae_gb) * _MIB_PER_GB
     )
+
+
+def test_fp16_native_wan_is_planned_at_fp16_size(fake_runtime, monkeypatch):
+    # On an fp16-only card TI2V-5B now stays fp16, so the plan prices the bf16-sized table as is (no doubling).
+    from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.delenv(FP16_GUARD_ENV, raising = False)
+    _fp32_promoted_cuda_target(monkeypatch)
+    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
 
 
 def test_the_fp32_promotion_still_doubles_a_bf16_vae(fake_runtime, monkeypatch):
@@ -9217,6 +10646,41 @@ def test_cuda_graph_is_a_per_family_opt_in():
 
     opted_in = [f.name for f in _FAMILIES if f.supports_cuda_graph]
     assert opted_in == [], f"{opted_in} opts into CUDA graphs with no measurement on record"
+    # Offloaded denoisers are a different trade: the replay records the onloads and the step makes no host wait.
+    # Each opt-in carries a capped-card measurement in its family comment.
+    offloaded = sorted(f.name for f in _FAMILIES if f.offload_cuda_graph)
+    assert offloaded == sorted(OFFLOAD_GRAPH_FAMILIES), offloaded
+    assert (
+        h3.offload_cuda_graph is False
+    )  # streamed H3 onloads with host waits; a graph cannot record them
+    assert (
+        "GPU-bound" in h3.cuda_graph_decline and "wait on the host" in h3.cuda_graph_decline
+    )  # the measured reasons
+
+
+OFFLOAD_GRAPH_FAMILIES = ("wan2.2-ti2v-5b", "hunyuanvideo-1.5")
+
+
+def test_h3_modular_load_arms_a_deferred_graph_after_placement():
+    """A forced H3 graph is deferred to placement by apply_speed_optims; the modular load must arm it (or record why
+    it stays eager). Without the call the status read "off: armed after placement" for the whole load."""
+    import ast
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(video_module.VideoBackend._load_h3_modular_pipeline))
+    calls = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "arm_graphs_after_placement"
+    ]
+    assert calls and isinstance(calls[0].args[0], ast.Name) and calls[0].args[0].id == "speed_view"
+    speed = src.index("applied = autoopt.run_speed_layer(")
+    arm = src.index("arm_graphs_after_placement(")
+    status = src.index('"cuda_graph": (')
+    assert (
+        speed < arm < status
+    )  # after the deferring speed pass, before the resolved record reads the reason
 
 
 def test_every_rebuilt_speed_target_carries_the_backend():
@@ -9237,6 +10701,53 @@ def test_every_rebuilt_speed_target_carries_the_backend():
     for call in rebuilt:
         fields = {kw.arg for kw in call.keywords}
         assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
+
+
+def test_h3_speed_optims_get_the_denoisers_own_placement():
+    """A denoiser pinned under H3's offload policy must not read as offloaded."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    text = source.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+    h3 = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+    )
+    calls = [
+        n
+        for n in ast.walk(h3)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "apply_speed_optims"
+    ]
+    assert len(calls) == 1
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert "denoiser_offloaded" in kw
+    expr = ast.unparse(kw["denoiser_offloaded"])
+    names = {n.id for n in ast.walk(kw["denoiser_offloaded"]) if isinstance(n, ast.Name)}
+    assert (
+        {"denoiser_pinned", "denoiser_streamed"}
+        <= names
+        <= {"denoiser_pinned", "denoiser_streamed", "bool"}
+    ), expr
+    for pinned, streamed, offloaded in (
+        (True, None, False),
+        (True, "group", True),
+        (False, None, True),
+    ):
+        got = eval(
+            compile(ast.Expression(kw["denoiser_offloaded"]), "<h3>", "eval"),
+            {"bool": bool},
+            {"denoiser_pinned": pinned, "denoiser_streamed": streamed},
+        )
+        assert bool(got) is offloaded, (expr, pinned, streamed)
+    installs = [
+        n
+        for n in ast.walk(h3)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_int8_gemm"
+    ]
+    assert len(installs) == 1 and "device" in {k.arg for k in installs[0].keywords}
 
 
 class _GraphHandle:
@@ -9301,7 +10812,7 @@ def _stub_denoiser_seed(
         kind = "repo", location = repo, filename = "x.pt", fallback_filename = None
     )
     monkeypatch.setattr(
-        dq, "denoiser_prequant_sources", lambda fam, s, base: {c: source for c in components}
+        dq, "denoiser_prequant_sources", lambda fam, s, base, **_: {c: source for c in components}
     )
     modules = {c: object() for c in components}
     calls = []
@@ -9699,7 +11210,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
 
@@ -9760,7 +11271,7 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda target, requested, **kw: requested
     )
@@ -9858,7 +11369,7 @@ def _a14b_plan(monkeypatch):
             fallback_filename = None,
         ),
     }
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: sources)
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
@@ -10254,6 +11765,29 @@ def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkey
     # And exactly one step was marked, the one that really was submitted. No boundary marker
     # either, since the decoder was never reached.
     assert len(events) == 1
+
+
+def test_phase_reads_encode_until_the_denoise_loop_starts(fake_runtime, monkeypatch):
+    # The prompt encode runs inside pipe() before the first step; the bar said "denoise" through it.
+    _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    phases: list = []
+    pipe.scheduler.on_step = lambda n: phases.append(backend._gen.get("phase"))
+    original_call = type(pipe).__call__
+
+    def _call(self, *args, **kwargs):
+        phases.append(("at_call", backend._gen.get("phase")))
+        return original_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(pipe), "__call__", _call)
+    backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
+    assert phases[0] == ("at_call", "encode")
+    # From the first step on, the host is in the loop: denoise (steps 2 and 3 are seen after step 1's tick).
+    assert phases[2:] == ["denoise", "denoise"]
 
 
 def test_hv15_bar_never_outruns_the_gpu_and_holds_the_phase(fake_runtime, monkeypatch):
@@ -10760,7 +12294,7 @@ def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
     import core.inference.video_denoiser_prequant as dq
 
     installs, listed, _ = _video_install_probe(monkeypatch)
-    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: None)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base, **_: None)
     _video_load_to_the_install_gate()
     assert installs == []
     assert listed == []
@@ -12047,6 +13581,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         *,
         cancel_event = None,
         local_files_only = False,
+        scheme = None,
     ):
         fetched.append(([src.location for src in sources], cancel_event, local_files_only))
 
@@ -12184,3 +13719,291 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
     backend = _load_ltx23_from_dir(tmp_path)
     assert calls == [1]
     assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+def test_wan_load_turns_cudnn_benchmark_back_off(fake_runtime, monkeypatch):
+    # cudnn.benchmark's per-process conv pick made two servers decode the same Wan latents differently.
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"cudnn_benchmark": True, "compiled": False},
+    )
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["family"] == "wan2.2-ti2v-5b"
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+def test_cudnn_benchmark_opt_out_families():
+    # Every family on the Wan or HunyuanVideo-1.5 VAE opts out (reproducibility), LTX-2 keeps its re-tune opt-out.
+    from core.inference.video_families import _FAMILIES
+
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert {
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "ltx-2",
+        "ltx-2.5",
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+    } <= off
+    assert all(
+        fam.vae_force_fp32
+        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name.startswith("hunyuanvideo-1.5")
+        for fam in _FAMILIES
+        if not fam.cudnn_benchmark
+    )
+
+
+def test_hunyuanvideo15_load_keeps_cudnn_benchmark_off(fake_runtime, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    seen = []
+
+    def fake_speed(view, target, **kw):
+        seen.append(getattr(kw.get("family"), "cudnn_benchmark", True))
+        return {"cudnn_benchmark": True, "compiled": False}
+
+    monkeypatch.setattr(video_mod, "apply_speed_optims", fake_speed)
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    assert status["family"] == "hunyuanvideo-1.5"
+    assert seen and seen[0] is False
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+@pytest.mark.parametrize(
+    "plan_fields, filename, direct, te_direct",
+    [
+        ({"offload_policy": "none"}, "ltx-2.3-22b-distilled.safetensors", True, True),
+        (
+            {"offload_policy": "group", "stream_transformer": False, "stream_text_encoders": True},
+            "ltx-2.3-22b-distilled.safetensors",
+            True,
+            False,
+        ),
+        (
+            {"offload_policy": "group", "stream_transformer": True},
+            "ltx-2.3-22b-distilled.safetensors",
+            False,
+            False,
+        ),
+        ({"offload_policy": "model"}, "ltx-2.3-22b-distilled.safetensors", False, False),
+        ({"offload_policy": "none"}, "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf", False, False),
+    ],
+    ids = ["resident", "streamed-encoders", "streamed-dit", "model-offload", "gguf"],
+)
+def test_ltx23_reads_the_checkpoint_onto_the_card_only_for_a_resident_dit(
+    fake_runtime, tmp_path, monkeypatch, plan_fields, filename, direct, te_direct
+):
+    # The direct read puts the weights where a resident plan places them anyway; any plan that moves the DiT (or a GGUF,
+    # which keeps its block-quantised host tensors) keeps the host load.
+    import dataclasses
+
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
+    sentinel = object()
+    asked: list = []
+
+    def _device(device):
+        asked.append(device)
+        return sentinel
+
+    monkeypatch.setattr(video_ltx2, "direct_load_device", _device)
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), **plan_fields),
+    )
+    seen: dict = {}
+
+    def _assemble(checkpoint_path, **kwargs):
+        seen.update(kwargs)
+        return _FakePipeline.from_pretrained("Lightricks/LTX-2")
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_pipeline", _assemble)
+    monkeypatch.setattr(video_mod, "_return_direct_loaded_modules", lambda *a, **k: None)
+    # The fake pipeline has no offload hooks; placement is not what this test is about.
+    monkeypatch.setattr(
+        video_mod, "apply_memory_plan", lambda pipe, plan, **k: (plan.offload_policy, True)
+    )
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert seen["device"] is (sentinel if direct else None)
+    assert seen["text_encoder_device"] is (sentinel if te_direct else None)
+    assert bool(asked) is direct
+    backend.unload()
+
+
+def _cuda_wan_load(monkeypatch, *, policy, speed_mode):
+    """Load Wan2.2-TI2V-5B on a stubbed CUDA target with ``apply_memory_plan`` returning ``policy``."""
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        "cuda",
+        types.SimpleNamespace(is_available = lambda: False, synchronize = lambda: None),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = "cuda",
+            dtype = torch.bfloat16,
+            backend = "cuda",
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.video.settled_snapshot_device_memory", _fits_in_memory_snapshot("cuda")
+    )
+    _stub_apply_memory_plan(monkeypatch, video_module, policy = policy, vae_tiling = True)
+    backend = VideoBackend()
+    return backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed_mode
+    )
+
+
+@pytest.mark.parametrize(
+    "policy,speed_mode,installed",
+    [("none", "default", True), ("model", "default", False), ("none", "off", False)],
+)
+def test_resident_wan_load_decodes_untiled_when_it_fits(
+    fake_runtime, monkeypatch, policy, speed_mode, installed
+):
+    # Tiling is forced on for every conventional video load; a resident CUDA pipeline additionally gets the
+    # untiled-when-it-fits decode (reported in speed_optims). Offloaded and SPEED_OFF loads keep the plain tiled decode.
+    from core.inference import video_vae_untiled
+
+    calls = []
+    monkeypatch.setattr(
+        video_vae_untiled,
+        "install_untiled_decode",
+        lambda pipe, family, logger = None: calls.append(family) or True,
+    )
+    status = _cuda_wan_load(monkeypatch, policy = policy, speed_mode = speed_mode)
+    assert status["loaded"] is True
+    assert calls == (["wan2.2-ti2v-5b"] if installed else [])
+    assert ("vae_untiled_when_fits" in status["speed_optims"]) is installed
+
+
+def test_previewer_is_finished_when_the_render_fails_before_its_loop(fake_runtime, monkeypatch):
+    # The previewer starts a polling worker thread; a raise between its creation and the guarded
+    # render (here protect_generation) used to leave that thread polling for the life of the process.
+    import core.inference.diffusion_nvfp4_protect as protect_mod
+    import core.inference.diffusion_preview as preview_mod
+
+    _patch_events(monkeypatch)
+    started: list = []
+
+    class _Previewer:
+        finished = False
+
+        def on_step(self, *args, **kwargs):
+            pass
+
+        def finish(self):
+            self.finished = True
+
+    def _create(**kwargs):
+        started.append(_Previewer())
+        return started[-1]
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("protect refused")
+
+    monkeypatch.setattr(preview_mod.LatentPreviewer, "create", staticmethod(_create))
+    monkeypatch.setattr(protect_mod, "protect_generation", _refuse)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    with pytest.raises(RuntimeError, match = "protect refused"):
+        backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
+    assert all(p.finished for p in started)
+
+
+def test_h3_modular_single_file_from_an_untrusted_repo_checks_the_header_first(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The modular H3 branch returns before the generic single-file check, so it validates the header itself.
+    import pickle
+
+    bogus = tmp_path / "minimax_h3_fp8.safetensors"
+    bogus.write_bytes(pickle.dumps({"weights": 1}))
+    reached = []
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "ModularPipeline", _FakeModularPipeline, raising = False)
+    monkeypatch.setattr(diffusers, "ComponentsManager", _FakeComponentsManager, raising = False)
+    monkeypatch.setattr(diffusers, "MiniMaxH3Transformer3DModel", _FakeTransformer, raising = False)
+    monkeypatch.setattr(
+        VideoBackend, "_resolve_checkpoint_path", lambda self, *args, **kwargs: bogus
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_load_h3_modular_pipeline",
+        lambda self, **kwargs: reached.append(kwargs["comfy_checkpoint"]),
+    )
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        VideoBackend().load_pipeline(
+            "someone/minimax-h3-repack",
+            gguf_filename = bogus.name,
+            family_override = "minimax-h3",
+        )
+    assert reached == []
+
+
+def test_untrusted_a14b_pair_checks_the_partner_files_header_too(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Both experts come from the untrusted repo, so the partner is validated like the picked file.
+    import json
+    import pickle
+
+    high = tmp_path / "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+    low = tmp_path / "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+    raw = json.dumps({"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
+    high.write_bytes(len(raw).to_bytes(8, "little") + raw + b"\x00\x00\x80\x3f")
+    low.write_bytes(pickle.dumps({"weights": 1}))
+    monkeypatch.setattr(VideoBackend, "_resolve_checkpoint_path", lambda self, *a, **k: high)
+    monkeypatch.setattr(VideoBackend, "_resolve_moe_partner_path", lambda self, *a, **k: low)
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        VideoBackend().load_pipeline(
+            "someone/wan-a14b-repack",
+            gguf_filename = high.name,
+            base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            family_override = "wan2.2-t2v-a14b",
+        )
+
+
+def test_a_diffusers_without_the_i2v_class_reports_no_first_frame(fake_runtime):
+    # The fake diffusers has WanPipeline but no WanImageToVideoPipeline: the picker must not offer
+    # a start frame, and a request carrying one is refused before it reserves the backend.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["supports_first_frame"] is False
+    with pytest.raises(ValueError, match = "WanImageToVideoPipeline"):
+        backend.begin_generate(prompt = "p", first_frame = _data_url(64, 64))
+    assert backend.generate_progress()["active"] is False

@@ -14,6 +14,7 @@ Splitting a genuinely split GGUF is the opposite mistake, so both are pinned her
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,8 @@ def test_packed_and_grouped_quants_keep_their_own_key_in_both_copies():
         "Ternary-Bonsai-8B-PQ2_0.gguf": "PQ2_0",
         "Ternary-Bonsai-8B-Q2_0.gguf": "Q2_0",
         "Ternary-Bonsai-8B-Q2_0_g64.gguf": "Q2_0_g64",
+        # prism-ml/Ternary-Bonsai-27B-gguf spells its group-64 pack without the "_0".
+        "Ternary-Bonsai-27B-Q2_g64.gguf": "Q2_g64",
         "Ternary-Bonsai-2-27B-PTQ1_0.gguf": "PTQ1_0",
     }
     for path, key in files.items():
@@ -1107,8 +1110,8 @@ def test_the_remote_default_variant_prefers_the_root_checkpoint():
     from hub.services.models import gguf_variants as service
 
     source = inspect.getsource(service)
-    assert 'root_rows = [v.filename for v in variants if "/" not in v.quant]' in source
-    assert "pick_best_gguf(_default_variant_candidates(variants))" in source
+    assert "default_gguf_scope(variants, repo_id, key = lambda v: v.quant)" in source
+    assert "pick_best_gguf(_default_variant_candidates(variants, repo_id))" in source
 
 
 def test_the_load_guard_sees_the_alias_the_delete_accepts():
@@ -1150,7 +1153,8 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
+    # Whitespace-insensitive: the formatter may wrap a call across lines.
+    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 5
     assert "pick_best_gguf(filenames)" not in source
 
 
@@ -1188,7 +1192,8 @@ def test_the_remote_load_path_auto_selects_the_root_checkpoint():
     from utils.models import model_config as mc
 
     source = inspect.getsource(mc.ModelConfig.from_identifier)
-    assert "root_rows = [" in source
-    assert "variant_filenames = root_rows or [v.filename for v in variants]" in source
+    # The shared scope (root rows, or a curated repo's default subdirectory) keyed on the bare id.
+    assert "for v in default_gguf_scope(" in source
+    assert "identifier," in source
     # The filter reads the ADVERTISED identity, the same one the lister assigns each row.
-    assert '"/" not in _qualified_variant_name(v.filename, v.quant)' in source
+    assert "key = lambda v: _qualified_variant_name(v.filename, v.quant)" in source

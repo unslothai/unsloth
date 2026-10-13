@@ -23,8 +23,8 @@
 #   (c) Guide drift                    -- preflight passed + install ok, but
 #       the documented `unsloth start` flow produced no/garbled output.
 #
-# Agents covered (6): claude, codex, hermes, openclaw, opencode, pi.
-#   - All six have a `unsloth start <agent>` recipe, so each cell obtains its
+# Agents covered (8): claude, codex, hermes, openclaw, opencode, pi, dsh, vibe.
+#   - All eight have a `unsloth start <agent>` recipe, so each cell obtains its
 #     env + command from `unsloth start <agent> --no-launch` and runs THAT
 #     (self-updating: a recipe change is exercised automatically).
 
@@ -184,7 +184,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
         opencode_channel: [stable]
         include:
           # OpenClaw needs Node 24; everything else is happy on 22.
@@ -426,7 +426,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
         include:
           - agent: openclaw
             node: '24'

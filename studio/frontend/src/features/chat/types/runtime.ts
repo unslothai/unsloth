@@ -4,6 +4,12 @@
 export type MinPMode = "server-default" | "custom";
 
 export interface InferenceParams {
+  engineParallelism?: "tensor" | "pipeline" | "data";
+  enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engineKvCacheDtype?: "auto" | "fp8";
+  engineSeed?: number | null;
+  engineGpuMemoryUtilization?: number | null;
+  engine?: "auto" | "vllm" | "sglang";
   temperature: number;
   topP: number;
   topK: number;
@@ -56,7 +62,16 @@ export function modelReadsSamplingSeed(
 /** The params that survive a reload. `checkpoint` names the model rather than being one of its
  *  settings, so it is not one of them. */
 export type PersistedInferenceParams = Partial<
-  Omit<InferenceParams, "checkpoint">
+  Omit<
+    InferenceParams,
+    | "checkpoint"
+    | "engine"
+    | "enginePrecision"
+    | "engineParallelism"
+    | "engineKvCacheDtype"
+    | "engineSeed"
+    | "engineGpuMemoryUtilization"
+  >
 >;
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {

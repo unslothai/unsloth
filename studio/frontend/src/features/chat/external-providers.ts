@@ -2,11 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ConnectionApiType,
   ProviderApiType,
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
+import {
+  type CustomReasoningConfig,
+  normalizeCustomReasoningConfig,
+} from "./custom-reasoning.ts";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -17,6 +22,8 @@ export interface ExternalProviderConfig {
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
   apiType?: ProviderApiType;
+  reasoningConfig?: CustomReasoningConfig;
+  decisionsOnly?: boolean;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   /** Cached available model ids from the provider's /models response. */
@@ -113,7 +120,7 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle. vLLM's OpenAI-compat
-// endpoint does not advertise this per model.
+// endpoint does not advertise this per model; Ollama's /api/tags does.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
@@ -122,6 +129,26 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
+}
+
+const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
+
+export function isDecisionConnection(
+  provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,
+): boolean {
+  return (
+    provider.decisionsOnly === true ||
+    DECISION_PROVIDER_TYPES.has(provider.providerType)
+  );
+}
+
+export function connectionApiFields(
+  apiType: ConnectionApiType | undefined,
+): Pick<ExternalProviderConfig, "apiType" | "decisionsOnly"> {
+  return {
+    apiType: apiType === "responses" ? "responses" : "chat_completions",
+    decisionsOnly: apiType === "systemone",
+  };
 }
 
 // Known text-only providers on their main chat endpoint.
@@ -149,9 +176,15 @@ export function providerTypeSupportsVision(
 }
 
 
+export type ProviderModelCapability = {
+  vision?: boolean;
+  studio_tools?: boolean;
+  thinking?: boolean;
+};
+
 const REGISTRY_MODEL_CAPABILITIES = new Map<
   string,
-  Record<string, { vision?: boolean; studio_tools?: boolean }>
+  Record<string, ProviderModelCapability>
 >();
 
 const REGISTRY_MODEL_CAPABILITIES_KEY =
@@ -165,10 +198,7 @@ function hydrateProviderModelCapabilities(): void {
   try {
     const parsed = JSON.parse(
       localStorage.getItem(REGISTRY_MODEL_CAPABILITIES_KEY) ?? "{}",
-    ) as Record<
-      string,
-      Record<string, { vision?: boolean; studio_tools?: boolean }>
-    >;
+    ) as Record<string, Record<string, ProviderModelCapability>>;
     for (const [providerType, capabilities] of Object.entries(parsed)) {
       if (capabilities && typeof capabilities === "object") {
         REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -193,14 +223,14 @@ function persistProviderModelCapabilities(): void {
 
 export function getProviderModelCapabilities(
   providerType: string,
-): Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined {
+): Record<string, ProviderModelCapability> | undefined {
   hydrateProviderModelCapabilities();
   return REGISTRY_MODEL_CAPABILITIES.get(providerType);
 }
 
 export function setProviderModelCapabilities(
   providerType: string,
-  capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  capabilities: Record<string, ProviderModelCapability> | undefined,
 ): void {
   hydrateProviderModelCapabilities();
   if (capabilities) REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -289,6 +319,42 @@ export function providerModelSupportsStudioTools(
   }
   const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
   return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** No wildcard fallback: one Ollama host serves thinking and non-thinking models. `null` = never
+ *  described (hand-typed id, older Ollama), which is not a yes. */
+export function providerModelSupportsThinking(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+  if (!providerType || !modelId) return null;
+  hydrateProviderModelCapabilities();
+  const value =
+    REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.thinking;
+  return typeof value === "boolean" ? value : null;
+}
+
+/** Rows with a capability list overwrite `thinking` (a re-pulled tag can lose it); rows without
+ *  one are left alone. */
+export function learnCatalogModelCapabilities(
+  providerType: string,
+  models: readonly { id: string; capabilities?: string[] | null }[],
+): void {
+  if (!providerType) return;
+  const stored = getProviderModelCapabilities(providerType) ?? {};
+  const merged: Record<string, ProviderModelCapability> = { ...stored };
+  let learned = false;
+  for (const model of models) {
+    const names = model.capabilities;
+    const modelId = model.id?.trim();
+    if (!modelId || !Array.isArray(names)) continue;
+    merged[modelId] = {
+      ...stored[modelId],
+      thinking: names.includes("thinking"),
+    };
+    learned = true;
+  }
+  if (learned) setProviderModelCapabilities(providerType, merged);
 }
 
 /** Whether the connection behind an `external::` model id runs Unsloth tools. Resolves the
@@ -552,6 +618,12 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
     apiType: raw.apiType === "responses" ? "responses" : "chat_completions",
+    reasoningConfig:
+      providerType === "custom" &&
+      (raw.backendProviderType === undefined || raw.backendProviderType === "custom") &&
+      raw.apiType !== "responses" && raw.decisionsOnly !== true
+        ? normalizeCustomReasoningConfig(raw.reasoningConfig)
+        : undefined,
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),

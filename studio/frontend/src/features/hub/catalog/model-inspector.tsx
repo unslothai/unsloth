@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -47,6 +48,8 @@ import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
+  hubModelRunsOnAudioPage,
+  isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -288,11 +291,12 @@ function ModelStatusChips({
     !isDataset &&
     unslothSupport.status === "unsupported" &&
     !unslothSupport.supportedIn;
+  const showVllm = !isDataset && unslothSupport.supportedIn === "vllm";
   // The format-unsupported chip already explains itself; this one covers the
   // supported-format model a chat-only host still can't run.
-  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported && !showVllm;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram) return null;
+  if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -339,6 +343,29 @@ function ModelStatusChips({
             <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showVllm && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="Requires vLLM" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            The default engine cannot load this format. After downloading, open
+            it from the chat model picker and choose vLLM as the Inference
+            engine in its run settings.
+            {unslothSupport.reason && (
+              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+                {unslothSupport.reason}
+              </span>
+            )}
           </TooltipContent>
         </Tooltip>
       )}
@@ -405,7 +432,7 @@ export type ModelInspectorActions = {
   onSearchHub?: (query: string) => void;
   onRun?: (
     selection: HubModelRunSelection,
-    mediaPage: ReturnType<typeof studioPageForTask>,
+    mediaPage: ReturnType<typeof studioPageForTask> | "audio",
   ) => void;
   runConfigPending?: boolean;
 };
@@ -484,6 +511,8 @@ export const ModelInspector = memo(function ModelInspector({
   const supportTagsKey = model?.tags?.join("\0") ?? "";
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -492,8 +521,12 @@ export const ModelInspector = memo(function ModelInspector({
       libraryName: supportLibraryName,
       deviceType,
       quantMethod: supportQuantMethod,
+      vllmAvailable,
+      vllmPlatform,
     });
   }, [
+    vllmAvailable,
+    vllmPlatform,
     deviceType,
     supportLibraryName,
     supportModelId,
@@ -554,10 +587,11 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   // Media models use a separate runtime, so the llama.cpp memory estimate does
   // not describe their load.
-  const mediaPage = studioPageForTask(
-    taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
-  );
-  const runsOnMediaRuntime = mediaPage !== undefined;
+  const mediaTask = taskForMediaPick(model.pipelineTag, model.task);
+  const mediaPage = studioPageForTask(mediaTask ?? undefined);
+  const audioPage =
+    mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
+  const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
@@ -567,6 +601,22 @@ export const ModelInspector = memo(function ModelInspector({
   });
   const runAction =
     runEligible && onRun
+      ? (selection: HubModelRunSelection) =>
+          onRun(selection, audioPage ? "audio" : mediaPage)
+      : undefined;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf &&
+    (model.libraryName?.toLowerCase() === "mlx" ||
+      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+  const precisionRunAction =
+    isMlx &&
+    onRun &&
+    !isDataset &&
+    !isEmbeddingOnly(model) &&
+    !runsOnMediaRuntime &&
+    !chatOnlyMeasured &&
+    unslothSupport.status !== "unsupported"
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
@@ -704,7 +754,8 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
-              mediaRuntime={runsOnMediaRuntime}
+              mediaPage={mediaPage}
+              assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
@@ -723,6 +774,8 @@ export const ModelInspector = memo(function ModelInspector({
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
+              isMlx={isMlx}
+              onRunPrecision={precisionRunAction}
             />
           )}
         </InspectorDownloadSlot>

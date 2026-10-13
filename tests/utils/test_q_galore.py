@@ -176,6 +176,81 @@ def test_removed_bitsandbytes_options_are_rejected(name, value):
         _adamw_mod.QGaLoreAdamW8bit([nn.Parameter(torch.ones(2))], **{name: value})
 
 
+@pytest.mark.parametrize("out_features,in_features", [(4, 3), (3, 4)])
+def test_projected_step_preserves_full_rank_gradients(out_features, in_features):
+    bnb = pytest.importorskip("bitsandbytes")
+    try:
+        probe = nn.Parameter(torch.ones(2))
+        probe.grad = torch.zeros_like(probe)
+        bnb.optim.AdamW32bit([probe], lr = 0.0).step()
+    except Exception as exc:
+        pytest.skip(
+            reason = f"bitsandbytes build lacks CPU optimizer kernels (older releases): {exc}"
+        )
+    model = nn.Linear(in_features, out_features, bias = False)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(
+        [{"params": list(model.parameters()), "rank": 1, "quant": False}],
+        lr = 0.01,
+        weight_decay = 0.0,
+    )
+    inputs = torch.arange(2 * in_features, dtype = torch.float32).reshape(2, in_features)
+    for _ in range(2):
+        optimizer.zero_grad(set_to_none = False)
+        model(inputs).square().mean().backward()
+        expected_grad = model.weight.grad.clone()
+        optimizer.step()
+        torch.testing.assert_close(model.weight.grad, expected_grad)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("quant", [True, False])
+def test_resume_from_weights_only_checkpoint_matches_uninterrupted(quant):
+    """unslothai/unsloth#729: transformers resumes with torch.load(weights_only=True, map_location="cpu")."""
+    import io
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+
+    def make(weight, bias):
+        weight = nn.Parameter(weight.clone())
+        bias = nn.Parameter(bias.clone())
+        projected = {"params": [weight], "rank": 4, "update_proj_gap": 2, "quant": quant}
+        projected.update(queue_size = 2, cos_threshold = 0.0)
+        optimizer = _adamw_mod.QGaLoreAdamW8bit([projected, {"params": [bias]}], lr = 1e-2)
+        return weight, bias, optimizer
+
+    def step(weight, bias, optimizer, i):
+        # svd_lowrank draws from the global RNG, so each step reseeds it.
+        torch.manual_seed(i)
+        weight.grad = torch.randn(weight.shape, device = device)
+        bias.grad = torch.randn(bias.shape, device = device)
+        optimizer.step()
+
+    torch.manual_seed(0)
+    weight, bias, optimizer = make(
+        torch.randn(128, 64, device = device), torch.randn(64, device = device)
+    )
+    for i in range(3):
+        step(weight, bias, optimizer, i)
+    buffer = io.BytesIO()
+    torch.save(optimizer.state_dict(), buffer)
+    assert isinstance(optimizer.state[weight]["projector"], GaLoreProjector)
+    buffer.seek(0)
+    saved = torch.load(buffer, map_location = "cpu", weights_only = True)
+
+    weight2, bias2, resumed = make(weight.detach(), bias.detach())
+    resumed.load_state_dict(saved)
+    projector = resumed.state[weight2]["projector"]
+    assert projector.ortho_matrix.device == weight2.device
+    for i in range(3, 7):
+        step(weight, bias, optimizer, i)
+        step(weight2, bias2, resumed, i)
+    assert torch.equal(weight, weight2)
+    assert torch.equal(bias, bias2)
+    # The adaptive schedule widened the gap after resume, so its saved queue was used.
+    assert projector.update_proj_gap == optimizer.state[weight]["projector"].update_proj_gap == 4
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================
@@ -247,17 +322,46 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 4,
             update_proj_gap = 10,
-            cos_threshold = 0.0,  # Very low threshold → always triggers
+            cos_threshold = 0.9,
             gamma_proj = 2.0,
             queue_size = 2,
         )
-        # Near-identical gradients keep cosine similarity high.
+        # Near-identical gradients keep the subspace, so |cos| stays near 1.
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
             proj.project(grad, step = i * 10)
 
-        assert proj.update_proj_gap > 10
+        assert proj.update_proj_gap > 10, list(proj.queue)
+
+    @staticmethod
+    def _scheduled_gap(monkeypatch, bases, cos_threshold):
+        """Drive the schedule with a fixed sequence of orthogonal bases, one per SVD."""
+        sequence = iter(bases)
+        monkeypatch.setattr(
+            GaLoreProjector,
+            "_compute_orthogonal",
+            staticmethod(lambda *args, **kwargs: next(sequence)),
+        )
+        proj = GaLoreProjector(
+            rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
+        )
+        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
+        for step in range(len(bases)):
+            if step % proj.update_proj_gap == 0:
+                proj.project(grad, step = step)
+        return proj.update_proj_gap
+
+    def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
+        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
+        basis = torch.eye(8)[:2]
+        assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
+
+    def test_adaptive_scheduling_still_rejects_a_rotated_basis(self, monkeypatch):
+        eye = torch.eye(8)
+        assert (
+            self._scheduled_gap(monkeypatch, [eye[:2], eye[2:4], eye[4:6]], cos_threshold = 0.4) == 1
+        )
 
     def test_scale_applied(self):
         """project_back applies the scale factor."""
@@ -637,3 +741,124 @@ class TestQGaLoreIntegration:
 
         for h in handles:
             h.remove()
+
+
+class _TinyBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = nn.Linear(32, 32, bias = False)
+        self.down_proj = nn.Parameter(torch.randn(4, 32, 16) * 0.02)
+
+    def forward(self, x):
+        return torch.einsum("bh,eho->bo", self.q_proj(x), self.down_proj)
+
+
+def _q_galore_step(model, device, weight_quant, targets):
+    groups = make_q_galore_param_groups(
+        model,
+        rank = 4,
+        proj_quant = False,
+        weight_quant = weight_quant,
+        stochastic_round = False,
+        weight_group_size = 32,
+        target_modules = targets,
+    )
+    if weight_quant:
+        _adamw_mod.QGaLoreAdamW8bit.init_weight_quantization(model, groups, group_size = 32)
+        _adamw_mod.install_weight_quant_hooks(model)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(groups, lr = 1e-2)
+    model(torch.randn(2, 32, device = device)).square().sum().backward()
+    optimizer.step()
+    return groups
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_stacked_expert_weights_use_plain_adamw_not_galore():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TinyBlock().to(device)
+    before = model.down_proj.detach().clone()
+    groups = _q_galore_step(model, device, weight_quant = False, targets = ["q_proj", "down_proj"])
+    galore = next(g for g in groups if "rank" in g)["params"]
+    assert [p.dim() for p in galore] == [2]
+    assert not torch.equal(model.down_proj.detach(), before)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_state_dict_after_step_holds_full_weights():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TinyBlock().to(device)
+    _q_galore_step(model, device, weight_quant = True, targets = ["q_proj"])
+    weight = model.q_proj.weight
+    assert weight.shape == (1,)
+
+    state_dict = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    expected = _dequantize(weight._q_data, weight._q_scales, weight._q_zeros, weight._q_shape)
+    torch.testing.assert_close(state_dict["q_proj.weight"], expected)
+    assert weight.shape == (1,)
+
+    fresh = _TinyBlock().to(device)
+    fresh.load_state_dict(state_dict)
+    x = torch.randn(2, 32, device = device)
+    torch.testing.assert_close(model(x), fresh(x))
+
+    # Loading into the live quantized model must not be overwritten by the stale INT8 copy.
+    target = {k: torch.randn_like(v) for k, v in state_dict.items()}
+    model.load_state_dict(target)
+    fresh.load_state_dict(target)
+    torch.testing.assert_close(model(x), fresh(x))
+
+
+class _HookBypassingBlock(_TinyBlock):
+    # Calls forward directly, like a torch.compile'd parent that never runs submodule pre-hooks.
+    def forward(self, x):
+        return torch.einsum("bh,eho->bo", self.q_proj.forward(x), self.down_proj)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_root_hook_restores_weights_for_bypassed_submodules():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _HookBypassingBlock().to(device)
+    _q_galore_step(model, device, weight_quant = True, targets = ["q_proj"])
+    weight = model.q_proj.weight
+    expected = _dequantize(weight._q_data, weight._q_scales, weight._q_zeros, weight._q_shape)
+    model(torch.randn(2, 32, device = device))
+    torch.testing.assert_close(weight.data, expected)
+    # Already materialized: checkpointing reuses the live tensor instead of a second dense copy.
+    assert model.state_dict()["q_proj.weight"].data_ptr() == weight.data_ptr()
+
+
+class _TwoBranchBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = nn.Linear(32, 32, bias = False)
+        self.k_proj = nn.Linear(32, 32, bias = False)
+        self.use_k = True
+
+    def forward(self, x):
+        return (self.k_proj if self.use_k else self.q_proj)(x)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_weight_quant_unrouted_weights_return_to_placeholders():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    model = _TwoBranchBlock().to(device)
+    groups = _q_galore_step(model, device, weight_quant = True, targets = ["q_proj", "k_proj"])
+    weight = model.k_proj.weight
+    assert weight.shape == (1,)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(groups, lr = 1e-2)
+    weight.grad = None
+    model.use_k = False
+    model(torch.randn(2, 32, device = device)).square().sum().backward()
+    assert weight.shape == (32, 32)
+    q_data = weight._q_data.clone()
+    optimizer.step()
+    assert weight.shape == (1,)
+    assert torch.equal(weight._q_data, q_data)

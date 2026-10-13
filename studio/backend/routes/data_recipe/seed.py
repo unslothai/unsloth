@@ -881,7 +881,72 @@ def _load_preview_rows(
     *, load_dataset_fn, load_kwargs: dict[str, Any], preview_size: int
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
-    return [row for row in islice(streamed_ds, preview_size)]
+    features = getattr(streamed_ds, "features", None) if managed_account() else None
+    undecoded = _images_undecoded(features) if features else None
+    if undecoded is None or undecoded == features:
+        return [row for row in islice(streamed_ds, preview_size)]
+    # Image cells, nested ones included, stay {bytes, path} dicts so a local path is checked
+    # against the account before it is opened; Hub-hosted images are decoded here.
+    tokens = getattr(streamed_ds, "_token_per_repo_id", None)
+    return [
+        _decode_hub_images(undecoded, row, tokens)
+        for row in islice(streamed_ds.cast(undecoded), preview_size)
+    ]
+
+
+def _images_undecoded(feature):
+    import dataclasses
+
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        return dataclasses.replace(feature, decode = False)
+    if isinstance(feature, dict):
+        return type(feature)({key: _images_undecoded(value) for key, value in feature.items()})
+    if isinstance(feature, list):
+        return [_images_undecoded(value) for value in feature]
+    if dataclasses.is_dataclass(feature) and getattr(feature, "feature", None) is not None:
+        return dataclasses.replace(feature, feature = _images_undecoded(feature.feature))
+    return feature
+
+
+def _is_hub_path(path) -> bool:
+    from datasets import config
+
+    if not isinstance(path, str):
+        return False
+    parts = path.split("::")
+    source = parts[-1]
+    return (source.startswith("hf://") or source.startswith(f"{config.HF_ENDPOINT}/")) and not any(
+        part.startswith("file:") for part in parts
+    )
+
+
+def _decode_hub_images(feature, value, tokens):
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        if (
+            isinstance(value, dict)
+            and value.get("bytes") is None
+            and _is_hub_path(value.get("path"))
+        ):
+            try:
+                return Image(mode = feature.mode).decode_example(value, token_per_repo_id = tokens)
+            except Exception:
+                return value
+        return value
+    if isinstance(feature, dict) and isinstance(value, dict):
+        return {
+            key: _decode_hub_images(feature[key], item, tokens) if key in feature else item
+            for key, item in value.items()
+        }
+    inner = (
+        feature[0] if isinstance(feature, list) and feature else getattr(feature, "feature", None)
+    )
+    if inner is not None and isinstance(value, list):
+        return [_decode_hub_images(inner, item, tokens) for item in value]
+    return value
 
 
 def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -907,6 +972,10 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         return base64.b64decode(raw, validate = True)
     except binascii.Error as exc:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
+
+
+# Match the recipe's DuckDB read: inference made "007" -> 7 and a created_at number a date.
+_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False}
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
@@ -944,12 +1013,12 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
                 full_df.to_csv(tmp_csv, index = False, encoding = "utf-8")
                 tmp_csv.replace(path)
         elif ext == ".jsonl":
-            df = pd.read_json(path, lines = True).head(preview_size)
+            df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
         elif ext == ".json":
             try:
-                df = pd.read_json(path).head(preview_size)
+                df = pd.read_json(path, **_JSON_READ_OPTIONS).head(preview_size)
             except ValueError:
-                df = pd.read_json(path, lines = True).head(preview_size)
+                df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
         else:
             raise HTTPException(status_code = 422, detail = f"unsupported file type: {ext}")
     except HTTPException:
@@ -1029,6 +1098,30 @@ def _read_preview_rows_from_multi_files(
     )
 
 
+def _require_own_seed_source(dataset_name: str) -> None:
+    """load_dataset also reads a local folder, its dataset card's data_files and any links in it, and a
+    check before the read cannot pin what the read opens. A managed account previews Hub ids only, as
+    the UI does; its own files go through /seed/inspect-upload."""
+    if not managed_account():
+        return
+    parts = dataset_name.split("/")
+    hub_id = len(parts) == 2 and all(
+        part not in {"", ".", ".."} and all(c.isalnum() or c in "-_." for c in part)
+        for part in parts
+    )
+    if hub_id:
+        # Only a well-formed id reaches the filesystem: a UNC name would start SMB auth on Windows.
+        try:
+            hub_id = not Path(dataset_name).expanduser().exists()
+        except (ValueError, RuntimeError, OSError):
+            hub_id = False
+    if not hub_id:
+        raise HTTPException(
+            status_code = 403,
+            detail = "dataset_name must be a Hugging Face repo id like org/repo",
+        )
+
+
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
 def inspect_seed_dataset(
     payload: SeedInspectRequest, allow_ambient_token: bool = Depends(allow_ambient_hf_token)
@@ -1039,6 +1132,7 @@ def inspect_seed_dataset(
             status_code = 400,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
+    _require_own_seed_source(dataset_name)
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
@@ -1152,10 +1246,8 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
     elif ext == ".docx":
-        import mammoth
-        with open(str(file_path), "rb") as f:
-            result = mammoth.convert_to_markdown(f)
-            raw = result.value
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
@@ -1321,8 +1413,10 @@ async def upload_unstructured_file(
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         missing = getattr(e, "name", None)
-        expected_missing = {".pdf": "pymupdf4llm", ".docx": "mammoth"}.get(ext)
+        expected_missing = {".pdf": "pymupdf4llm", ".docx": "docx"}.get(ext)
         if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
+            # Name what to install: python-docx imports as docx, and PyPI's "docx" is another package.
+            package = {"docx": "python-docx"}.get(missing, missing)
             logger.error(
                 "data_recipe.seed.text_extraction_dependency_missing",
                 error = str(e),
@@ -1334,7 +1428,7 @@ async def upload_unstructured_file(
                 filename = original_filename,
                 size_bytes = size_bytes,
                 status = "error",
-                error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+                error = f"Cannot read {ext} files: the '{package}' package is not installed.",
             )
         logger.error(
             "data_recipe.seed.text_extraction_failed",

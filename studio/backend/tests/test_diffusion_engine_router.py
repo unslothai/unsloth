@@ -23,6 +23,7 @@ _ENVS = (
 
 @pytest.fixture(autouse = True)
 def _clean_env_and_state(monkeypatch):
+    r._supported_family_capabilities.cache_clear()
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
     # A light status-capable stub so selection / active_status() never import the heavy diffusers or sd.cpp
@@ -46,6 +47,7 @@ def _clean_env_and_state(monkeypatch):
     finally:
         r._active_engine_name = saved_engine
         r._fallback_reason = saved_reason
+        r._supported_family_capabilities.cache_clear()
 
 
 def _set_device(monkeypatch, backend):
@@ -200,6 +202,19 @@ def test_active_status_injects_engine_and_reason(monkeypatch):
     st = r.active_status()
     assert st["engine"] == ENGINE_DIFFUSERS
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
+
+
+def test_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        r,
+        "pipeline_available_family_names",
+        lambda: calls.append("probe") or ("z-image", "flux.1"),
+    )
+
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert calls == ["probe"]
 
 
 # ── engine-switch eviction ordering ───────────────────────────────────────────
@@ -458,3 +473,19 @@ def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monke
     _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+
+
+def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monkeypatch, tmp_path):
+    # #12470: the load replaces a moved-pin build before selecting, so the plan must not stage diffusers.
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    old = _write_binary(tmp_path, "sd-cli-old4", marker = False)
+    _set_binary(monkeypatch, old)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    moved: list = []
+    monkeypatch.setattr(r, "_pin_moved", lambda binary, accel: moved.append(binary) or True)
+    fam = detect_family("qwen-image-2.1")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+    assert moved == [old]
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS

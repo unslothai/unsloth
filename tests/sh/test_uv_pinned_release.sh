@@ -30,7 +30,7 @@ fi
 
 # The pinned attempt must precede the fallback, or the fallback is what actually runs.
 _pinned_at=$(grep -n 'if _uv_install_pinned[ ;]' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_fallback_at=$(grep -n 'download "https://astral.sh/uv/install.sh"' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_fallback_at=$(grep -n 'download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ -n "$_pinned_at" ] && [ -n "$_fallback_at" ] && [ "$_pinned_at" -lt "$_fallback_at" ]; then
     ok "the pinned path is tried before the astral fallback"
 else

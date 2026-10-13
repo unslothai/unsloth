@@ -164,7 +164,8 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
                 "id": "resp_route",
                 "status": "completed",
                 "output": [
-                    {"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}
+                    {"type": "compaction", "encrypted_content": "enc_compacted"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Hello"}]},
                 ],
             },
         )
@@ -199,12 +200,100 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
     assert response.status_code == upstream_status
     body = json.loads(response.body)
     if upstream_status == 200:
-        assert body["choices"][0]["message"]["content"] == "Hello"
+        assert body["choices"][0]["message"]["content"] == [
+            {"type": "compaction", "encrypted_content": "enc_compacted"},
+            {"type": "text", "text": "Hello"},
+        ]
         assert monitor.snapshot()[0]["status"] == "completed"
     else:
         assert "rate limited" in body["error"]["message"]
         assert body["error"]["code"] == "429"
     assert monitor.active_count() == 0
+
+
+@pytest.mark.parametrize("server_compaction_rejected", [False, True])
+def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_compaction_rejected):
+    from routes import inference
+
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if server_compaction_rejected and "context_management" in body:
+            return httpx.Response(
+                400,
+                json = {
+                    "error": {
+                        "message": "context_management is unavailable for this deployment",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_route",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            },
+        )
+
+    truncation = {"dropped_messages": 2, "boundary_messages": 2, "fits": True}
+
+    def fit(
+        messages,
+        _payload,
+        *,
+        tools = None,
+    ):
+        assert tools is None
+        return messages[-1:], truncation, 128
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monkeypatch.setattr(inference, "_fit_external_context", fit)
+            monkeypatch.setattr(
+                inference, "compacts_server_side", lambda *_args: server_compaction_rejected
+            )
+            monkeypatch.setattr(
+                ep, "_is_openai_family_cloud", lambda _base_url: server_compaction_rejected
+            )
+            payload = ChatCompletionRequest(
+                messages = [
+                    {"role": "user", "content": "old"},
+                    {"role": "assistant", "content": "answer"},
+                    {"role": "user", "content": "latest"},
+                ],
+                stream = False,
+                provider_type = "custom",
+                provider_base_url = "https://gateway.example/v1",
+                provider_api_type = "responses",
+                external_model = "gateway-model",
+                context_overflow = "truncate_oldest",
+                compaction_threshold = 6_000,
+            )
+
+            async def disconnected():
+                return False
+
+            request = SimpleNamespace(
+                headers = {},
+                state = SimpleNamespace(skip_api_monitor = True),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+                is_disconnected = disconnected,
+            )
+            return await inference._proxy_to_external_provider(payload, request)
+
+    response = asyncio.run(run())
+    assert response.status_code == 200
+    body = json.loads(response.body)
+    assert body["context_truncated"] == truncation
+    assert "old" not in json.dumps(requests[-1]["input"])
+    assert "latest" in json.dumps(requests[-1]["input"])
+    assert len(requests) == (2 if server_compaction_rejected else 1)
 
 
 def test_responses_follow_up_preserves_reasoning_metadata():

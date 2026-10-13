@@ -180,8 +180,15 @@ def test_api_monitor_renders_download_rows():
 def test_monitor_can_unload_the_loaded_model():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable; disabled, not hidden.
-    assert "disabled={unloading || !data?.active_model}" in src
+    # Always rendered so the manual release stays discoverable; disabled, not hidden. Read the
+    # button's own disabled= as a set of || terms: #11223 added `modelLoading` (no unload while a
+    # model loads), and the guard is that these two stay among them, not the exact spelling.
+    click = "onClick={() => void unloadActiveModel()}"
+    button = src[src.index(click) + len(click) :]
+    disabled = re.match(r"\s*disabled=\{([^}]*)\}", button)
+    assert disabled, "the unload button no longer sits next to its disabled= prop"
+    terms = {term.strip() for term in disabled.group(1).split("||")}
+    assert {"unloading", "!data?.active_model"} <= terms, terms
     assert "{data?.active_model ? (" not in src
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
@@ -10,6 +11,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
+import { DownloadApprovalDialog } from "@/features/browser";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -33,7 +35,12 @@ import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
+import {
+  ManagedEngineOfferDialog,
+  SharedRunConfigLinkHandler,
+} from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
+import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -49,12 +56,13 @@ import {
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
@@ -81,7 +89,7 @@ import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
 import type { SettingsMenuAction } from "../app-menu-chords";
-import { useAppMenuActions } from "../use-app-menu-actions";
+import { hasAppMenus, useAppMenuActions } from "../use-app-menu-actions";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -440,6 +448,7 @@ function RootLayout() {
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
+  useTypeToActivate();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
@@ -466,12 +475,13 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings predating the server override map live only here, so an API load would use
-  // app defaults. Backfill once, after auth.
+  // app defaults. Backfill once, after auth; pins are restored from the account's server copy.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;
     }
     void backfillModelOverrides();
+    void hydratePins();
   }, [isAuthFlowRoute]);
 
   useEffect(() => {
@@ -539,10 +549,10 @@ function RootLayout() {
   const openingFolder = useOpeningFolder();
   const desktopShellReady = useDesktopShellReady();
   // Menu items for web shortcuts are live exactly while a mounted handler would take them.
-  const sidebarMounted = useShortcutAvailable("toggleSidebar", isTauri);
-  const findMounted = useShortcutAvailable("findInPage", isTauri);
-  const previousChatMounted = useShortcutAvailable("previousChat", isTauri);
-  const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
+  const sidebarMounted = useShortcutAvailable("toggleSidebar", hasAppMenus);
+  const findMounted = useShortcutAvailable("findInPage", hasAppMenus);
+  const previousChatMounted = useShortcutAvailable("previousChat", hasAppMenus);
+  const nextChatMounted = useShortcutAvailable("nextChat", hasAppMenus);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
   // Help opens settings or a web page, so it works anywhere past sign-in.
@@ -675,9 +685,13 @@ function RootLayout() {
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
+      <DownloadApprovalDialog />
       <TransformersUpgradeDialog />
+      <ManagedEngineOfferDialog />
+      <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
+      <ImageViewer />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
@@ -819,6 +833,9 @@ function RootLayout() {
   return (
     <AppProvider>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        <SharedRunConfigLinkHandler
+          chatSearch={shouldMountChat ? chatSearch : null}
+        />
         {content}
       </CredentialBootstrapGate>
     </AppProvider>

@@ -187,6 +187,12 @@ def test_model_call_sites_use_shared_cache_dispatch():
     gemma_source = (REPO_ROOT / "unsloth" / "models" / "gemma.py").read_text(encoding = "utf-8")
     gemma2_source = (REPO_ROOT / "unsloth" / "models" / "gemma2.py").read_text(encoding = "utf-8")
     granite_source = (REPO_ROOT / "unsloth" / "models" / "granite.py").read_text(encoding = "utf-8")
+    loader_utils_source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(
+        encoding = "utf-8"
+    )
+    q_galore_source = (REPO_ROOT / "unsloth" / "optimizers" / "q_galore_adamw.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
@@ -202,6 +208,12 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "clean_gpu_cache()" in gemma2_source
     assert "torch.cuda.empty_cache()" not in granite_source
     assert "clean_gpu_cache()" in granite_source
+    # Keyed off cuda alone, the load-retry flush and the optimizer fence were no-ops on NPU / XPU.
+    assert "torch.cuda.empty_cache()" not in loader_utils_source
+    assert "torch.xpu.empty_cache()" not in loader_utils_source
+    assert "clean_gpu_cache()" in loader_utils_source
+    assert "torch.cuda.synchronize()" not in q_galore_source
+    assert "device_synchronize()" in q_galore_source
 
 
 NPU_PROPERTIES = types.SimpleNamespace(

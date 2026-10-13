@@ -37,8 +37,9 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     # The store owns the stream, so nothing else can stall ingestion by not reading.
     assert "ensureResearchRunFollowed(run.id, run);" in store
     assert "export async function* watchResearchRun" in store
-    for action in ("cancel", "retry"):
-        assert f'mutate(id, "{action}")' in api
+    assert 'mutate(id, "cancel")' in api
+    # Retry carries the current time budget and website access (#11837).
+    assert re.search(r'mutate\(\s*id,\s*"retry",', api)
     assert 'mutate(id, "approve", { planRevision, planHash })' in api
     assert "JSON.stringify({ plan, expectedRevision })" in api
 
@@ -185,7 +186,26 @@ def test_research_presentation_is_integrated() -> None:
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    assert "if (researchRunId || ownsResearchMessage)" in thread
+    # A research message has no Delete. The hook reports `hidden` for research messages, and every
+    # component that renders Delete from it renders nothing when hidden. That component has been a
+    # bar button, a More-menu item (#12735) and a bar button again (#13615), so it is found by the
+    # hook it calls rather than by its name.
+    delete_hook = thread.split("function useDeleteMessage()", 1)[1].split("\n}\n", 1)[0]
+    assert re.search(
+        r"hidden:\s*Boolean\(\s*researchRunId\s*\|\|\s*ownsResearchMessage\s*\)", delete_hook
+    )
+    delete_controls = {
+        name: body
+        for name, body in re.findall(
+            r"^const (\w+): FC = \(\) => \{\n([\s\S]*?)\n\};\n", thread, re.M
+        )
+        if "useDeleteMessage()" in body
+    }
+    assert delete_controls, "no thread.tsx component renders Delete through useDeleteMessage()"
+    for name, body in delete_controls.items():
+        assert re.search(
+            r"if\s*\(\s*hidden\s*\)\s*\{?\s*return null", body
+        ), f"{name} renders Delete without the research-message gate"
     assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
     assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
     assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
@@ -253,8 +273,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
     assert 'behavior: "smooth"' not in activity
-    assert "collapsible={showArtifactPanel}" in page
-    assert "!artifactLayoutActive &&" in page
+    assert "collapsible={showBrowserPanel}" in page
+    assert "(!artifactLayoutActive || browserFullView) &&" in page
     assert '? "30%"' in page
     assert '? "58%"' in page
     assert "key={openResearchRunId}" in page

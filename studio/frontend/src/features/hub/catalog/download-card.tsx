@@ -51,11 +51,13 @@ export function DownloadCard({
   progress,
   children,
   dialogs,
+  footer,
 }: {
   job: DownloadJob;
   progress: DownloadJobProgress | null;
   children: ReactNode;
   dialogs?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
     <>
@@ -73,6 +75,7 @@ export function DownloadCard({
             />
           </div>
         )}
+        {footer}
       </div>
       <TransportConflictDialog
         conflict={job.transportConflict}

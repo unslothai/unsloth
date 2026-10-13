@@ -16,6 +16,7 @@ export const CONVERSATION_MARKDOWN_FORMAT = "markdown";
 export const CONVERSATION_MARKDOWN_LABEL = "Markdown";
 export const CONVERSATION_MARKDOWN_EXTENSION = "md";
 export const CONVERSATION_MARKDOWN_MIME_TYPE = "text/markdown";
+export const CONVERSATION_MARKDOWN_FRAME_PREFIX = "<!-- unsloth-chat-v1:";
 
 const ROLE_LABELS: Readonly<Record<string, string>> = {
   assistant: "Assistant",
@@ -600,13 +601,22 @@ export function renderConversationBlocks(
 
 export function buildConversationMarkdown(
   messages: readonly ConversationMarkdownMessage[],
+  options: { includeImportMetadata?: boolean } = {},
 ): string {
   const sections = messages.flatMap(({ role, content }) => {
     if (!content.trim()) {
       return [];
     }
     const label = roleLabel(role);
-    return [`## ${label}\n\n${content}`];
+    const text = options.includeImportMetadata
+      ? content.replace(/\r\n?/g, "\n")
+      : content;
+    return [`## ${label}\n\n${text}`];
   });
-  return sections.length > 0 ? `${sections.join("\n\n")}\n` : "";
+  if (sections.length === 0) return "";
+  const body = `${sections.join("\n\n")}\n`;
+  if (!options.includeImportMetadata) return body;
+  // section lengths distinguish transcript boundaries from identical text inside a message.
+  const lengths = JSON.stringify(sections.map((section) => section.length));
+  return `${CONVERSATION_MARKDOWN_FRAME_PREFIX}${lengths} -->\n\n${body}`;
 }
