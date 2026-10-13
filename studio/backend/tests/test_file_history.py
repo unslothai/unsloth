@@ -261,3 +261,34 @@ def test_edit_file_still_works_when_history_cannot_open(chat, monkeypatch):
     file_history.set_turn("chat-1", "u1")
     _edit("app.py", "", "x = 1\n")
     assert (workdir / "app.py").read_text() == "x = 1\n"
+
+
+def test_a_file_written_while_another_chats_call_ran_is_a_conflict(chat):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("seed.txt", "", "s\n")  # takes the folder's baseline
+    mine = history.begin("chat-1", str(workdir), "u2", _walk(str(workdir))[0])
+    theirs = history.begin("chat-2", str(workdir), "v1", _walk(str(workdir))[0])
+    (workdir / "theirs.txt").write_text("2\n")
+    history.end(mine, _walk(str(workdir))[0])
+    history.end(theirs, _walk(str(workdir))[0])
+    report = _rewind(history, ["u2"])
+    assert report.conflicts == ["theirs.txt"] and report.deleted == []
+    assert (workdir / "theirs.txt").read_text() == "2\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "uses a symlink")
+def test_a_folder_swapped_for_a_link_is_never_written_through(chat, tmp_path):
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("a.txt", "", "1\n")
+    _edit("a.txt", "1", "2")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "a.txt").write_text("2\n")
+    workdir.rename(tmp_path / "moved")
+    workdir.symlink_to(elsewhere, target_is_directory = True)
+    report = history.rewind(
+        "chat-1", ["u1"], lambda wd: tools._history_snapshot(tools._snapshot_workdir_files(wd))
+    )
+    assert report.errors and (elsewhere / "a.txt").read_text() == "2\n"

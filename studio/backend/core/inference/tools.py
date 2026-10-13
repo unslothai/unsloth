@@ -22821,7 +22821,10 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     if file_history.current_turn() is None or not session_id:
         return {}
     workdir = os.path.realpath(_get_workdir(session_id))
-    rel = os.path.relpath(os.path.realpath(target), workdir)
+    try:
+        rel = os.path.relpath(os.path.realpath(target), workdir)
+    except ValueError:  # Windows: another drive, so outside the folder
+        return {}
     if rel.startswith(os.pardir) or os.path.isabs(rel):
         return {}
     rel = rel.replace(os.sep, "/")

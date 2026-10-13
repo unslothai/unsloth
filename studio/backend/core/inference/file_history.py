@@ -454,7 +454,8 @@ class FileHistory:
         with self._lock:
             marks = ",".join("?" * len(turn_ids))
             rows = self._db.execute(
-                "SELECT c.workdir, fv.rel_path, fv.before_kind, fv.before_blob, fv.before_mode FROM file_versions fv"
+                "SELECT c.workdir, fv.rel_path, fv.before_kind, fv.before_blob, fv.before_mode, c.ambiguous"
+                " FROM file_versions fv"
                 f" JOIN checkpoints c ON c.id=fv.checkpoint_id WHERE c.chat_id=? AND c.turn_id IN ({marks})"
                 " ORDER BY c.id",
                 (chat_id, *turn_ids),
@@ -495,9 +496,13 @@ class FileHistory:
                 ),
             )
             target: dict = {}
-            for wd, rel, kind, blob, mode in rows:
+            # Written while another chat's call ran in this folder: either chat's, so never ours to undo.
+            shared = set()
+            for wd, rel, kind, blob, mode, ambiguous in rows:
                 if wd == workdir:
                     target.setdefault(rel, (kind, blob, mode))
+                    if ambiguous:
+                        shared.add(rel)
             last_after = {
                 row[0]: (row[1], row[2])
                 for row in self._db.execute(
@@ -516,7 +521,7 @@ class FileHistory:
                 continue
             if now == (kind, blob):
                 continue
-            if now != last_after.get(rel) and not force:
+            if (now != last_after.get(rel) or rel in shared) and not force:
                 report.conflicts.append(rel)
                 continue
             bucket = (
@@ -638,6 +643,8 @@ def _resolve_inside(workdir: str, rel: str, create_dirs: bool) -> str:
     parts = rel.split("/")
     if os.path.isabs(rel) or any(part in ("", ".", "..") for part in parts):
         raise OSError("not a path inside the chat's folder")
+    # The folder itself too: recorded by its real path, so a link there now leads somewhere else.
+    _require_plain_dir(workdir, "the chat's folder")
     current = workdir
     for part in parts[:-1]:
         current = os.path.join(current, part)
@@ -649,9 +656,18 @@ def _resolve_inside(workdir: str, rel: str, create_dirs: bool) -> str:
             os.mkdir(current)
             continue
         # A parent swapped for a link would carry the write outside the folder.
-        if not stat_mod.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise OSError(f"'{part}' is no longer a plain folder")
+        _require_plain_dir(current, f"'{part}'", info)
     return os.path.join(current, parts[-1])
+
+
+def _require_plain_dir(
+    path: str,
+    name: str,
+    info = None,
+) -> None:
+    info = os.lstat(path) if info is None else info
+    if not stat_mod.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise OSError(f"{name} is no longer a plain folder")
 
 
 def _safe_write(workdir: str, rel: str, data: bytes, mode: Optional[int]) -> None:
