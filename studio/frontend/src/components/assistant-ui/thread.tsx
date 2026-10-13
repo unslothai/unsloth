@@ -238,6 +238,7 @@ import {
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
+import type { TranslationKey } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -2620,41 +2621,47 @@ const pickRandom = <T,>(arr: T[]): T =>
 
 // Each greeting carries its matching sloth picture so a line always shows the
 // same mascot. Greeting varies by local time; name-bearing lines drop the
-// name when none is set.
-type Welcome = { text: string; sloth: string };
+// name when none is set. Text is a message key, translated at render so a
+// language switch updates the open greeting.
+type Welcome = { key: TranslationKey; name?: string; sloth: string };
 const DEFAULT_WELCOME: Welcome = {
-  text: "What’s on your mind today?",
+  key: "welcome.onYourMind",
   sloth: "sloth magnify final.png",
 };
 
 function buildWelcome(hour: number, name: string): Welcome {
-  const g = (text: string, sloth: string): Welcome => ({ text, sloth });
+  const g = (key: TranslationKey, sloth: string): Welcome => ({ key, sloth });
+  const named = (
+    key: TranslationKey,
+    namedKey: TranslationKey,
+    sloth: string,
+  ): Welcome => (name ? { key: namedKey, name, sloth } : { key, sloth });
   // Use the name on ~a third of lines (only direct salutations where it reads
   // naturally); the rest stay name-free so greetings don't feel repetitive.
   const base: Welcome[] = [
-    g(name ? `Good to see you, ${name}` : "Good to see you", "large sloth wave.png"),
-    g("Ready when you are", "large sloth thumbs.png"),
+    named("welcome.goodToSeeYou", "welcome.goodToSeeYouName", "large sloth wave.png"),
+    g("welcome.readyWhenYouAre", "large sloth thumbs.png"),
     DEFAULT_WELCOME,
-    g("How can I help?", "sloth sir large.png"),
+    g("welcome.howCanIHelp", "sloth sir large.png"),
   ];
   if (hour >= 4 && hour < 9) {
-    const morning = g(name ? `Good morning, ${name}` : "Good morning", "large sloth drink.png");
+    const morning = named("welcome.goodMorning", "welcome.goodMorningName", "large sloth drink.png");
     return pickRandom([...base, morning]);
   }
   if (hour >= 17 && hour < 23) {
     const evening: Welcome[] = [
-      g(name ? `Good evening, ${name}` : "Good evening", "sloth shy large.png"),
-      g("What’s on for tonight?", "large sloth glasses.png"),
+      named("welcome.goodEvening", "welcome.goodEveningName", "sloth shy large.png"),
+      g("welcome.tonight", "large sloth glasses.png"),
     ];
     // Lean toward an evening line, but a base greeting can still appear.
     return pickRandom(Math.random() < 0.75 ? evening : base);
   }
   if (hour >= 23 || hour < 4) {
     return pickRandom([
-      g("Night owl mode?", "large sloth glasses.png"),
-      g("Late night ideas?", "large sloth yay.png"),
-      g("Up late with an idea?", "large sloth heart.png"),
-      g(name ? `The night shift begins, ${name}` : "The night shift begins", "large sloth drink.png"),
+      g("welcome.nightOwl", "large sloth glasses.png"),
+      g("welcome.lateNightIdeas", "large sloth yay.png"),
+      g("welcome.upLate", "large sloth heart.png"),
+      named("welcome.nightShift", "welcome.nightShiftName", "large sloth drink.png"),
     ]);
   }
   return pickRandom(base);
@@ -2669,6 +2676,7 @@ const ThreadWelcome: FC<{
   const nickname = useUserProfileStore((s) => s.nickname);
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
+  const t = useT();
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
@@ -2696,13 +2704,14 @@ const ThreadWelcome: FC<{
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {incognito ? "Temporary chat" : welcome.text}
+              {incognito
+                ? t("welcome.temporaryChat")
+                : t(welcome.key, welcome.name ? { name: welcome.name } : undefined)}
             </h1>
           </div>
           {incognito && (
             <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
-              This chat won't appear in your history and isn't saved. It
-              disappears when you leave.
+              {t("welcome.temporaryChatDescription")}
             </p>
           )}
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
