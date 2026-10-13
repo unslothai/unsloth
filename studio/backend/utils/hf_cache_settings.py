@@ -406,6 +406,56 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
                 CACHE_HISTORY_SETTING_KEY: deduped,
             }
         )
+    _invalidate_cache_views()
+    return get_hf_cache_paths()
+
+
+def download_cache_paths(download_dir: Optional[str]) -> HuggingFaceCachePaths:
+    """Cache paths for one download: the Models folder, or a chosen folder laid out the same way.
+
+    Raises ValueError for a folder the Models folder setting would also refuse.
+    """
+    active = get_hf_cache_paths()
+    if download_dir is None or not download_dir.strip():
+        return active
+    home = _validate_cache_home(download_dir)
+    if os.path.normcase(str(home)) == os.path.normcase(str(_canonical(active.cache_home))):
+        return active
+    xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+    return HuggingFaceCachePaths(
+        home,
+        home / "hub",
+        _canonical(xet) if xet else home / "xet",
+        "studio",
+    )
+
+
+def remember_cache_home(cache_home: Path) -> None:
+    """Keep a download folder among the known caches, like a previous Models folder.
+
+    Progress, resume, delete and the cached-model checks read only known caches. Idempotent; a
+    full history is left alone so no earlier Models folder is pushed out.
+    """
+    home = _canonical(cache_home)
+    key = os.path.normcase(str(home))
+    with _settings_lock:
+        history = _stored_history()
+        if len(history) >= MAX_CACHE_HISTORY or any(
+            os.path.normcase(str(path)) == key for path in history
+        ):
+            return
+        from storage.studio_db import upsert_app_settings
+        from utils.account_context import OWNER, run_as
+
+        run_as(
+            OWNER,
+            upsert_app_settings,
+            {CACHE_HISTORY_SETTING_KEY: [*(str(path) for path in history), str(home)]},
+        )
+    _invalidate_cache_views()
+
+
+def _invalidate_cache_views() -> None:
     # Inventory scans are cached independently from settings. Invalidate after
     # persistence so the next request sees both the new active root and history.
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
@@ -420,7 +470,6 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     from utils.cache_inventory import invalidate_hf_rooted_sizes
 
     invalidate_hf_rooted_sizes()
-    return get_hf_cache_paths()
 
 
 def effective_cache_home() -> Path:
