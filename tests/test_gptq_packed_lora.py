@@ -113,7 +113,6 @@ def test_awq_checkpoint_gets_trainable_backend(monkeypatch):
     monkeypatch.setattr(transformers.utils, "is_gptqmodel_available", lambda: True)
     cfg = gptq_trainable_quantization_config(_config(dict(_AWQ4)), None)
     assert type(cfg).__name__ == "AwqConfig" and cfg.backend == "auto_trainable"
-    # transformers overlays only the loading attributes, so the checkpoint's own layout survives.
     merged = AutoHfQuantizer.merge_quantization_configs(dict(_AWQ4), cfg)
     assert (merged.bits, merged.group_size, merged.zero_point) == (4, 64, True)
     assert merged.format == "gemm" and merged.backend == "auto_trainable"
