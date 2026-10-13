@@ -122,13 +122,11 @@ export function installPageAgent(): PageAgent {
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
   let lastMutation = performance.now();
-  let mutated = false;
   let scrolls = 0;
   addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
     new MutationObserver(() => {
       lastMutation = performance.now();
-      mutated = true;
     }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   } catch {
     // A page without a document element yet: settling then reads as quiet.
@@ -1119,16 +1117,11 @@ export function installPageAgent(): PageAgent {
           // Fetch/XHR the proxied shell counts as open since `since` (routes/browser_network.py).
           const pending = host[Symbol.for("unsloth.browser.pending")];
           const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
-          // The proxied shell has watched the DOM since the document began; this agent only since it
-          // arrived, which right after a load would make every page look busy for the full quiet time.
-          const shell = host[Symbol.for("unsloth.browser.quietMs")];
-          const shellQuiet = typeof shell === "function" ? Number(shell()) : Number.NaN;
-          const ownQuiet = performance.now() - lastMutation;
-          const quiet = !Number.isFinite(shellQuiet) ? ownQuiet : mutated ? Math.min(shellQuiet, ownQuiet) : shellQuiet;
           return {
             ok: true,
-            quietMs: Math.round(quiet),
-            requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
+            quietMs: Math.round(performance.now() - lastMutation),
+            // Absent where nothing counts them (native views), so a wait can't take that for "none open".
+            ...(typeof pending === "function" ? { requests: Number(pending(since)) || 0 } : {}),
             title: document.title,
             ...view(),
           };

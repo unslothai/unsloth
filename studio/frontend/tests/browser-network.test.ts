@@ -121,25 +121,3 @@ test("a second send the browser refuses keeps counting the request in flight", (
   xhr.dispatchEvent(new Event("loadend"));
   assert.equal(t.pending(0), 0);
 });
-
-test("the shell reports how long the DOM has been still since the document began", () => {
-  let now = 1000;
-  let notify: () => void = () => {};
-  class FakeObserver {
-    constructor(callback: () => void) {
-      notify = callback;
-    }
-    observe() {}
-  }
-  class PageResponse extends Response {}
-  const window = Object.assign(new EventTarget(), { fetch: async () => new PageResponse(""), XMLHttpRequest: NativeXHR });
-  runInNewContext(source, {
-    window, document: {}, MutationObserver: FakeObserver, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
-  });
-  const quiet = (window as unknown as Record<symbol, () => number>)[Symbol.for("unsloth.browser.quietMs")];
-  now += 400;
-  assert.equal(quiet(), 400);
-  notify();
-  now += 50;
-  assert.equal(quiet(), 50);
-});

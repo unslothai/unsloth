@@ -53,6 +53,8 @@ const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
 const SETTLE_MAX_MS = 3_000;
 const FILL_QUIET_MAX_MS = 1_000;
+// A loaded page that opened no request has drawn what it will; content still on its way arrives by a request.
+const FILL_IDLE_QUIET_MS = 120;
 const PAGE_READY_MS = 4_000;
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
@@ -358,9 +360,16 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
 }
 
 /** Requests started since `since` and a quiet DOM; `left` says the tab is on another page. */
-function waitOnPage(tabId: string, left: (tab: BrowserTab) => boolean, since: number, changingMaxMs: number, signal?: AbortSignal) {
+function waitOnPage(
+  tabId: string,
+  left: (tab: BrowserTab) => boolean,
+  since: number,
+  changingMaxMs: number,
+  signal?: AbortSignal,
+  idleQuietMs?: number,
+) {
   return waitForPage({
-    maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, now: Date.now, sleep,
+    maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, idleQuietMs, now: Date.now, sleep,
     status: () => {
       const tab = findTab(tabId);
       return tab ? pageCall(tab, { op: "status", since }).catch(() => null) : Promise.resolve(null);
@@ -385,7 +394,7 @@ async function settle(tabId: string, urlBefore: string, since: number, signal?: 
  *  A DOM that never rests gets only FILL_QUIET_MAX_MS. A router rewriting the address is still this page. */
 async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal): Promise<boolean> {
   const entry = currentEntry(tab);
-  return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal)) === "loading";
+  return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
 async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
