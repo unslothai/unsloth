@@ -181,29 +181,8 @@ def _sanitize_public_query(query: str) -> str:
             value = re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))
             exact.add(value)
             credentials.update(piece for piece in [value, *value.split()] if len(piece) >= 8)
-    # Short values match whole tokens or token-character-bounded fields such as {"received":"YTpi"}.
     exact.discard("")
-    exact_echo = exact and re.compile(
-        "|".join(rf"(?<![\w.~+/=-]){re.escape(value)}(?![\w~+/-]|\.[\w~+/-])" for value in exact)
-    )
-    plain = [
-        token
-        for token in plain
-        if not (exact_echo and exact_echo.search(token))
-        and not any(piece in token for piece in credentials)
-    ]
-    # A multiword credential echoed unquoted spans several tokens.
-    for words in {tuple(value.split()) for value in exact if len(value.split()) > 1}:
-        index = 0
-        while index <= len(plain) - len(words):
-            window = [
-                token.strip(_TOKEN_PUNCTUATION + ".!?")
-                for token in plain[index : index + len(words)]
-            ]
-            if tuple(window) == words:
-                del plain[index : index + len(words)]
-            else:
-                index += 1
+    plain = [token for token in plain if not any(piece in token for piece in credentials)]
     tokens = plain
     if with_authorization != plain:
         # 600 tokens cover the 500-character output; the matcher is quadratic past that.
@@ -212,7 +191,13 @@ def _sanitize_public_query(query: str) -> str:
         tokens = [
             token for a, _, size in matcher.get_matching_blocks() for token in plain[a : a + size]
         ]
-    query = " ".join(tokens).strip(" ,;:-")[:500]
+    query = " ".join(tokens)
+    if exact:
+        # Echoes of identified values, also inside fields like received=YTpi or {"received":"a b"}.
+        values = sorted(exact, key = len, reverse = True)
+        echo = "|".join(r"\s+".join(map(re.escape, value.split())) for value in values)
+        query = re.sub(rf"(?<![\w.~+/-])(?:{echo})(?![\w~+/-]|\.[\w~+/-])", " ", query)
+    query = " ".join(query.split()).strip(" ,;:-")[:500]
     if not any(character.isalnum() for character in query):
         raise ValueError("Research query contained only private or credential-like data")
     return query
