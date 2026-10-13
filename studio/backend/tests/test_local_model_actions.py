@@ -192,8 +192,12 @@ def test_ollama_alias_tags_sharing_a_blob_delete_the_chosen_tag(lm_root, tmp_pat
     kept_ref = ollama._ollama_manifest_ref(Path(os.path.realpath(library / "kept" / "latest")))
     blob = store / "blobs" / "sha256-shared"
     rows = [
-        LocalModelInfo(id = kept_ref, load_id = kept_ref, display_name = "kept", path = str(blob), source = "ollama"),
-        LocalModelInfo(id = gone_ref, load_id = gone_ref, display_name = "gone", path = str(blob), source = "ollama"),
+        LocalModelInfo(
+            id = kept_ref, load_id = kept_ref, display_name = "kept", path = str(blob), source = "ollama"
+        ),
+        LocalModelInfo(
+            id = gone_ref, load_id = gone_ref, display_name = "gone", path = str(blob), source = "ollama"
+        ),
     ]
 
     async def listing(models_dir: str = "./models"):
@@ -216,3 +220,31 @@ def test_dictation_sidecar_holding_the_model_blocks_delete(lm_root, monkeypatch)
     assert actions._dictation_holds(str(model))
     sidecar.loaded_model = None
     assert not actions._dictation_holds(str(model))
+
+
+def test_custom_row_inside_an_hf_cache_is_left_to_delete_cached(lm_root, tmp_path, monkeypatch):
+    snapshot = tmp_path / "hf" / "models--a--b" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    row = _row(snapshot, "custom")
+
+    async def listing(models_dir: str = "./models"):
+        return LocalModelListResponse(models_dir = "", hf_cache_dir = "", models = [row])
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(actions.delete_local_model_response(str(snapshot)))
+    assert caught.value.status_code == 400
+    assert snapshot.is_dir()
+
+
+def test_primary_backend_loading_the_model_blocks_delete(lm_root, monkeypatch):
+    import types
+
+    import core.inference.orchestrator as orchestrator
+
+    _, model, _ = lm_root
+    backend = types.SimpleNamespace(loading_models = [str(model)], active_model_name = None)
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+    assert actions._primary_loading(str(model))
+    backend.loading_models = []
+    assert not actions._primary_loading(str(model))

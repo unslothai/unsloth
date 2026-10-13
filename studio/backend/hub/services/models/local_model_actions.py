@@ -30,7 +30,9 @@ def _identity(raw: str | os.PathLike) -> str:
 
 
 async def _listed_row(
-    path: str, sources: frozenset[str], row_id: str | None = None
+    path: str,
+    sources: frozenset[str],
+    row_id: str | None = None,
 ) -> LocalModelInfo:
     if not path or not path.strip():
         raise HTTPException(status_code = 400, detail = "path is required")
@@ -44,25 +46,35 @@ async def _listed_row(
     raise HTTPException(status_code = 404, detail = "Model not found on device")
 
 
+def _hf_cache_roots() -> set[str]:
+    sources = local_inventory._local_inventory_sources()
+    roots = (sources.hf_cache_dir, sources.legacy_hf, sources.hf_default, *sources.known_hf_caches)
+    return {_identity(root) for root in roots if str(root)}
+
+
 def _protected_roots(custom_folders: list[dict]) -> set[str]:
     sources = local_inventory._local_inventory_sources()
     roots: list[Path | str] = [
         Path("./models"),
-        sources.hf_cache_dir,
-        sources.legacy_hf,
-        sources.hf_default,
         *sources.lm_dirs,
         *sources.ollama_dirs,
         *sources.hermes_dirs,
-        *sources.known_hf_caches,
         *sources.omlx_dirs,
         *(str(folder.get("path") or "") for folder in custom_folders),
     ]
-    return {_identity(root) for root in roots if str(root)}
+    return {_identity(root) for root in roots if str(root)} | _hf_cache_roots()
 
 
 def _delete_blocking(target: Path, protected: set[str]) -> None:
     resolved = _identity(target)
+    # A custom folder can reach into an HF cache; those files go through delete-cached, which
+    # coordinates with downloads and the shared blobs.
+    for root in _hf_cache_roots():
+        if resolved.startswith(root.rstrip(os.sep) + os.sep):
+            raise HTTPException(
+                status_code = 400,
+                detail = "This model is in the Hugging Face cache; delete it from there",
+            )
     # A row whose path IS a scan root (a custom folder holding one model) would take the
     # folder itself, and an ancestor of a root takes everything under it.
     for root in protected:
@@ -115,13 +127,26 @@ def _load_state_blocks_delete(paths: tuple[str, ...]) -> str | None:
             return detail
         if _dictation_holds(path):
             return "Unload the audio model before deleting"
+        if _primary_loading(path):
+            return "A model load is using this model; wait for it to finish"
     return None
+
+
+def _primary_loading(path: str) -> bool:
+    # deletion._inference_backend_blocks_delete reads loading_models on kept slots only.
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+        primary = peek_inference_backend()
+    except Exception as e:  # noqa: BLE001 -- unavailable is not "in use", as in deletion.py
+        logger.debug("Inference backend unavailable during a local delete guard: %s", e)
+        return False
+    loading = getattr(primary, "loading_models", ()) if primary is not None else ()
+    return any(deletion._loaded_id_matches_repo(str(m), path) for m in loading or ())
 
 
 def _dictation_holds(path: str) -> bool:
     try:
         from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
-
         sidecar = get_audio_cpp_stt_sidecar()
     except Exception as e:  # noqa: BLE001 -- unavailable is not "in use", as in deletion.py
         logger.debug("Dictation sidecar unavailable during a local delete guard: %s", e)

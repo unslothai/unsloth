@@ -361,7 +361,7 @@ async def reveal_local_model(
 ):
     """Reveal an on-device model outside the HF cache. `id` picks one of several rows sharing a path."""
     return await local_model_actions.reveal_local_model_response(
-        resolve_host_path_reference(path) or path, id
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
     )
 
 
@@ -373,7 +373,7 @@ async def delete_local_model(
 ):
     """Delete an on-device model outside the HF cache listed by /local."""
     return await local_model_actions.delete_local_model_response(
-        resolve_host_path_reference(path) or path, id
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
     )
 
 
