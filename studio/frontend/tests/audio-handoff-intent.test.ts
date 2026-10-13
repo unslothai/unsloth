@@ -325,17 +325,15 @@ test("?workflow= follows the committed page, and a moved URL is a request", () =
     { kind: "write", workflow: "clone" },
   );
   // In sync: nothing to do, and no transition (Transcribe's has side effects).
-  for (const lastSynced of ["transcribe", null] as const) {
-    assert.deepEqual(
-      audioWorkflowUrlAction({
-        ...base,
-        urlWorkflow: "transcribe",
-        lastSynced,
-        committed: "transcribe",
-      }),
-      { kind: "none" },
-    );
-  }
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: "transcribe",
+      lastSynced: "transcribe",
+      committed: "transcribe",
+    }),
+    { kind: "none" },
+  );
 });
 
 test("the model and Library handoffs own the URL until they clean it up", () => {
@@ -378,10 +376,22 @@ test("the URL keeps the page after a handoff instead of clearing it", () => {
   for (const call of navigations) assert.match(call, /replace: true/);
 });
 
-test("a reload on the default page keeps it over the loaded model's page", () => {
+test("the first URL commits its page, so the loaded model's page cannot replace it", () => {
+  const base = { hasModel: false, hasItem: false, lastSynced: null } as const;
+  // A reload of ?workflow=speak, or a ?task=text-to-speech link, while the store still holds
+  // its default Speak: without a commit, a loaded music model moved the page to Music.
+  assert.deepEqual(
+    audioWorkflowUrlAction({ ...base, urlWorkflow: "speak", committed: "speak" }),
+    { kind: "intent", workflow: "speak" },
+  );
+  // A bare /audio asks for nothing, so the loaded model's page may still be adopted.
+  assert.deepEqual(
+    audioWorkflowUrlAction({ ...base, urlWorkflow: null, committed: "speak" }),
+    { kind: "write", workflow: "speak" },
+  );
   const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
   assert.match(
     handoff,
-    /if \(urlWorkflow === committedWorkflow\) \{[\s\S]*?if \(\s*lastSyncedWorkflow\.current === null &&\s*routeSearch\.workflow &&\s*!transitionWorkflow\(urlWorkflow\)\s*\) \{\s*return;\s*\}\s*lastSyncedWorkflow\.current = urlWorkflow;/,
+    /const urlWorkflow = audioRouteIntent\(routeSearch\);/,
   );
 });

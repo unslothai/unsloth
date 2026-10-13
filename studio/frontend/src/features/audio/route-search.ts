@@ -103,6 +103,11 @@ export function audioWorkflowUrlAction({
 }): AudioWorkflowUrlAction {
   // The model and Library handoffs own the URL until they clean it up.
   if (hasModel || hasItem) return { kind: "none" };
+  // The first URL seen (a reload, a ?task= link) is a request even for the current page, so it
+  // commits before the loaded model's page can replace it.
+  if (urlWorkflow !== null && lastSynced === null) {
+    return { kind: "intent", workflow: urlWorkflow };
+  }
   if (urlWorkflow === committed) return { kind: "none" };
   if (urlWorkflow !== null && urlWorkflow !== lastSynced) {
     return { kind: "intent", workflow: urlWorkflow };

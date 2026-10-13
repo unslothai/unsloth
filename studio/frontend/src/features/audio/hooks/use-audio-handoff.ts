@@ -80,14 +80,6 @@ export function useAudioHandoff({
       });
       if (action.kind === "none") {
         if (urlWorkflow === committedWorkflow) {
-          // A reload on the default page names it too, so the loaded model's page must not replace it.
-          if (
-            lastSyncedWorkflow.current === null &&
-            routeSearch.workflow &&
-            !transitionWorkflow(urlWorkflow)
-          ) {
-            return;
-          }
           lastSyncedWorkflow.current = urlWorkflow;
         }
         return;
