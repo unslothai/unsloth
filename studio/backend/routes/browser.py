@@ -1710,10 +1710,16 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "redirected": False,
     }
 
-    def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
+    def allowed(allow_origin: Optional[str]) -> bool:
+        return (allow_origin or "").strip() in ("*", hops["origin"])
+
+    def on_redirect(url: str, hop_method: str, has_body: bool, headers) -> Optional[str]:
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
+        # A browser CORS-checks each response from another site, a redirect too, before following it.
+        if not hops["same_origin"] and not allowed(headers.get("Access-Control-Allow-Origin")):
+            return "Redirected through a site that does not allow it."
         hops["redirected"] = True
         hops["rewritten"] = hops["rewritten"] or hop_method != method
         last, hops["last"] = hops["last"], _origin(url)
@@ -1787,8 +1793,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     # Redirected through another site, it is a CORS request, as in a browser: read only with the
     # consent of the site that answered, and only the headers it exposes.
     if not hops["same_origin"]:
-        allow_origin = (meta.get("allow_origin") or "").strip()
-        if allow_origin not in ("*", hops["origin"]):
+        if not allowed(meta.get("allow_origin")):
             raise HTTPException(status_code = 502, detail = "Redirected to another site.")
         exposed = {
             name.strip().lower()

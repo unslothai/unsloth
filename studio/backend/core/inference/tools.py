@@ -16436,7 +16436,7 @@ def _fetch_url_raw(
 ) -> tuple[str | None, "str | bytes", str]:
     """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads.
     ``method`` replaces the GET/POST chosen from ``post_data``; with ``any_status`` (binary mode) every status returns its body, and ``meta_out`` gets the status and headers.
-    ``on_redirect(url, method, has_body)`` runs before a redirect is followed; a string it returns is the error, and the hop is never sent."""
+    ``on_redirect(url, method, has_body, headers)`` runs before a redirect is followed, with the redirect's headers; a string it returns is the error, and the hop is never sent."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
@@ -16558,6 +16558,7 @@ def _fetch_url_raw(
                             current_url,
                             pending_method or ("GET" if pending_post is None else "POST"),
                             pending_post is not None,
+                            e.headers,
                         )
                         if refused:
                             return refused, "", ""

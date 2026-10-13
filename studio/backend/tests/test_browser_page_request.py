@@ -258,7 +258,11 @@ def test_a_chain_back_to_the_pages_origin_stays_cors(monkeypatch, allow):
         monkeypatch,
         {
             "site.test/go": (302, b"", {"Location": "https://sso.test/bounce"}),
-            "sso.test/bounce": (302, b"", {"Location": "https://site.test/home"}),
+            "sso.test/bounce": (
+                302,
+                b"",
+                {"Location": "https://site.test/home", "Access-Control-Allow-Origin": "*"},
+            ),
             "site.test/home": (
                 200,
                 b"home",
@@ -329,7 +333,14 @@ def test_a_second_hop_between_other_sites_sends_a_null_origin(monkeypatch):
         monkeypatch,
         {
             "site.test/go": (302, b"", {"Location": "https://a.test/go"}),
-            "a.test/go": (302, b"", {"Location": "https://b.test/data"}),
+            "a.test/go": (
+                302,
+                b"",
+                {
+                    "Location": "https://b.test/data",
+                    "Access-Control-Allow-Origin": "https://site.test",
+                },
+            ),
             "b.test/data": (200, b"public", {"Access-Control-Allow-Origin": "null"}),
         },
     )
@@ -390,6 +401,32 @@ def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, t
     assert sent[0]["headers"]["authorization"] == "Bearer page"
     assert "authorization" not in sent[1]["headers"]
     assert "referer" not in sent[1]["headers"]
+
+
+@pytest.mark.parametrize("allow", [None, "*"])
+def test_a_redirect_from_another_site_is_cors_checked_before_it_is_followed(monkeypatch, allow):
+    # site -> a.test -> b.test: a.test's redirect must allow the page too, as in a browser.
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": "https://a.test/go"}),
+            "a.test/go": (
+                302,
+                b"",
+                {
+                    "Location": "https://b.test/data",
+                    **({"Access-Control-Allow-Origin": allow} if allow else {}),
+                },
+            ),
+            "b.test/data": (200, b"public", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    if allow is None:
+        with pytest.raises(HTTPException):
+            _request(url = "https://site.test/go")
+        assert [hop["url"] for hop in sent] == ["site.test/go", "a.test/go"]
+    else:
+        assert base64.b64decode(_request(url = "https://site.test/go")["body"]) == b"public"
 
 
 def test_safelisted_headers_follow_a_redirect_to_another_site(monkeypatch):
