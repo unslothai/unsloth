@@ -68,7 +68,12 @@ from .models.loader_utils import (
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model, lora_relative_to_original_base
+from .models._utils import (
+    _convert_torchao_model,
+    _merged_torchao_config_for_peft_qat,
+    _strip_torchao_fake_quantization,
+    lora_relative_to_original_base,
+)
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
@@ -6036,17 +6041,21 @@ def _unsloth_save_torchao_with_attached_config(
     token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
-    _convert_torchao_model(model)
-    if isinstance(model, PeftModelForCausalLM):
+    if isinstance(model, (PeftModelForCausalLM, PeftModel)):
+        # Quantizing in place leaves int4 base layers the LoRA merge cannot read, so merge in 16-bit and quantize the reload with the QAT configs.
+        torchao_config = _merged_torchao_config_for_peft_qat(model)
+        _strip_torchao_fake_quantization(model)
         _unsloth_save_torchao_with_given_config(
             model = model,
             save_directory = save_directory,
             tokenizer = tokenizer,
-            torchao_config = model.config.quantization_config,
+            torchao_config = torchao_config,
             push_to_hub = push_to_hub,
             token = token,
         )
         return
+
+    _convert_torchao_model(model)
 
     # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
@@ -6933,10 +6942,10 @@ def unsloth_save_pretrained_torchao(
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
 ):
-    """Save a torchao quantized model checkpoint. Two mutually exclusive workflows: a model trained with `qat_scheme` must NOT be given a `torchao_config` and has its fake-quantized weights converted to real quantized ones; any other model must be given one, and is quantized here.
+    """Save a torchao quantized model checkpoint. A model trained with `qat_scheme` may omit `torchao_config` and is quantized with its QAT scheme; any other model must be given one, and is quantized here.
 
     `save_directory`: local folder, or a hub id when `push_to_hub` is True.
-    `torchao_config` (TorchAOBaseConfig): required for PTQ, None for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
+    `torchao_config` (TorchAOBaseConfig): required for PTQ, optional for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -6948,11 +6957,9 @@ def unsloth_save_pretrained_torchao(
     has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
 
     if torchao_config is not None:
-        assert not has_qat_config, (
-            "Unsloth: You passed `torchao_config` but this model was trained with `qat_scheme`. "
-            "For QAT models, do not pass `torchao_config` - the quantization config is already "
-            "attached to the model from training."
-        )
+        if has_qat_config:
+            # The 16-bit save below must see plain modules, not fake-quantized ones.
+            _strip_torchao_fake_quantization(self)
         _unsloth_save_torchao_with_given_config(
             model = self,
             save_directory = save_directory,

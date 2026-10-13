@@ -3736,11 +3736,50 @@ $_setup_unsup_pci
 EOF
         return 1
     }
-    if [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
+    # $_setup_mkt is the marketing name of the SAME record the arch came from, paired
+    # per GPU agent by _rocminfo_gpu_records and ordered by _amd_smi_hip_order.
+    # An arch READ as uncovered on every probed GPU gets the warning too, not only a missing
+    # one: a host with ROCm installed reads gfx1010 fine and still has no wheels (#8529).
+    # install.sh's get_torch_index_url holds the same list. A declared arch is all the
+    # installers route on, so the physical inventory is not consulted beside it. The
+    # installers probe with ROCR_VISIBLE_DEVICES stripped, rocminfo here does not, so a mask
+    # could hide the covered peer. A readable HSA_OVERRIDE_GFX_VERSION is the arch the runtime
+    # runs, so it alone is judged (same triple parse as install.sh's _hsa_override_gfx_arch).
+    _setup_unsup_cur="$_setup_gfx"
+    _setup_unsup_inv="$_setup_gfx_all"
+    [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && _setup_unsup_inv=""
+    _setup_unsup_hsa=$(printf '%s' "${HSA_OVERRIDE_GFX_VERSION:-}" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+          if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+          split($0, p, "."); maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+          if (maj <= 0 || min > 9 || step > 15) exit
+          printf "gfx%d%d%x", maj, min, step }')
+    if [ -n "$_setup_unsup_hsa" ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        _setup_unsup_cur="$_setup_unsup_hsa"
+        _setup_unsup_inv=""
+    fi
+    # A ROCm torch already in the venv is kept by the update (a TheRock or hand-installed build
+    # may run here), so only a non-ROCm one is reported as CPU-only. Read off disk, no import.
+    _setup_unsup_torch_rocm=false
+    for _setup_unsup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_unsup_tv" ] || continue
+        grep -qE "^hip(: [^=]*)? = '|^__version__ = '[^']*\+rocm" "$_setup_unsup_tv" 2>/dev/null \
+            && _setup_unsup_torch_rocm=true
+        break
+    done
+    _setup_unsup_gfx=""
+    if [ "$_setup_unsup_torch_rocm" = false ] && \
+       { [ -n "$_setup_unsup_hsa" ] || [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || [ -z "${ROCR_VISIBLE_DEVICES:-}" ]; }; then
+        _setup_unsup_gfx=$(printf '%s\n' "$_setup_unsup_cur" "$_setup_unsup_inv" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | awk 'NF { if ($1 !~ /^gfx(1010|1011|1012|803)$/) bad = 1; else if (!seen[$1]++) l = l (l ? ", " : "") $1 }
+                   END { if (!bad && l != "") print l }')
+    fi
+    if [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ] && [ -n "$_setup_mkt" ]; then
         step "gpu" "$_setup_mkt ($_setup_gfx)"
-    elif [ -n "$_setup_gfx" ]; then
+    elif [ -z "$_setup_unsup_gfx" ] && [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
-    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
+    elif [ -n "$_setup_unsup_gfx" ] || _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # unsloth raises at import without CUDA/XPU (unsloth/device_type.py). An explicit index pin
         # changes that. Trimmed like get_torch_index_url; distinct name from the XPU block's _setup_pin.

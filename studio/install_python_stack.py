@@ -3135,8 +3135,39 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-# Minimum ROCm tag whose generic wheels carry each arch: _ROCM_TORCH_INDEX also maps 6.0-6.4, and a
-# new kernel beside a stale /opt/rocm can pick a tag with no kernels for the card.
+# RDNA 1 and Polaris: no Linux index this installer picks carries their kernels (#8529).
+# install.sh's get_torch_index_url holds the same list.
+_LINUX_UNCOVERED_AMD_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+
+
+def _linux_host_only_uncovered_amd(*arch_lists: "list[str]") -> "str | None":
+    """The uncovered arches, comma-joined, when every probed arch is one; else None.
+
+    A generic ROCm wheel installed there loads, then faults on its first GPU op. A covered
+    peer anywhere in the lists keeps the normal route. A readable HSA_OVERRIDE_GFX_VERSION is
+    the arch the runtime runs, whatever amd-smi and KFD read, so it alone is judged.
+    """
+    _spoof = _hsa_override_gfx_arch(os.environ.get("HSA_OVERRIDE_GFX_VERSION"))
+    if _spoof and not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip():
+        arch_lists = ([_spoof],)
+    _archs = list(
+        dict.fromkeys(
+            (g or "").strip().lower().split(":", 1)[0] for _l in arch_lists for g in (_l or [])
+        )
+    )
+    _archs = [g for g in _archs if g]
+    if not _archs or any(g not in _LINUX_UNCOVERED_AMD_GFX for g in _archs):
+        return None
+    return ", ".join(_archs)
+
+
+# _GENERIC_ROCM_WHEEL_GFX was measured on the tags the pins resolve (rocm7.0 and up), but
+# _ROCM_TORCH_INDEX also maps ROCm 6.0-6.4, whose wheels predate some of these arches. A host
+# can resolve an old tag while the KERNEL names a new card (a current amdgpu beside a stale
+# /opt/rocm), leaving that wheel with no kernels for it. AMD's matrices put production
+# gfx1200/gfx1201 at ROCm 6.4. gfx1150/gfx1151 need an entry despite the Strix reroute, which
+# is gated on a ROCm VERSION and so inactive on a bundled-runtime host reading 0.0; rocm7.0
+# is the oldest tag measured to carry them.
 _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     # gfx950 has no _GFX_TO_AMD_INDEX_ARCH entry; this only steers the generic tag choice.
     "gfx950": (7, 0),
@@ -5626,9 +5657,14 @@ def _amd_torch_needs_dependency_pass() -> bool:
         _rocm_visible = _has_rocm_gpu()
         if not _rocm_visible and not _inferred_gfx:
             return False
-        # _runtime_gfx_target composes both mask layers and returns no target only when the selection is
-        # unreadable, so gate on it rather than on the host being mixed.
-        _selected_gfx, _, _selected_spoof, _selected_host = _runtime_gfx_target(_inferred_gfx)
+        # A mixed-arch host used to end it here, because probe and mask order could disagree
+        # with nothing to resolve it. _runtime_gfx_target now composes both mask layers and
+        # returns no target ONLY when the selection is genuinely unreadable, so gate on its
+        # answer, not the shape of the host: a mixed box with HIP_VISIBLE_DEVICES naming a
+        # card is not ambiguous, and its generic wheel can still lack kernels for it.
+        _selected_gfx, _selected_codes, _selected_spoof, _selected_host = _runtime_gfx_target(
+            _inferred_gfx
+        )
         if _selected_gfx is None:
             return False
         # A corroborated spoof needs _ensure_rocm_torch even when the wheel family is right.
@@ -5636,7 +5672,16 @@ def _amd_torch_needs_dependency_pass() -> bool:
             return True
         _pre_ran, _pre_imp, _pre_ver, _pre_hip, _pre_cuda = _probe_torch_runtime()
         _pre_torch = (_pre_ver or "").lower() if (_pre_ran and _pre_imp) else ""
-        # The compatibility reroutes have no version floor; ask them before rejecting an unreadable version.
+        # The repair declines a ROCm install for these GPUs, so forcing its pass only repeats.
+        if (
+            _pre_torch
+            and not (_pre_hip or "rocm" in _pre_torch)
+            and _linux_host_only_uncovered_amd(_selected_codes, _selected_host)
+        ):
+            return False
+        # The compatibility reroutes have no version floor either, so a host whose ROCm
+        # version will not read must not be turned away before they are asked. Only with a
+        # torch that reads back: an unreadable one is not evidence its wheels are wrong.
         if _pre_torch and _rocm_compat_reroute_pending(
             _selected_gfx, _detect_rocm_version() or (0, 0), _pre_torch
         ):
@@ -6109,6 +6154,14 @@ def _ensure_rocm_torch() -> "bool | None":
             _safe_print(
                 f"   {_runtime_gfx} computes incorrect results under ROCm "
                 f"(studio/ROCM_RDNA2_APU.md) -- not installing ROCm torch for it.\n"
+            )
+            return
+        # Keeps an existing ROCm build: only the install onto CPU/CUDA torch is declined.
+        _uncovered = _linux_host_only_uncovered_amd(gfx_codes, _host_codes)
+        if _uncovered and not rocm_torch_ready:
+            _safe_print(
+                f"   AMD {_uncovered}: no ROCm PyTorch wheel carries kernels for this GPU -- "
+                f"not installing ROCm torch for it.\n"
             )
             return
         _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
