@@ -86,7 +86,7 @@ function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null)
       data: { type: "unsloth:browser-command", command: "response", id, ...answer },
     }));
   const pending = (since: number) => (window as unknown as Record<symbol, (since: number) => number>)[Symbol.for("unsloth.browser.pending")](since);
-  const page = window as unknown as { fetch: (url: string) => Promise<Response>; XMLHttpRequest: new () => NativeXHR };
+  const page = window as unknown as { fetch: (url: string, init?: RequestInit) => Promise<Response>; XMLHttpRequest: new () => NativeXHR };
   return {
     window: page, pending, advance: (ms: number) => (now += ms),
     answer: (i: number, body = "{}") => answers[i](new PageResponse(body)),
@@ -222,7 +222,7 @@ test("requests to other sites, and from a page with no address, stay the browser
 
 test("a fetch body reaches the panel with the headers the browser would send", async () => {
   const t = setup(NativeXHR, "https://site.test/");
-  void t.window.fetch("/api", { method: "POST", headers: { "X-Test": "1" }, body: "hello" } as RequestInit);
+  void t.window.fetch("/api", { method: "POST", headers: { "X-Test": "1" }, body: "hello"});
   await tick();
   await tick();
   const sent = t.posted[0];
@@ -242,7 +242,7 @@ test("a failed relay is fetch's network error; an abort rejects and tells the pa
   await assert.rejects(failing, (error: Error) => error.name === "TypeError");
 
   const controller = new AbortController();
-  const aborted = t.window.fetch("/b", { signal: controller.signal } as RequestInit);
+  const aborted = t.window.fetch("/b", { signal: controller.signal});
   await tick();
   controller.abort();
   await assert.rejects(aborted, (error: Error) => error.name === "AbortError");
@@ -345,7 +345,7 @@ test("a synchronous XHR, which can't wait for the panel, stays the browser's", (
 
 test("a fetch's redirect mode reaches the panel, and manual stops at an opaque redirect", async () => {
   const t = setup(NativeXHR, "https://site.test/");
-  const request = t.window.fetch("/login", { redirect: "manual" } as RequestInit);
+  const request = t.window.fetch("/login", { redirect: "manual"});
   await tick();
   assert.equal(t.posted[0].redirect, "manual");
   t.reply(t.posted[0].id, { ...ok(""), opaqueRedirect: true, status: 0, headers: [], url: "https://site.test/login" });

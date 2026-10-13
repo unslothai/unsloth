@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PageResponse } from "../src/features/browser/api.ts";
+import type { PageRequest } from "../src/features/browser/frame-message.ts";
 import { pageRequests } from "../src/features/browser/page-requests.ts";
 
-const request = { url: "https://site.test/api", method: "GET", headers: [], body: null };
+const request: PageRequest = { url: "https://site.test/api", method: "GET", headers: [], body: null, redirect: "follow" };
 const answer: PageResponse = { status: 200, statusText: "OK", url: "https://site.test/api", headers: [], body: new ArrayBuffer(0) };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
