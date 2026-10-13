@@ -94,7 +94,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      showInlineEditResponse: false,
+      showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
@@ -122,6 +122,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     }),
     {
       name: "unsloth_chat_preferences",
+      // v0 stored the old off default for everyone, so it cannot tell a choice from the default.
+      version: 1,
+      migrate: (persisted, version) =>
+        version < 1 && persisted && typeof persisted === "object"
+          ? { ...persisted, showInlineEditResponse: true }
+          : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
         // Records written before the three-state settings carry the two booleans instead.
@@ -138,7 +144,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
-          showInlineEditResponse: saved?.showInlineEditResponse ?? false,
+          showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,

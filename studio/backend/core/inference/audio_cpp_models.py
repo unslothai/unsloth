@@ -2269,6 +2269,7 @@ def resolve(
     )
     with _resolve_lock:
         hit = _resolve_cache.get(key)
+        generation = _forget_generation
     if hit is not None and time.monotonic() - hit[0] < (_RESOLVE_TTL_SECONDS if network else 20.0):
         return hit[1]
     if gguf_hint and ref.repo_id and not is_umbrella_id(ref.id):
@@ -2281,7 +2282,8 @@ def resolve(
     with _resolve_lock:
         if len(_resolve_cache) > 256:
             _resolve_cache.clear()
-        _resolve_cache[key] = (time.monotonic(), model)
+        if generation == _forget_generation:
+            _resolve_cache[key] = (time.monotonic(), model)
         if model is not None:
             _known_audio_cpp_ids.add(model.id.lower())
     return model
@@ -2289,7 +2291,10 @@ def resolve(
 
 def forget(identifier: Optional[str] = None) -> None:
     """Drop memoized resolutions (after a download or delete changed the cache)."""
+    global _forget_generation
     with _resolve_lock:
+        # A lookup already reading the old cache must not store its answer after this.
+        _forget_generation += 1
         # What is downloaded changed too, so the next status poll must not reuse the old listing.
         _downloaded_cache.clear()
         if identifier is None:
@@ -2657,6 +2662,182 @@ def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tu
     return row_id, "/".join([*parts[1:-1], quant_label(f"{parts[-1]}.gguf")])
 
 
+def cached_folder_target(
+    identifier: Optional[str], variant: Optional[str] = None
+) -> Optional[tuple[str, list[str]]]:
+    """``(umbrella repo, path-qualified variant keys)`` a cache action on an umbrella folder row
+    works on, from the cache only; None for any other id.
+
+    With a variant, only that folder's own variant (a bare ``Q8_0`` would name another folder's file
+    at repo scope); without one, every variant of the folder with its GGUF on disk. Never the whole
+    repo: an empty list means nothing of this folder is cached.
+    """
+    if not is_umbrella_id(identifier):
+        return None
+    base, inline = split_variant_ref(str(identifier))
+    ref = parse_identifier(base)
+    if ref is None or not ref.folder:
+        return None
+    # No Hub folder name holds a colon; on Windows ``snapshot / "C:"`` would name the snapshot root.
+    if ":" in ref.folder:
+        return AUDIO_CPP_REPO, []
+    wanted = (variant or "").strip() or inline or ref.variant_hint
+    model = resolve(ref.id, wanted, network = False)
+    chosen: list[AudioCppVariant] = []
+    if model is not None and model.repo_id:
+        if wanted:
+            chosen = _cached_variants_named(model.variants, wanted, ref.folder)
+        else:
+            snapshots = snapshot_dirs(model.repo_id)
+            chosen = [
+                v
+                for v in model.variants
+                if v.primary
+                and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
+            ]
+    from hub.utils.gguf import gguf_variant_key
+
+    keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
+    if wanted and keys:
+        return AUDIO_CPP_REPO, keys
+    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted, ref.folder):
+        return AUDIO_CPP_REPO, []
+    # A quant cancelled before any file finished has only download state; the variant delete clears it.
+    partial = _folder_state_keys(ref.folder)
+    if wanted:
+        partial = [k for k in partial if _state_key_named(k, wanted, ref.folder)]
+        return AUDIO_CPP_REPO, partial if len(partial) == 1 else []
+    seen = {k.lower() for k in keys}
+    return AUDIO_CPP_REPO, keys + [k for k in partial if k.lower() not in seen]
+
+
+def _on_disk_quant_named(variants: Sequence[AudioCppVariant], wanted: str, folder: str) -> bool:
+    """Whether ``wanted`` is ambiguous on disk: its quant and scope words fit several variants."""
+    found, quant_given = _variants_matching(variants, wanted, folder)
+    return quant_given and len(found) > 1
+
+
+def _folder_state_keys(folder: str) -> list[str]:
+    """Planner keys under ``<folder>/`` with a download manifest or cancel marker in the active cache."""
+    try:
+        from hub.utils import download_manifest
+        found = {
+            key
+            for listing in (
+                download_manifest.iter_variant_manifests(
+                    "model", AUDIO_CPP_REPO, hub_cache = _hub_cache()
+                ),
+                download_manifest.iter_variant_markers(
+                    "model", AUDIO_CPP_REPO, hub_cache = _hub_cache()
+                ),
+            )
+            for key, _path in listing
+        }
+    except Exception:  # noqa: BLE001 - unreadable state names nothing more
+        return []
+    prefix = f"{folder.lower()}/"
+    return sorted(k for k in found if k.lower().startswith(prefix) and len(k) > len(prefix))
+
+
+def _state_key_named(key: str, wanted: str, folder: str) -> bool:
+    """Whether a folder's planner key (``<Folder>/<dirs>/<file stem>``) is the variant ``wanted``
+    names, by the same rules as a cached variant: the key itself, its file, or its quant plus scope
+    words."""
+    low = wanted.strip().replace("\\", "/").strip("/").lower()
+    path = key.lower()
+    stem = path.rsplit("/", 1)[-1]
+    if not low or low in (path, stem, f"{stem}.gguf") or f"{folder.lower()}/{low}" == path:
+        return bool(low)
+    parts = [p for p in low.split("/") if p]
+    if quant_label(f"{stem}.gguf").lower() != parts[-1]:
+        return False
+    dirs = set(path.split("/")[1:-1])
+    folder_words = set(re.split(r"[-_.]+", folder.lower()))
+    words = dirs | (set(re.split(r"[-_.]+", stem)) - folder_words)
+    return all(_scope_word_matches(w, words, stem) for w in parts[:-1])
+
+
+def _scope_word_matches(word: str, scope: set[str], stem: str) -> bool:
+    """A scope word is one of ``scope``, or a compound (``v4-small``) whose every part is a word of the
+    file stem: its parts can all be folder words, which ``scope`` leaves out."""
+    if word in scope:
+        return True
+    parts = [p for p in re.split(r"[-_.]+", word) if p]
+    return len(parts) > 1 and set(parts) <= set(re.split(r"[-_.]+", stem))
+
+
+def _cached_variants_named(
+    variants: Sequence[AudioCppVariant], wanted: str, folder: str
+) -> list[AudioCppVariant]:
+    """The cached variants ``wanted`` names. The picker keys a multi-size folder's quants from the Hub
+    listing (``tiny/Q8_0``) while a cache holding one size keys it ``Q8_0``, so scope words also
+    match the file path; a quant must still pick exactly one, never a fallback default (``match_variant``
+    would rank a bare ``Q8_0`` onto one of ``tiny/Q8_0`` and ``small/Q8_0``)."""
+    found, quant_given = _variants_matching(variants, wanted, folder)
+    return found if not quant_given or len(found) == 1 else []
+
+
+def _variants_matching(
+    variants: Sequence[AudioCppVariant], wanted: str, folder: str
+) -> tuple[list[AudioCppVariant], bool]:
+    """Every variant ``wanted`` could name, and whether it named a quant (which must be unique)."""
+    low = wanted.strip().replace("\\", "/").strip("/").lower()
+    for exact in (
+        [v for v in variants if v.key.lower() == low],
+        [v for v in variants if v.main_file.lower() in (low, f"{folder}/{low}".lower())],
+        [v for v in variants if v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")],
+    ):
+        if len(exact) == 1:
+            return exact, False
+        if exact:
+            return [], False
+    parts = [p for p in low.split("/") if p]
+    if not parts:
+        return [], False
+    quants = {quant_label(v.main_file).lower() for v in variants}
+    quant = parts[-1] if parts[-1] in quants else None
+    words = parts[:-1] if quant else parts
+    folder_words = set(re.split(r"[-_.]+", folder.lower()))
+
+    def stem_of(v: AudioCppVariant) -> str:
+        return v.main_file.rsplit("/", 1)[-1].lower().removesuffix(".gguf")
+
+    def scope(v: AudioCppVariant) -> set[str]:
+        # A size or edition: a directory of the key, or a word of the file name the folder's own
+        # name does not supply (``tiny`` in ``moonshine-streaming-tiny-q8_0``).
+        return set(v.key.lower().split("/")[:-1]) | (
+            set(re.split(r"[-_.]+", stem_of(v))) - folder_words
+        )
+
+    found = [
+        v
+        for v in variants
+        if (quant is None or quant_label(v.main_file).lower() == quant)
+        and all(_scope_word_matches(w, scope(v), stem_of(v)) for w in words)
+    ]
+    return found, quant is not None
+
+
+def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
+    """``<snapshot>/<Folder>`` of the first cached snapshot holding an umbrella folder row."""
+    ref = parse_identifier(split_variant_ref(str(identifier or ""))[0])
+    if ref is None or not ref.folder or not ref.repo_id or ":" in ref.folder:
+        return None
+    snapshots = [s for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
+    # The snapshot holding a variant's weights, not a newer metadata-only or partial one.
+    from core.inference.audio_cpp_files import _file_complete
+
+    model = resolve(ref.id, network = False)
+    variants = [v for v in (model.variants if model is not None else ()) if v.files]
+    for snapshot in snapshots:
+        if any(all(_file_complete(snapshot / f.path, f.size) for f in v.files) for v in variants):
+            return snapshot / ref.folder
+    for snapshot in snapshots:
+        if any(p.suffix.lower() == ".gguf" for p in (snapshot / ref.folder).rglob("*")):
+            return snapshot / ref.folder
+    return snapshots[0] / ref.folder if snapshots else None
+
+
 def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
     """Raise ``AudioCppModelError`` when Studio cannot run ``model`` (for ``task`` when given)."""
     if model.unsupported:
@@ -2695,6 +2876,7 @@ RECOMMENDED_STT_MODELS: tuple[str, ...] = tuple(
 
 
 _downloaded_cache: dict[Optional[str], tuple[float, list[AudioCppModel]]] = {}
+_forget_generation = 0
 _DOWNLOADED_TTL_SECONDS = 10.0
 
 
@@ -2706,11 +2888,13 @@ def downloaded_models(task: Optional[str] = None) -> list[AudioCppModel]:
     """
     with _resolve_lock:
         hit = _downloaded_cache.get(task)
+        generation = _forget_generation
     if hit is not None and time.monotonic() - hit[0] < _DOWNLOADED_TTL_SECONDS:
         return list(hit[1])
     out = _scan_downloaded(task)
     with _resolve_lock:
-        _downloaded_cache[task] = (time.monotonic(), out)
+        if generation == _forget_generation:
+            _downloaded_cache[task] = (time.monotonic(), out)
     return list(out)
 
 

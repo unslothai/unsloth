@@ -19,6 +19,7 @@ import {
   AUDIO_CPP_UNOFFERED_FOLDERS,
   audioCppDictationModelFor,
   audioCppDisplayName,
+  audioCppHubPath,
   audioCppModelFor,
   audioCppSizeLabel,
   audioCppWorkflowsFor,
@@ -52,7 +53,9 @@ import {
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
 import {
   AUDIO_CATALOG,
+  IMAGE_CATALOG,
   catalogToModelOptions,
+  curatedRowLabelFor,
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
@@ -138,6 +141,17 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(isAudioCppFolderId(AUDIO_CPP_REPO), false);
   assert.equal(isAudioCppFolderId(`${AUDIO_CPP_REPO}/`), false);
   assert.equal(isAudioCppFolderId("unslothai/Qwen3-ASR-0.6B-GGUF"), false);
+  assert.equal(
+    audioCppHubPath(`${AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF`),
+    `${AUDIO_CPP_REPO}/tree/main/Qwen3-TTS-12Hz-0.6B-Base-GGUF`,
+  );
+  assert.equal(
+    audioCppHubPath(`${ACE_STEP}/turbo`),
+    `${AUDIO_CPP_REPO}/tree/main/ACE-Step1.5-GGUF`,
+  );
+  assert.equal(audioCppHubPath(AUDIO_CPP_REPO), null);
+  assert.equal(audioCppHubPath(MINIMAX_GGUF), null);
+  assert.equal(audioCppHubPath("unsloth/Qwen3-8B-GGUF"), null);
   assert.equal(audioCppModelFor("OpenMOSS-Team/MOSS-TTS-Nano-100M"), null);
   assert.equal(audioCppModelFor(""), null);
   assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
@@ -199,9 +213,32 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       const option = options.find((candidate) => candidate.id === model.id);
       assert.ok(option, `${host}: ${model.id}`);
       assert.equal(option.isGguf, true);
-      assert.equal(option.descriptionSuffix, "GGUF");
+      // The name already ends in -GGUF, so a "GGUF" suffix would only repeat it.
+      assert.equal(option.descriptionSuffix, undefined, `${host}: ${model.id}`);
     }
   }
+});
+
+test("a GGUF suffix is kept only where the name does not already say GGUF", () => {
+  for (const option of catalogToModelOptions([...AUDIO_CATALOG, ...IMAGE_CATALOG])) {
+    if (option.isGguf && /-gguf$/i.test(option.name)) {
+      assert.equal(option.descriptionSuffix, undefined, option.id);
+    } else {
+      assert.ok(option.descriptionSuffix, option.id);
+    }
+  }
+});
+
+test("a hub GGUF named like a bundled folder does not read as its twin", () => {
+  const hub = curatedRowLabelFor("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG);
+  const folder = curatedRowLabelFor(QWEN_ASR, AUDIO_CATALOG);
+  assert.equal(hub?.name, folder?.name);
+  assert.notDeepEqual(hub, folder);
+  assert.deepEqual(hub?.tags, ["llama.cpp"]);
+  assert.deepEqual(folder?.tags, []);
+  // A GGUF with no twin keeps a bare row.
+  assert.deepEqual(curatedRowLabelFor(KOKORO, AUDIO_CATALOG)?.tags, []);
+  assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.tags, []);
 });
 
 test("voice conversion models are seeded with the pages they run on", () => {
