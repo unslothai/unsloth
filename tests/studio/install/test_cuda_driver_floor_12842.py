@@ -249,11 +249,16 @@ class TestWindowsBelowTheFloorGetsTheVulkanBundle:
         )
 
     # (10, 1) on sm_30 is #13662's GT 650M; a pre-12 driver used to source-build.
-    @pytest.mark.parametrize("driver, caps", [((12, 2), ("86",)), ((11, 8), ("61",)), ((10, 1), ("30",))])
+    @pytest.mark.parametrize(
+        "driver, caps", [((12, 2), ("86",)), ((11, 8), ("61",)), ((10, 1), ("30",))]
+    )
     def test_a_driver_below_the_floor_gets_vulkan_then_cpu(self, monkeypatch, driver, caps):
         monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
         choices = m.resolve_release_asset_choice(
-            host("Windows", driver, caps), "b11443", _release_with("windows-vulkan", "windows-cpu"), None
+            host("Windows", driver, caps),
+            "b11443",
+            _release_with("windows-vulkan", "windows-cpu"),
+            None,
         )
         assert [c.install_kind for c in choices] == ["windows-vulkan", "windows-cpu"]
         assert choices[0].name == f"app-{TAG}-windows-x64-vulkan.zip"
