@@ -2123,6 +2123,24 @@ def test_video_auto_toggle_not_armed_when_the_dit_cannot_cache(fake_runtime, tmp
     backend.unload()
 
 
+def test_video_gguf_status_does_not_call_a_bf16_gguf_quantized(fake_runtime, tmp_path):
+    # unsloth/LTX-2.5-GGUF also ships a dense BF16 GGUF: the reason names the file's quant, not "quantized weights".
+    filename = "ltx-2.3-22b-distilled-1.1-BF16.gguf"
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert status["gguf_variant"] == "BF16"
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert reason == "not engaged (GGUF DiT (BF16) loaded; the file's own weights are used as is)"
+    assert "quantized" not in reason
+    backend.unload()
+
+
 def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     fake_runtime, tmp_path
 ):
@@ -2141,7 +2159,7 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     # The DiT is the GGUF's own quantized weights, not a dense bf16 one.
     quant = status["resolved"]["transformer_quant"]
     assert (quant["value"], quant["source"]) == ("off", "auto")
-    assert quant["reason"] == "not engaged (GGUF DiT loaded; its quantized weights are used as is)"
+    assert quant["reason"] == "not engaged (GGUF DiT (Q4_K_M) loaded; the file's own weights are used as is)"
     assert backend.unload()["gguf_variant"] is None
     # A pipeline load has no checkpoint quant to name.
     assert (

@@ -278,6 +278,15 @@ from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
 _TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
 
+def _gguf_quant_token(filename: Optional[str]) -> Optional[str]:
+    """The quant a GGUF filename names (``Q4_K_M``, ``BF16``), as the status reports it in ``gguf_variant``."""
+    if not filename:
+        return None
+    from hub.utils.gguf import extract_quant_token
+
+    return extract_quant_token(filename)
+
+
 def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[str]) -> str:
     """Classify a load request; explicit model_kind wins, else the filename decides."""
     if model_kind:
@@ -7738,9 +7747,13 @@ class VideoBackend:
                                 "skipped: offload moves the DiT, unsupported for torchao "
                                 "tensors; pin a resident memory mode to combine them"
                                 if quant_skipped_for_offload
-                                # A GGUF DiT keeps its own quantized weights (dequantized per layer), so "dense bf16"
-                                # would misreport it.
-                                else "not engaged (GGUF DiT loaded; its quantized weights are used as is)"
+                                # A GGUF DiT runs the file's own weights at its own quant (a BF16 GGUF is dense), so name
+                                # the quant the status reports as gguf_variant rather than claiming either.
+                                else (
+                                    "not engaged (GGUF DiT ("
+                                    + (_gguf_quant_token(gguf_filename) or "GGUF")
+                                    + ") loaded; the file's own weights are used as is)"
+                                )
                                 if kind == "gguf"
                                 else "not engaged (dense bf16 DiT loaded)"
                             )
