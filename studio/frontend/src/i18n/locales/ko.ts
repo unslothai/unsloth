@@ -2987,7 +2987,7 @@ export const ko = {
         modelClef: "Clef",
         recommended: "추천",
         device: "실행 위치",
-        deviceDescription: "GPU가 더 빠르지만 다시 시작할 때까지 메모리를 계속 차지합니다.",
+        deviceDescription: "GPU가 더 빠르며, 모델을 언로드하면 메모리를 반환합니다.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "런타임",

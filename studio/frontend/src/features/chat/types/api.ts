@@ -48,6 +48,9 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   load_request_id?: string | null;
@@ -182,6 +185,9 @@ export function isMultimodalResponse(
 export interface LoadModelResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   evicted?: string[];
@@ -289,6 +295,9 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;

@@ -66,8 +66,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   type DecisionExportInfo,
+  type DiffusionLmExportInfo,
   type ModelCheckpoints,
-  fetchDecisionExportInfo,
+  fetchCheckpointExportProbe,
 } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
@@ -507,15 +508,16 @@ export function ExportPage() {
   const [decisionState, setDecisionState] = useState<{
     path: string;
     info: DecisionExportInfo | null;
+    diffusionLm?: DiffusionLmExportInfo | null;
   } | null>(null);
   useEffect(() => {
     if (!decisionProbePath) {
       return;
     }
     const controller = new AbortController();
-    fetchDecisionExportInfo(decisionProbePath, controller.signal)
-      .then((info) => {
-        setDecisionState({ path: decisionProbePath, info });
+    fetchCheckpointExportProbe(decisionProbePath, controller.signal)
+      .then(({ decision: info, diffusionLm }) => {
+        setDecisionState({ path: decisionProbePath, info, diffusionLm });
         if (!info) {
           return;
         }
@@ -544,6 +546,15 @@ export function ExportPage() {
       ? decisionState.info
       : null;
   const isDecision = decisionInfo != null;
+  // Text-diffusion LMs: no GGUF (llama.cpp would serve them left to right); DiffusionGemma also no merge.
+  const diffusionLmInfo =
+    decisionProbePath && decisionState?.path === decisionProbePath
+      ? (decisionState.diffusionLm ?? null)
+      : null;
+  const diffusionDisabledMethods = useMemo<ExportMethod[]>(
+    () => diffusionLmInfo?.disabled_methods ?? [],
+    [diffusionLmInfo],
+  );
   const decisionIneligible = decisionInfo?.eligible === false;
   const decisionQuantOptions = useMemo(
     () =>
@@ -613,6 +624,16 @@ export function ExportPage() {
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
+    if (
+      exportMethod !== null &&
+      diffusionDisabledMethods.includes(exportMethod)
+    ) {
+      setExportMethod(null);
+    }
+    if (diffusionDisabledMethods.includes("gguf") && loraAsGguf) {
+      setLoraAsGguf(false);
+    }
+    // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
     if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
       setGgufTarget("model");
     }
@@ -622,6 +643,8 @@ export function ExportPage() {
     exportMethod,
     isMacHost,
     ggufTarget,
+    diffusionDisabledMethods,
+    loraAsGguf,
   ]);
 
   const handleSourceTabChange = useCallback((next: string) => {
@@ -738,6 +761,7 @@ export function ExportPage() {
     selectedExportSource &&
     exportMethod &&
     !exportUnsupported &&
+    !diffusionDisabledMethods.includes(exportMethod) &&
     !hubMultiFormat &&
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
     (exportMethod !== "merged" || selectedFormats.length > 0) &&
@@ -812,6 +836,8 @@ export function ExportPage() {
       sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
     if (exportUnsupported) return;
+    if (diffusionDisabledMethods.includes(exportMethod)) return;
+    // GGUF with no quant, or merged with no format, would run an empty export; require at least one.
     if (exportMethod === "gguf" && !ggufAsLora && quantLevels.length === 0)
       return;
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
@@ -951,6 +977,7 @@ export function ExportPage() {
     runExport,
     isDecision,
     decisionIneligible,
+    diffusionDisabledMethods,
     t,
   ]);
 
@@ -1501,9 +1528,10 @@ export function ExportPage() {
                       ? ["merged", "lora"]
                       : !effectiveIsAdapter && effectiveIsQuantized
                         ? ["merged", "lora", "gguf"]
-                        : effectiveIsAdapter
-                          ? []
-                          : ["lora"]
+                        : [
+                            ...(effectiveIsAdapter ? [] : (["lora"] as const)),
+                            ...diffusionDisabledMethods,
+                          ]
                 }
                 disabledReason={
                   exportUnsupported
@@ -1512,9 +1540,16 @@ export function ExportPage() {
                       ? t("exportDecision.ggufOnly")
                       : !effectiveIsAdapter && effectiveIsQuantized
                         ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                        : effectiveIsAdapter
-                          ? undefined
-                          : "LoRA-only export needs a LoRA adapter checkpoint"
+                        : [
+                            effectiveIsAdapter
+                              ? null
+                              : "LoRA-only export needs a LoRA adapter checkpoint",
+                            diffusionDisabledMethods.length > 0
+                              ? diffusionLmInfo?.reason
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || undefined
                 }
               />
 
@@ -1673,7 +1708,12 @@ export function ExportPage() {
                           variant={loraAsGguf ? "default" : "outline"}
                           size="sm"
                           onClick={() => setLoraAsGguf(true)}
-                          title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                          disabled={diffusionDisabledMethods.includes("gguf")}
+                          title={
+                            diffusionDisabledMethods.includes("gguf")
+                              ? (diffusionLmInfo?.reason ?? undefined)
+                              : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
+                          }
                         >
                           GGUF adapter
                         </Button>

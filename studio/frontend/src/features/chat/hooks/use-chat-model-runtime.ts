@@ -182,6 +182,11 @@ import {
   loadManagedLlamaFlags,
 } from "@/features/model-picker/api/llama-flags";
 import { usePlatformStore } from "@/config/env";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFrom,
+  engineLaunchFieldsFromParams,
+} from "../lib/engine-launch-fields";
 import type {
   ChatLoraSummary,
   ChatModelRow,
@@ -1788,6 +1793,9 @@ export function useChatModelRuntime() {
           engine: "auto",
           enginePrecision: "auto",
           engineParallelism: "tensor",
+          engineKvCacheDtype: "auto",
+          engineSeed: null,
+          engineGpuMemoryUtilization: null,
         });
       }
       const requestedEngine =
@@ -2032,6 +2040,7 @@ export function useChatModelRuntime() {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
             engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+            ...engineLaunchFieldsFromParams(stateBeforeUnload.params),
           };
           try {
             // Pre-flight validation avoids unloading a working model for a clearly invalid id.
@@ -2125,6 +2134,7 @@ export function useChatModelRuntime() {
               model_path: loadPath,
               engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
               engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+              ...engineLaunchFieldsFromParams(stateBeforeUnload.params),
               engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
@@ -2204,6 +2214,7 @@ export function useChatModelRuntime() {
                 engine,
                 engine_precision: "auto",
                 engine_parallelism: "tensor",
+                ...DEFAULT_ENGINE_LAUNCH_FIELDS,
               };
               engineSwitched = true;
               downloadComplete = true;
@@ -2795,6 +2806,7 @@ export function useChatModelRuntime() {
               loadedEngine: loadResponse.engine ?? "auto",
               loadedEnginePrecision: loadResponse.engine_precision ?? "auto",
               loadedEngineParallelism: loadResponse.engine_parallelism ?? "tensor",
+              loadedEngineLaunch: engineLaunchFieldsFrom(loadResponse),
             });
             // Native file-picker paths need an expiring lease, so they are not remembered.
             const indexedLocalPick =
@@ -2844,6 +2856,7 @@ export function useChatModelRuntime() {
                   engine: stateBeforeUnload.loadedEngine,
                   engine_precision: stateBeforeUnload.loadedEnginePrecision,
                   engine_parallelism: stateBeforeUnload.loadedEngineParallelism,
+                  ...stateBeforeUnload.loadedEngineLaunch,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,

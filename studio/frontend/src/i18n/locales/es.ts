@@ -3033,7 +3033,7 @@ export const es = {
         modelClef: "Clef",
         recommended: "Recomendado",
         device: "Ejecutar en",
-        deviceDescription: "La GPU responde más rápido, pero mantiene su memoria reservada hasta reiniciar.",
+        deviceDescription: "La GPU responde más rápido y libera su memoria cuando se descarga el modelo.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Entorno de ejecución",

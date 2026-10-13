@@ -2995,7 +2995,7 @@ export const ar = {
         modelClef: "Clef",
         recommended: "موصى به",
         device: "التشغيل على",
-        deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
+        deviceDescription: "وحدة GPU أسرع في الإجابة، وتحرر ذاكرتها عند إلغاء تحميل النموذج.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "بيئة التشغيل",

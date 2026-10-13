@@ -43,6 +43,7 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { engineLaunchFieldsFrom } from "./engine-launch-fields";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -135,6 +136,19 @@ export type ApplyInferenceStatusOptions = {
   adoptingExistingServerModel?: boolean;
 };
 
+/** The resident engine launch settings, in the store's params shape. */
+function residentEngineParams(status: InferenceStatusResponse) {
+  return {
+    engine: status.engine ?? "auto",
+    enginePrecision: status.engine_precision ?? "auto",
+    engineParallelism: status.engine_parallelism ?? "tensor",
+    engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
+    engineSeed: status.engine_seed ?? null,
+    engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
+  } as const;
+}
+
+/** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
 export function applyActiveModelStatusToStore(
   status: InferenceStatusResponse,
   options: ApplyInferenceStatusOptions = {},
@@ -148,12 +162,18 @@ export function applyActiveModelStatusToStore(
     loadedEngine: status.engine ?? "auto",
     loadedEnginePrecision: status.engine_precision ?? "auto",
     loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+    loadedEngineLaunch: engineLaunchFieldsFrom(status),
   });
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
-  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
-    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  const residentEngine = residentEngineParams(status);
+  if (
+    (Object.keys(residentEngine) as (keyof typeof residentEngine)[]).some(
+      (key) => (store.params[key] ?? null) !== residentEngine[key],
+    )
+  ) {
+    store.setParams({ ...store.params, ...residentEngine });
   }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
@@ -161,7 +181,7 @@ export function applyActiveModelStatusToStore(
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
+        current: { ...store.params, ...residentEngine },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,

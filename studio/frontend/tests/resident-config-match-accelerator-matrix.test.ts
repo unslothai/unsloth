@@ -438,7 +438,11 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     "maxSeqLength",
     "enginePrecision",
     "engineParallelism",
-    // Read as the reconciler's namespace, but /status has no field to compare it against.
+    "engineKvCacheDtype",
+    "engineSeed",
+    "engineGpuMemoryUtilization",
+    // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
+    // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
     // Compared through standing.splitRatio, which the caller seeds from it.
     "tensorSplit",

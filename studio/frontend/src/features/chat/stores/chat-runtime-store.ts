@@ -126,6 +126,10 @@ import {
   CHAT_SPECULATIVE_TYPE_KEY,
 } from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  type EngineLaunchFields,
+} from "../lib/engine-launch-fields";
 
 export {
   CHAT_GPU_MEMORY_MODE_KEY,
@@ -2101,6 +2105,9 @@ type ChatRuntimeStore = {
   loadedEngine: "auto" | "vllm" | "sglang";
   loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
   loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
+  loadedEngineLaunch: EngineLaunchFields;
+  /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
+   *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
   /** Backend-reported: native-audio checkpoints are served off the MLX path. */
   loadedIsMlx: boolean | null;
@@ -3740,6 +3747,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedEngine: "auto",
   loadedEnginePrecision: "auto",
   loadedEngineParallelism: "tensor",
+  loadedEngineLaunch: DEFAULT_ENGINE_LAUNCH_FIELDS,
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,

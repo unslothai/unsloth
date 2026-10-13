@@ -76,6 +76,20 @@ const DIFFUSION_TAGS = new Set([
   "unconditional-image-generation",
 ]);
 
+// Text-diffusion language models (LLaDA, Dream, SDAR, DiffusionGemma, ...) are text generators that
+// can carry a bare "diffusion" tag; only an image / video tag or family name makes them image gen.
+const TEXT_DIFFUSION_LM_TAGS = new Set([
+  "llada",
+  "llada2_moe",
+  "dream",
+  "sdar",
+  "nemotron_labs_diffusion",
+  "diffusion_gemma",
+  "diffusion_gemma4",
+]);
+const TEXT_DIFFUSION_LM_ID_RE =
+  /(?:^|[-_/])(?:llada|dream[-_]v\d|diffucoder|sdar[-_]\d|diffusiongemma|nemotron[-_]labs[-_]diffusion)/;
+
 const CODE_TAGS = new Set([
   "code",
   "code-generation",
@@ -211,12 +225,19 @@ export function detectCapabilities(
   ) {
     out.push({ key: "embedding", label: "Embeddings" });
   }
-  if (
-    hasAny(DIFFUSION_TAGS) ||
+  const imageGenName =
     /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?(?:video|image)|wan2|latent[-_]?consistency|[-_]lcm\b|dreamshaper/.test(
       lowerId,
-    )
-  ) {
+    );
+  const textDiffusionLm =
+    !imageGenName &&
+    (hasAny(TEXT_DIFFUSION_LM_TAGS) || TEXT_DIFFUSION_LM_ID_RE.test(lowerId));
+  const imageGenTagged = textDiffusionLm
+    ? [...DIFFUSION_TAGS].some(
+        (tag) => tag !== "diffusion" && (tagSet.has(tag) || pipeline === tag),
+      )
+    : hasAny(DIFFUSION_TAGS);
+  if (imageGenTagged || imageGenName) {
     out.push({ key: "diffusion", label: "Image/video gen" });
   }
   const languageCodes = new Set<string>();

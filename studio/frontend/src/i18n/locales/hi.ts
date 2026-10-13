@@ -3002,7 +3002,7 @@ export const hi = {
         modelClef: "Clef",
         recommended: "सुझाया गया",
         device: "यहाँ चलाएँ",
-        deviceDescription: "GPU तेज़ जवाब देता है, लेकिन रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
+        deviceDescription: "GPU तेज़ जवाब देता है और मॉडल अनलोड होने पर अपनी मेमोरी खाली कर देता है।",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "रनटाइम",
