@@ -86,3 +86,93 @@ def test_the_same_film_with_both_assertions_passing_is_clean(tmp_path):
     path = _assertion_failed_on_treatment(tmp_path, treatment_ok = True)
     args = ([path], "t", U.UNSTABLE_ACTIONS)
     assert U.report(*args, min_reps = 2, min_compared = 16, declared_ui_change = True) == 0
+
+
+def _every_action_differs(tmp_path: Path) -> Path:
+    """A wrapper change: every action renders differently on head, in both repetitions."""
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            for i in range(17):
+                rows.append(action_row(cid, f"filler{i}", "BASE" if arm == "base" else "HEAD"))
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / "wrapper"
+    out.mkdir()
+    path = out / "payload.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    return path
+
+
+def test_a_declared_change_on_every_action_is_still_a_decided_run(tmp_path):
+    path = _every_action_differs(tmp_path)
+    args = ([path], "t", frozenset())
+    assert U.report(*args, min_reps = 2, min_compared = 16) == 1
+    assert U.report(*args, min_reps = 2, min_compared = 16, declared_ui_change = True) == 0
+
+
+def _windowed_film(tmp_path: Path, name: str, head_visible: str) -> Path:
+    """`settings` on a windowed treatment arm (no structural verdict), its visible region as given."""
+    from tests.studio.studiobench.sweep.selftest.test_studiobench_windowed_parity import _capture
+
+    rows: list[dict] = [{"row_type": "run_meta", "tier": "fast"}]
+    for rep in ("rep0", "rep1"):
+        for arm in ("base", "treatment"):
+            cid = f"r100K.{arm}.{rep}"
+            treat = arm == "treatment"
+            rows.append(
+                {
+                    "row_type": "action",
+                    "cell_id": cid,
+                    "action": "settings",
+                    "ran": True,
+                    "parity": _capture(6 if treat else 18, 18, "d"),
+                    "visible": {
+                        "visible_attempted": True,
+                        "ever_visible": [1],
+                        "ever_visible_count": 1,
+                        "mounted_ever_visible": 1,
+                        "unmounted_at_capture": 0,
+                        "messages": {
+                            "1": {
+                                "role": "assistant",
+                                "digest": head_visible if treat else "same",
+                                "chars": 10,
+                            }
+                        },
+                    },
+                }
+            )
+            rows.append({"row_type": "cell", "cell_id": cid, "completed": True})
+    out = tmp_path / name
+    out.mkdir()
+    (out / "payload.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
+    )
+    return out
+
+
+def test_a_windowed_visible_difference_gets_its_evidence(tmp_path):
+    from tests.studio.studiobench.sweep import parity_shots as S
+
+    result = U.shards_of(str(_windowed_film(tmp_path, "result", "HEAD")))
+    null = U.shards_of(str(_windowed_film(tmp_path, "null", "same")))
+    picked = S.differing_actions(result, null, min_reps = 2)
+    assert {(d["action"], d["cell"]) for d in picked} == {
+        ("settings", "r100K rep0"),
+        ("settings", "r100K rep1"),
+    }, picked
+
+
+def test_a_windowed_pair_that_matches_gets_no_picture(tmp_path):
+    from tests.studio.studiobench.sweep import parity_shots as S
+
+    result = U.shards_of(str(_windowed_film(tmp_path, "result", "same")))
+    null = U.shards_of(str(_windowed_film(tmp_path, "null", "same")))
+    assert S.differing_actions(result, null, min_reps = 2) == []
+
+
+def test_a_declared_visible_change_on_every_pair_is_still_a_decided_run(tmp_path):
+    paths = U.shards_of(str(_windowed_film(tmp_path, "result", "HEAD")))
+    assert U.visible_report(paths, "t", min_reps = 2) == 1
+    assert U.visible_report(paths, "t", min_reps = 2, declared_ui_change = True) == 0

@@ -1016,7 +1016,7 @@ def visible_report(
             "\n  DECLARED UI CHANGE: the PR says it changes the screen (--declared-ui-change), so the "
             "rendering differences above are reported, not failed. Behaviour differences still fail."
         )
-    if matched == 0:
+    if matched == 0 and not differing:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
@@ -2022,7 +2022,8 @@ def report(
     # 2, the same code the empty-payload path uses: the tool was asked a question it could not
     # answer, and exiting 0 would let CI go green on a run structurally incapable of firing.
     # `decided`, not `matched`. AFTER the failure return, since "it failed" is more specific.
-    if decided == 0:
+    # A declared difference was decided too: a wrapper change can differ on every pair.
+    if decided == 0 and not stable_bad:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
