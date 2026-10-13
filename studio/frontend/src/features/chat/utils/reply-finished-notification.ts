@@ -9,7 +9,7 @@ import {
 import { useChatPreferencesStore } from "../stores/chat-preferences-store.ts";
 
 const TITLE = "Reply finished";
-const BODY = "Your reply in Unsloth Studio is ready.";
+const BODY = "Your reply in Unsloth is ready.";
 
 // A reply cut at Max Tokens resumes as a new run (auto-continue), and a queued prompt starts the
 // next one; any run starting cancels this wait, so one notification fires once replies settle.
