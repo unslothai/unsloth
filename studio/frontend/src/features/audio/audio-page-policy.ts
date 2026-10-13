@@ -11,7 +11,9 @@ import {
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
+  AUDIO_CPP_REPO,
   audioCppModelFor,
+  isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
 
 /** Why the installed audio runtime cannot run this recommended speech or music model, or null
@@ -343,6 +345,93 @@ export function canTransitionAudioMode(
   return (
     busy === null || (busy === "generating" && generationPhase === "generating")
   );
+}
+
+/** The main slot's loaded model as the picker rows name it. llama-server reports a custom-folder
+ *  GGUF's file stem as active_model and its path as model_identifier, and that row uses the path;
+ *  a Hub model keeps its repo id, since model_identifier can be a cache snapshot path. */
+export function audioLoadedSelection(
+  status:
+    | {
+        active_model?: string | null;
+        model_identifier?: string | null;
+        gguf_variant?: string | null;
+      }
+    | null
+    | undefined,
+  // The quant a GGUF file name carries (`ggufQuantLabel`); without one a file name stays as is.
+  quantLabel?: (filename: string) => string,
+): { id: string | null; variant: string | null } {
+  const active = status?.active_model ?? null;
+  const id = active
+    ? active.includes("/")
+      ? active
+      : (status?.model_identifier ?? active)
+    : null;
+  return { id, variant: id ? loadedQuantKey(status?.gguf_variant ?? null, quantLabel) : null };
+}
+
+/** llama status echoes the load selector, which is a file name for a pick from the quant list
+ *  (`model-q4_k_m.gguf`); picker rows key that quant `Q4_K_M`, under any directory it sits in. */
+function loadedQuantKey(
+  variant: string | null,
+  quantLabel?: (filename: string) => string,
+): string | null {
+  if (!variant || !quantLabel || !/\.gguf$/i.test(variant.trim())) return variant;
+  const path = variant.trim().replace(/\\/g, "/");
+  const cut = path.lastIndexOf("/") + 1;
+  return `${path.slice(0, cut)}${quantLabel(path.slice(cut)).toUpperCase()}`;
+}
+
+/** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
+ *  the model listed. An audio.cpp folder is gone with its package repo, or, once the inventory
+ *  lists folder rows, when its own row is missing. */
+export function rememberedModelIsGone(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  if (!inventory.settled || inventory.error) return false;
+  if (inventory.available.has(id.toLowerCase())) return false;
+  if (!isAudioCppFolderId(id)) return true;
+  return (
+    !inventory.available.has(AUDIO_CPP_REPO.toLowerCase()) ||
+    [...inventory.available].some((listed) => isAudioCppFolderId(listed))
+  );
+}
+
+/** Whether a delete of `deletedRepoId` can have removed the remembered model: the same repo, or
+ *  the audio.cpp package that holds the remembered folder. */
+export function deleteCoversRememberedModel(
+  deletedRepoId: string,
+  rememberedId: string,
+): boolean {
+  const deleted = deletedRepoId.toLowerCase();
+  const remembered = rememberedId.toLowerCase();
+  return remembered === deleted || remembered.startsWith(`${deleted}/`);
+}
+
+/** Delete markers a settled inventory listing newer than the delete has now been judged against.
+ *  Each marker keeps the listing current when its delete was announced. */
+export function settledDeleteMarkers(
+  markers: ReadonlyMap<string, ReadonlySet<string>>,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): string[] {
+  if (!inventory.settled || inventory.error) return [];
+  return [...markers]
+    .filter(([, listedAtDelete]) => listedAtDelete !== inventory.available)
+    .map(([repoId]) => repoId);
+}
+
+const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was
+ *  deleted while nothing on this page was listening. Local folders and trained checkpoints are not
+ *  listed by repo id, so they are always offered. Nothing is forgotten here. */
+export function rememberedModelUnavailable(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  return HUB_REPO_ID_RE.test(id) && rememberedModelIsGone(id, inventory);
 }
 
 /** A managed TTS completion owns auto-load only while the same staging generation is selected

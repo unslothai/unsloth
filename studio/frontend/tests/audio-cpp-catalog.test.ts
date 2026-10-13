@@ -52,7 +52,9 @@ import {
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
 import {
   AUDIO_CATALOG,
+  IMAGE_CATALOG,
   catalogToModelOptions,
+  curatedRowLabelFor,
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
@@ -210,9 +212,32 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       const option = options.find((candidate) => candidate.id === model.id);
       assert.ok(option, `${host}: ${model.id}`);
       assert.equal(option.isGguf, true);
-      assert.equal(option.descriptionSuffix, "GGUF");
+      // The name already ends in -GGUF, so a "GGUF" suffix would only repeat it.
+      assert.equal(option.descriptionSuffix, undefined, `${host}: ${model.id}`);
     }
   }
+});
+
+test("a GGUF suffix is kept only where the name does not already say GGUF", () => {
+  for (const option of catalogToModelOptions([...AUDIO_CATALOG, ...IMAGE_CATALOG])) {
+    if (option.isGguf && /-gguf$/i.test(option.name)) {
+      assert.equal(option.descriptionSuffix, undefined, option.id);
+    } else {
+      assert.ok(option.descriptionSuffix, option.id);
+    }
+  }
+});
+
+test("a hub GGUF named like a bundled folder does not read as its twin", () => {
+  const hub = curatedRowLabelFor("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG);
+  const folder = curatedRowLabelFor(QWEN_ASR, AUDIO_CATALOG);
+  assert.equal(hub?.name, folder?.name);
+  assert.notDeepEqual(hub, folder);
+  assert.deepEqual(hub?.tags, ["llama.cpp"]);
+  assert.deepEqual(folder?.tags, []);
+  // A GGUF with no twin keeps a bare row.
+  assert.deepEqual(curatedRowLabelFor(KOKORO, AUDIO_CATALOG)?.tags, []);
+  assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.tags, []);
 });
 
 test("voice conversion models are seeded with the pages they run on", () => {
