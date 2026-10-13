@@ -212,7 +212,7 @@ function ReasoningTrigger({
       data-slot="reasoning-trigger"
       data-active={active ? "" : undefined}
       className={cn(
-        "aui-reasoning-trigger group/trigger flex min-h-5 min-w-0 cursor-pointer items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "aui-reasoning-trigger group/trigger flex min-h-5 min-w-0 cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -240,7 +240,7 @@ function ReasoningTrigger({
       </span>
       {/* Outside the label so it reads while the block is still working and closed. */}
       {foldedSummary ? (
-        <span className="whitespace-nowrap leading-none text-muted-foreground/70">
+        <span className="whitespace-nowrap leading-none">
           {"\u00b7 "}
           {foldedSummary}
         </span>
@@ -330,10 +330,8 @@ function ReasoningText({
       data-slot="reasoning-text"
       data-streaming={streaming ? "" : undefined}
       className={cn(
-        // Same muted colour and size as the header above it, so only the answer is at full
-        // foreground. Flush with the header, no cap and no fade; the thread's own
-        // follow-scroll tracks it while it streams.
-        "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-muted-foreground leading-relaxed",
+        // Trace ink, as the header above it, so it reads apart from the answer.
+        "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-trace-foreground leading-relaxed",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         !virtualized &&
           cn(
@@ -592,7 +590,7 @@ function ReasoningTail({
                 ?.focus({ preventScroll: true });
             onShowFull();
           }}
-          className="mt-2 cursor-pointer font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="mt-2 cursor-pointer font-medium text-trace-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           Show full thinking
         </button>

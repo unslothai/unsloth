@@ -43,10 +43,10 @@ import {
   AlertCircleIcon,
   ChevronDownIcon,
   LoaderIcon,
+  WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { InternetGlyph } from "@/lib/internet-icon";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -166,15 +166,13 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
-// The shared app tick is icon data, not a component; wrap it to slot into the
-// status map alongside the lucide icons.
-function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
-  return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
+// A finished call shows what kind of tool ran, not a tick: "Used tool" already says it finished.
+function completeToolIcon(name: string): ElementType {
+  return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
 }
 
-const statusIconMap: Record<ToolStatus, ElementType> = {
+const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {
   running: LoaderIcon,
-  complete: CompleteTickIcon,
   incomplete: XCircleIcon,
   "requires-action": AlertCircleIcon,
 };
@@ -201,9 +199,12 @@ function ToolFallbackTrigger({
   const isRunning = isToolCallRunning(status);
   const isCancelled = isToolCallCancelled(status);
 
-  const StatusIcon = statusIconMap[statusType];
   const label = toolFallbackLabel(status);
   const name = toolArgText(toolName);
+  const StatusIcon =
+    statusType === "complete"
+      ? completeToolIcon(name)
+      : statusIconMap[statusType];
   const displayName = formatMcpToolName(name, mcpServer, mcpTool) ?? name;
 
   return (
@@ -212,7 +213,7 @@ function ToolFallbackTrigger({
       className={cn(
         // Brightens on hover like the Thinking trigger. The icon inherits this; the label
         // sets its own colour and picks it up through the group below.
-        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground",
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -222,28 +223,20 @@ function ToolFallbackTrigger({
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"
-          className={cn(
-            "aui-tool-fallback-trigger-icon size-4 shrink-0",
-            isCancelled && "text-muted-foreground",
-          )}
+          className="aui-tool-fallback-trigger-icon size-4 shrink-0"
         />
       ) : (
         <StatusIcon
           data-slot="tool-fallback-trigger-icon"
-          className={cn(
-            "aui-tool-fallback-trigger-icon size-4 shrink-0",
-            isCancelled && "text-muted-foreground",
-          )}
+          className="aui-tool-fallback-trigger-icon size-4 shrink-0"
         />
       )}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground transition-colors",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-trace-foreground transition-colors",
           // A cancelled row stays muted: the strikethrough is the point, not the name.
-          isCancelled
-            ? "text-muted-foreground line-through"
-            : "group-hover/trigger:text-foreground",
+          isCancelled ? "line-through" : "group-hover/trigger:text-foreground",
         )}
       >
         <span
