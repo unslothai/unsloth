@@ -197,3 +197,22 @@ test("an XHR aborted mid-flight cancels the panel's read and never loads", async
   assert.ok(t.posted.some((message) => message.type === "resourceCancel" && message.id === t.posted[0].id));
   assert.equal(xhr.readyState, 0);
 });
+
+test("a relayed XHR decodes text in the response's charset, and JSON as UTF-8", async () => {
+  const t = setup();
+  const read = async (type: string, contentType: string, bytes: string) => {
+    const xhr = new t.window.XMLHttpRequest();
+    xhr.open("GET", "/legacy");
+    xhr.responseType = type as XMLHttpRequestResponseType;
+    const done = new Promise((resolve) => xhr.addEventListener("loadend", resolve));
+    xhr.send();
+    const sent = t.posted.filter((message) => message.type === "resource").at(-1);
+    t.reply(sent?.id, { status: 200, url: "https://huggingface.co/legacy", headers: { "content-type": contentType }, body: btoa(bytes) });
+    await done;
+    return xhr;
+  };
+  assert.equal((await read("", "text/plain; charset=ISO-8859-1", "caf\xe9")).responseText, "café");
+  assert.equal((await read("", 'text/plain; charset="windows-1251"', "\xcf\xf0\xe8")).responseText, "При");
+  assert.equal((await read("", "text/plain; charset=no-such-charset", "caf\xc3\xa9")).responseText, "café");
+  assert.deepEqual((await read("json", "application/json; charset=iso-8859-1", '{"a":"\xc3\xa9"}')).response, { a: "é" });
+});

@@ -117,6 +117,22 @@ def test_a_coded_page_reaches_the_browser_panel_decoded(monkeypatch, coding, bod
     assert content_type == "text/html"
 
 
+def test_raw_deflate_output_zlib_held_back_at_the_end_is_not_truncation(monkeypatch):
+    # The last wire bytes fill the 64 KiB output buffer; zlib keeps the rest with no input left.
+    body = b"a" * 65_537
+    _serve(
+        monkeypatch,
+        [
+            _FakeResp(
+                _raw_deflate(body), {"Content-Type": "text/plain", "Content-Encoding": "deflate"}
+            )
+        ],
+    )
+    error, raw, _ = tools._fetch_url_raw("https://example.com/a.txt", raw_bytes_max = 10_000_000)
+    assert error is None
+    assert raw == body
+
+
 def test_web_fetch_reads_a_gzip_page_as_text(monkeypatch):
     _serve(
         monkeypatch,

@@ -16206,6 +16206,7 @@ class _ContentDecoder:
         if self.finished:
             return b""
         data, self.unread = self.unread, b""
+        draining = False
         if len(data) < 2 and (self.inflater is None or not data):
             more = read_wire(65536)
             self.wire += len(more)
@@ -16217,7 +16218,10 @@ class _ContentDecoder:
                 if self.at_boundary and (not data or self.members):
                     self.finished = True
                     return b""
-                raise ValueError("truncated compressed response")
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
             data += more
             if self.inflater is None and len(data) < 2:
                 self.unread = data
@@ -16236,6 +16240,8 @@ class _ContentDecoder:
                 self.inflater = zlib.decompressobj(15 if wrapped else -15)
             self.at_boundary = False
         out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
         if not self.inflater.eof:
             self.unread = self.inflater.unconsumed_tail
         elif self.gzip:

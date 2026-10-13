@@ -98,7 +98,16 @@ BROWSER_NETWORK_JS = r"""
           get responseURL() { return this._relay ? this._result?.url || "" : super.responseURL; }
           get responseType() { return this._relay ? this._type : super.responseType; }
           set responseType(value) { if (this._relay) this._type = value; else super.responseType = value; }
-          get _decoded() { return (this._text ??= this._bytes ? new TextDecoder().decode(this._bytes) : ""); }
+          // In the response's charset, as native XHR decodes text; JSON is always UTF-8.
+          get _decoded() {
+            if (this._text == null) {
+              const charset = /;\s*charset="?([^";\s]+)/i.exec(this.getResponseHeader("content-type") || "")?.[1];
+              let decoder = new TextDecoder();
+              try { if (charset) decoder = new TextDecoder(charset); } catch {}
+              this._text = this._bytes ? decoder.decode(this._bytes) : "";
+            }
+            return this._text;
+          }
           get responseText() {
             if (!this._relay) return super.responseText;
             if (this._type && this._type !== "text") throw new DOMException("Not a text response", "InvalidStateError");
@@ -118,7 +127,7 @@ BROWSER_NETWORK_JS = r"""
             if (this._type === "arraybuffer") return this._bytes?.buffer || null;
             if (this._type === "blob") return this._bytes ? new Blob([this._bytes], { type: this.getResponseHeader("content-type") || "" }) : null;
             if (this._type === "document") return this.responseXML;
-            if (this._type === "json") { try { return JSON.parse(this._decoded); } catch { return null; } }
+            if (this._type === "json") { try { return JSON.parse(new TextDecoder().decode(this._bytes)); } catch { return null; } }
             return this.responseText;
           }
           setRequestHeader(name, value) { super.setRequestHeader(name, value); this._headers?.append(name, value); }
