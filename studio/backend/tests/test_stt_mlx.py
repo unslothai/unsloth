@@ -26,11 +26,14 @@ from types import SimpleNamespace
 
 
 class _Model:
+    config = SimpleNamespace(support_languages = ["Chinese", "English", "French"])
+
     def __init__(self, path):
         self.repo_dir = Path(path).parts[-3]
 
-    def generate(self, audio):
-        return SimpleNamespace(text = f"heard {len(audio)} samples from {self.repo_dir}")
+    def generate(self, audio, language = None):
+        said = f" in {language}" if language else ""
+        return SimpleNamespace(text = f"heard {len(audio)} samples from {self.repo_dir}{said}")
 
 def load(path):
     if "broken" in str(path):
@@ -216,7 +219,7 @@ def test_child_loads_and_transcribes_an_mlx_checkpoint(monkeypatch, tmp_path):
 
     assert responses == [
         {"type": "loaded", "device": "cpu", "is_multilingual": None, "supports_timestamps": False},
-        {"type": "text", "text": "heard 320 samples from models--a--b", "consumed": 320},
+        {"type": "text", "text": "heard 320 samples from models--a--b in English", "consumed": 320},
         {"type": "shutdown_ack"},
     ]
     import mlx.core
@@ -252,8 +255,8 @@ def test_a_spawned_worker_transcribes_a_cached_mlx_checkpoint_end_to_end(spawned
 
     # 45 s of silence: one 30 s window, then the 15 s rest.
     assert text == (
-        "heard 480000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit "
-        "heard 240000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit"
+        "heard 480000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit in English "
+        "heard 240000 samples from models--mlx-community--Qwen3-ASR-0.6B-8bit in English"
     )
     assert sidecar.loaded_model is None
 
@@ -376,3 +379,23 @@ def test_translation_is_untouched_off_a_mac(monkeypatch, tmp_path):
         lambda _m: pytest.fail("no cache lookup off a Mac"),
     )
     assert stt_sidecar_module.can_translate(_REPO) is True
+
+
+@pytest.mark.parametrize(
+    ("code", "hint"),
+    [("fr", "French"), ("en", "English"), ("sw", None), (None, None), ("zz", None)],
+)
+def test_the_chosen_language_reaches_mlx_only_when_the_checkpoint_knows_it(code, hint):
+    seen = {}
+
+    class Model:
+        config = SimpleNamespace(support_languages = ["English", "French"])
+
+        def generate(self, audio, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(text = "ok")
+
+    engine = worker_module._MlxSttModel(Model())
+    pcm = np.zeros(160, dtype = np.float32).tobytes()
+    assert worker_module.transcribe_mlx_window(engine, pcm, code) == ("ok", 160)
+    assert seen == ({"language": hint} if hint else {})

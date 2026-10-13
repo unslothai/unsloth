@@ -197,12 +197,29 @@ def load_mlx_stt(
     return _MlxSttModel(model)
 
 
-def transcribe_mlx_window(engine: _MlxSttModel, pcm: bytes) -> tuple:
-    # Language is left to the model, as Qwen3-ASR does on the llama.cpp engine.
+def _mlx_language(model, code: Optional[str]) -> Optional[str]:
+    """The checkpoint's own name for a Whisper language code, or None to let it detect one."""
+    if not code:
+        return None
+    try:
+        from transformers.models.whisper.tokenization_whisper import LANGUAGES
+    except Exception:  # noqa: BLE001 - no table, no hint
+        return None
+    name = LANGUAGES.get(code, "").lower()
+    supported = getattr(getattr(model, "config", None), "support_languages", None) or []
+    return next((lang for lang in supported if str(lang).lower() == name), None)
+
+
+def transcribe_mlx_window(
+    engine: _MlxSttModel,
+    pcm: bytes,
+    language: Optional[str] = None,
+) -> tuple:
     import numpy as np
 
     segment = np.frombuffer(pcm, dtype = np.float32)
-    result = engine.model.generate(segment)
+    hint = _mlx_language(engine.model, language)
+    result = engine.model.generate(segment, **({"language": hint} if hint else {}))
     text = getattr(result, "text", result)
     return (text if isinstance(text, str) else ""), len(segment)
 
@@ -346,7 +363,11 @@ def run_stt_worker(
                     raise SttWorkerError("The dictation worker has no model loaded.")
                 cancellable = bool(command.get("cancellable"))
                 if isinstance(engine, _MlxSttModel):
-                    text, consumed = transcribe_mlx_window(engine, command["audio"])
+                    text, consumed = transcribe_mlx_window(
+                        engine,
+                        command["audio"],
+                        (command.get("generate_kwargs") or {}).get("language"),
+                    )
                 else:
                     text, consumed = transcribe_window(
                         engine[0],
