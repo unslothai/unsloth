@@ -394,6 +394,45 @@ def test_desktop_secret_authenticates_the_shell_health_probe(monkeypatch):
     assert refused.value.status_code == 401
 
 
+def test_shutdown_cleanup_runs_off_the_event_loop_and_once(monkeypatch):
+    # The cleanup waits seconds on subprocesses (llama-server: 5 s SIGTERM + 5 s SIGKILL). Run on the
+    # loop it kept uvicorn from closing the port until it finished, so Shutdown left the port open past
+    # a 15 s check on a loaded host. The loop must stay free meanwhile, and a second click is no-op.
+    import main
+
+    raw = storage.create_desktop_secret()
+    add_managed()
+    app = FastAPI()
+    started, release, calls = [], __import__("threading").Event(), []
+
+    def slow_cleanup():
+        calls.append(time.monotonic())
+        started.append(True)
+        release.wait(10)
+
+    app.state.trigger_shutdown = slow_cleanup
+    app.add_api_route("/api/desktop/shutdown", main.desktop_shutdown_server, methods = ["POST"])
+    app.add_api_route("/ping", lambda: {"ok": True}, methods = ["GET"])
+    try:
+        with TestClient(app) as http:
+            headers = {"X-Desktop-Secret": raw}
+            assert http.post("/api/desktop/shutdown", headers = headers).status_code == 200
+            deadline = time.monotonic() + 5
+            while not started and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert started
+            t0 = time.monotonic()
+            assert http.get("/ping").json() == {"ok": True}
+            assert time.monotonic() - t0 < 1.0  # served while the cleanup is still running
+            assert http.post("/api/desktop/shutdown", headers = headers).status_code == 200
+            time.sleep(0.5)
+            assert len(calls) == 1  # a second Shutdown joins the running cleanup
+    finally:
+        release.set()
+    app.state._shutdown_thread.join(5)
+    assert not app.state._shutdown_thread.is_alive()
+
+
 def test_desktop_secret_stops_the_backend_it_owns(monkeypatch):
     import main
 

@@ -2296,12 +2296,24 @@ async def desktop_shutdown_server(request: Request):
     return _schedule_shutdown(request)
 
 
+_shutdown_thread_lock = threading.Lock()
+
+
 def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            trigger()
+            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
+            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
+            # uvicorn from closing the port until all of it was done. The main thread still waits
+            # for it (_shutdown_event) before the process exits. One cleanup per process.
+            with _shutdown_thread_lock:
+                running = getattr(request.app.state, "_shutdown_thread", None)
+                if running is None:
+                    running = threading.Thread(target = trigger, name = "studio-shutdown")
+                    request.app.state._shutdown_thread = running
+                    running.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
