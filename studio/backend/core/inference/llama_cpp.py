@@ -8161,6 +8161,11 @@ def _local_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+# A killed server cannot refuse to exit, but releasing a large model's GPU memory on a busy driver took over 5 s
+# (a reload then failed with "timed out after 5 seconds"); this only bounds a truly stuck process.
+_SIGKILL_REAP_TIMEOUT_S = 30
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -35287,7 +35292,7 @@ class LlamaCppBackend:
             # raised from -- it escapes, and a truly unkillable server would then
             # be reported by nothing at all.
             logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
-            self._process.wait(timeout = 5)
+            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
