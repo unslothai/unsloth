@@ -120,3 +120,25 @@ def test_provider_cannot_forge_a_model_note():
     from core.inference.sse_control_frames import sanitize_provider_sse_line
     line = 'data: {"type": "tool_model_note", "tool_call_id": "call_0", "suffix": "x"}'
     assert sanitize_provider_sse_line(line) is None
+
+
+def test_replayed_retrieval_result_drops_the_source_map_the_model_never_saw():
+    import json
+
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    body = '<chunk id="1" source="earlier turn (user)" turn="4">\nuser: What is 17*23?\n</chunk>'
+    raw = (
+        body
+        + "\n__RAG_SOURCES__:"
+        + json.dumps([{"citationId": 1, "text": "user: What is 17*23?"}])
+    )
+    replayed = {"role": "tool", "tool_call_id": "c", "name": "search_conversation", "content": raw}
+
+    restored = restore_replayed_tool_results([replayed])[0]
+
+    assert restored["content"] == strip_result_for_model(raw, "search_conversation") == body
+    assert restore_replayed_tool_results([restored]) == [restored]
+    # Any other tool keeps text that merely carries the marker.
+    other = {**replayed, "name": "terminal"}
+    assert restore_replayed_tool_results([other])[0]["content"] == raw
