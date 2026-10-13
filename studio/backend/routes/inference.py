@@ -10012,6 +10012,15 @@ def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
     return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
 
 
+def _anthropic_top_level_image_location(payload) -> Optional[str]:
+    for i, msg in enumerate(payload.messages):
+        if isinstance(msg.content, list):
+            for j, block in enumerate(msg.content):
+                if block.type == "image":
+                    return f"messages.{i}.content.{j}.image"
+    return None
+
+
 def _anthropic_local_image_payloads(payload) -> list[str]:
     encoded_images = []
     for block in _anthropic_image_blocks(payload):
@@ -41913,6 +41922,14 @@ async def anthropic_messages(
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).
     model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    # Anthropic's block path lets clients drop the image instead of resending it every turn.
+    if _anthropic_top_level_image and not llama_backend.is_vision:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{_anthropic_top_level_image_location(payload)}: "
+            "Image provided but current GGUF model does not support vision.",
+        )
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
     openai_messages = anthropic_messages_to_openai(
