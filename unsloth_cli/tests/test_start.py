@@ -6215,6 +6215,26 @@ def test_a_disabled_connection_or_unknown_name_keeps_the_old_load(fake_studio):
     assert "Connection" not in result.output
 
 
+@pytest.mark.parametrize("model", ["gpt-5.4", "external::c1::gpt-5.4"])
+def test_a_chatgpt_subscription_connection_is_refused_before_loading(fake_studio, model):
+    fake_studio.state["providers"] = [
+        {**GEMINI_CONNECTION, "models": ["gpt-5.4"], "auth_kind": "chatgpt_oauth"}
+    ]
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", "--model", model])
+    assert result.exit_code == 1
+    assert "ChatGPT subscription Connection" in result.output
+    assert _loads(fake_studio) == []
+
+
+@pytest.mark.parametrize("agent", ["codex", "opencode"])
+def test_app_mode_refuses_a_connection_model(fake_studio, agent):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(start.start_app, [agent, "--app", "--model", "gemini-2.5-flash"])
+    assert result.exit_code == 1
+    assert "app can't use a Connection model yet" in result.output
+    assert not [call for call in fake_studio if str((call[2] or {}).get("name")).endswith(" app")]
+
+
 def test_an_explicit_connection_model_never_starts_a_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = []

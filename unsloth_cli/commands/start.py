@@ -4409,14 +4409,21 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
         matches = [p for p in enabled if p.get("id") == provider_id]
         if not matches:
             _fail(f"No enabled Connection {provider_id!r} on {base}. Check Settings → Connections.")
-        return {"id": model, "connection": matches[0].get("display_name") or provider_id}
-    matches = [p for p in enabled if model in (p.get("models") or [])]
-    ids = [f"{_CONNECTION_MODEL_PREFIX}{p['id']}::{quote(model, safe = '')}" for p in matches]
+    else:
+        matches = [p for p in enabled if model in (p.get("models") or [])]
+        if not matches:
+            return None
+    usable = [p for p in matches if p.get("auth_kind") != "chatgpt_oauth"]
+    if not usable:
+        _fail(
+            f"{model} is on a ChatGPT subscription Connection, which only the Unsloth chat can use."
+        )
+    if explicit:
+        return {"id": model, "connection": usable[0].get("display_name") or usable[0]["id"]}
+    ids = [f"{_CONNECTION_MODEL_PREFIX}{p['id']}::{quote(model, safe = '')}" for p in usable]
     if len(ids) > 1:
         _fail(f"{model} is offered by more than one Connection. Pass one of: {', '.join(ids)}")
-    if not ids:
-        return None
-    return {"id": ids[0], "connection": matches[0].get("display_name") or matches[0]["id"]}
+    return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
 def _connect(
@@ -6376,6 +6383,8 @@ def codex(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app and entry.get("connection"):
+        _fail("The Codex app can't use a Connection model yet. Drop --app to run it in Codex.")
     if app:
         return _codex_app_session(base, api_key, entry)
     if as_subagent:
@@ -6600,6 +6609,10 @@ def opencode(
         server_options = server_options,
         connections = True,
     )
+    if app and entry.get("connection"):
+        _fail(
+            "The OpenCode app can't use a Connection model yet. Drop --app to run it in OpenCode."
+        )
     if app:
         target = _opencode_app_target(max_tokens, server_options.request_body())
         return _add_app_provider(target, base, api_key, entry)

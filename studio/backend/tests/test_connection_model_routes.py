@@ -24,26 +24,6 @@ class FakeExternalClient:
 
     def stream_chat_completion(self, **kwargs):
         FakeExternalClient.calls[-1]["stream"] = kwargs
-        if kwargs.get("stream") is False:
-
-            async def reply():
-                yield json.dumps(
-                    {
-                        "id": "chatcmpl-1",
-                        "object": "chat.completion",
-                        "model": kwargs["model"],
-                        "choices": [
-                            {
-                                "index": 0,
-                                "finish_reason": "stop",
-                                "message": {"role": "assistant", "content": "pong"},
-                            }
-                        ],
-                        "usage": {"prompt_tokens": 5, "completion_tokens": 1},
-                    }
-                )
-
-            return reply()
 
         async def gen():
             for chunk in (
@@ -304,14 +284,41 @@ def test_responses_streams_a_connection_model_for_codex(v1):
 
 
 def test_responses_answers_a_connection_model_without_streaming(v1):
-    resp = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping"})
+    resp = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "read a.txt"})
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    assert body["object"] == "response"
     assert body["status"] == "completed"
-    assert body["output"][0]["content"][0]["text"] == "pong"
-    assert body["usage"]["input_tokens"] == 5
-    assert FakeExternalClient.calls[0]["stream"]["stream"] is False
+    assert body["output"][0]["content"][0]["text"] == "Reading it."
+    assert body["output"][1]["type"] == "function_call"
+    assert json.loads(body["output"][1]["arguments"]) == {"file_path": "a.txt"}
+    assert body["usage"]["input_tokens"] == 11
+
+
+def test_responses_reports_the_connection_failure(v1, monkeypatch):
+    class Failing(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield 'data: {"error": {"message": "API key expired.", "code": "401"}}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Failing)
+    events = _sse(
+        v1.post(
+            "/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping", "stream": True}
+        ).text
+    )
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["error"]["message"] == "API key expired."
+
+    resp = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping"})
+    assert resp.status_code == 502
+    assert "API key expired." in resp.text
 
 
 def test_count_tokens_cannot_serve_a_connection_model(v1):
@@ -381,3 +388,23 @@ def test_a_connection_stream_ends_at_done_even_if_the_provider_keeps_it_open(v1,
     events = _sse(v1.post(path, json = body).text)
 
     assert events[-1]["type"] in ("response.completed", "message_stop")
+
+
+def test_a_connection_stream_without_a_space_after_data_still_reaches_the_agent(v1, monkeypatch):
+    class Compact(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield 'data:{"choices": [{"index": 0, "delta": {"content": "pong"}}]}'
+                yield 'data:{"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}'
+                yield "data:[DONE]"
+
+            return gen()
+
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Compact)
+    message = v1.post("/v1/messages", json = _messages_body()).json()
+    assert message["content"] == [{"type": "text", "text": "pong"}]
+
+    response = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping"}).json()
+    assert response["output"][0]["content"][0]["text"] == "pong"

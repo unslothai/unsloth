@@ -38546,7 +38546,6 @@ async def _responses_non_streaming(
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
-    connection = _connection_model_ref(payload.model) is not None
     request_state = getattr(request, "state", None)
     if request_state is None:
         request_state = type("_RequestState", (), {})()
@@ -38567,7 +38566,7 @@ async def _responses_non_streaming(
             via_api_key = _request_used_api_key(request),
             model = payload.model,
             prompt = _monitor_prompt_from_messages(messages),
-            context_length = None if connection else _monitor_context_length(),
+            context_length = _monitor_context_length(),
             subject = current_subject,
         )
     if request_state is not None:
@@ -38577,7 +38576,7 @@ async def _responses_non_streaming(
     inner_perf: dict = {}
     if monitor_id:
         inner_perf["monitor_id"] = monitor_id
-        inner_perf["context_length"] = None if connection else _monitor_context_length()
+        inner_perf["context_length"] = _monitor_context_length()
     try:
         _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
@@ -38585,21 +38584,11 @@ async def _responses_non_streaming(
         finally:
             _monitor_perf_sink.reset(_sink_token)
 
-        # openai_chat_completions returns a JSONResponse for non-streaming; the Connection proxy
-        # streams its one JSON body, followed by a [DONE] line.
-        if isinstance(result, StreamingResponse):
-            text = "".join(
-                [c.decode() if isinstance(c, bytes) else c async for c in result.body_iterator]
-            )
-            body = json.JSONDecoder().raw_decode(text.lstrip())[0]
-        elif isinstance(result, Response):
+        # openai_chat_completions returns a JSONResponse for non-streaming.
+        if isinstance(result, Response):
             body = json.loads(result.body.decode())
         else:
             body = result
-        if connection and isinstance(body.get("error"), dict):
-            raise HTTPException(
-                status_code = 502, detail = body["error"].get("message") or "The connection failed."
-            )
 
         choices = body.get("choices", [])
         text = ""
@@ -38613,7 +38602,7 @@ async def _responses_non_streaming(
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
             raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
-            llama_backend = None if connection else get_llama_cpp_backend()
+            llama_backend = get_llama_cpp_backend()
             reasoning_text, text = _extract_responses_reasoning(
                 raw_text,
                 msg.get("reasoning_content"),
@@ -38677,7 +38666,7 @@ async def _responses_non_streaming(
         _monitor_usage(
             monitor_id,
             usage_data,
-            None if connection else _monitor_context_length(),
+            _monitor_context_length(),
             # Inner monitor suppressed: only the llama-server pass-through carries timings on
             # the body; in-process paths return a ChatCompletion with no field for them.
             timings = (
@@ -39410,9 +39399,9 @@ async def _responses_stream(
                     continue
                 if not raw_line:
                     continue
-                if not raw_line.startswith("data: "):
+                if not raw_line.startswith("data:"):
                     continue
-                data_str = raw_line[6:]
+                data_str = raw_line[5:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
@@ -39431,10 +39420,10 @@ async def _responses_stream(
                         # response.failed (which flags the scope) so a later response.completed
                         # can't fire and the middleware can't claim a preview-owned slot.
                         api_monitor.fail(monitor_id, error_message)
-                        yield _sse(
-                            "response.failed",
-                            _failed_response_payload(RuntimeError(error_message)),
-                        )
+                        failed = _failed_response_payload(RuntimeError(error_message))
+                        if upstream is not None:
+                            failed["response"]["error"]["message"] = error_message
+                        yield _sse("response.failed", failed)
                         return
                     _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
                     continue
@@ -39985,7 +39974,7 @@ async def openai_responses(
                     param = "tool_choice",
                 ),
             )
-    if payload.stream:
+    if payload.stream or connection is not None:
         # streaming preflights here; non-streaming delegates its complete preflight to chat.
         _responses_has_image = _messages_have_image(m for m in messages if m.role != "tool")
         _responses_image_b64s = _local_image_payloads_from_messages(messages)
@@ -40019,7 +40008,7 @@ async def openai_responses(
                 subject = current_subject,
             )
         try:
-            return await _responses_stream(
+            response = await _responses_stream(
                 payload, messages, request, monitor_id, current_subject, connection
             )
         except HTTPException as exc:
@@ -40031,7 +40020,36 @@ async def openai_responses(
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
             raise
+        if payload.stream or not isinstance(response, StreamingResponse):
+            return response
+        # A Connection streams whatever the client asked for; answer from the terminal event.
+        return await _responses_from_stream(response, payload)
     return await _responses_non_streaming(payload, messages, request, current_subject)
+
+
+async def _responses_from_stream(response: StreamingResponse, payload: ResponsesRequest):
+    terminal = None
+    async for line in _sse_data_lines(response.body_iterator):
+        if line.startswith("data:"):
+            event = json.loads(line[5:])
+            if event.get("type") in (
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            ):
+                terminal = event["response"]
+    if terminal is None or terminal["status"] == "failed":
+        error = (terminal or {}).get("error") or {}
+        raise HTTPException(
+            status_code = 502, detail = error.get("message") or "The connection failed."
+        )
+    terminal.update(
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        max_output_tokens = payload.max_output_tokens,
+        instructions = payload.instructions,
+    )
+    return JSONResponse(terminal)
 
 
 # =====================================================================
@@ -41355,7 +41373,7 @@ async def _anthropic_events_from_openai_sse(lines, message_id: str, model: str):
     items = _sse_data_lines(lines)
     try:
         async for line in items:
-            data = line[len("data: ") :].strip() if line.startswith("data: ") else ""
+            data = line[len("data:") :].strip() if line.startswith("data:") else ""
             if data == "[DONE]":
                 break
             if not data:
