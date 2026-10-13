@@ -30,7 +30,6 @@ def module_bytes(module: Any) -> int:
 def _denoisers(pipe: Any) -> list:
     try:
         from .diffusion_cuda_graph import _denoiser_modules
-
         return list(_denoiser_modules(pipe))
     except Exception:  # noqa: BLE001 -- no denoiser found: nothing to hold
         return []
@@ -55,7 +54,11 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
 
 
 @contextlib.contextmanager
-def hold_denoiser_between_calls(pipe: Any, runner: Any, companions: Iterable[Any] = ()):
+def hold_denoiser_between_calls(
+    pipe: Any,
+    runner: Any,
+    companions: Iterable[Any] = (),
+):
     """Around a pipeline call that another call of the same request follows. ``pipe`` owns the offload hooks
     (``enable_model_cpu_offload``); ``runner`` is the pipeline actually called (``pipe`` or a pipeline derived from
     its modules, which has no hook list of its own and so never offloads at its end). Without hooks: a no-op.
