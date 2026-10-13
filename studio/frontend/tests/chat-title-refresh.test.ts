@@ -130,7 +130,7 @@ test("a refresh follows the connection that answered, and asks a local model onl
   // bounded: a stalled status check must still reach the heuristic fallback.
   // With the WebKitGTK-safe helper (no AbortSignal.timeout before 2.38), disposed once settled.
   assert.match(serving, /const wait = disposableTimeoutSignal\(TITLE_STATUS_WAIT_MS\);/);
-  assert.match(serving, /const status = await getInferenceStatus\(wait\.signal, checkpoint\);/);
+  assert.match(serving, /const status = await Promise\.race\(\[getInferenceStatus\(wait\.signal, checkpoint\), timedOut\]\);/);
   assert.match(serving, /finally \{ wait\.dispose\(\); \}/);
   assert.doesNotMatch(source, /AbortSignal\.timeout\(/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);

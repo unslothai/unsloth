@@ -175,7 +175,12 @@ async function titleModelServing(checkpoint: string): Promise<boolean> {
   const wait = disposableTimeoutSignal(TITLE_STATUS_WAIT_MS);
   try {
     // Scoped to the slot serving it, which need not be the primary one.
-    const status = await getInferenceStatus(wait.signal, checkpoint);
+    // Raced, not only signalled: a 401 first awaits a token refresh that takes no signal.
+    const timedOut = new Promise<never>((_, reject) => {
+      wait.signal.addEventListener("abort", () => reject(new Error("status check timed out")), { once: true });
+    });
+    timedOut.catch(() => undefined);
+    const status = await Promise.race([getInferenceStatus(wait.signal, checkpoint), timedOut]);
     if (!status.active_model || status.is_audio || status.is_diffusion) return false;
     const want = normalizeModelIdentity(checkpoint);
     return [status.model_identifier, status.active_model, ...(status.serving_checkpoints ?? [])].some(
