@@ -782,8 +782,10 @@ def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkey
         else:
             assert info["precision_modes"] != [] or name not in _DIT_TRAIN_FAMILIES
 
-    # Any accelerator clears it (MPS here, which bitsandbytes accepts).
+    # MPS alone does not clear it: the trainer would run on the CPU, where the 4-bit load refuses.
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert "GPU" in (dit_accelerator_missing_reason("flux.1") or "")
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: True)
     assert dit_accelerator_missing_reason("flux.1") is None
 
 

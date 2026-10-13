@@ -270,27 +270,12 @@ install_torchao_int_mm_patch()
 # pipeline (full diffusers repo)
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
-# Vendor base repos allowed to load as full (non-GGUF) artifacts. Exact-match, lowercased, safetensors-only, no remote
-# code.
-_TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
-    {
-        "lightricks/ltx-2",
-        "lightricks/ltx-2.3",
-        "lightricks/ltx-2.3-fp8",
-        # LTX-2.5: the Diffusers pack (safetensors + configs, no remote code) and the split single-file repo.
-        "lightricks/ltx-2.5-diffusers",
-        "lightricks/ltx-2.5",
-        # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
-        "wan-ai/wan2.2-ti2v-5b-diffusers",
-        "wan-ai/wan2.2-t2v-a14b-diffusers",
-        "wan-ai/wan2.1-t2v-1.3b-diffusers",
-        "wan-ai/wan2.1-t2v-14b-diffusers",
-        # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json)
-        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
-        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
-        "minimaxai/minimax-h3",
-    }
-)
+# Official non-unsloth bases allowed to load as full (non-GGUF) artifacts: safetensors-only, no remote code, exact
+# lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
+from .video_families import _FAMILIES as _VIDEO_REGISTRY  # noqa: E402
+from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+
+_TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
 
 def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[str]) -> str:
@@ -1076,6 +1061,13 @@ def _i2v_state_call_kwargs(fam: VideoFamily, state: Any) -> dict[str, Any]:
         state.repo_id,
         state.base_repo,
     )
+
+
+def _bg_i2v_render(first_pil: Any, i2v_active: bool) -> bool:
+    """An image-conditioned render for the background compile, however the family conditions (a swapped i2v pipeline,
+    or a pipeline its own render derives): its denoiser inputs (per-token timesteps) are never a text-to-video sample,
+    so it neither seeds the compile nor counts as an eager text render."""
+    return bool(i2v_active) or first_pil is not None
 
 
 def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
@@ -4236,10 +4228,10 @@ class VideoBackend:
         self._precommit_globals = None
         restore_backend_flags(flags)
         from . import diffusion_gguf_compile
-        from . import video_wan_fused
+        from .diffusion_autoopt.patches import GROUP_VIDEO_FUSED, uninstall_group
 
         diffusion_gguf_compile.uninstall_all()
-        video_wan_fused.uninstall()
+        uninstall_group(GROUP_VIDEO_FUSED)
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
     # encoder / tokenizer are pulled.
@@ -7395,16 +7387,26 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
-        from . import video_wan_fused
+        # Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach. The
+        # registered video patches (diffusion_autoopt.patches; the fused fp16 Wan block on a speed tier, uninstalled
+        # on `off`) run through the same orchestrator as the image backend's.
+        from . import diffusion_autoopt as autoopt
 
-        wan_fused_engaged = False
-        if effective_speed != SPEED_OFF:
-            wan_fused_engaged = video_wan_fused.install_for_pipe(
-                pipe, dtype, getattr(target, "device", "cuda"), logger = logger
-            )
-        else:
-            video_wan_fused.uninstall()
+        load_audit = autoopt.new_audit(backend = "video", family = fam)
+        wan_fused_engaged = bool(
+            autoopt.install_patches(
+                autoopt.STAGE_LOAD,
+                pipe = pipe,
+                target = target,
+                family = fam,
+                dtype = dtype,
+                device = getattr(target, "device", "cuda"),
+                speed_mode = effective_speed,
+                backend = "video",
+                audit = load_audit,
+                logger = logger,
+            ).get("wan_fused")
+        )
         # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
@@ -7542,33 +7544,33 @@ class VideoBackend:
                 # quadratic math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
-            if fam.name in LTX_FAMILIES:
-                # Token counts depend only on (w, h, frames), so static compile: one recompile per shape, ~1.3x faster.
-                ltx_dit = getattr(view, fam.denoiser_attr, None)
-                if ltx_dit is not None:
-                    try:
-                        ltx_dit._unsloth_compile_static = True
-                    except Exception:  # noqa: BLE001 -- not a settable module (tests/fakes)
-                        pass
-            applied = apply_speed_optims(
+            # The optimizer's speed layer (diffusion_autoopt), shared with the image backend. Its family hooks are
+            # what used to be inline here: LTX static compile (token counts depend only on (w, h, frames): one
+            # recompile per shape, ~1.3x faster) before the primitive, the LTX STG compile adapter and the
+            # cudnn.benchmark opt-out after it.
+            applied = autoopt.run_speed_layer(
                 view,
                 target,
-                is_gguf = gguf_transformer,
                 family = fam,
+                backend = "video",
                 speed_mode = effective_speed,
-                # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT
-                # crashes)
-                cache_active = cache_graph_break or cache_may_toggle,
+                is_gguf = gguf_transformer,
                 offload_active = plan.offload_policy != "none",
-                cuda_graph_default = False,
+                audit = load_audit,
+                apply = lambda family, log, view = view: apply_speed_optims(
+                    view,
+                    target,
+                    is_gguf = gguf_transformer,
+                    family = family,
+                    speed_mode = effective_speed,
+                    # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled
+                    # DiT crashes)
+                    cache_active = cache_graph_break or cache_may_toggle,
+                    offload_active = plan.offload_policy != "none",
+                    cuda_graph_default = False,
+                    logger = log,
+                ),
             )
-            if fam.name in LTX_FAMILIES and applied.get("compiled"):
-                from .video_ltx2 import install_stg_compile_adapter
-                install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
-            if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
-                from .video_ltx2 import disable_cudnn_benchmark
-                if disable_cudnn_benchmark():
-                    applied = {**applied, "cudnn_benchmark": False}
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
@@ -7758,6 +7760,16 @@ class VideoBackend:
                     ),
                 }
             )
+            # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
+            autoopt.record_load_steps(
+                load_audit,
+                attention = attention_engaged,
+                step_cache = cache_engaged,
+                step_cache_reason = cache_reason,
+                compile_cache = False,
+                compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
+            )
+            autoopt.finalize(load_audit, speed_optims, resolved)
 
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             if ltx25_client is not None:
@@ -8693,6 +8705,9 @@ class VideoBackend:
         self._precommit_globals = (_load_token, backend_flags)
         attention_engaged = None
         speed_optims: tuple = ()
+        from . import diffusion_autoopt as autoopt
+
+        h3_audit = autoopt.new_audit(backend = "video", family = fam)
         # Both helpers reach the denoiser through ``pipe.transformer``, and a reference load's DiT is
         # ``transformer_ref``. Handed the bare pipe they would enumerate no denoiser at all, so the partition this run
         # denoises with would keep native attention and stay uncompiled while the resolved record below still reported
@@ -8752,28 +8767,49 @@ class VideoBackend:
                         h3_attn_levers += ("h3_strided_attn",)
                 except Exception as exc:  # noqa: BLE001 -- stock processor stays
                     logger.warning("video.h3_attn: strided attention skipped: %s", exc)
-            applied = apply_speed_optims(
-                speed_view,
-                types.SimpleNamespace(
-                    device = device,
-                    dtype = dtype,
-                    # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
-                    backend = getattr(umem_target, "backend", "cuda"),
-                    supports_default_torch_compile = getattr(
-                        umem_target, "supports_default_torch_compile", False
-                    ),
+            h3_speed_target = types.SimpleNamespace(
+                device = device,
+                dtype = dtype,
+                # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
+                backend = getattr(umem_target, "backend", "cuda"),
+                supports_default_torch_compile = getattr(
+                    umem_target, "supports_default_torch_compile", False
                 ),
-                is_gguf = False,
+            )
+            # Same orchestrator as the image backend and the other video families (diffusion_autoopt).
+            applied = autoopt.run_speed_layer(
+                speed_view,
+                h3_speed_target,
                 family = fam,
+                backend = "video",
                 speed_mode = effective_speed,
-                cache_active = False,
-                # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
-                # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
-                # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can engage
-                denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
-                cuda_graph_default = False,
+                audit = h3_audit,
                 logger = logger,
+                apply = lambda family, log: apply_speed_optims(
+                    speed_view,
+                    types.SimpleNamespace(
+                        device = device,
+                        dtype = dtype,
+                        # ROCm reports device "cuda"; the graph arm refuses it by backend, so keep the field.
+                        backend = getattr(umem_target, "backend", "cuda"),
+                        supports_default_torch_compile = getattr(
+                            umem_target, "supports_default_torch_compile", False
+                        ),
+                    ),
+                    is_gguf = False,
+                    family = family,
+                    speed_mode = effective_speed,
+                    cache_active = False,
+                    # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the
+                    # onload hooks are live and fullgraph has to drop.
+                    offload_active = offload_policy != "none",
+                    # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can
+                    # engage
+                    denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
+                    cuda_graph_default = False,
+                    logger = log,
+                ),
             )
             speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
@@ -8959,6 +8995,15 @@ class VideoBackend:
                 ),
             }
         )
+        autoopt.record_load_steps(
+            h3_audit,
+            attention = attention_engaged,
+            step_cache = h3_cache_engaged,
+            step_cache_reason = h3_cache_reason,
+            compile_cache = False,
+            compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
+        )
+        autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
@@ -9945,6 +9990,9 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                if bg_eager and not i2v_active and _bg_i2v_render(first_pil, i2v_active):
+                    # Same as the i2v swap above, for a family that conditions without one (its own render).
+                    i2v_swap.enter_context(bg_compile.no_record())
                 # Auto-blocks distinguish omitted conditioning from empty conditioning.
                 # LTX-2.5 conditions through its own render (LTX2ConditionPipeline), not an image kwarg.
                 if first_pil is not None and fam.name != "ltx-2.5":
@@ -9986,6 +10034,10 @@ class VideoBackend:
                             upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None),
                             on_step = kwargs.get("callback_on_step_end"),
                             cancel = cancel,
+                            # Stage 1 denoises at half size: the live preview unpacks its tokens with that grid.
+                            on_stage = lambda w, h: (
+                                previewer.set_render_size(h, w) if previewer is not None else None
+                            ),
                         )
 
                 started = time.monotonic()
@@ -10154,11 +10206,16 @@ class VideoBackend:
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle
                 if state.cache_auto:
+                    # Judged against the runner (an I2V class swap shares the denoiser): FBCache hooks need it to
+                    # open cache_context, which every registered I2V pipeline does today (diffusers 0.41).
+                    from .diffusion_autoopt.runtime import auto_cache_steps
+
+                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, steps)
                     toggled = state.transformer_cache
                     for view in _views_for(pipe, fam):
                         toggled = maybe_toggle_step_cache(
                             view,
-                            steps = steps,
+                            steps = cache_steps,
                             quant_active = state.cache_quant_active,
                             threshold = state.cache_threshold,
                             logger = logger,
@@ -10170,7 +10227,9 @@ class VideoBackend:
                         if isinstance(entry, dict):
                             entry["value"] = toggled or "off"
                             entry["reason"] = (
-                                f"auto: {steps}-step generation "
+                                f"auto: {runner_reason}"
+                                if runner_reason
+                                else f"auto: {steps}-step generation "
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
@@ -10286,7 +10345,7 @@ class VideoBackend:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                 if bg_eager:
-                    _settle_bg_compile(bg, i2v = i2v_active)
+                    _settle_bg_compile(bg, i2v = _bg_i2v_render(first_pil, i2v_active))
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
@@ -11031,11 +11090,11 @@ class VideoBackend:
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
             from . import diffusion_cuda_graph
-            from . import video_wan_fused
+            from .diffusion_autoopt.patches import GROUP_VIDEO_FUSED, uninstall_group
 
             diffusion_gguf_compile.uninstall_all()
             # The fused Wan block forward is class-level: a later bf16 / speed=off load gets the stock one back.
-            video_wan_fused.uninstall()
+            uninstall_group(GROUP_VIDEO_FUSED)
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
