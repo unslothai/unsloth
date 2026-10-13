@@ -432,6 +432,18 @@ export function deleteCoversRememberedModel(
   return remembered === deleted || remembered.startsWith(`${deleted}/`);
 }
 
+/** Delete markers a settled inventory listing newer than the delete has now been judged against.
+ *  Each marker keeps the listing current when its delete was announced. */
+export function settledDeleteMarkers(
+  markers: ReadonlyMap<string, ReadonlySet<string>>,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): string[] {
+  if (!inventory.settled || inventory.error) return [];
+  return [...markers]
+    .filter(([, listedAtDelete]) => listedAtDelete !== inventory.available)
+    .map(([repoId]) => repoId);
+}
+
 const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
 
 /** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was

@@ -50,6 +50,7 @@ import {
   deleteCoversRememberedModel,
   rememberedModelIsGone,
   rememberedModelUnavailable,
+  settledDeleteMarkers,
 } from "./audio-page-policy";
 import { clipReference } from "./audio-run-request";
 import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
@@ -980,13 +981,16 @@ export function AudioPage({
   );
   const forgetModel = useAudioWorkspaceStore((state) => state.forgetModel);
   const modelInventory = useHubInventory({ kind: "models" });
-  // Deleted repos wait here until the refreshed inventory shows whether the model is gone.
-  const deletedModelsRef = useRef(new Set<string>());
+  // Deleted repos wait here, with the inventory listing current at the delete, until a newer
+  // settled listing shows whether the model is gone.
+  const deletedModelsRef = useRef(new Map<string, ReadonlySet<string>>());
+  const availableSetRef = useRef(modelInventory.availableSet);
+  availableSetRef.current = modelInventory.availableSet;
   const [deletedModelsTick, setDeletedModelsTick] = useState(0);
   useEffect(
     () =>
       subscribeModelDeleted((repoId) => {
-        deletedModelsRef.current.add(repoId.toLowerCase());
+        deletedModelsRef.current.set(repoId.toLowerCase(), availableSetRef.current);
         setDeletedModelsTick((tick) => tick + 1);
       }),
     [],
@@ -1002,14 +1006,18 @@ export function AudioPage({
     for (const id of new Set(Object.values(rememberedModels))) {
       if (
         !id ||
-        ![...deleted].some((repoId) => deleteCoversRememberedModel(repoId, id))
+        ![...deleted.keys()].some((repoId) =>
+          deleteCoversRememberedModel(repoId, id),
+        )
       ) {
         continue;
       }
-      if (rememberedModelIsGone(id, inventory)) {
-        deleted.delete(id.toLowerCase());
-        forgetModel(id);
-      }
+      if (rememberedModelIsGone(id, inventory)) forgetModel(id);
+    }
+    // A listing newer than the delete was just judged, so the marker is spent; kept, a package
+    // marker would forget a folder downloaded again later.
+    for (const repoId of settledDeleteMarkers(deleted, inventory)) {
+      deleted.delete(repoId);
     }
   }, [
     deletedModelsTick,

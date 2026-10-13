@@ -27,6 +27,7 @@ import {
   resolveSttLoadedModel,
   resolveSttResidency,
   selectAutoGgufVariant,
+  settledDeleteMarkers,
   stagedTtsLoadIsOwned,
   sttEjectSucceeded,
   sttSelectionReady,
@@ -959,8 +960,34 @@ test("a deleted model is forgotten only once the settled inventory lacks it", ()
     false,
   );
   // Only a delete puts a model up for forgetting, so a load racing the inventory keeps it.
-  assert.match(audioPageSource, /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.add\(repoId\.toLowerCase\(\)\);/);
-  assert.match(audioPageSource, /if \(rememberedModelIsGone\(id, inventory\)\) \{\s*deleted\.delete/);
+  assert.match(
+    audioPageSource,
+    /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.set\(repoId\.toLowerCase\(\), availableSetRef\.current\);/,
+  );
+  assert.match(audioPageSource, /if \(rememberedModelIsGone\(id, inventory\)\) forgetModel\(id\);/);
+});
+
+test("a delete marker is spent once a newer settled listing was judged, folders included", () => {
+  // A kept package marker forgot a folder downloaded again later, before its listing arrived.
+  const atDelete = new Set(["audio-cpp/audio.cpp-gguf"]);
+  const markers = new Map([["audio-cpp/audio.cpp-gguf", atDelete]]);
+  const settled = { settled: true, error: false };
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, available: atDelete }), []);
+  assert.deepEqual(
+    settledDeleteMarkers(markers, { settled: false, error: false, available: new Set() }),
+    [],
+  );
+  assert.deepEqual(
+    settledDeleteMarkers(markers, { settled: true, error: true, available: new Set() }),
+    [],
+  );
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, available: new Set() }), [
+    "audio-cpp/audio.cpp-gguf",
+  ]);
+  assert.match(
+    audioPageSource,
+    /for \(const repoId of settledDeleteMarkers\(deleted, inventory\)\) \{\s*deleted\.delete\(repoId\);/,
+  );
 });
 
 test("pages a loaded model cannot run point at the page it does run, not always Speak", () => {
@@ -1015,7 +1042,7 @@ test("deleting the audio.cpp package forgets the folders remembered from it", ()
   );
   assert.match(
     audioPageSource,
-    /\[\.\.\.deleted\]\.some\(\(repoId\) => deleteCoversRememberedModel\(repoId, id\)\)/,
+    /\[\.\.\.deleted\.keys\(\)\]\.some\(\(repoId\) =>\s*deleteCoversRememberedModel\(repoId, id\),?\s*\)/,
   );
 });
 
