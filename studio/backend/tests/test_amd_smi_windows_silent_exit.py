@@ -44,3 +44,26 @@ def test_linux_silent_exit_keeps_polling(spawns, monkeypatch):
         assert amd._run_amd_smi("metric") is None
     assert len(spawns) == 3
     assert amd._amd_smi_disabled is False
+
+
+@pytest.mark.parametrize(
+    "flag, allowed",
+    [(None, False), ("0", False), ("1", True), ("true", True)],
+)
+def test_windows_needs_explicit_opt_in_even_with_a_hip_sdk(monkeypatch, tmp_path, flag, allowed):
+    # A HIP SDK on PATH used to allow amd-smi; the driver's amd-smi.exe still prompts there.
+    (tmp_path / "hipinfo.exe").write_bytes(b"")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("HIP_PATH", str(tmp_path))
+    if flag is None:
+        monkeypatch.delenv("UNSLOTH_ENABLE_AMD_SMI", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_ENABLE_AMD_SMI", flag)
+    monkeypatch.setattr(amd.platform, "system", lambda: "Windows")
+    assert amd._amd_smi_allowed() is allowed
+
+
+def test_linux_always_allowed(monkeypatch):
+    monkeypatch.setattr(amd.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("UNSLOTH_ENABLE_AMD_SMI", "0")
+    assert amd._amd_smi_allowed() is True

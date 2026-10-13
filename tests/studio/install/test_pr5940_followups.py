@@ -31,7 +31,6 @@ _SPEC.loader.exec_module(prebuilt)
 _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
-_AMD_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
 _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
@@ -361,9 +360,9 @@ def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
 
 
 def test_python_hipinfo_gates_scan_all_path_entries():
-    # All three copies of the amd-smi HIP-SDK probe must scan every PATH entry (not just the first shutil.which hit) so
+    # Both installer copies of the amd-smi HIP-SDK probe must scan every PATH entry (not just the first shutil.which hit) so
     # the venv-internal hipInfo cannot shadow a real SDK's hipinfo later on PATH.
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
             "_external_hipinfo_on_path" in text
@@ -605,16 +604,16 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
 
 
 def test_python_hipinfo_strips_quotes_in_all_copies():
-    # All three copies of the PATH scan must strip surrounding quotes from entries.
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    # Both installer copies of the PATH scan must strip surrounding quotes from entries.
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
 
 
 def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
     # If sys.prefix resolves to a bare root (C:\ or /), commonpath matches every path on the filesystem and classifies
-    # a real external hipinfo as venv-internal, silently disabling amd-smi. All three copies must guard it.
-    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+    # a real external hipinfo as venv-internal, silently disabling amd-smi. Both installer copies must guard it.
+    for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
             "os.path.dirname(" in text and ") == " in text and "return False" in text
