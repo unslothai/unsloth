@@ -269,3 +269,16 @@ test("every locale lists Pi among the --as-subagent agents", async () => {
     assert.match(source.slice(at, at + 400), /OpenCode[^"]*Pi/, file);
   }
 });
+
+test("the API tab shows the VS Code note too", () => {
+  const usage = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/components/usage-examples.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(
+    usage,
+    /\{agent === "vscode" && \([\s\S]*?t\("settings\.agents\.vscodeNote"\)/,
+  );
+});
