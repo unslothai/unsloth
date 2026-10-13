@@ -62,6 +62,8 @@ def test_patched_voxtral_processor_saves(tmp_path):
         processor = transformers.AutoProcessor.from_pretrained(TINY_VOXTRAL)
     except Exception as e:
         pytest.skip(f"cannot load {TINY_VOXTRAL}: {e}")
+    if not isinstance(processor.tokenizer, transformers.PreTrainedTokenizerBase):
+        pytest.skip("transformers 4.x MistralCommonTokenizer; FastModel cannot load Voxtral there")
     patch_saving_functions(processor)
     patch_saving_functions(processor.tokenizer)
     processor.save_pretrained(str(tmp_path / "processor"))
