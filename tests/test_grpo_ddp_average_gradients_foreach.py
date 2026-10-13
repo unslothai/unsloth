@@ -59,9 +59,15 @@ def _model(shapes, dtype = torch.float32):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_bucket_copy_back_is_fused_and_exact(two_identical_ranks, monkeypatch, dtype):
     average = _load()
-    # LoRA-like: many small A / B tensors that share a bucket, one non-contiguous gradient.
-    ddp = _model([(4, 16), (16, 4), (4, 32), (32, 4), (8,)], dtype)
+    # LoRA-like: many small A / B tensors that share a bucket, one non-contiguous gradient, and one that is
+    # contiguous but strided (1, 1) because of a size-1 dim.
+    ddp = _model([(4, 16), (16, 4), (4, 32), (32, 4), (8,), (1, 8)], dtype)
     ddp.module.params[1].grad = torch.randn(4, 16, dtype = dtype).t()
+    ddp.module.params[5].grad = torch.randn(8, 1, dtype = dtype).t()
+    assert ddp.module.params[5].grad.is_contiguous() and ddp.module.params[5].grad.stride() == (
+        1,
+        1,
+    )
     before = [p.grad.clone() for p in ddp.module.params]
     calls = []
     real = torch._foreach_copy_
@@ -73,8 +79,8 @@ def test_bucket_copy_back_is_fused_and_exact(two_identical_ranks, monkeypatch, d
 
     monkeypatch.setattr(torch, "_foreach_copy_", counting)
     average(ddp)
-    # The non-contiguous grad is copied alone so the fused route sees only stride-matched pairs.
-    assert calls == [len(before) - 1]
+    # Both stride-mismatched grads are copied alone so the fused route sees only stride-matched pairs.
+    assert calls == [len(before) - 2]
     for p, g in zip(ddp.module.params, before):
         # SUM of two identical ranks then div by 2 gives the gradient back bit for bit.
         assert torch.equal(p.grad, g)
