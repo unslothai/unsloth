@@ -890,6 +890,9 @@ def test_frame_relay_throttles_and_never_raises_into_the_sampler():
     relay({"block": 0, "step": 0, "total": 2, "tokens": [1], "mask_id": None})
     relay({"block": 0, "step": 1, "total": 2, "tokens": [2], "mask_id": None})
     assert [f["text"] for f in sent] == ["<1>"]
+    # A block's last step is never throttled away.
+    relay({"block": 0, "step": 2, "total": 2, "tokens": [3], "mask_id": None})
+    assert [f["text"] for f in sent] == ["<1>", "<3>"]
 
     def broken(frame):
         raise OSError("queue closed")

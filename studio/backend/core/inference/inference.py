@@ -636,7 +636,9 @@ def _diffusion_frame_relay(
 
     def on_frame(frame):
         now = time.monotonic()
-        if now - last[0] < interval_s:
+        # A block's last step always goes out: it is the settled block the next frames build on.
+        block_end = int(frame.get("step", 0)) >= int(frame.get("total", 0)) > 0
+        if now - last[0] < interval_s and not block_end:
             return
         last[0] = now
         try:
