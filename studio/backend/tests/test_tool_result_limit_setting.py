@@ -34,7 +34,10 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", limit.DEFAULT_MAX_CHARS)
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
     token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
+    # `execute_tool` sets the room for the rest of the thread.
+    room = tools._REQUEST_RESULT_BUDGET.set(None)
     yield
+    tools._REQUEST_RESULT_BUDGET.reset(room)
     tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
 
@@ -246,3 +249,17 @@ def test_an_mcp_call_through_execute_tool_gets_the_saved_cap(monkeypatch):
     assert tools.execute_tool("mcp__srv1__dump", {}, **call) == MCP_23K
     limit.set_max_chars(4000)
     assert "truncated to 4000 chars" in tools.execute_tool("mcp__srv1__dump", {}, **call)
+
+
+@pytest.mark.parametrize("saved, cut", [(4000, 4000), (32000, None), (None, None)])
+def test_an_api_model_mcp_result_honours_only_a_lowered_setting(saved, cut):
+    """External providers price no room (`context_tokens=0`): a lowered setting still applies, nothing else changes."""
+    if saved:
+        limit.set_max_chars(saved)
+    tools._REQUEST_CONTEXT_TOKENS.set(0)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    if cut is None:
+        assert out == MCP_23K
+    else:
+        assert f"truncated to {cut} chars for the model; 23098 chars total" in out
+    assert tools._fit_result_to_room(FILE_50K, "edit_file") == FILE_50K

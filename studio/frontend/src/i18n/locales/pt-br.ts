@@ -2633,13 +2633,13 @@ export const ptBR = {
         "compactação compactar automaticamente contexto janela truncar deslizante checkpoint margem arquivo recuperação busca compaction rolling headroom archive retrieval rag",
       toolResultLimit: "Tamanho da saída das ferramentas",
       toolResultLimitDescription: "Caracteres de um resultado de Python, Terminal ou ferramenta MCP que o modelo lê. O padrão é {count}.",
-      toolResultLimitHint: "Saídas mais longas são salvas em um arquivo que o modelo pode ler em partes. Um limite maior vale para modelos executados no Unsloth, e janelas de contexto pequenas continuam recebendo menos. Modelos de API mantêm o padrão, a menos que você o reduza.",
+      toolResultLimitHint: "Saídas mais longas de Python e Terminal são salvas em um arquivo que o modelo pode ler em partes. Um limite maior vale para modelos executados no Unsloth, e janelas de contexto pequenas continuam recebendo menos. Modelos de API mantêm o padrão, a menos que você o reduza.",
       toolResultLimitDefault: "{count} (padrão)",
       toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Não foi possível carregar o tamanho da saída das ferramentas.",
       toolResultLimitSaveError: "Não foi possível salvar o tamanho da saída das ferramentas.",
       toolResultLimitKeywords:
-        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "saída resultado truncar cortado limite caracteres tamanho tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Recolhido",
         auto: "Expandir durante a execução",

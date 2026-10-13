@@ -2629,13 +2629,13 @@ export const ru = {
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "Длина вывода инструментов",
       toolResultLimitDescription: "Сколько символов одного результата Python, Терминала или инструмента MCP читает модель. По умолчанию {count}.",
-      toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
+      toolResultLimitHint: "Более длинный вывод Python и Терминала сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
       toolResultLimitDefault: "{count} (по умолчанию)",
       toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Не удалось загрузить длину вывода инструментов.",
       toolResultLimitSaveError: "Не удалось сохранить длину вывода инструментов.",
       toolResultLimitKeywords:
-        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "вывод результат обрезка обрезан лимит символы длина tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Свёрнуто",
         auto: "Разворачивать во время работы",

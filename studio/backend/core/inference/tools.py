@@ -21313,10 +21313,15 @@ def _fit_result_to_room(text, name = None):
     notice and no paging hint.
 
     With no priced room (external providers, the hosted path, any loop that does not measure its own
-    conversation) the text is returned untouched.
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
     """
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text:
         return text
+    if _request_result_room() is None:
+        # A lowered setting still holds an MCP result here, as it does Python and Terminal on API models.
+        lowered = _tool_result_max_chars() < _MAX_OUTPUT_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
     # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
     # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
