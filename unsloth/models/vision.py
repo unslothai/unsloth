@@ -4833,6 +4833,9 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
+
+        fix_transformers_voxtral_realtime_inplace_audio_add()
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:

@@ -7436,10 +7436,13 @@ def unsloth_tokenizer_save_pretrained(
     push_to_hub = False,
     **kwargs,
 ):
+    # Forward only what the caller set: MistralCommonBackend (Voxtral, tekken checkpoints) rejects these even as None.
+    if legacy_format is not None:
+        kwargs["legacy_format"] = legacy_format
+    if filename_prefix is not None:
+        kwargs["filename_prefix"] = filename_prefix
     result = self.original_save_pretrained(
         save_directory,
-        legacy_format = legacy_format,
-        filename_prefix = filename_prefix,
         push_to_hub = False,
         **kwargs,
     )
@@ -7573,14 +7576,13 @@ def patch_saving_functions(model, vision = False):
                 return original(*bound.args, **bound.kwargs)
         return original(*args, **kwargs)
 
-    if (
-        isinstance(model, PreTrainedTokenizerBase)
-        and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
-    ):
-        model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = _bind_saving_method(
-            unsloth_tokenizer_save_pretrained, model, "save_pretrained"
-        )
+    if isinstance(model, PreTrainedTokenizerBase):
+        if model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained":
+            model.original_save_pretrained = model.save_pretrained
+            model.save_pretrained = _bind_saving_method(
+                unsloth_tokenizer_save_pretrained, model, "save_pretrained"
+            )
+    # Never into a tokenizer's own .tokenizer: MistralCommonBackend's is a raw mistral_common object.
     elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
 
