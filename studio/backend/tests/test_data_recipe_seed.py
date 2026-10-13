@@ -6,7 +6,6 @@ import base64
 import importlib.util
 import io
 import json
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1444,21 +1443,9 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
 
 
-@pytest.mark.parametrize("case", ["outside", "own", "symlink", "linked_dir", "malformed"])
-def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch, tmp_path, case):
-    from core.training import account_jobs
-
+def _seed_inspect_as(monkeypatch, tmp_path, *, managed):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    workspace = tmp_path / "accounts" / "alice"
-    owner_rows = tmp_path / "owner" / "uploads"
-    for folder in (workspace / "seeds", owner_rows):
-        folder.mkdir(parents = True)
-        (folder / "train.csv").write_text("secret\nowner-only\n")
-    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
-    monkeypatch.setattr(seed_route, "managed_account", lambda: True)
-    monkeypatch.setattr(account_jobs, "workspace_root", lambda: workspace)
-    monkeypatch.setattr(account_jobs, "project_workspaces_root", lambda: workspace / "projects")
-    monkeypatch.setattr(account_jobs, "tmp_root", lambda: workspace / "tmp")
+    monkeypatch.setattr(seed_route, "managed_account", lambda: managed)
     monkeypatch.setattr(seed_route, "refuse_unauthorized_dataset_preview", lambda *a, **k: None)
     monkeypatch.setattr(seed_route, "_list_hf_repo_files", lambda **kwargs: ["train.csv"])
     monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: [])
@@ -1478,56 +1465,52 @@ def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch,
             allow_ambient_token = False,
         )
 
-    refusals = {
-        "outside": (str(owner_rows), 403),
-        # Its sandbox can plant a link to the owner's file inside its own folder.
-        "symlink": (str(workspace / "linked"), 403),
-        # A linked folder inside its workspace that holds such a link.
-        "linked_dir": (str(workspace / "via"), 403),
-        "malformed": ("org/\x00repo", 400),
-    }
-    (workspace / "linked").mkdir()
-    (workspace / "linked" / "train.csv").symlink_to(owner_rows / "train.csv")
-    (workspace / "via").mkdir()
-    (workspace / "via" / "alias").symlink_to(workspace / "linked", target_is_directory = True)
-    # A link cycle inside its own folder must not hang the walk.
-    (workspace / "seeds" / "loop").symlink_to(workspace / "seeds", target_is_directory = True)
-    if case in refusals:
-        name, status = refusals[case]
-        with pytest.raises(HTTPException) as refused:
-            inspect(name)
-        assert refused.value.status_code == status
-        assert read == []
-    else:
-        # A Hub id and a folder in the account's own workspace still preview.
-        inspect("org/repo")
-        inspect(str(workspace / "seeds"))
-        assert len(read) == 2
+    return inspect, read
 
 
-def test_a_folder_reached_through_many_links_is_scanned_once(monkeypatch, tmp_path):
-    from core.training import account_jobs
+def _seed_folders(tmp_path):
+    owner_rows = tmp_path / "owner" / "uploads"
+    owner_rows.mkdir(parents = True)
+    (owner_rows / "train.csv").write_text("secret\nowner-only\n")
+    own = tmp_path / "accounts" / "alice" / "seeds"
+    own.mkdir(parents = True)
+    (own / "train.csv").write_text("a\n1\n")
+    # load_dataset honours a card's data_files, so a folder of its own can still point elsewhere.
+    (own / "README.md").write_text(
+        f"---\nconfigs:\n- config_name: default\n  data_files: {owner_rows / 'train.csv'}\n---\n"
+    )
+    linked = tmp_path / "accounts" / "alice" / "linked"
+    linked.mkdir()
+    (linked / "train.csv").symlink_to(owner_rows / "train.csv")
+    return owner_rows, own, linked
 
-    seed_route = _load_seed_route(monkeypatch, tmp_path)
-    workspace = tmp_path / "accounts" / "alice"
-    (workspace / "seeds").mkdir(parents = True)
-    for i in range(20):
-        (workspace / "seeds" / f"part{i}.csv").write_text("a\n1\n")
-    farm = workspace / "farm"
-    farm.mkdir()
-    for i in range(30):
-        (farm / f"link{i}").symlink_to(workspace / "seeds", target_is_directory = True)
-    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
-    monkeypatch.setattr(seed_route, "managed_account", lambda: True)
-    monkeypatch.setattr(account_jobs, "workspace_root", lambda: workspace)
-    scans = []
-    real_scandir = os.scandir
-    monkeypatch.setattr(os, "scandir", lambda path: scans.append(path) or real_scandir(path))
 
-    seed_route._require_own_seed_source(str(farm))
+# A managed account previews Hub ids only (what the UI's Hugging Face mode sends); every local
+# folder is refused before load_dataset, whatever its card, links or later swaps say.
+@pytest.mark.parametrize(
+    "name", ["owner", "own", "linked", "org/\x00repo", "../repo", "~nobody/repo", "a/b/c"]
+)
+def test_a_managed_account_inspects_hub_ids_only(monkeypatch, tmp_path, name):
+    owner_rows, own, linked = _seed_folders(tmp_path)
+    name = {"owner": str(owner_rows), "own": str(own), "linked": str(linked)}.get(name, name)
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
 
-    # The farm and one linked copy of seeds, not one scan per link.
-    assert len(scans) <= 2
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code == 403
+    assert read == []
+    inspect("org/repo")
+    assert read
+
+
+def test_the_owner_still_inspects_a_local_folder(monkeypatch, tmp_path):
+    _owner_rows, own, _linked = _seed_folders(tmp_path)
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = False)
+
+    inspect(str(own))
+
+    assert read
 
 
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):

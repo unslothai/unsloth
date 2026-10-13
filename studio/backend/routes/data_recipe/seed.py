@@ -1099,28 +1099,25 @@ def _read_preview_rows_from_multi_files(
 
 
 def _require_own_seed_source(dataset_name: str) -> None:
-    """load_dataset also takes a local directory and follows symlinks in it, so a managed account may
-    only name its own folder, and every entry under it must resolve inside its workspace too."""
+    """load_dataset also reads a local folder, its dataset card's data_files and any links in it, and a
+    check before the read cannot pin what the read opens. A managed account previews Hub ids only, as
+    the UI does; its own files go through /seed/inspect-upload."""
     if not managed_account():
         return
+    parts = dataset_name.split("/")
+    hub_id = len(parts) == 2 and all(
+        part not in {"", ".", ".."} and all(c.isalnum() or c in "-_." for c in part)
+        for part in parts
+    )
     try:
-        account_path(dataset_name, reference = True)
-        local = Path(dataset_name).expanduser()
-        seen = {os.path.realpath(local)}
-        # followlinks, as the loader's glob follows linked folders; each folder is scanned once.
-        for root, dirs, files in os.walk(local, followlinks = True):
-            account_path(root)
-            for name in files:
-                account_path(os.path.join(root, name))
-            fresh = []
-            for name in dirs:
-                real = os.path.realpath(os.path.join(root, name))
-                if real not in seen:
-                    seen.add(real)
-                    fresh.append(name)
-            dirs[:] = fresh
-    except (ValueError, RuntimeError, OSError) as exc:
-        raise HTTPException(status_code = 400, detail = "dataset_name is not a valid path") from exc
+        local = Path(dataset_name).expanduser().exists()
+    except (ValueError, RuntimeError, OSError):
+        local = True
+    if not hub_id or local:
+        raise HTTPException(
+            status_code = 403,
+            detail = "dataset_name must be a Hugging Face repo id like org/repo",
+        )
 
 
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
