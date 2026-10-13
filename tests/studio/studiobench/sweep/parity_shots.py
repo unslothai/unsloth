@@ -180,8 +180,7 @@ def differing_actions(
     firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
     for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
-    # The pairs the verdict scores in visible mode, from its own plan; with that mode's floor and no
-    # corroboration, so a declared change found only there still gets its picture.
+    # The verdict's own visible-mode pairs and floor, so a declared change found only there gets a picture.
     windowed = {key for key, (mode, _why) in decide_modes(result_paths).items() if mode == WINDOWED}
     if windowed:
         floor = visible_unstable_set(null_paths or None)

@@ -785,14 +785,8 @@ jobs:
       # render in one repetition is demoted to UNCORROBORATED and printed rather
       # than counted.
       #
-      # A PR labelled `affects UI#` has declared that it changes the screen, so `--declared-ui-change`
-      # reports its rendering differences instead of failing on them: the gate exists to catch UI
-      # changes nobody declared. A control that works on one build only, an action whose own
-      # assertion fails on one build, no data, too few comparisons and an undecided null still fail.
-      #
-      # Read from the API, not `github.event.pull_request.labels`: that is the label set when the
-      # push happened, so adding the label and re-running the job would still see it missing. A
-      # failed read counts as undeclared.
+      # `affects UI#` declares a UI change: rendering differences are reported, behaviour differences still fail.
+      # Live labels, not `github.event.pull_request.labels` (stale on a re-run); a failed read is undeclared.
       - name: Read the PR's labels
         id: labels
         env:
