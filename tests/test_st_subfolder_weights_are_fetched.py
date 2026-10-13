@@ -236,8 +236,7 @@ def test_both_weights_at_root_call_sites_go_through_the_check():
     resolve_vllm_model_path for the vLLM path, #13486), so one carve-out covers them
     all. A call into anything else, or an inlined copy of the patterns, fails here
     instead of leaving some loader pruning ST weights."""
-    # AST, not grep: the names also appear in prose inside docstrings, and a text count
-    # would police the documentation instead of the code.
+    # AST, not grep: the names also appear in docstring prose.
     import ast
 
     routed = {"maybe_prefetch_hf_snapshot", "resolve_vllm_model_path"}

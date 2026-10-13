@@ -452,8 +452,7 @@ def snapshot(entry: Callable) -> dict:
         "_HELPERS",
         {"patch": _patch_function, "restore": _restore_original},
     )
-    # diffusers' GGUF utils import the optional `gguf` package, so without it compiled_dequant never installs and
-    # every gguf=1 case would depend on the host. A stand-in module keeps the install path the same everywhere.
+    # diffusers' GGUF utils need the optional `gguf` package; without a stand-in every gguf=1 case is host-dependent.
     from core.inference import diffusion_gguf_compile
 
     fake_gguf_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
