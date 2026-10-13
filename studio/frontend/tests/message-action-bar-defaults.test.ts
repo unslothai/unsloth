@@ -68,3 +68,8 @@ test("a prompt's bar is Copy, Edit, Rewind, Fork and Delete, with no More menu",
   );
   assert.ok(!THREAD.includes("UserMoreMenu"));
 });
+
+test("the reply footer and bar wrap, so the wider bar never scrolls a narrow thread", () => {
+  assert.match(THREAD, /"aui-assistant-message-footer [^"]*\bflex-wrap\b/);
+  assert.match(THREAD, /"aui-assistant-action-bar-root [^"]*\bflex-wrap\b/);
+});
