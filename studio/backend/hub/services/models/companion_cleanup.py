@@ -271,13 +271,13 @@ def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
     from hub.services.models import downloads
 
     # The delete keeps a variant's extras while a sibling in its directory downloads; so does this.
-    if any(
-        downloads.registry.has_active_peer_variant(
+    busy = {
+        key.rsplit("/", 1)[0].lower() + "/"
+        for key in keys
+        if downloads.registry.has_active_peer_variant(
             model.repo_id, key, prefix = key.rsplit("/", 1)[0] + "/"
         )
-        for key in keys
-    ):
-        return 0
+    }
     deleting = {key.lower() for key in keys}
     listed: dict[str, int] = {}
     kept: set[str] = set()
@@ -290,7 +290,12 @@ def _shared_folder_extra_bytes(repo_id: str, keys: list[str]) -> int:
             kept |= files
     total = 0
     seen: set[Path] = set()
-    for path in sorted(p for p, count in listed.items() if count > 1 and p not in kept):
+    shared = (
+        p
+        for p, count in listed.items()
+        if count > 1 and p not in kept and not any(p.lower().startswith(d) for d in busy)
+    )
+    for path in sorted(shared):
         for snapshot in snapshot_dirs(model.repo_id):
             try:
                 blob = (snapshot / path).resolve(strict = True)

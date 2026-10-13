@@ -617,3 +617,41 @@ def test_a_folder_delete_preview_keeps_shared_extras_a_downloading_sibling_needs
     assert impact["reclaimed_bytes"] == ggufs
     asyncio.run(deletion.delete_cached_model_response(pocket, None))
     assert path.exists() and voice.exists()
+
+
+def test_a_folder_delete_preview_keeps_only_the_busy_directory_s_extras(hub, monkeypatch):
+    from hub.services.models import companion_cleanup, deletion
+    from hub.utils import download_registry
+
+    _idle(monkeypatch)
+    snap = hub / SNAPSHOT
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
+    voices = {}
+    for lang in ("english", "french"):
+        for quant in ("q8_0", "f16"):
+            rel = f"PocketTTS-GGUF/{lang}/pocket-tts-{lang}-{quant}.gguf"
+            _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+        voices[lang] = blobs / f"voice-{lang}"
+        voices[lang].write_bytes(lang[:1].encode() * 900)
+        path = snap / f"PocketTTS-GGUF/{lang}/embeddings/alba.safetensors"
+        path.parent.mkdir(parents = True, exist_ok = True)
+        os.symlink(os.path.relpath(voices[lang], path.parent), path)
+    acm.forget()
+    registry = download_registry.DownloadRegistry()
+    peer = "PocketTTS-GGUF/english/pocket-tts-english-bf16"
+    registry.claim(
+        f"{AUDIO_CPP_REPO}::{peer}",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+        variant = peer,
+        blob_hashes = frozenset({"peer"}),
+        progress_blob_hashes = frozenset({"peer"}),
+    )
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
+    ggufs = sum(p.stat().st_size for p in (snap / "PocketTTS-GGUF").rglob("*.gguf"))
+    impact = asyncio.run(companion_cleanup.delete_impact_response(pocket, None))
+    assert impact["reclaimed_bytes"] == ggufs + 900
+    asyncio.run(deletion.delete_cached_model_response(pocket, None))
+    assert voices["english"].exists() and not voices["french"].exists()
