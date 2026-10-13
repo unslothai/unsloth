@@ -142,7 +142,11 @@ _PEAKS: dict = {}
 
 
 def calibration_key(
-    family: Any, repo: Any = None, offload_policy: Any = None, device: Any = None, **extra: Any
+    family: Any,
+    repo: Any = None,
+    offload_policy: Any = None,
+    device: Any = None,
+    **extra: Any,
 ) -> tuple:
     """What a measured peak is valid for: the model, its placement and the device kind."""
     return (
@@ -171,11 +175,20 @@ def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
     own = _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
     if own is not None:
         return own
-    return _covering(_PEAKS.get(getattr(module, "_unsloth_video_calibration_key", None)) or {}, work)
+    return _covering(
+        _PEAKS.get(getattr(module, "_unsloth_video_calibration_key", None)) or {}, work
+    )
 
 
 def arm_request(
-    pipe: Any, *, key: Any, width: int, height: int, frames: int, device: Any, rearm: bool = True
+    pipe: Any,
+    *,
+    key: Any,
+    width: int,
+    height: int,
+    frames: int,
+    device: Any,
+    rearm: bool = True,
 ) -> bool:
     """Tag the denoiser with ``key`` and arm the peak measurement ``record_request_peak`` closes. ``rearm=False``
     after ``fit_for_request`` (which armed this request itself) only tags. CUDA only; never raises."""

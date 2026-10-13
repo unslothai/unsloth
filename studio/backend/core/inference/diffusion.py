@@ -5588,7 +5588,6 @@ class DiffusionBackend:
     ) -> Optional[int]:
         """A half load narrows only a file stored wider throughout (a mixed file pins its fp32 norms)."""
         from .diffusion_component_sizes import read_safetensors_header
-
         try:
             header = read_safetensors_header(path, max_bytes = 100_000_000)
             if header is None:
@@ -5936,7 +5935,6 @@ class DiffusionBackend:
         """Total tensor elements in a safetensors file, read from its JSON header without touching
         the tensor data. 0 on any read/parse failure."""
         from .diffusion_component_sizes import read_safetensors_header
-
         try:
             header = read_safetensors_header(path)
             if header is None:

@@ -23,7 +23,6 @@ def _real_hub_cache():
     """The host's HF hub cache, read at collection (before conftest points every cache root at an empty dir)."""
     try:
         from huggingface_hub import constants
-
         return os.environ.get("HF_HUB_CACHE") or constants.HF_HUB_CACHE
     except Exception:  # noqa: BLE001
         return None
@@ -38,16 +37,29 @@ def _write_header(path: Path, tensors: dict) -> None:
     offset = 0
     for name, (dtype, numel) in tensors.items():
         width = {"BF16": 2, "F16": 2, "F32": 4, "I64": 8, "F8_E4M3": 1}[dtype]
-        header[name] = {"dtype": dtype, "shape": [numel], "data_offsets": [offset, offset + numel * width]}
+        header[name] = {
+            "dtype": dtype,
+            "shape": [numel],
+            "data_offsets": [offset, offset + numel * width],
+        }
         offset += numel * width
     raw = json.dumps(header).encode()
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(struct.pack("<Q", len(raw)) + raw)
 
 
-def _component(root: Path, folder: str, gb: float, dtype: str = "BF16", *, stem: str = "diffusion_pytorch_model"):
+def _component(
+    root: Path,
+    folder: str,
+    gb: float,
+    dtype: str = "BF16",
+    *,
+    stem: str = "diffusion_pytorch_model",
+):
     width = 4 if dtype == "F32" else 2
-    _write_header(root / folder / f"{stem}.safetensors", {"w": (dtype, int(round(gb * _GB / width)))})
+    _write_header(
+        root / folder / f"{stem}.safetensors", {"w": (dtype, int(round(gb * _GB / width)))}
+    )
 
 
 # ---- parser ----
@@ -97,7 +109,8 @@ def test_local_sizes_pick_default_variant_and_complete_index(tmp_path):
     # sharded transformer + a stray fp16 variant the loader never reads
     for i in (1, 2):
         _write_header(
-            root / "transformer" / f"diffusion_pytorch_model-0000{i}-of-00002.safetensors", {f"t{i}": ("F32", 1000)}
+            root / "transformer" / f"diffusion_pytorch_model-0000{i}-of-00002.safetensors",
+            {f"t{i}": ("F32", 1000)},
         )
     (root / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
         json.dumps(
@@ -109,7 +122,9 @@ def test_local_sizes_pick_default_variant_and_complete_index(tmp_path):
             }
         )
     )
-    _write_header(root / "transformer" / "diffusion_pytorch_model.fp16.safetensors", {"x": ("F16", 999_999)})
+    _write_header(
+        root / "transformer" / "diffusion_pytorch_model.fp16.safetensors", {"x": ("F16", 999_999)}
+    )
     # text_encoder with a complete transformers index and a stale diffusers index naming absent shards (LTX-2 layout)
     _write_header(root / "text_encoder" / "model-00001-of-00001.safetensors", {"e": ("F32", 500)})
     (root / "text_encoder" / "model.safetensors.index.json").write_text(
@@ -119,7 +134,9 @@ def test_local_sizes_pick_default_variant_and_complete_index(tmp_path):
         json.dumps({"weight_map": {"e": "diffusion_pytorch_model-00001-of-00009.safetensors"}})
     )
     # a partially downloaded component: its index lists a shard that is not there -> unknown, never smaller
-    _write_header(root / "vae" / "diffusion_pytorch_model-00001-of-00002.safetensors", {"v": ("BF16", 10)})
+    _write_header(
+        root / "vae" / "diffusion_pytorch_model-00001-of-00002.safetensors", {"v": ("BF16", 10)}
+    )
     (root / "vae" / "diffusion_pytorch_model.safetensors.index.json").write_text(
         json.dumps(
             {
@@ -165,7 +182,14 @@ def test_video_roles(tmp_path):
         ("latent_upsampler", 1.0),
         ("prompt_enhancer", 10.2),  # not loaded by the pipeline: outside the table
     ):
-        _component(ltx25, folder, gb, stem = "model" if folder in ("text_encoder", "prompt_enhancer") else "diffusion_pytorch_model")
+        _component(
+            ltx25,
+            folder,
+            gb,
+            stem = "model"
+            if folder in ("text_encoder", "prompt_enhancer")
+            else "diffusion_pytorch_model",
+        )
     triple = dcs.video_header_components_gb(_fam("ltx-2.5"), dcs.local_component_sizes(ltx25))
     assert triple == pytest.approx((37.98, 23.92, 6.34 + 1.45 + 0.11 + 0.26 + 1.0), abs = 1e-6)
     # an audio family without its audio VAE is incomplete
@@ -184,9 +208,13 @@ def test_video_roles(tmp_path):
     )
 
     moe = _fam("wan2.2-t2v-a14b")
-    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan)) is None  # one expert only
+    assert (
+        dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan)) is None
+    )  # one expert only
     _component(wan, "transformer_2", 5.68, "F32")
-    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(5.68)
+    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(
+        5.68
+    )
 
 
 def test_reconcile_rules(monkeypatch):
@@ -194,7 +222,11 @@ def test_reconcile_rules(monkeypatch):
     table = (10.0, 11.4, 2.8)
     assert dcs.reconcile_with_table(None, table, is_base = True) == table
     assert dcs.reconcile_with_table((9.9996, 11.3618, 2.8188), table, is_base = True) == table
-    assert dcs.reconcile_with_table((9.9996, 11.3618, 2.8188), None, is_base = True) == (10.0, 11.4, 2.8)
+    assert dcs.reconcile_with_table((9.9996, 11.3618, 2.8188), None, is_base = True) == (
+        10.0,
+        11.4,
+        2.8,
+    )
     # base repo: a real disagreement keeps the table and is recorded for review
     assert dcs.reconcile_with_table((12.0, 11.4, 2.8), table, is_base = True, key = ("f", "b")) == table
     assert dcs.table_mismatches()[("f", "b")] == ((12.0, 11.4, 2.8), table)
@@ -228,7 +260,9 @@ def test_stub_headers_reproduce_every_video_table(tmp_path, monkeypatch, fam):
     monkeypatch.setattr(dcs, "_MISMATCHES", {})
     _stub_for_table(tmp_path, fam)
     sizes = dcs.local_component_sizes(tmp_path)
-    assert dcs.video_header_components_gb(fam, sizes) == pytest.approx(fam.bf16_components_gb, abs = 1e-6)
+    assert dcs.video_header_components_gb(fam, sizes) == pytest.approx(
+        fam.bf16_components_gb, abs = 1e-6
+    )
     # the base repo resolving to these headers keeps the table exactly
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
     assert dcs.video_components_gb(fam) == fam.bf16_components_gb
@@ -241,12 +275,16 @@ def test_stub_headers_reproduce_every_video_table(tmp_path, monkeypatch, fam):
     assert (fam.name, fam.base_repo) in dcs.table_mismatches()
     # the same headers on a variant repo price the variant
     variant = dcs.video_components_gb(fam, str(tmp_path))
-    assert variant[0] == pytest.approx(round(fam.bf16_components_gb[0] + 2.0 + (0.0001 if fam.is_moe else 0), 1))
+    assert variant[0] == pytest.approx(
+        round(fam.bf16_components_gb[0] + 2.0 + (0.0001 if fam.is_moe else 0), 1)
+    )
 
 
 def test_no_headers_falls_back_to_the_table(monkeypatch):
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
-    monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: pytest.fail("hub read for a tabled base"))
+    monkeypatch.setattr(
+        dcs, "hub_component_sizes", lambda *a, **k: pytest.fail("hub read for a tabled base")
+    )
     for fam in VIDEO_FAMILIES:
         assert dcs.video_components_gb(fam, allow_hub = True) == fam.bf16_components_gb
 
@@ -258,8 +296,12 @@ def test_untabled_or_variant_repo_reads_the_hub_before_download(monkeypatch, tmp
     calls = []
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
     monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: calls.append(repo) or stub)
-    assert dcs.video_components_gb(fam, "someone/finetune", allow_hub = True) == fam.bf16_components_gb
-    assert dcs.video_components_gb(fam, "someone/finetune", allow_hub = False) == fam.bf16_components_gb
+    assert (
+        dcs.video_components_gb(fam, "someone/finetune", allow_hub = True) == fam.bf16_components_gb
+    )
+    assert (
+        dcs.video_components_gb(fam, "someone/finetune", allow_hub = False) == fam.bf16_components_gb
+    )
     assert calls == ["someone/finetune"]
 
 
@@ -319,7 +361,9 @@ def test_cached_video_families_headers_match_tables():
     checked, problems = [], []
     for fam in _TABLE_FAMILIES:
         snap = dcs.local_snapshot_dir(fam.base_repo, _REAL_HUB_CACHE)
-        header = dcs.video_header_components_gb(fam, dcs.local_component_sizes(snap)) if snap else None
+        header = (
+            dcs.video_header_components_gb(fam, dcs.local_component_sizes(snap)) if snap else None
+        )
         if header is None:
             continue
         checked.append(fam.name)
@@ -337,7 +381,11 @@ def test_cached_image_families_headers_match_tables():
     for fam in IMAGE_FAMILIES:
         table = family_bf16_components_gb(fam, fam.base_repo)
         snap = dcs.local_snapshot_dir(fam.base_repo, _REAL_HUB_CACHE)
-        header = dcs.image_header_components_gb(dcs.local_component_sizes(snap)) if snap and table else None
+        header = (
+            dcs.image_header_components_gb(dcs.local_component_sizes(snap))
+            if snap and table
+            else None
+        )
         if header is None:
             continue
         checked.append(fam.name)
@@ -349,7 +397,8 @@ def test_cached_image_families_headers_match_tables():
 
 @pytest.mark.allow_network
 @pytest.mark.skipif(
-    os.environ.get("UNSLOTH_TEST_HUB_HEADERS") != "1", reason = "Hub ranged header reads (set UNSLOTH_TEST_HUB_HEADERS=1)"
+    os.environ.get("UNSLOTH_TEST_HUB_HEADERS") != "1",
+    reason = "Hub ranged header reads (set UNSLOTH_TEST_HUB_HEADERS=1)",
 )
 @pytest.mark.parametrize("fam", _TABLE_FAMILIES, ids = lambda f: f.name)
 def test_hub_headers_match_tables(fam):
@@ -395,7 +444,9 @@ def test_calibration_records_and_reuses_for_any_family(monkeypatch):
     assert vsr._measured_extra_mib(reloaded.transformer, work) == 3000
     # rearm=False (fit_for_request armed it) only tags the module
     other = _Pipe()
-    assert vsr.arm_request(other, key = key, width = 1, height = 1, frames = 1, device = "cuda:0", rearm = False)
+    assert vsr.arm_request(
+        other, key = key, width = 1, height = 1, frames = 1, device = "cuda:0", rearm = False
+    )
     assert getattr(other.transformer, "_unsloth_video_pending", None) is None
     assert not vsr.arm_request(_Pipe(), key = key, width = 1, height = 1, frames = 1, device = "cpu")
     monkeypatch.setenv(vsr.VIDEO_DIT_RESIDENT_MEASURED_ENV, "0")
@@ -405,14 +456,23 @@ def test_calibration_records_and_reuses_for_any_family(monkeypatch):
 def test_shortfall_uses_a_measured_peak_only_when_smaller():
     from core.inference.video import video_offload_shortfall_message
 
-    kwargs = dict(family = "ltx-2.5", floor_mib = 20_000, placement = "x", width = 1280, height = 704, frames = 121)
+    kwargs = dict(
+        family = "ltx-2.5", floor_mib = 20_000, placement = "x", width = 1280, height = 704, frames = 121
+    )
     base = video_offload_shortfall_message(available_mib = 1, **kwargs)
     needed = float(base.split("needs about ")[1].split(" GiB")[0])
     # unchanged without a measurement
-    assert video_offload_shortfall_message(available_mib = 1, measured_extra_mib = None, **kwargs) == base
+    assert (
+        video_offload_shortfall_message(available_mib = 1, measured_extra_mib = None, **kwargs) == base
+    )
     # a large measured peak never raises the bar
-    assert video_offload_shortfall_message(available_mib = 1, measured_extra_mib = 10**6, **kwargs) == base
+    assert (
+        video_offload_shortfall_message(available_mib = 1, measured_extra_mib = 10**6, **kwargs) == base
+    )
     small = video_offload_shortfall_message(available_mib = 1, measured_extra_mib = 2000, **kwargs)
     assert float(small.split("needs about ")[1].split(" GiB")[0]) < needed
     fits = 20_000 + int(2000 * vsr.MEASURED_PEAK_MARGIN) + vsr.MEASURED_SLACK_MIB
-    assert video_offload_shortfall_message(available_mib = fits, measured_extra_mib = 2000, **kwargs) is None
+    assert (
+        video_offload_shortfall_message(available_mib = fits, measured_extra_mib = 2000, **kwargs)
+        is None
+    )

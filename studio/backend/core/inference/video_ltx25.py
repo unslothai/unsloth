@@ -484,7 +484,10 @@ def ltx25_latent_upsampler_gb(repo: Optional[str] = None) -> float:
     header = component_gb(repo or "Lightricks/LTX-2.5-Diffusers", LATENT_UPSAMPLER_SUBFOLDER)
     is_base = repo is None or str(repo).lower() == "lightricks/ltx-2.5-diffusers"
     return reconcile_scalar(
-        header, LTX25_LATENT_UPSAMPLER_GB, is_base = is_base, key = ("ltx-2.5", "latent_upsampler", repo)
+        header,
+        LTX25_LATENT_UPSAMPLER_GB,
+        is_base = is_base,
+        key = ("ltx-2.5", "latent_upsampler", repo),
     )
 
 

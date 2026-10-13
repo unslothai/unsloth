@@ -6503,10 +6503,7 @@ class VideoBackend:
                     _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
                 ):
                     from .video_ltx25 import ltx25_latent_upsampler_gb
-
-                    vae_gb -= ltx25_latent_upsampler_gb(
-                        repo_id if kind == "pipeline" else None
-                    )
+                    vae_gb -= ltx25_latent_upsampler_gb(repo_id if kind == "pipeline" else None)
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
