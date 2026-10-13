@@ -1637,9 +1637,7 @@ function Get-LlamaBuildJobs {
     return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
-# "ggml-rpc-server", "rpc-server" on older trees, '' when the tree has no RPC tool. Read from
-# the tree because the VS generator has no `cmake --build --target help`; setup.sh's
-# _llama_rpc_server_target reads the same two files, so the scripts agree.
+# "ggml-rpc-server", "rpc-server" on older trees, '' when the tree has no RPC tool.
 function Get-LlamaRpcServerTarget {
     param([string]$SourceDir)
     foreach ($rel in @('tools\rpc\CMakeLists.txt', 'examples\rpc\CMakeLists.txt')) {

@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Spark code must cost nothing, and do nothing, on every other machine: importing the
-modules pulls in no heavy dependency, and every entry point degrades to a message and a clean
-exit rather than raising, hanging or making a network call. Nothing here needs a Spark.
-"""
+"""The Spark code must cost nothing, and do nothing, on every other machine: importing the modules
+pulls in no heavy dependency, and every entry point degrades to a message and a clean exit rather
+than raising, hanging or making a network call."""
 
 from __future__ import annotations
 
@@ -58,8 +57,8 @@ def test_no_heavy_imports_at_module_scope(rel: str) -> None:
 
 
 def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
-    """The peer is reached as the account that ran `provision`; a hardcoded account would ssh
-    to the wrong user on every pair but one."""
+    """The peer is reached as the account that ran `provision`; a hardcoded account would ssh to the
+    wrong user on every pair but one."""
     import getpass
 
     sc = _load("studio/spark_cluster.py")
@@ -80,8 +79,8 @@ def test_detection_is_negative_off_a_spark(monkeypatch) -> None:
 
 
 def test_planner_never_recommends_splitting_a_model_that_fits() -> None:
-    """Splitting a model that fits never decodes faster than a single Spark, so the planner
-    must never suggest it for speed: regressing this makes Unsloth slower than not clustering."""
+    """Splitting a model that fits never decodes faster than a single Spark, so the planner must never
+    suggest it for speed: regressing this makes Unsloth slower than not clustering."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     small = sc.plan_deployment(budget / 4, two_sparks = True)
@@ -147,9 +146,7 @@ def test_load_balancer_parses_backends() -> None:
 
 
 def test_interleaved_chunks_cover_every_layer_exactly_once() -> None:
-    """Interleaved PP gets a 2-stage pipeline past its bubble ceiling. A wrong assignment is
-    silent -- the model still runs, it just computes something else -- so pin completeness,
-    disjointness and the alternation that puts consecutive chunks on different devices."""
+    """Interleaved PP gets a 2-stage pipeline past its bubble ceiling."""
     sp = _load("studio/spark_pipeline.py")
     for n_layers in (24, 32, 64, 80):
         for world in (2,):
@@ -187,14 +184,7 @@ def test_n_nodes_agrees_with_the_legacy_two_sparks_kwarg() -> None:
 
 
 def test_axis_follows_intent_not_just_fit() -> None:
-    """TP is the only axis that speeds one request; replicas are aggregate-only.
-
-    The throughput case is asserted at 16 concurrent, not at the default 1. This test used to
-    require `replicas` at concurrency 1, which contradicted the module's own measurement --
-    replicas are 1.00x at one user, for the cost of a full second copy of the weights -- and
-    the plan then recommended spending that memory while `recommend_topology`'s reason,
-    printed beside it, said not to.
-    """
+    """TP is the only axis that speeds one request; replicas are aggregate-only."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     fits = budget * 0.6
@@ -284,10 +274,6 @@ def test_discovery_is_completely_inert_off_a_spark() -> None:
     assert out["is_spark"] is False
     assert out["peers"] == [] and out["n_nodes"] == 1 and out["cable_present"] is False
     assert called == []
-
-
-# `_cmd_setup()` once rsync --delete'd the studio venv onto the peer merely by being called,
-# taking the interpreter out from under any job running there.
 
 
 def test_setup_writes_nothing_without_consent(monkeypatch, tmp_path, capsys) -> None:
@@ -392,7 +378,6 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     res = sc.provision_peer("192.168.200.13")
     assert res["refused"] and res["copied"] == [] and ran == []
 
-    # Idle peer: it copies, and `--delete` is absent unless asked for.
     monkeypatch.setattr(
         sc,
         "peer_gpu_busy",
@@ -413,9 +398,7 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
     assert ran and all("--delete" not in cmd for cmd in ran)
     ran.clear()
     sc.provision_peer("192.168.200.13", delete = True)
-    # rsync commands only. Provisioning also runs an ssh step to repair the copied venv's
-    # absolute self-references when it lands at a different path on the peer, and `--delete`
-    # has no meaning there.
+    # rsync commands only.
     assert all("--delete" in cmd for cmd in ran if cmd and cmd[0] == "rsync")
     assert any(cmd and cmd[0] == "rsync" for cmd in ran)
     ran.clear()
@@ -427,9 +410,7 @@ def test_provision_refuses_a_busy_peer_and_never_deletes_by_default(monkeypatch)
 
 
 def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
-    """`curl | sh` must not trigger a remote write by answering nothing. In a piped install
-    stdin belongs to the shell script, so /dev/tty is the only thing that can ask; when even
-    that is unavailable, silence is a no."""
+    """`curl | sh` must not trigger a remote write by answering nothing."""
     sc = _load("studio/spark_cluster.py")
 
     class _Stream:
@@ -451,7 +432,6 @@ def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
     monkeypatch.setattr(sc.sys, "stdin", _Stream(False))
     assert sc._consented(False, "?") is False
 
-    # stdout is a terminal, stdin is the piped script, /dev/tty unopenable -> no.
     monkeypatch.setattr(sc.sys, "stdout", _Stream(True))
 
     def no_tty(*a, **k):
@@ -462,9 +442,8 @@ def test_consent_declines_when_no_terminal_is_watching(monkeypatch) -> None:
 
 
 def test_summary_and_recommendation_never_contradict() -> None:
-    """One coherent paragraph in either print order: `summary` answers "what fits where" and
-    must name no axis, because every axis claim lives in `recommendation`. Overlapping them
-    once had the tool naming two different engines' answers as though they were one."""
+    """One coherent paragraph in either print order: `summary` answers "what fits where" and must name
+    no axis, because every axis claim lives in `recommendation`."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     axis_words = (
@@ -485,9 +464,7 @@ def test_summary_and_recommendation_never_contradict() -> None:
 
 
 def test_every_entry_point_guards_on_is_dgx_spark() -> None:
-    """No entry point may reach rail discovery off a Spark: GUARDED, not lucky. Empty sysfs
-    happens to make it harmless on a laptop, and safe-by-accident is not good enough for a
-    file `unsloth run` imports on every platform."""
+    """No entry point may reach rail discovery off a Spark: GUARDED, not lucky."""
     sc = _load("studio/spark_cluster.py")
     sc._IS_SPARK_CACHE = False
     sc.cabled_rails = lambda *a, **k: pytest.fail("touched rails off a Spark")
@@ -508,14 +485,9 @@ def test_every_entry_point_guards_on_is_dgx_spark() -> None:
         ["estimate", "--model", "m"],
     ):
         assert sc.main(argv) == 0, argv
-    # `detect` is the installer's machine-readable gate and answers 1 by design.
     assert sc.main(["detect"]) == 1
     for plan in (sc.train_launch_plan("t.py"), sc.pipeline_launch_plan("M"), sc.rpc_cluster_plan()):
         assert plan["ok"] is False and plan["problems"]
-
-
-# The failure mode here is silent: an adapter missing half its layers loads without error
-# and simply trains worse.
 
 
 def _mk_stage(
@@ -541,8 +513,8 @@ def _mk_stage(
         t[f"base_model.model.{name}.weight"] = torch.zeros(2, 2)
     save_file(t, str(d / "adapter_model.safetensors"))
     (d / "adapter_config.json").write_text(_json.dumps({"r": 16, "lora_alpha": 32}))
-    # What spark_pipeline writes beside the adapter: the merge cannot otherwise tell a
-    # complete two-stage run from a three-stage one whose last rank never saved.
+    # What spark_pipeline writes beside the adapter: the merge cannot otherwise tell a complete
+    # two-stage run from a three-stage one whose last rank never saved.
     if meta:
         (d / "unsloth_stage.json").write_text(
             _json.dumps({"rank": rank, "world": world, "n_layers": n_layers})
@@ -592,8 +564,8 @@ def test_merge_refuses_missing_layers(tmp_path) -> None:
 
 
 def test_merge_refuses_a_run_that_lost_its_last_stage(tmp_path) -> None:
-    """stage0 and stage1 of a THREE-rank run: the directories are contiguous from 0, their
-    layers are contiguous from 0, and every earlier check passes on two thirds of a model."""
+    """stage0 and stage1 of a THREE-rank run: the directories are contiguous from 0, their layers are
+    contiguous from 0, and every earlier check passes on two thirds of a model."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     sm = _load("studio/spark_merge.py")
@@ -616,8 +588,8 @@ def test_merge_says_so_when_the_stage_count_was_never_recorded(tmp_path) -> None
 
 
 def test_a_config_fault_does_not_overwrite_a_good_output(tmp_path) -> None:
-    """It wrote the tensors first, so the command reported that it had refused the merge and
-    left the old config paired with the new weights."""
+    """It wrote the tensors first, so the command reported that it had refused the merge and left the
+    old config paired with the new weights."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     import json as _json
@@ -637,9 +609,8 @@ def test_a_config_fault_does_not_overwrite_a_good_output(tmp_path) -> None:
 
 
 def test_a_staged_base_model_path_is_not_a_config_mismatch(tmp_path) -> None:
-    """`stage_run_inputs` rewrites rank 1's --model to the path it staged on the peer, so PEFT
-    records a different `base_model_name_or_path` per stage. Treating that as fatal refused
-    every adapter pair from a `--run --save` with a local checkpoint, after the run finished."""
+    """`stage_run_inputs` rewrites rank 1's --model to the path it staged on the peer, so PEFT records
+    a different `base_model_name_or_path` per stage."""
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
     import json as _json
@@ -684,9 +655,9 @@ def test_merge_module_imports_nothing_heavy() -> None:
     assert not [n for n in imported if n.split(".")[0] in HEAVY | {"safetensors"}]
 
 
-# notify_device_map_cannot_span_sparks runs inside from_pretrained for every user on every
-# OS, and is cosmetic, so the bar is that it can never turn a succeeding load into a crash
-# and is silent on anything that is not a cabled Spark.
+# notify_device_map_cannot_span_sparks runs inside from_pretrained for every user on every OS, and
+# is cosmetic, so the bar is that it can never turn a succeeding load into a crash and is silent on
+# anything that is not a cabled Spark.
 
 _PLATFORMS = [
     ("Linux", "x86_64"),
@@ -747,9 +718,7 @@ def _spark_notice(
 
 @pytest.mark.parametrize("system,machine", _PLATFORMS)
 def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine):
-    """No user on another platform should ever see this. `opener=FileNotFoundError` simulates
-    the non-Spark FILESYSTEM as well as the platform; without it the aarch64 case reads a real
-    /etc/dgx-release and this test fails only when CI runs on actual Spark hardware."""
+    """No user on another platform should ever see this."""
     LU = _spark_notice(monkeypatch, system, machine, opener = FileNotFoundError)
     capsys.readouterr()  # drop unsloth's import banner, which is not ours to assert on
     for device_map in _DEVICE_MAPS:
@@ -762,9 +731,7 @@ def test_spark_notice_is_silent_off_a_spark(monkeypatch, capsys, system, machine
     "opener", [OSError, PermissionError, IsADirectoryError, ValueError, RuntimeError]
 )
 def test_spark_notice_never_breaks_a_load(monkeypatch, system, machine, opener):
-    """A probe that raises must not propagate: the caller is loading a model. The probes catch
-    OSError themselves, so ValueError and RuntimeError are the point -- only the outer guard
-    stops those escaping into from_pretrained."""
+    """A probe that raises must not propagate: the caller is loading a model."""
     LU = _spark_notice(monkeypatch, system, machine, opener = opener)
     for device_map in _DEVICE_MAPS:
         LU.notify_device_map_cannot_span_sparks(device_map)
@@ -781,10 +748,6 @@ def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", boom)
     LU._SPARK_NOTICE_SHOWN[0] = False
     LU.notify_device_map_cannot_span_sparks("balanced")
-
-
-# With UNSLOTH_STUDIO_HOME set, copying the hardcoded default copies a stale venv or nothing
-# and still prints "Peer now matches this node", causing the exact hang provision prevents.
 
 
 def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
@@ -811,8 +774,7 @@ def test_provision_paths_unchanged_without_studio_home(monkeypatch) -> None:
 
 
 def test_peer_activate_stays_home_relative_by_default(monkeypatch) -> None:
-    """`$HOME` is left unexpanded so it resolves on the PEER, whose home may differ. Only a
-    custom STUDIO_HOME forces an absolute path, which provision mirrors exactly."""
+    """`$HOME` is left unexpanded so it resolves on the PEER, whose home may differ."""
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
@@ -828,7 +790,7 @@ def test_peer_activate_is_absolute_under_studio_home(monkeypatch, tmp_path) -> N
 
 
 # The flat loss holds only for a llama.cpp predating ggml-org/llama.cpp#18626; with it, what
-# overlaps is prefill, so the answer becomes a function of prompt length. Pin both branches.
+# overlaps is prefill, so the answer becomes a function of prompt length.
 
 
 def test_layer_split_speedup_defaults_to_the_conservative_number() -> None:
@@ -862,8 +824,8 @@ def test_layer_split_speedup_snaps_down_to_a_measured_row() -> None:
     )
 
 
-# A layer split never speeds up decode for a model that fits; two replicas win from 8
-# concurrent users up. Either direction of getting this wrong is slower than one Spark.
+# A layer split never speeds up decode for a model that fits; two replicas win from 8 concurrent
+# users up.
 
 _GIB = 2**30
 
@@ -915,20 +877,13 @@ def test_recommend_topology_never_splits_a_fitting_model_unless_prefill_heavy() 
 
 
 def test_recommend_topology_counts_kv_for_every_user() -> None:
-    """A replica is not half a node.
-
-    Each replica runs its own full server, and the launcher hands it the same context and
-    --parallel as the primary while the router declares the slots on both, so it allocates KV
-    for every user rather than half of them. This test used to assert the halved figure and so
-    blessed a plan that put 132 GiB on a 120 GiB node.
-    """
+    """A replica is not half a node."""
     sc = _load("studio/spark_cluster.py")
-    # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB per node either way, so neither a
-    # single node nor a replica of it fits, and only spreading the layers does.
+    # 100 GiB model, 2 GiB KV per user, 16 users: 132 GiB per node either way, so neither a single
+    # node nor a replica of it fits, and only spreading the layers does.
     out = sc.recommend_topology(100 * _GIB, 2 * _GIB, 16, 512, 120 * _GIB)
     assert out["topology"] == "layer_split" and "KV" in out["reason"]
     assert out["replica_node_bytes"] == out["single_node_bytes"]
-    # 100 GiB model, 4 GiB KV per user, 16 users: further past the budget, same answer.
     out = sc.recommend_topology(100 * _GIB, 4 * _GIB, 16, 512, 120 * _GIB)
     assert out["topology"] == "layer_split" and "KV" in out["reason"]
     # Whenever replicas ARE chosen, a node must hold a full copy plus KV for every user.
@@ -951,7 +906,6 @@ def test_measured_tables_snap_to_measured_points() -> None:
     assert sc.replicas_speedup(1023, 8) == sc.REPLICAS_DECODE_SPEEDUP[512][8]
     assert sc.replicas_speedup(4096, 12) == sc.REPLICAS_DECODE_SPEEDUP[2048][8]
     assert sc.layer_split_decode_speedup(512, 8) == 0.85
-    # Pinned against the data: the two cells above 1.0 at prompt 2048 are prefill contention.
     assert max(sc.LAYER_SPLIT_DECODE_SPEEDUP[512].values()) <= 1.01
     assert sc.LAYER_SPLIT_DECODE_ONLY_SPEEDUP < 1.0
     assert all(v >= 1.30 for u, v in sc.REPLICAS_DECODE_SPEEDUP[512].items() if u >= 8)
@@ -979,8 +933,8 @@ def test_plan_deployment_carries_the_serving_layout() -> None:
     assert sc.expected_gain("replicas", 2, 16)["aggregate"] == 1.75
 
 
-# The bundle lives beside the studio root, not inside the venv, so copying the venv alone
-# leaves the peer a release behind and llama-server fails at load on the protocol mismatch.
+# The bundle lives beside the studio root, not inside the venv, so copying the venv alone leaves the
+# peer a release behind and llama-server fails at load on the protocol mismatch.
 
 
 def test_provision_paths_include_the_llama_bundle(monkeypatch) -> None:
@@ -991,8 +945,6 @@ def test_provision_paths_include_the_llama_bundle(monkeypatch) -> None:
     paths = dict((label, path) for path, label in sc.provision_paths())
     assert paths["llama.cpp prebuilt"] == str(Path.home() / ".unsloth" / "llama.cpp")
     assert paths["Unsloth venv"] == str(Path.home() / ".unsloth" / "studio" / "unsloth_studio")
-    # Order: venv first, bundle second, then the caches, so the peer can serve before
-    # the caches land.
     labels = [label for _, label in sc.provision_paths()]
     assert labels[:2] == ["Unsloth venv", "llama.cpp prebuilt"]
 
@@ -1027,15 +979,9 @@ def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> 
     bundle_cmd = next(c for c in ran if c[-2].startswith(str(tmp_path / "elsewhere" / "llama.cpp")))
     assert bundle_cmd[-1].endswith(":" + str(tmp_path / "elsewhere" / "llama.cpp") + "/")
     # This asserted `mkdir -p` was present, which pinned a defect rather than a contract:
-    # --rsync-path runs on the PEER before any transfer, so --dry-run never suppressed it and
-    # the dry run created the very directories it was meant to only report. A dry run must ask
-    # the peer for nothing. The real run's parent creation is covered in
-    # tests/studio/test_spark_cluster_provision_dry_run.py.
+    # --rsync-path runs on the PEER before any transfer, so --dry-run never suppressed it and the
+    # dry run created the very directories it was meant to only report.
     assert not any("mkdir" in part for part in bundle_cmd), bundle_cmd
-
-
-# Signal (a): the bundle identity, from BUILD_INFO.txt and the libggml-rpc hash.
-# Signal (b): a live HELLO against a running ggml-rpc-server.
 
 
 def _mk_bundle(
@@ -1101,7 +1047,6 @@ def test_compare_bundles_names_both_versions_and_the_fix(tmp_path) -> None:
     assert "b10796-mix-659e406" in text and "b10715-mix-86bd2d3" in text
     assert "unsloth spark provision" in text and "RPC server version mismatch" in text
 
-    # Same tag, different library: the hash is the signal that catches it.
     patched = sc.llama_bundle_identity(_mk_bundle(tmp_path / "patched", lib = b"patched-lib"))
     hashed = sc.compare_llama_bundles(new, patched)
     assert hashed["ok"] is False and "libggml-rpc differs" in hashed["problems"][0]
@@ -1233,8 +1178,8 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
     pre = sc.rpc_protocol_preflight("192.168.200.13")
     assert pre["ok"] is False and "unsloth spark provision" in pre["problems"][0]
 
-    # Matching bundles, but a stale 5.x server is still up on the peer and hangs up on
-    # a 6.0 HELLO: the live signal catches what the bundle signal cannot.
+    # Matching bundles, but a stale 5.x server is still up on the peer and hangs up on a 6.0 HELLO:
+    # the live signal catches what the bundle signal cannot.
     monkeypatch.setattr(sc, "peer_llama_bundle_identity", lambda *a, **k: new)
 
     def live(host, port, **k):
@@ -1316,11 +1261,6 @@ def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> No
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
 
 
-# The daemon carries bulk bytes UNENCRYPTED over the point-to-point cable, so these pin what
-# makes that safe: its config, who it admits, when the path is refused, that the work split
-# is disjoint and complete, and that it dies with the command.
-
-
 def _fast_module(monkeypatch, tmp_path):
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setattr(sc.shutil, "which", lambda name: "/usr/bin/" + name)
@@ -1356,7 +1296,6 @@ def test_fast_daemon_config_is_locked_to_the_rail() -> None:
     assert "port = 41234" in lines
     assert "use chroot = no" in lines and "read only = no" in lines
     assert f"max connections = {sc.FAST_MAX_WORKERS}" in lines and sc.FAST_MAX_WORKERS == 4
-    # The daemon's idle timeout is the client's twice over: the client drops and retries.
     assert f"timeout = {2 * sc.FAST_IO_TIMEOUT}" in lines
     assert "pid file = /tmp/unsloth-provision-1/rsyncd.pid" in lines
     assert "log file = /tmp/unsloth-provision-1/rsyncd.log" in lines
@@ -1500,8 +1439,8 @@ def test_provision_work_split_is_disjoint_complete_and_capped(tmp_path) -> None:
 
 
 class _Fake:
-    """A subprocess.run stand-in that plays the peer: ssh starts or stops the daemon,
-    rsync workers succeed or fail as scripted, and the ssh rsync finaliser succeeds."""
+    """A subprocess.run stand-in that plays the peer: ssh starts or stops the daemon, rsync workers
+    succeed or fail as scripted, and the ssh rsync finaliser succeeds."""
 
     def __init__(
         self,
@@ -1569,8 +1508,6 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
     res = sc.provision_peer("192.168.200.13")
     assert res["copied"] == [("scratch", str(src))] and not res["failed"]
     assert res["fast"]["used"] is True and res["fast"]["errors"] == []
-    # Two files, two workers, each against the daemon URL with the secret in the
-    # environment and nowhere on the command line.
     workers = fake.workers()
     assert len(workers) == 2
     start_script = next(
@@ -1579,9 +1516,8 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
     secret = start_script.split("<<'UNSLOTH_EOF'\n")[1].split("\n")[0].split(":", 1)[1]
     for cmd, kw in workers:
         assert kw["env"]["RSYNC_PASSWORD"] == secret
-        # Not `"ssh" not in " ".join(cmd)`: the credentials directory is an mkdtemp name,
-        # and a random suffix containing "ssh" failed this run at about one in ten thousand.
-        # What it means is that the worker carries no ssh transport.
+        # Not `"ssh" not in " ".join(cmd)`: the credentials directory is an mkdtemp name, and a
+        # random suffix containing "ssh" failed this run at about one in ten thousand.
         assert secret not in " ".join(cmd)
         assert "-e" not in cmd and not any(a == "ssh" or a.endswith("/ssh") for a in cmd)
         assert f"--timeout={sc.FAST_IO_TIMEOUT}" in cmd and "--contimeout=15" in cmd
@@ -1602,7 +1538,6 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
 
 def test_fast_path_retries_a_stalled_worker_on_a_fresh_connection(monkeypatch, tmp_path) -> None:
     sc, src = _fast_module(monkeypatch, tmp_path)
-    # First worker call times out (rsync exit 30), the retry succeeds; the other is fine.
     fake = _Fake(worker_rc = [30, 0, 0])
     monkeypatch.setattr(sc.subprocess, "run", fake)
     res = sc.provision_peer("192.168.200.13")
@@ -1639,7 +1574,6 @@ def test_fast_daemon_is_stopped_when_the_copy_raises(monkeypatch, tmp_path) -> N
     with pytest.raises(KeyboardInterrupt):
         sc.provision_peer("192.168.200.13")
     assert len(fake.stops()) == 1 and fake.stops()[0][-1] == "-s"
-    # An ssh finaliser that blows up is recorded, and the daemon still goes.
     fake = _Fake(ssh_rsync = OSError("ssh died"))
     monkeypatch.setattr(sc.subprocess, "run", fake)
     res = sc.provision_peer("192.168.200.13")
@@ -1647,13 +1581,7 @@ def test_fast_daemon_is_stopped_when_the_copy_raises(monkeypatch, tmp_path) -> N
 
 
 def test_fast_daemon_start_failure_means_plain_ssh_and_a_cleanup(monkeypatch, tmp_path) -> None:
-    """It falls back to ssh, and it cleans up after itself.
-
-    This used to assert NO stop, which is the defect: the peer runs `setsid ... rsync
-    --daemon` before the handshake is read, so a failure after that point left a writable
-    daemon, its credentials file and its temp directory alive for the four-hour backstop.
-    `work_dir` is known before the connection is made, which is what makes the cleanup
-    possible without a descriptor."""
+    """It falls back to ssh, and it cleans up after itself."""
     sc, src = _fast_module(monkeypatch, tmp_path)
     fake = _Fake(daemon_rc = 1)
     monkeypatch.setattr(sc.subprocess, "run", fake)
@@ -1727,7 +1655,6 @@ def test_no_fast_flag_reaches_provision(monkeypatch, capsys) -> None:
     assert seen["no_fast"] is True
     assert sc.main(["provision"]) == 0
     assert seen["no_fast"] is False
-    # The help text says the bytes are unencrypted, where they go, and how to opt out.
     with pytest.raises(SystemExit):
         sc.main(["--help"])
     text = " ".join(capsys.readouterr().out.split())
@@ -1735,9 +1662,9 @@ def test_no_fast_flag_reaches_provision(monkeypatch, capsys) -> None:
     assert f"{sc.FAST_ENV}=0" in text
 
 
-# The launch commands the planner prints are what a user pastes, so every flag that changes
-# the run has to survive into BOTH of them. --microbatches in particular: it was once omitted,
-# which cost about 20% at 70B and produced no error, only a slower run.
+# The launch commands the planner prints are what a user pastes, so every flag that changes the run
+# has to survive into BOTH of them. --microbatches in particular: it was once omitted, which cost
+# about 20% at 70B and produced no error, only a slower run.
 
 
 def _fake_spark_cluster(seen: dict):
@@ -1796,7 +1723,6 @@ def test_layer_split_launch_carries_every_flag_that_changes_the_run(monkeypatch)
     )
     assert result.exit_code == 0, result.output
     emitted = _emitted(seen)
-    # Each of these silently changes throughput or memory if it goes missing.
     for flag in (
         "--microbatches 32",
         "--schedule 1f1b",
@@ -1810,8 +1736,8 @@ def test_layer_split_launch_carries_every_flag_that_changes_the_run(monkeypatch)
 
 
 def test_layer_split_defaults_also_carry_the_microbatch_count(monkeypatch) -> None:
-    """Not just when the user names it: the CLI default is 32 and the pipeline's own default
-    is 4, so dropping the flag would quietly run a different, slower configuration."""
+    """Not just when the user names it: the CLI default is 32 and the pipeline's own default is 4, so
+    dropping the flag would quietly run a different, slower configuration."""
     seen, result = _run_spark_cli(monkeypatch, ["train", "--layer-split", "some/model"])
     assert result.exit_code == 0, result.output
     assert "--microbatches 32" in _emitted(seen)
@@ -1824,21 +1750,19 @@ def test_grad_checkpoint_is_off_unless_asked(monkeypatch) -> None:
 
 
 def test_the_harness_default_schedule_is_not_the_one_the_docs_say_to_avoid() -> None:
-    """gpipe holds every microbatch's activations at once: 99.92 GiB against a 121.69 GiB
-    node, where 1f1b took 7.34 GiB for the same work. The CLI always passes --schedule, but
-    the commands it PRINTS are pasted and edited, so the harness default matters too."""
+    """gpipe holds every microbatch's activations at once: 99.92 GiB against a 121.69 GiB node, where
+    1f1b took 7.34 GiB for the same work."""
     pp = _load("studio/spark_pipeline.py")
     assert pp.default_schedule("torch") == "1f1b"
-    # legacy keeps gpipe: its hand-written 1f1b deadlocks and is refused outright, so 1f1b
-    # there would be an error rather than a default.
+    # legacy keeps gpipe: its hand-written 1f1b deadlocks and is refused outright, so 1f1b there
+    # would be an error rather than a default.
     assert pp.default_schedule("legacy") == "gpipe"
     args = pp.build_parser().parse_args(["--model", "m"])
     assert args.schedule is None, "resolved per backend in main(), not by argparse"
 
 
-# A model whose fused attention kernels are missing runs about 2.1x slower with no error and
-# one easily-missed line from transformers. The warning must be loud, and must not fire on a
-# model that has no fast path to lose.
+# A model whose fused attention kernels are missing runs about 2.1x slower with no error and one
+# easily-missed line from transformers.
 
 
 def test_fast_path_warning_names_the_missing_packages_and_the_cost() -> None:
@@ -1851,8 +1775,7 @@ def test_fast_path_warning_names_the_missing_packages_and_the_cost() -> None:
 
 
 def test_fast_path_warning_is_silent_when_there_is_no_fast_path_to_lose() -> None:
-    """None means the architecture has no fused path at all. Warning there would tell every
-    llama user to install a package that would do nothing for them."""
+    """None means the architecture has no fused path at all."""
     pp = _load("studio/spark_pipeline.py")
     assert pp.fast_path_warning("llama", None, []) is None
     assert pp.fast_path_warning("llama", True, []) is None

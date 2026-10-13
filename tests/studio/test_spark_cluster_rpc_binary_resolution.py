@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolving the RPC server binary has to mean the same thing on every platform.
-
-`os.access(path, os.X_OK)` is not an executability test on Windows: it succeeds for any file
-that exists. The guard therefore accepted a text file as a server binary. The second half is
-worse, and a fix for the first alone leaves it in place: `_RPC_SERVER_NAMES` is POSIX-shaped,
-extensionless names first, and the search takes the first hit, so a stray extensionless
-`ggml-rpc-server` sitting beside the real `ggml-rpc-server.exe` won. The resolution could report
-success while handing back the wrong file.
-
-Windows is exercised through the product's own `_on_windows` seam rather than by patching
-`os.name`, which pathlib reads to choose its flavour and which therefore makes `Path()` try to
-build a `WindowsPath` on Linux. A separate test pins that seam to `os.name`. POSIX
-behaviour is asserted directly and must not change: there the extensionless name is correct and
-the exec bit means what it says.
-"""
+"""Resolving the RPC server binary has to mean the same thing on every platform."""
 
 from __future__ import annotations
 
@@ -49,8 +35,6 @@ def _write(path: Path, *, executable: bool) -> Path:
 def _bundle(cluster, monkeypatch, tmp_path: Path) -> Path:
     root = tmp_path / "llama.cpp"
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
-    # rpc_server_binary also searches ~/src/llamacpp-rpc, which exists on a developer machine
-    # and would answer for the tree under test.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setattr(cluster.shutil, "which", lambda name: None)
@@ -122,8 +106,8 @@ def test_the_search_order_follows_the_platform(windows: bool, leading: str) -> N
 
 
 def test_the_peer_probe_decides_for_itself() -> None:
-    """`_BUNDLE_PROBE` runs on the peer, which need not be this platform, so the same ordering
-    and the same executability test have to be inside the probe rather than baked in here."""
+    """`_BUNDLE_PROBE` runs on the peer, which need not be this platform, so the same ordering and the
+    same executability test have to be inside the probe rather than baked in here."""
     source = cluster_source = _cluster()._BUNDLE_PROBE
     assert "os.name" in source, "the probe does not look at the peer's platform at all"
     assert "def order(" in source, "the probe does not order names by platform"

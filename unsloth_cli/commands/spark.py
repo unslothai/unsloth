@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth spark` -- own one DGX Spark, or several, without knowing any of this.
-
-The entry point is `unsloth spark up`: it works out which situation the machine is in and
-either does the next thing or names the ONE command that does. Two counter-intuitive facts
-drive most of the output, which is why the CLI states them rather than assuming anyone
-infers them: the biggest measured win needs NO second machine (choosing the NVFP4 kernel by
-workload), and a second Spark does not make a model that already FITS decode faster.
-
-Nothing here imports torch, transformers, vllm or numpy at module scope, and nothing touches
-the network unless this is a DGX Spark with a cabled peer.
-"""
+"""`unsloth spark` -- own one DGX Spark, or several, without knowing any of this."""
 
 from __future__ import annotations
 
@@ -25,30 +15,23 @@ spark_app = typer.Typer(
 )
 
 
-# Every planner number printed by `plan` comes from studio.spark_cluster via expected_gain(),
-# so nothing here can drift from the planner. Only what that module does not model is kept
-# here: the kernel result (a single-node fact) and the prefill/TTFT split.
+# Every planner number printed by `plan` comes from studio.spark_cluster via expected_gain(), so
+# nothing here can drift from the planner.
 PREFILL_KERNEL_SPEEDUP = 6.2  # CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096
 
-# Llama-3.3-70B fp8, two Sparks (tensor parallel) versus one. The gain is unevenly spread
-# across workloads, so both ends are printed rather than an average.
 PREFILL_TOKS = (166, 643)  # tok/s, 3.87x
 TTFT_MS = (3085, 797)  # median TTFT, 3.87x
 TPOT_ONE_SPARK_MS = 332.7
 TPOT_TP2_MS = 162.4  # decode, 2.09x
 
-# A "128 GB" Spark is 128 GiB with ~6.3 GiB firmware-reserved. Sizing a model against the
-# marketed figure is an OOM nobody can explain, so the real number is always printed.
 MARKETED_GIB = 128.0
 USABLE_GIB_FALLBACK = 121.69
 
-# nvidia-cutlass-dsl 4.7.0 fails the b12x family with an internal DSL compiler error, which
-# disables the kernel family built for this GPU, so a wrong version is flagged separately.
+# nvidia-cutlass-dsl 4.7.0 fails the b12x family with an internal DSL compiler error, which disables
+# the kernel family built for this GPU, so a wrong version is flagged separately.
 CUTLASS_PIN = "4.6.2"
-# Without flashinfer-jit-cache, FlashInfer JIT-compiles on first use and the compile itself
-# OOMs on a Spark unless MAX_JOBS is throttled. It is NOT on PyPI (that 404s), so it needs
-# FlashInfer's own index, which carries the matching cu130 aarch64 build.
-# NEVER add flashinfer-cubin: ~6.8 GB of prebuilt cubins this GPU cannot load.
+# Without flashinfer-jit-cache, FlashInfer JIT-compiles on first use and the compile itself OOMs on
+# a Spark unless MAX_JOBS is throttled.
 KERNEL_INSTALL = (
     'pip install flashinfer-python "nvidia-cutlass-dsl==4.6.2" && '
     "pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/"
@@ -69,8 +52,8 @@ def _field(name: str, value: str) -> None:
     _say(f"  {name:<14} {value}")
 
 
-# studio.spark_cluster is read through getattr and signature inspection throughout, so this
-# file works against both its pair-only and its N-node API and never imports a missing symbol.
+# studio.spark_cluster is read through getattr and signature inspection throughout, so this file
+# works against both its pair-only and its N-node API and never imports a missing symbol.
 
 
 def _cluster():
@@ -107,9 +90,8 @@ def _serve_budget(sc) -> float:
 
 
 def _max_nodes(sc) -> int:
-    """The largest cluster this build will PLAN ADDRESSING for, which is NOT how many Sparks
-    can be seen. Read from the module rather than hardcoded, so a change there cannot leave
-    this file quietly lying."""
+    """The largest cluster this build will PLAN ADDRESSING for, which is NOT how many Sparks can be
+    seen."""
     for name in (
         "MAX_PLANNABLE_NODES",
         "MAX_CLUSTER_NODES",
@@ -134,8 +116,7 @@ def _plan_deployment(
     prefill_heavy: bool = False,
     kv_gib_per_user: float = 0.0,
 ):
-    """Call plan_deployment against whichever signature the module currently has. A CLI that
-    raises TypeError after an upgrade is worse than one giving a plainer answer."""
+    """Call plan_deployment against whichever signature the module currently has."""
     fn = getattr(sc, "plan_deployment", None)
     if fn is None:
         return None
@@ -170,16 +151,14 @@ def _plan_deployment(
 
 
 def _require_spark(sc, what: str) -> None:
-    """Exit cleanly off a DGX Spark before delegating anything that assumes one. A clear
-    sentence and exit 0 is the contract for every command in this group on any other machine."""
+    """Exit cleanly off a DGX Spark before delegating anything that assumes one."""
     if not _on_spark(sc):
         _say(f"Not a DGX Spark; {what}")
         raise typer.Exit(0)
 
 
 def _kernel_state() -> dict:
-    """Is the prefill kernel installed in THIS interpreter? Uses importlib.metadata rather
-    than importing anything: this is on the casual `status` path."""
+    """Is the prefill kernel installed in THIS interpreter?"""
     from importlib.metadata import version, PackageNotFoundError
 
     def _v(name: str):
@@ -192,8 +171,6 @@ def _kernel_state() -> dict:
 
     flashinfer = _v("flashinfer-python") or _v("flashinfer")
     cutlass = _v("nvidia-cutlass-dsl")
-    # A SEPARATE package: reporting "installed" without it hides the slowest part of a first
-    # run behind a green tick.
     jit_cache = _v("flashinfer-jit-cache")
     state = {
         "flashinfer": flashinfer,
@@ -203,8 +180,8 @@ def _kernel_state() -> dict:
         "pin_wrong": bool(cutlass) and cutlass != CUTLASS_PIN,
         "jit_cache_missing": bool(flashinfer) and not jit_cache,
     }
-    # cutlass == pin, not "not pin_wrong": an ABSENT cutlass leaves pin_wrong false, which
-    # reported the prefill kernel ready while the fast path could not run.
+    # cutlass == pin, not "not pin_wrong": an ABSENT cutlass leaves pin_wrong false, which reported
+    # the prefill kernel ready while the fast path could not run.
     state["ok"] = bool(flashinfer) and cutlass == CUTLASS_PIN and bool(jit_cache)
     return state
 
@@ -229,7 +206,6 @@ def _kernel_banner(state: dict | None = None) -> bool:
         _say("  Then serve with:")
         _say("    --linear-backend flashinfer_cutlass")
     elif state.get("jit_cache_missing"):
-        # A distinct message: "install flashinfer" is unhelpful to someone who has it.
         _say("  flashinfer is installed but flashinfer-jit-cache is NOT.")
         _say("  The kernels still work; they are compiled on FIRST USE instead:")
         _say("    ~430 s of cold start, and on a Spark the compile itself OOMs")
@@ -258,15 +234,13 @@ def _peer_reachable(
     port: int = 22,
     timeout: float = 3.0,
 ) -> bool | None:
-    """Can we open a TCP connection to the peer? None when we cannot tell. A bounded connect,
-    never a ping and never an ssh: it must not hang, prompt, or need a tool Windows lacks."""
+    """Can we open a TCP connection to the peer?"""
     import socket
     try:
         with socket.create_connection((host, port), timeout = timeout):
             return True
     except ConnectionRefusedError:
-        # Something answered to say no, so the host is up and only sshd is down. Reporting this
-        # as unreachable sends the user looking at cables, power and the GPU instead.
+        # Something answered to say no, so the host is up and only sshd is down.
         return True
     except OSError:
         return False
@@ -275,9 +249,7 @@ def _peer_reachable(
 
 
 def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
-    """Whether the peer already has the Unsloth venv. None when we cannot tell. Worth one
-    bounded ssh: without it the head rank blocks 601 s and reports only
-    `DistStoreError: 1/2 clients joined`, naming neither the peer nor the venv."""
+    """Whether the peer already has the Unsloth venv."""
     import os
     import shutil
     import subprocess
@@ -285,8 +257,8 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     if not shutil.which("ssh"):  # Windows, or a stripped image
         return None
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
-    # Resolved, not assumed: UNSLOTH_STUDIO_HOME moves the venv, so the default path reports
-    # the peer unprovisioned when it is fine, or fine when it is not.
+    # Resolved, not assumed: UNSLOTH_STUDIO_HOME moves the venv, so the default path reports the
+    # peer unprovisioned when it is fine, or fine when it is not.
     try:
         from studio.spark_cluster import venv_activate
         _venv = venv_activate().rsplit("/bin/activate", 1)[0]
@@ -406,8 +378,6 @@ def _report_inventory(sc, sit: dict) -> None:
         )
         _field("peer seen", f"{name} at {addr} -- {reach}")
     if sit.get("peer_ip"):
-        # Separate from the discovered address: mDNS answers over whatever advertised, usually
-        # Wi-Fi, which would quietly bypass the link the pairing exists to provide.
         _field("fast link", f"{sit['peer_ip']} -- use THIS for NCCL, ray and rsync")
     _field(
         "cluster",
@@ -453,13 +423,7 @@ def up(
     ),
     check: bool = typer.Option(False, "--check", help = "Report only. Change nothing, ever."),
 ) -> None:
-    """Get this machine to a working state, whatever state it is in now.
-
-    This is the one command to run. It works out whether you have one Spark, two, a
-    cable that was never paired, a peer that is powered off, a degraded link or a
-    missing kernel, and then either fixes it or prints the single next command. Every
-    other subcommand in this group still exists and still does exactly what it did.
-    """
+    """Get this machine to a working state, whatever state it is in now."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -528,10 +492,7 @@ def up(
             _say("  point-to-point, so pairing them needs a switched RoCE fabric and an")
             _say(f"  explicit `--nodes {nodes} --switched`.")
             _say("")
-            # And then STOP. Falling through to `setup --yes` built and saved the default
-            # two-node plan, silently leaving out the machines this paragraph just said
-            # needed a switched-fabric plan. Whether they share such a fabric is not
-            # something this can see, and rail_plan_report refuses to guess it either.
+            # And then STOP.
             _say(f"NEXT: unsloth spark setup --nodes {nodes} --switched")
             _say("  (run it yourself: whether those Sparks share a switched RoCE fabric is")
             _say("   not visible from here, and a flat plan that assumes one black-holes.)")
@@ -681,12 +642,7 @@ def status(
         help = "Measure the rail with ib_write_bw. Needs perftest on both nodes.",
     ),
 ) -> None:
-    """Show the ConnectX rails, any peer Spark, and link health.
-
-    `--benchmark` exists because the status output tells you to run it: carrier
-    counters cannot tell a throttled link from a healthy one, and only a measurement
-    can. It drives ib_write_bw on both nodes and takes a few seconds.
-    """
+    """Show the ConnectX rails, any peer Spark, and link health."""
     rc = _cluster().main(["status"] + (["--benchmark"] if benchmark else []))
     sc = _cluster_or_none()
     if sc is not None and _on_spark(sc):
@@ -702,20 +658,7 @@ def setup(
         False, "--switched", help = "All Sparks share a switched RoCE fabric. Required above two."
     ),
 ) -> None:
-    """Plan and configure the link between the Sparks.
-
-    Two Sparks are the easy case: one QSFP cable, one flat /24 per PCIe function, no
-    switch. THREE OR MORE cannot be cabled that way, so `--nodes 3` without
-    `--switched` is REFUSED rather than answered. That refusal is the correct answer,
-    not a missing feature: on daisy-chained Sparks each cable needs its own subnet, and
-    a flat plan would put two nodes that share no cable on the same subnet and
-    black-hole every route between them. A netplan that looks right and does not work
-    costs far more to debug than a refusal costs to read.
-
-    Note that this also rsyncs this machine's environment onto the peer, which is what
-    prevents the 601 s `DistStoreError: 1/2 clients joined` from a missing venv. It
-    uses `--delete`, so do not run it against a peer that is busy.
-    """
+    """Plan and configure the link between the Sparks."""
     argv = ["setup"]
     if yes:
         argv.append("--yes")
@@ -732,16 +675,7 @@ def peers(
         True, "--probe/--no-probe", help = "TCP-probe each peer for reachability."
     ),
 ) -> None:
-    """List every Spark this node can see, in the order the planner ranks them.
-
-    The ordering is by address and is identical on every node, which is what makes the
-    index usable as a node rank -- an order that depended on who ran the discovery
-    would hand two nodes the same rank.
-
-    Seeing a Spark is not the same as being able to cluster with it. mDNS answers over
-    whatever interface advertised, usually Wi-Fi, which says nothing about whether the
-    fast RoCE link between you exists.
-    """
+    """List every Spark this node can see, in the order the planner ranks them."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -754,7 +688,6 @@ def peers(
     except SystemExit:
         raise
     except Exception:
-        # An older build has no `peers` command; do it here rather than traceback.
         rc = 0
         try:
             found = sc.discover_peers(check_reachable = probe).get("peers") or []
@@ -772,11 +705,7 @@ def peers(
 
 @spark_app.command("env")
 def env() -> None:
-    """Print the GB10-correct NCCL settings as shell exports.
-
-    Handy as `eval "$(unsloth spark env)"` before a torchrun/NCCL job that
-    Unsloth is not launching itself.
-    """
+    """Print the GB10-correct NCCL settings as shell exports."""
     raise typer.Exit(_cluster().main(["env"]))
 
 
@@ -799,21 +728,7 @@ def serve(
         "option when the default is taken by something else.",
     ),
 ) -> None:
-    """Serve a GGUF split across both Sparks via llama.cpp's RPC backend.
-
-    Defaults to TWO engines, each split across both Sparks, behind a round-robin front
-    end -- measured at 1.35x a single Spark, where ONE split engine never beats a single
-    Spark on decode (0.85x to 1.01x measured from 1 to 32 users). The difference is that
-    two engines give the pair data-independent work; a single autoregressive stream
-    cannot be pipelined, which is why vLLM and SGLang also require pp_size independent
-    batches in flight. A model that fits on one Spark is served as two independent
-    replicas instead, which measured 1.30x to 1.91x at 8 to 32 users.
-
-    Before a split is printed, both nodes' llama.cpp bundles are compared and any RPC
-    server already listening is asked its protocol version: a peer on a different
-    bundle fails at load with "RPC server version mismatch", and the fix is
-    `unsloth spark provision`.
-    """
+    """Serve a GGUF split across both Sparks via llama.cpp's RPC backend."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -902,13 +817,7 @@ def train(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
     ),
 ) -> None:
-    """Print the two-node commands for DDP (--script) or layer-split (--layer-split).
-
-    The two modes solve different problems. DDP replicates the model for throughput, so
-    it must still fit on one Spark. A layer split divides the decoder stack across both,
-    which is the only way to train something larger than one Spark's ~117 GiB -- verified
-    here on Llama-3.3-70B, which is 132 GiB and cannot be trained on a single node.
-    """
+    """Print the two-node commands for DDP (--script) or layer-split (--layer-split)."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -921,8 +830,8 @@ def train(
         typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
-        # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so
-        # the user saw a traceback instead of the pipeline's own "must be >= 1".
+        # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so the
+        # user saw a traceback instead of the pipeline's own "must be >= 1".
         if microbatches < 1:
             typer.echo(f"--microbatches ({microbatches}) must be at least 1.")
             raise typer.Exit(2)
@@ -986,27 +895,7 @@ def doctor(
         help = "Do not compare the two nodes' fast-path packages and kernels.",
     ),
 ) -> None:
-    """Measure the link and diagnose the two DGX Spark hardware faults.
-
-    Worth running whenever two-Spark training feels slow. The fault this catches drops
-    NCCL from ~21 GB/s to ~3 GB/s -- a 7x hit on every gradient all-reduce -- while
-    leaving raw RDMA (`ib_write_bw`) reading a healthy 24.5 GB/s, so nothing cheaper
-    than a real collective will reveal it. It needs a FULL POWER CYCLE; a reboot does
-    not clear it, which is why it can persist for days. The other fault looks similar
-    and has the opposite remedy: a GPU whose compute engine is dead (cuInit returns
-    100, dmesg shows 0xbadf5600) needs a PLAIN REBOOT, and a module reload will not do.
-
-    It also compares the two nodes' fast-path stack. A node missing `causal_conv1d` and
-    `flash-linear-attention` ran Qwen3.5 LoRA training here at 1183 tok/s against the
-    other node's 2593, on a byte-identical cell with identical clocks and NCCL, and
-    nothing raised: the pair just moved at the slower node's pace.
-
-    It also compares the two nodes' capability gates. A gate that differs between ranks
-    -- `which(nvcc)` finding CUDA on one node's PATH and not the other's is the case that
-    cost this project the most -- changes which collectives each rank executes, and a
-    collective entered by only some ranks does not raise. It waits, for 1800 s, and then
-    reports a gloo transport error that names nothing related to the cause.
-    """
+    """Measure the link and diagnose the two DGX Spark hardware faults."""
     from unsloth_cli.commands.doctor import _workload_guidance, check_fastpath, check_parity
 
     sc = _cluster_or_none()
@@ -1024,8 +913,8 @@ def doctor(
         parity_rc = check_parity(peer_ip, deep = deep)
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        # Same ordering as `unsloth doctor`: --parity-only says no GPU work, so the runtime
-        # imports wait for --deep while the package comparison still runs.
+        # Same ordering as `unsloth doctor`: --parity-only says no GPU work, so the runtime imports
+        # wait for --deep while the package comparison still runs.
         fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
     if parity_only:
         _workload_guidance()
@@ -1058,21 +947,7 @@ def provision(
         "swap the environment underneath it.",
     ),
 ) -> None:
-    """Copy this Spark's environment and warm caches to the peer over the fast link.
-
-    Run after pairing, and again whenever this node's environment changes. It copies
-    rather than installs because HuggingFace measures ~20 KB/s from these machines
-    while the ConnectX link does ~1 GB/s -- and because copying cannot produce the
-    dependency drift that two separate installs can.
-
-    It also prevents two silent failures. A peer missing the venv makes the head block
-    for 601 seconds and die with `DistStoreError: 1/2 clients joined`, never showing
-    the worker's real error. A peer missing a warm cache rebuilds it from scratch,
-    which looks like a 17-minute hang during CUDA graph capture.
-
-    Bulk bytes travel unencrypted over the direct cable between the two Sparks unless
-    --no-fast is given; ssh over the same link is 4x slower than the disk.
-    """
+    """Copy this Spark's environment and warm caches to the peer over the fast link."""
     argv = ["provision"]
     if dry_run:
         argv.append("--dry-run")
@@ -1156,23 +1031,7 @@ def plan(
         "case in which a model that fits is layer-split.",
     ),
 ) -> None:
-    """Say exactly how to deploy a model here, and what it will buy you.
-
-    Ask for what you actually want -- `--for latency`, `--for throughput` or
-    `--for capacity` -- and this prints the command to run and the measured speedup to
-    expect. The intent is what decides the ANSWER, not just the wording: the same model
-    on the same two Sparks is tensor-parallel for latency and independent replicas for
-    throughput, and those are different commands with different results.
-
-    It will also say plainly when more Sparks buy you nothing. A model that already fits
-    on one Spark never decodes faster split across two (0.85x to 1.01x measured from 1 to
-    32 users), so that layout is recommended only for a model that does not fit, or with
-    `--prefill-heavy` for long-prompt work where the split's 1.7x to 1.85x prefill is the
-    point. Two replicas of a model that fits measured 1.30x at 8 users, 1.75x at 16 and
-    1.91x at 32, and only 1.00x to 1.13x below 8, so `--concurrency` decides between one
-    Spark and two. Anything not measured at your node count is reported as not measured
-    rather than extrapolated.
-    """
+    """Say exactly how to deploy a model here, and what it will buy you."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -1195,17 +1054,16 @@ def plan(
     except Exception:
         size = None
 
-    # "auto" resolves here: latency is what an unthought-about request usually means, and
-    # capacity is the only honest answer when the model does not fit at all.
+    # "auto" resolves here: latency is what an unthought-about request usually means, and capacity
+    # is the only honest answer when the model does not fit at all.
     budget = _serve_budget(sc)
     resolved = choice
     if resolved == "auto":
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
-    # The planner grew a KV input and this path was still handing it zero, so `plan`
-    # recommended replicas for a model whose weights fit and whose KV for the requested
-    # concurrency does not -- exactly the case the KV term exists to catch. `serve` computed
-    # it and `plan` did not, and they are supposed to give the same answer.
+    # The planner grew a KV input and this path was still handing it zero, so `plan` recommended
+    # replicas for a model whose weights fit and whose KV for the requested concurrency does not --
+    # exactly the case the KV term exists to catch.
     kv = {"gib": None, "why": "not computed"}
     try:
         kv = sc.serving_kv_gib_per_user(model, ctx)
@@ -1269,8 +1127,6 @@ def plan(
         raise typer.Exit(1)
 
     _heading("Recommendation")
-    # One voice: `summary` and `recommendation` are true of different engines, and printing
-    # both reads as the tool contradicting itself, so the axis answer wins.
     if result.get("recommendation"):
         _print_wrapped(str(result["recommendation"]))
     elif result.get("summary"):
@@ -1279,8 +1135,8 @@ def plan(
     for line in _expected_line(result.get("expected")):
         _say(line)
 
-    # Every cross-node figure here came from a model that does NOT fit on one Spark, so
-    # quoting it for a model that does fit would apply a different regime's measurement.
+    # Every cross-node figure here came from a model that does NOT fit on one Spark, so quoting it
+    # for a model that does fit would apply a different regime's measurement.
     if result.get("axis") == "tensor-parallel" and result.get("fits_one_node"):
         _say("")
         _print_wrapped(
@@ -1343,14 +1199,7 @@ def plan(
 def kernels(
     workload: str = typer.Option("mixed", "--workload", help = "decode | prefill | mixed"),
 ) -> None:
-    """Recommend the NVFP4 kernel for a workload on GB10.
-
-    There is no single best kernel: the fastest decode kernel is the slowest prefill
-    kernel by 6.5x, and the crossover sits near 256 tokens per forward pass. Measured
-    on identical weights with only the kernel changed, so this is not a checkpoint
-    difference. vLLM auto-selects sensibly for decode, which makes prefill-heavy and
-    long-prompt workloads the case where an explicit flag is worth multiples.
-    """
+    """Recommend the NVFP4 kernel for a workload on GB10."""
     rc = _cluster().main(["kernels", "--workload", workload])
     sc = _cluster_or_none()
     if sc is not None and _on_spark(sc):
@@ -1380,20 +1229,7 @@ def merge(
         "or a partial recovery. The result is a partly-populated adapter.",
     ),
 ) -> None:
-    """Merge the per-stage adapters from a layer-split run into one loadable checkpoint.
-
-    `spark train --layer-split` leaves one directory per stage, each holding only the LoRA
-    weights for the layers that stage owned -- two half-models and nothing you can load.
-    This combines them.
-
-    It is a union, not an average: stages replace foreign layers with Identity rather than
-    deleting them, so layer numbering is preserved and the two key sets are disjoint by
-    construction. If that is ever not true -- overlapping layers, a gap, a missing stage --
-    this refuses instead of guessing, because a partly-populated adapter loads without error
-    and quietly produces a worse model.
-
-    Needs no GPU and no second Spark; merging is pure file work.
-    """
+    """Merge the per-stage adapters from a layer-split run into one loadable checkpoint."""
     import importlib.util
     from pathlib import Path
 
@@ -1421,17 +1257,7 @@ def estimate(
     full_finetune: bool = typer.Option(False, "--full-finetune"),
     grad_checkpoint: bool = typer.Option(False, "--grad-checkpoint"),
 ) -> None:
-    """Check whether a layer-split training run will fit, before starting it.
-
-    Worth running every time, because the failure it prevents is slow and severe: a 70B
-    arm in this project loaded 66 GiB of weights, spent an hour materialising, then ran
-    out of memory and left the node **unreachable over ssh** -- kernel and NIC healthy
-    while userspace could no longer fork, which needs a power cycle to clear.
-
-    The estimate is sized on the LAST stage, which is the one that runs out first: it
-    holds the logits, and for a 128k vocabulary that single fp32 tensor plus its gradient
-    can outweigh every other activation combined.
-    """
+    """Check whether a layer-split training run will fit, before starting it."""
     argv = [
         "estimate",
         "--model",

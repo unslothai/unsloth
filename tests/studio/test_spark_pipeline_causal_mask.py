@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pipeline stage calls decoder layers directly, so causality is its own responsibility.
-
-sdpa and flash read `is_causal` when `attention_mask` is None, but transformers' eager path
-adds the mask under `if attention_mask is not None` and so applies none at all. Passing None
-there trains a bidirectional model at a flattering loss. Measured before the fix: editing the
-last token moved hidden states at earlier positions by 6.4e-02 on eager and by exactly 0 on
-sdpa.
-"""
+"""A pipeline stage calls decoder layers directly, so causality is its own responsibility."""
 
 from __future__ import annotations
 
@@ -67,8 +60,8 @@ def test_a_stage_is_causal_on_every_attention_implementation(impl: str) -> None:
         before = stage(ids)
         after = stage(edited)
 
-    # Every position but the last may only see tokens at or before it, so editing the final
-    # token must leave them bit-identical.
+    # Every position but the last may only see tokens at or before it, so editing the final token
+    # must leave them bit-identical.
     moved = (before[0, :-1] - after[0, :-1]).abs().max().item()
     assert moved == 0.0, f"{impl}: the last token moved earlier positions by {moved:.3e}"
 
@@ -149,14 +142,7 @@ def _build_stage(pipeline, model, **kwargs):
 
 @pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3"])
 def test_a_stage_computes_the_same_model_it_was_split_from(builder: str) -> None:
-    """The contract is not that the names resolve, it is that the arithmetic agrees.
-
-    Resolving `embed_tokens` and `final_layer_norm` is necessary and not sufficient: a stage
-    that finds every module it looks for can still drop one it never looks for, and nothing
-    raises. Comparing the stage against the model it was split from is the only check that
-    catches that. Gemma 3 is here because it keeps one rope table per attention type and
-    selects with a `layer_type` argument, which a single whole-stage rotary call cannot supply.
-    """
+    """The contract is not that the names resolve, it is that the arithmetic agrees."""
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
 
@@ -176,13 +162,7 @@ def test_a_stage_computes_the_same_model_it_was_split_from(builder: str) -> None
 
 @pytest.mark.parametrize("builder,dropped", [("gpt2", "wpe"), ("opt", "embed_positions")])
 def test_a_stage_refuses_a_layout_whose_positions_it_would_drop(builder: str, dropped: str) -> None:
-    """GPT-2 and OPT keep learned positions in a module outside every decoder layer.
-
-    Running the layers alone gives those models no position information at all, and it does not
-    raise: `GPT2Block.forward` absorbs the unexpected keyword, so the stage trained and saved a
-    model that was not the checkpoint. Refusing is the honest answer; making them work means
-    reproducing each architecture's embedding path.
-    """
+    """GPT-2 and OPT keep learned positions in a module outside every decoder layer."""
     pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
 
@@ -192,9 +172,8 @@ def test_a_stage_refuses_a_layout_whose_positions_it_would_drop(builder: str, dr
 
 
 def test_a_stage_refuses_a_batch_longer_than_the_sliding_window() -> None:
-    """Below the window a sliding mask and a causal mask are the same matrix, because every
-    query already reaches every earlier token. Above it they are not, and the stage builds the
-    causal one, so it stops rather than training against attention the model does not have."""
+    """Below the window a sliding mask and a causal mask are the same matrix, because every query
+    already reaches every earlier token."""
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
 
@@ -211,20 +190,7 @@ def test_a_stage_refuses_a_batch_longer_than_the_sliding_window() -> None:
 
 
 def test_the_legacy_backend_actually_checkpoints_when_asked() -> None:
-    """`--pp-backend legacy --grad-checkpoint` set the transformers flag and reported success.
-
-    That flag is consulted in the model forward, and the legacy `_Stage` calls decoder layers
-    directly, so it was inert: the run said checkpointing was on and kept every activation, and
-    a shape chosen to fit only with it would OOM. Measured on a 6-layer model, saved tensors and
-    the elements behind them, before the fix and after:
-
-        grad_checkpoint=False   0 checkpoint() calls   241 saved   964927 elements
-        grad_checkpoint=True    0 checkpoint() calls   241 saved   964927 elements   (before)
-        grad_checkpoint=True    6 checkpoint() calls    25 saved    53311 elements   (after)
-
-    The count of saved tensors is the property that matters; the call count alone would pass for
-    an implementation that checkpointed and saved everything anyway.
-    """
+    """`--pp-backend legacy --grad-checkpoint` set the transformers flag and reported success."""
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
     import torch.utils.checkpoint as torch_checkpoint

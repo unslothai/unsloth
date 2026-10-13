@@ -2342,14 +2342,7 @@ _RUN_PANEL_ADVANCED = "Advanced"
 
 
 def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
-    """On a clustered DGX Spark, say how this model should be spread across the nodes.
-
-    Advisory only; it never changes what `run` does. `intent` defaults to latency because
-    someone typing `unsloth run` is starting one interactive session, not a serving fleet.
-    Wrapped in a bare except and gated on `is_dgx_spark()` so a hint can never break
-    `unsloth run` elsewhere, and discovery gets timeout=0 so no mDNS browse ever lands in
-    front of a model load.
-    """
+    """On a clustered DGX Spark, say how this model should be spread across the nodes."""
     if not model:
         return
     try:
@@ -2357,8 +2350,8 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
 
         if not spark_cluster.is_dgx_spark():
             return
-        # Size first: it is a filesystem read, while `peer_ip_for()` forks `ip` per rail, and
-        # a model we cannot size produces no hint at any node count.
+        # Size first: it is a filesystem read, while `peer_ip_for()` forks `ip` per rail, and a
+        # model we cannot size produces no hint at any node count.
         size = spark_cluster.model_size_gib(model)
         if size is None or not spark_cluster.peer_ip_for():
             return
@@ -2376,8 +2369,8 @@ def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
         if advice["topology"] not in ("replicas", "single-or-replicas", "layer-split", "too-large"):
             return
         tag = f"[{nodes} Sparks]"
-        # `single-or-replicas` means the model fits on one node, which is exactly when someone
-        # needs telling that tensor parallel still helps and splitting does not.
+        # `single-or-replicas` means the model fits on one node, which is exactly when someone needs
+        # telling that tensor parallel still helps and splitting does not.
         if advice["topology"] in ("replicas", "layer-split", "too-large"):
             typer.secho(f"  {tag} {advice['summary']}", fg = "cyan", err = True)
         if advice.get("recommendation"):

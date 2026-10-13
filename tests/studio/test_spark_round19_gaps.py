@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Gaps that only open once the surrounding code is right.
-
-Three are the second half of an earlier fix: the planner grew a KV input that the public
-`plan` path still passed as zero, the drift check compares rails that are present and so
-cannot see one that vanished, and waiting for the peer rank to disappear is not the same as
-waiting for it to succeed. The rest are a failure mode that has no exception to raise --
-a blackholed backend, an ssh that returns 255, a parameter divided twice.
-"""
+"""Gaps that only open once the surrounding code is right."""
 
 from __future__ import annotations
 
@@ -38,9 +31,7 @@ def lb():
 
 
 def test_the_public_plan_passes_the_gguf_kv_through(monkeypatch) -> None:
-    """`plan` and `serve` are supposed to give the same answer for the same model. `serve`
-    computed the KV and `plan` handed the planner a zero, so `plan` recommended replicas for a
-    model whose weights fit and whose KV does not."""
+    """`plan` and `serve` are supposed to give the same answer for the same model."""
     from unsloth_cli.commands import spark as cmd
 
     seen = {}
@@ -127,8 +118,8 @@ def test_the_peer_replica_executable_is_quoted() -> None:
 
 
 def test_a_shared_parameter_is_scaled_once() -> None:
-    """A V layout puts the first and last stage on one rank, so a tied embedding is the same
-    Parameter in two stage modules: it was divided once per module, 1/M**2 against 1/M."""
+    """A V layout puts the first and last stage on one rank, so a tied embedding is the same Parameter
+    in two stage modules: it was divided once per module, 1/M**2 against 1/M."""
     source = (REPO / "studio" / "spark_pipeline.py").read_text()
     body = source.split("def scale_grads_after_step", 1)[1].split("\n    where =", 1)[0]
     assert "seen = set()" in body and "id(p) not in seen" in body
@@ -165,7 +156,6 @@ def test_the_peer_stage_must_report_zero_before_collection(cluster, monkeypatch)
     bad = cluster.wait_for_peer_stage("h", "u", "/tmp/p")
     assert bad["ok"] is False and "NONZERO" in bad["why"]
 
-    # Gone with no status at all, which is what an abrupt death looks like.
     codes["rc"] = 3
     gone = cluster.wait_for_peer_stage("h", "u", "/tmp/p")
     assert gone["ok"] is False and "no exit status" in gone["why"]
@@ -179,7 +169,6 @@ def test_a_failed_peer_probe_launch_does_not_start_rank_zero() -> None:
     source = (REPO / "studio" / "spark_cluster.py").read_text()
     probe = source.split("def nccl_bandwidth", 1)[1].split("\ndef ", 1)[0]
     assert "if started.returncode != 0:" in probe
-    # And it stops whatever it may have started before giving up.
     after = probe.split("if started.returncode != 0:", 1)[1]
     assert "stop_peer_nccl_probe" in after.split("return None", 1)[0]
 

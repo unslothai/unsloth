@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`spark serve` has to launch the layout the planner recommends, and size the model it will load.
-
-Three separate wrong answers met in this command. The fit class `single-or-replicas` means one
-copy fits each Spark and a second does not fit BESIDE it on the same node; read as a split, it
-forced the 0.92x cross-node layout onto the size range where two replicas measured 1.30x to
-1.91x, and said "two copies do not fit across the pair" while one fits on each of two nodes.
-The RPC server was required before the topology was known, so a replica deployment that never
-speaks RPC was refused on a bundle without it. And the size came from summing every weight file
-in sight, so a directory of alternative quantizations was planned as their total.
-"""
+"""`spark serve` has to launch the layout the planner recommends, and size the model it will load."""
 
 from __future__ import annotations
 
@@ -43,8 +34,6 @@ def _write(path: Path, size: int) -> Path:
         handle.truncate(size)
     return path
 
-
-# ── sizing ──────────────────────────────────────────────────────────────────────
 
 GIB = 2**30
 
@@ -88,9 +77,6 @@ def test_a_single_file_is_still_its_own_size(cluster, tmp_path) -> None:
     assert cluster.model_size_gib(str(one)) == pytest.approx(4096 / GIB)
 
 
-# ── GGUF header and KV size ─────────────────────────────────────────────────────
-
-
 def _kv(key: str, value_type: int, payload: bytes) -> bytes:
     return struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I", value_type) + payload
 
@@ -120,7 +106,6 @@ def test_kv_per_token_comes_from_the_header(cluster, tmp_path) -> None:
     )
     meta = cluster.gguf_metadata(str(model))
     assert meta["general.architecture"] == "llama"
-    # 40 layers * 8 kv heads * (128 + 128) * 2 bytes.
     assert cluster.gguf_kv_bytes_per_token(meta) == 40 * 8 * 256 * 2
 
 
@@ -160,9 +145,6 @@ def test_kv_per_user_scales_with_the_context(cluster, tmp_path) -> None:
     )
     per_user = cluster.serving_kv_gib_per_user(str(model), 8192)["gib"]
     assert per_user == pytest.approx(40 * 8 * 256 * 2 * 8192 / GIB)
-
-
-# ── which layout `serve` prints ─────────────────────────────────────────────────
 
 
 def _serve_fixture(
@@ -258,8 +240,7 @@ def test_an_unsizable_model_is_refused_rather_than_split(
 def test_kv_that_does_not_fit_sends_a_fitting_model_to_a_split(
     cluster, monkeypatch, tmp_path, capsys
 ) -> None:
-    """The weights fit; the KV for 16 users at this context does not, and only the split has
-    the room. Sizing on weights alone printed a replica pair that dies at load."""
+    """The weights fit; the KV for 16 users at this context does not, and only the split has the room."""
     _serve_fixture(cluster, monkeypatch, tmp_path, 80.0)
     monkeypatch.setattr(
         cluster, "serving_kv_gib_per_user", lambda model, ctx: {"gib": 4.0, "why": ""}
@@ -268,12 +249,9 @@ def test_kv_that_does_not_fit_sends_a_fitting_model_to_a_split(
     assert "layer-split" in capsys.readouterr().out
 
 
-# ── discovery, state and the GPU verdict ────────────────────────────────────────
-
-
 def test_the_configured_node_count_survives_a_switched_setup(cluster, monkeypatch) -> None:
-    """`setup --nodes 3 --switched` saves rail plans and no `peers` key, so discovery with
-    mDNS off came back with two nodes and planned for two."""
+    """`setup --nodes 3 --switched` saves rail plans and no `peers` key, so discovery with mDNS off
+    came back with two nodes and planned for two."""
     monkeypatch.setattr(
         cluster,
         "load_config",
@@ -372,8 +350,7 @@ def test_plan_drift_names_the_rail_and_what_differs(cluster, monkeypatch) -> Non
 
 
 def test_only_cuinit_100_is_the_reboot_fault(cluster) -> None:
-    """`dead-engine` is a reboot-only diagnosis, and 100 is the code it was written for. A
-    driver mismatch, and the synthesised -1 for an unloadable libcuda, are not that."""
+    """`dead-engine` is a reboot-only diagnosis, and 100 is the code it was written for."""
     classify = cluster.classify_cuda_state
     assert classify(0, True) == "ok"
     assert classify(100, True) == "dead-engine"
@@ -425,10 +402,8 @@ def test_a_bad_peer_listener_still_blocks(cluster, monkeypatch) -> None:
 
 
 def test_a_split_is_refused_when_the_kv_does_not_fit_across_the_pair(cluster) -> None:
-    """The aggregate gate counted weights only, so a model whose KV pushes the pair over its
-    total was still planned as a layer split and `serve` printed an RPC launch that OOMs at
-    load. Context is never divided: every one of the requested users gets the full context, so
-    the KV that follows is priced at full and refused when it does not fit."""
+    """The aggregate gate counted weights only, so a model whose KV pushes the pair over its total was
+    still planned as a layer split and `serve` printed an RPC launch that OOMs at load."""
     budget = cluster.SPARK_USABLE_GIB - cluster.SERVE_OVERHEAD_GIB
     weights = budget * 1.5  # does not fit one node, fits the pair on weights alone
     plan = cluster.plan_deployment(weights, two_sparks = True, concurrency = 1)
@@ -439,12 +414,11 @@ def test_a_split_is_refused_when_the_kv_does_not_fit_across_the_pair(cluster) ->
         weights, two_sparks = True, concurrency = 8, kv_gib_per_user = per_user
     )
     assert tight["topology"] == "too-large" and tight["fits"] is False
-    # The refusal has to say which of the two it was.
     assert "KV for 8" in tight["summary"]
     assert tight["split_need_gib"] > 2 * budget
 
-    # A single node is unaffected: it returns before the aggregate gate and keeps its
-    # weight-only class, so nothing changes for one Spark.
+    # A single node is unaffected: it returns before the aggregate gate and keeps its weight-only
+    # class, so nothing changes for one Spark.
     solo = cluster.plan_deployment(
         weights, two_sparks = False, concurrency = 8, kv_gib_per_user = per_user
     )

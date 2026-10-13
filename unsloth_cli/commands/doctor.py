@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth doctor` -- check this machine's setup and report what is wrong.
-
-Top-level on purpose: someone whose training is mysteriously slow reaches for
-`unsloth doctor` before a hardware-specific subcommand. It also runs two cross-node
-checks: CAPABILITY PARITY, where an asymmetric probe is a guaranteed hang rather than an
-error, and FAST-PATH parity, its quieter cousin, which hangs nothing and raises nothing
-and simply runs one node at a fraction of the speed.
-"""
+"""`unsloth doctor` -- check this machine's setup and report what is wrong."""
 
 from __future__ import annotations
 
@@ -20,16 +13,12 @@ doctor_app = typer.Typer(
 )
 
 
-# The deepest bug found here, and why this check exists: /usr/local/cuda/bin is on the peer's
-# PATH in a LOGIN shell but not in a non-interactive one (`ssh host cmd`, which is how every
-# launch works), so `which("nvcc")` differed by rank, vLLM's has_flashinfer() differed with
-# it, rank 0 entered a collective rank 1 never entered, and the job hung for 1800 s surfacing
-# as a gloo TCP error. Generally: ANY capability probe evaluated independently per rank is a
-# latent multi-node deadlock, because a collective some ranks skip does not raise, it waits.
-# SYMMETRY is what matters, not presence -- nvcc missing on BOTH nodes is fine. So the probe
-# must run over NON-INTERACTIVE ssh, and if it cannot run the answer is "unknown", never OK.
+# The deepest bug found here, and why this check exists: /usr/local/cuda/bin is on the peer's PATH
+# in a LOGIN shell but not in a non-interactive one (`ssh host cmd`, which is how every launch
+# works), so `which("nvcc")` differed by rank, vLLM's has_flashinfer() differed with it, rank 0
+# entered a collective rank 1 never entered, and the job hung for 1800 s surfacing as a gloo TCP
+# error.
 
-# Environment that is SUPPOSED to differ between the hosts; comparing it would be noise.
 PARITY_SKIP = (
     "host",
     "home",
@@ -43,9 +32,7 @@ PARITY_SKIP = (
 
 
 def parity_probe_source(deep: bool = False) -> str:
-    """The probe, as source, run identically on both nodes. Import-free with ``deep`` off, so
-    it never touches the GPU and is safe while one is busy, and that still catches the whole
-    PATH/which class. ``deep`` also imports torch and vllm, initialising CUDA on both."""
+    """The probe, as source, run identically on both nodes."""
     lines = [
         "import json, os, shutil, socket, sysconfig",
         "import importlib.util",
@@ -57,8 +44,6 @@ def parity_probe_source(deep: bool = False) -> str:
         "    os.path.join(sysconfig.get_paths()['include'], 'Python.h'))",
         "r['python_version'] = '.'.join(map(str, __import__('sys').version_info[:3]))",
         "r['executable'] = __import__('sys').executable",
-        # Reported so path-valued probes can be compared relative to each node's own home,
-        # which provisioning already allows to differ. Skipped in the comparison itself.
         "r['home'] = os.path.expanduser('~')",
         "r['PATH'] = os.environ.get('PATH', '')",
         "for k in ('LD_LIBRARY_PATH', 'CUDA_HOME', 'CUDA_VISIBLE_DEVICES',",
@@ -135,14 +120,7 @@ def parity_probe_source(deep: bool = False) -> str:
 
 
 def _activate_sh() -> str:
-    """Where the peer's venv activate lives, as ONE shell word.
-
-    Resolved rather than assumed, because UNSLOTH_STUDIO_HOME moves it and a hardcoded path
-    sources nothing, which reads as "could not measure NCCL bandwidth" on a healthy pair. And
-    quoted, because a custom home with a space produced
-    `[ -f /path with space/bin/activate ]`, a five-argument test: activation was skipped
-    without a word of complaint and the probe ran under whichever python3 was on PATH, so a
-    supported custom location reported false package and parity results."""
+    """Where the peer's venv activate lives, as ONE shell word."""
     try:
         from studio.spark_cluster import venv_activate_sh
         return venv_activate_sh()
@@ -151,8 +129,8 @@ def _activate_sh() -> str:
 
 
 def _probe_wrapper(source: str) -> str:
-    """The shell one-liner that runs the probe, identical on both nodes: a difference between
-    the two wrappers would itself show up as divergence and bury the real finding."""
+    """The shell one-liner that runs the probe, identical on both nodes: a difference between the two
+    wrappers would itself show up as divergence and bury the real finding."""
     import base64
 
     blob = base64.b64encode(source.encode()).decode()
@@ -211,17 +189,13 @@ def _run_probe_peer(
     timeout: int = 180,
     marker: str = "UNSLOTH_PARITY",
 ):
-    """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would. Not `ssh -t`,
-    not `bash -lc`: a login shell reads /etc/profile.d, which is exactly where the CUDA PATH
-    entry the real run never sees comes from, so it would report parity on a doomed pair."""
+    """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would."""
     import shutil
     import subprocess
 
     if not shutil.which("ssh"):
         return None, "no ssh on this machine"
-    # The same resolution every other SSH here uses. Reading only USER/USERNAME meant that
-    # from a service, a cron job or a container -- where neither is set -- the probes went to
-    # the literal account `nvidia` and reported UNKNOWN on a pair whose other SSH works.
+    # The same resolution every other SSH here uses.
     user = _ssh_login()
     remote = _probe_wrapper(source)
     try:
@@ -248,14 +222,7 @@ def _run_probe_peer(
 
 
 def _relative_to_home(probe: dict) -> dict:
-    """Path-valued probes rewritten against that node's OWN home.
-
-    A supported pair may use different usernames, and provisioning explicitly allows it, so
-    `/home/alice/.unsloth/.../torchrun` and `/home/bob/.unsloth/.../torchrun` are the same
-    capability. Compared raw they read as a divergence, doctor returns failure, and it warns of
-    a deadlock while both tools are present and equivalent. Only the home prefix is folded: a
-    tool at `/usr/bin` on one node and under the managed environment on the other still differs,
-    because that one is real."""
+    """Path-valued probes rewritten against that node's OWN home."""
     home = (probe.get("home") or "").rstrip("/")
     if not home:
         return probe
@@ -326,8 +293,8 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
         return 2
 
     diffs = compare_parity(local, peer)
-    # PATH is the usual CAUSE, not itself a capability, so it is supporting evidence when
-    # something real diverges and silent otherwise; a check that cries wolf gets ignored.
+    # PATH is the usual CAUSE, not itself a capability, so it is supporting evidence when something
+    # real diverges and silent otherwise; a check that cries wolf gets ignored.
     capability_diffs = [d for d in diffs if d[0] != "PATH"]
     path_diff = next((d for d in diffs if d[0] == "PATH"), None)
     diffs = capability_diffs
@@ -376,16 +343,9 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
 
 
 # The second-deepest bug, and why THIS check exists: one node was missing `causal_conv1d` and
-# `flash-linear-attention`, so Qwen3.5's linear-attention layers silently fell back to the
-# torch path -- 2.19x slower and 39% more memory on a byte-identical cell with identical
-# clocks and NCCL. Unlike a capability divergence this deadlocks nothing and raises nothing;
-# both nodes finish, and the only sign was one "The fast path is not available" line.
-# Two rules: COMPARE, do not demand -- a package missing on BOTH nodes may just be a model
-# family nobody runs, and a check listing packages nobody needs gets skipped. And ask the
-# RUNTIME, not the metadata: an installed extension that does not import is exactly as slow
-# as an absent one while reading as present. If it cannot run, the answer is "unknown".
+# `flash-linear-attention`, so Qwen3.5's linear-attention layers silently fell back to the torch
+# path -- 2.19x slower and 39% more memory on a byte-identical cell with identical clocks and NCCL.
 
-# Distributions that gate a fast path, with metadata aliases, in report order.
 FASTPATH_PACKAGES = (
     ("torch", ("torch",)),
     ("transformers", ("transformers",)),
@@ -401,7 +361,6 @@ FASTPATH_PACKAGES = (
     ("xformers", ("xformers",)),
 )
 
-# What each one buys, one line, so a finding explains itself without a web search.
 FASTPATH_WHY = {
     "causal_conv1d": "the fused causal conv1d used by linear-attention and Mamba blocks",
     "flash-linear-attention": "the fla kernels behind Qwen3.5-style linear attention",
@@ -417,11 +376,10 @@ FASTPATH_WHY = {
     "bitsandbytes": "4-bit and 8-bit kernels",
 }
 
-# These drag the rest of the stack with them, so the report says so rather than pretending.
 FASTPATH_HEAVY = ("torch", "triton")
 
-# Run as a CHILD process on purpose: importing flash-attn or a mismatched causal_conv1d
-# extension can abort the interpreter, and that must cost the package inventory nothing.
+# Run as a CHILD process on purpose: importing flash-attn or a mismatched causal_conv1d extension
+# can abort the interpreter, and that must cost the package inventory nothing.
 FASTPATH_RUNTIME_SOURCE = """
 import json
 g = {}
@@ -479,9 +437,7 @@ print("UNSLOTH_FASTPATH_GATES " + json.dumps(g, sort_keys=True))
 
 
 def fastpath_probe_source(runtime: bool = True) -> str:
-    """The fast-path probe, as source, run identically on both nodes. The inventory half reads
-    metadata only, so it is safe while a GPU is busy; the ``runtime`` half shells out to a
-    child interpreter, the only way to tell an installed package apart from a usable one."""
+    """The fast-path probe, as source, run identically on both nodes."""
     import base64
 
     lines = [
@@ -525,9 +481,7 @@ def fastpath_probe_source(runtime: bool = True) -> str:
 
 
 def compare_fastpath(local: dict, peer: dict) -> list:
-    """Findings comparing two probe results; empty means the nodes agree. Each is
-    ``{"kind", "name", "local", "peer", "lagging"}``, where ``lagging`` is None when neither
-    side is obviously behind. Never raises: a probe that half-ran must still report."""
+    """Findings comparing two probe results; empty means the nodes agree."""
     findings = []
     for name, _aliases in FASTPATH_PACKAGES:
         key = "pkg_" + name
@@ -566,8 +520,6 @@ def compare_fastpath(local: dict, peer: dict) -> list:
 
 
 # Gates worth mentioning when BOTH nodes lack them, because a pip install fixes them here.
-# `is_flash_attn_3_available` is deliberately absent: FA3 cannot simply be installed on a
-# Spark, so reporting it would be noise on every healthy pair.
 FASTPATH_BOTH_SLOW_GATES = (
     "tf_is_causal_conv1d_available",
     "tf_is_flash_linear_attention_available",
@@ -576,9 +528,7 @@ FASTPATH_BOTH_SLOW_GATES = (
 
 
 def fastpath_both_slow(local: dict, peer: dict) -> list:
-    """Fast paths that BOTH nodes lack, where transformers itself wanted one. A note, never a
-    failure, since nothing is asymmetric. Only transformers' own gates are used: they are the
-    one signal separating "this build looks for that kernel" from "nobody runs that model"."""
+    """Fast paths that BOTH nodes lack, where transformers itself wanted one."""
     return [
         key[3:]
         for key in FASTPATH_BOTH_SLOW_GATES
@@ -599,8 +549,6 @@ def _install_lines(node: str, peer_ip: str, spec: str) -> list:
     act = _activate_sh()
     if node == "local":
         return [f". {act}", f'python3 -m pip install "{spec}"']
-    # These are pasted by a user. `act` is already one double-quoted word, and it is going
-    # inside another double-quoted string, so its quotes are escaped like the spec's.
     inner = f'. {act.replace(chr(34), chr(92) + chr(34))}; python3 -m pip install \\"{spec}\\"'
     return [f'ssh {_ssh_login()}@{peer_ip} "{inner}"']
 
@@ -750,23 +698,7 @@ def doctor(
         help = "Do not compare the two nodes' fast-path packages and kernels.",
     ),
 ) -> None:
-    """Check the setup and report anything that would slow training down, or hang it.
-
-    Three classes of problem, all of which are silent until they are expensive:
-
-    * a power-delivery fault that drops NCCL from ~21 GB/s to ~3 GB/s -- a 7x hit on
-      every gradient all-reduce -- while raw RDMA still reads a healthy 24.5 GB/s, so
-      nothing cheaper than a real collective reveals it. It survives a REBOOT and needs
-      a full power cycle, so it can persist silently for days;
-    * a GPU whose compute engine is dead: nvidia-smi works, cuInit returns 100, dmesg
-      shows 0xbadf5600. That one needs a plain reboot and a power cycle is not required
-      -- the same symptom class as the above, with the opposite remedy;
-    * capability divergence between the two nodes, which does not slow anything down --
-      it deadlocks the job for 1800 s in a library that has nothing to do with the cause;
-    * a fast-path package present on one node and missing on the other, which deadlocks
-      nothing and raises nothing: the pair simply runs at the slower node's pace. Measured
-      here at 2.19x on Qwen3.5 LoRA training, with 39% more peak memory.
-    """
+    """Check the setup and report anything that would slow training down, or hang it."""
     if ctx.invoked_subcommand is not None:
         return
     from studio import spark_cluster
@@ -790,13 +722,10 @@ def doctor(
         typer.echo("  No configured peer, so there are no two nodes to compare.")
         typer.echo("  (Pair one with `unsloth spark up`.)")
 
-    # Inert without a peer: this check has nothing to say about one machine's package list.
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        # `--parity-only` promises no GPU work, and the runtime half of this probe imports
-        # torch and the native kernel packages on both nodes, which is minutes and a CUDA
-        # context. The package comparison still runs -- that IS a capability gate -- and
-        # `--deep` is the flag that asks for the imports.
+        # `--parity-only` promises no GPU work, and the runtime half of this probe imports torch and
+        # the native kernel packages on both nodes, which is minutes and a CUDA context.
         fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
 
     if parity_only:

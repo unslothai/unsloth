@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The fast-path parity check, driven with fake node responses.
-
-The bug it guards against is silent by construction, so these tests pin the three properties
-that make the check worth running: it names the node, package, both versions and a fixing
-command; it never fails open, answering UNKNOWN rather than OK when it could not look; and it
-is inert without a peer. Nothing here needs a Spark, a GPU, a peer or a network.
-"""
+"""The fast-path parity check, driven with fake node responses."""
 
 from __future__ import annotations
 
@@ -123,7 +117,6 @@ def test_report_prints_a_pasteable_fix_for_the_lagging_node(fake_probes, capsys)
     assert "1.7.0" in out and "<absent>" in out
     assert "fix, on this Spark" in out
     assert 'python3 -m pip install "causal_conv1d==1.7.0"' in out
-    # The peer is fine, so nothing may tell the operator to touch it.
     assert "fix, on the peer" not in out
 
 
@@ -191,10 +184,7 @@ def test_a_real_divergence_outranks_an_unknown_probe(fake_probes, capsys) -> Non
 
 
 def test_node_whose_fast_path_is_installed_but_does_not_import(fake_probes, capsys) -> None:
-    """An installed package whose extension will not load is exactly as slow as none.
-
-    The versions match, so a package-list comparison alone reports a healthy pair here.
-    """
+    """An installed package whose extension will not load is exactly as slow as none."""
     local = _node("a", gate_causal_conv1d_fn = "no (ImportError)")
     fake_probes(local, _node("b"))
     rc = D.check_fastpath("10.0.0.2")

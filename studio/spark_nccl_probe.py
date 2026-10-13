@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Measure real NCCL all-reduce bandwidth between two DGX Sparks.
-
-Run under torchrun on both nodes; rank 0 prints `SPARK_NCCL_BUSBW <GB/s> <ms>`.
-
-Not `ib_write_bw`: on GB10 the raw RDMA number stays healthy even when NCCL has collapsed,
-so only a real collective shows the fault. Not a general benchmark either -- one message
-size and few iterations, so it can sit behind a `doctor` someone runs impatiently.
-"""
+"""Measure real NCCL all-reduce bandwidth between two DGX Sparks."""
 
 from __future__ import annotations
 
@@ -43,7 +36,6 @@ def main() -> int:
 
     if rank == 0:
         gib = buf.numel() * 4 / 2**30
-        # The nccl-tests bus-bandwidth convention, so this is comparable to published figures.
         busbw = gib * 2 * (world - 1) / world / per_iter
         print(f"SPARK_NCCL_BUSBW {busbw:.2f} {per_iter * 1000:.1f}", flush = True)
 

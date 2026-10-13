@@ -290,10 +290,8 @@ class TestTheKeepPathsRequireSmCoverage:
 def test_the_fast_path_backfills_a_missing_rpc_server(
     monkeypatch, tmp_path, system, healthy_payload
 ):
-    """An install from before ggml-rpc-server entered the copy allowlist has its client library
-    and a matching tag. The no-plan fast path must not call that current, or the upgrade that
-    would re-extract the bundle never runs; once the server is there it must keep the install."""
-    # A fork tag at or past the first build that shipped the server; "v1.0" carries no number.
+    """An install from before ggml-rpc-server entered the copy allowlist has its client library and a
+    matching tag."""
     monkeypatch.setitem(
         globals(), "BUNDLE", dataclasses.replace(BUNDLE, release_tag = "b11541-mix-2500203")
     )
