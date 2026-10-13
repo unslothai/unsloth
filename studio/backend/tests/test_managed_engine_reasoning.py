@@ -369,3 +369,38 @@ def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path):
     assert options["reasoning_parser"] == "deepseek_v3"
     assert options["reasoning_flags"]["supports_reasoning"] is True
     assert options["reasoning_flags"]["reasoning_always_on"] is False
+
+
+def test_tokenize_receives_the_effort_inside_the_template_kwargs(monkeypatch):
+    # /tokenize has no top-level reasoning_effort, so the count would render the default level.
+    from core.inference import managed_engine
+
+    sent = []
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(
+            self,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return SimpleNamespace(raise_for_status = lambda: None, json = lambda: {"count": 7})
+
+    monkeypatch.setattr(managed_engine.httpx, "Client", _Client)
+    engine = ManagedEngine("vllm")
+    engine.base_url, engine.model, engine.reasoning_parser = "http://engine", "m", "qwen3"
+    assert engine.count_tokens([{"role": "user", "content": "hi"}], reasoning_effort = "low")[0] == 7
+    assert "reasoning_effort" not in sent[-1]
+    assert sent[-1]["chat_template_kwargs"] == {"reasoning_effort": "low", "enable_thinking": True}
+    engine.count_tokens([{"role": "user", "content": "hi"}], enable_thinking = False)
+    assert sent[-1]["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}

@@ -949,6 +949,18 @@ class ManagedEngine:
             raise RuntimeError("Exact prompt token counting is unavailable for this engine.")
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}, *messages]
+        fields = self.reasoning_fields(
+            kwargs.get("enable_thinking"),
+            kwargs.get("reasoning_effort"),
+            kwargs.get("preserve_thinking"),
+        )
+        # /tokenize takes template controls only in chat_template_kwargs; /chat/completions moves the
+        # top-level effort there itself, and turns thinking on for it unless told otherwise.
+        effort = fields.pop("reasoning_effort", None)
+        if effort is not None:
+            template_kwargs = fields["chat_template_kwargs"]
+            template_kwargs["reasoning_effort"] = effort
+            template_kwargs.setdefault("enable_thinking", effort != "none")
         with httpx.Client(trust_env = False, timeout = 30) as client:
             response = client.post(
                 self.base_url + "/tokenize",
@@ -957,11 +969,7 @@ class ManagedEngine:
                     "model": self.model,
                     "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
                     "add_generation_prompt": True,
-                    **self.reasoning_fields(
-                        kwargs.get("enable_thinking"),
-                        kwargs.get("reasoning_effort"),
-                        kwargs.get("preserve_thinking"),
-                    ),
+                    **fields,
                 },
             )
             response.raise_for_status()
