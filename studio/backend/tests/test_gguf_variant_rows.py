@@ -14,6 +14,7 @@ Splitting a genuinely split GGUF is the opposite mistake, so both are pinned her
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -1152,7 +1153,8 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
     # No branch may call pick_best_gguf on the raw filenames any more.
     source = inspect.getsource(service)
-    assert source.count("pick_best_gguf(_default_variant_candidates(") == 5
+    # Whitespace-insensitive: the formatter may wrap a call across lines.
+    assert len(re.findall(r"pick_best_gguf\(\s*_default_variant_candidates\(", source)) == 5
     assert "pick_best_gguf(filenames)" not in source
 
 
