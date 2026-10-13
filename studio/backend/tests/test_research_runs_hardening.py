@@ -225,6 +225,8 @@ def test_sanitize_query_redacts_every_auth_param_after_an_authorization_scheme()
         f'nonce="{nonce}", response="{digest}"',
         f'Authorization: Digest username="a\\"b", realm="api", nonce="{nonce}", response="{digest}"',
         f"Authorization: SCRAM-SHA-256 data={digest}{nonce}",
+        f"Authorization: 1Foo {digest}{nonce}",
+        f"Authorization: Digest nonce=abc`def, response={digest}{nonce}",
         f'Authorization: Digest username = "bob", nonce = "{nonce}", response = "{digest}"',
         f'curl -H "Authorization: Bearer {digest}{nonce}"',
         f"(Authorization: Basic {digest}{nonce}==)",

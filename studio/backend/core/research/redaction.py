@@ -29,9 +29,9 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,"`()<>\[\]{}”’]+)"""
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,"()<>\[\]{}”’]+)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[A-Za-z][\w!#$%&'*+.^`|~-]*[ \t]+
+    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[\w!#$%&'*+.^`|~-]+[ \t]+
     (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
 )
 _QUERY_CREDENTIAL = re.compile(
