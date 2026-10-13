@@ -336,6 +336,56 @@ def test_a_resumed_reply_does_not_merge_over_the_compaction_it_follows(executed)
     assert follow_up[0]["extra_content"]["anthropic"]["content"] == [summary]
 
 
+def test_the_searched_branch_carries_replayed_results_as_the_model_saw_them(executed):
+    from core.inference.tool_loop_controller import TOOL_ERROR_NUDGE
+
+    branch = [
+        {"role": "user", "content": "run it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_a", "name": "python", "content": "Error: boom"},
+        {"role": "user", "content": "what failed earlier"},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_c",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"failed"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "boom"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+
+    searched = executed[0]["conversation_branch"]
+    assert searched[2]["content"] == "Error: boom" + TOOL_ERROR_NUDGE
+    assert searched[2]["content"] == transport.requests[0]["messages"][2]["content"]
+
+
 def test_a_conversation_search_here_gets_the_active_branch(executed):
     """The provider loops share the local paths' tool catalogue.
 

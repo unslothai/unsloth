@@ -302,7 +302,7 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
-test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
+test("GPT-6 Sol and Luna subscription models use local Tools", () => {
   setProviderModelCapabilities("openai_codex", {
     "gpt-6-sol": { vision: true, studio_tools: true },
     "gpt-6-luna": { vision: true, studio_tools: true },

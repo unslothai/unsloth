@@ -2788,6 +2788,7 @@ class InferenceOrchestrator:
         recall_done: bool = False,
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
+        force_reset: bool = False,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
@@ -2833,6 +2834,7 @@ class InferenceOrchestrator:
                 _keeps_compaction_boundary,
                 _memory_tool_withheld,
                 _records_boundary,
+                _sticky_compaction_manual,
                 _sticky_compaction_state,
             )
 
@@ -2883,6 +2885,17 @@ class InferenceOrchestrator:
                 if replay_boundary
                 else (0, False)
             )
+            sticky_manual = (
+                sticky > 0
+                and sticky_is_checkpoint
+                and _sticky_compaction_manual(
+                    thread_id,
+                    request_branch,
+                    context_policy = context_policy,
+                    can_reset = can_reset,
+                    compaction_headroom_ratio = compaction_headroom_ratio,
+                )
+            )
             fitted, truncation = _fit_with_instruction_pins(
                 conversation,
                 context_length = context_length,
@@ -2895,6 +2908,8 @@ class InferenceOrchestrator:
                 reserve_tokens = _conversation_recall_reserve(thread_id),
                 sticky_dropped = sticky,
                 sticky_is_checkpoint = sticky_is_checkpoint,
+                sticky_manual = sticky_manual,
+                force_reset = force_reset,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             if not truncation:
@@ -3111,6 +3126,7 @@ class InferenceOrchestrator:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
+        compact_context: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3262,6 +3278,7 @@ class InferenceOrchestrator:
                 tool_loop = True,
                 anchor_ids = pinned,
                 replay_boundary = not _sticky_boundary_applied,
+                force_reset = compact_context and not _sticky_boundary_applied,
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,

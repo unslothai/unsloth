@@ -487,6 +487,26 @@ def variant_remaining_bytes_from_state(
     )
 
 
+def _audio_cpp_remaining_bytes(
+    repo_id: str, key: str, missing_files: list, missing_companion_bytes: Optional[int]
+) -> Optional[int]:
+    """What resuming an audio.cpp row still fetches. Its whole manifest, not the generic plan, which keeps
+    one GGUF per quant and so drops a package's other components; without a manifest, the missing files."""
+    try:
+        manifest = download_manifest.read_manifest("model", repo_id, key)
+        files = manifest.expected_files if manifest is not None else ()
+        if files:
+            have = download_registry.existing_blob_bytes(
+                "model", repo_id, frozenset(f.sha256 for f in files if f.sha256)
+            )
+            return max(0, sum(max(0, int(f.size or 0)) for f in files) - have)
+    except Exception as e:
+        logger.warning(f"Manifest pricing failed for {repo_id} [{key}]: {e}")
+    if missing_companion_bytes is None:
+        return None
+    return sum(size for _path, size in missing_files) + missing_companion_bytes
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -1103,12 +1123,65 @@ async def _audio_cpp_variants_answer(
             c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
         )
         companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
+        # An unresolved companion (offline, nothing cached) has an unknown size: no remainder then.
+        missing_companion_bytes = (
+            None
+            if any(c is None for c in companions)
+            else sum(
+                c.variant.size_bytes for c in companions if audio_cpp_files.cached_files(c) is None
+            )
+        )
+        try:
+            incomplete = download_registry.incomplete_blob_hashes(
+                "model", model.repo_id, active_only = True
+            )
+        except Exception as e:
+            logger.warning(f"Partial check failed for {model.id}: {e}")
+            incomplete = set()
+        # A file every row lists (a package's configs, a voice folder) says nothing about one row.
+        counts: dict[str, int] = {}
+        for variant in model.variants:
+            for path in {f.path for f in variant.files}:
+                counts[path] = counts.get(path, 0) + 1
         rows = []
         for variant in model.variants:
-            downloaded = (
-                companions_cached
-                and audio_cpp_files.cached_files(model.with_variant(variant)) is not None
-            )
+            row_model = model.with_variant(variant)
+            downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
+            partial = False
+            remaining = None
+            key = variant.key if model.is_package else gguf_variant_key(variant.primary)
+            if not downloaded:
+                missing_files = audio_cpp_files.missing_files(row_model)
+                missing = {path for path, _size in missing_files}
+                own_cached = any(
+                    f.path not in missing and counts.get(f.path, 0) == 1 for f in variant.files
+                )
+                try:
+                    partial = own_cached or hf_cache_scan.is_variant_partial(
+                        model.repo_id,
+                        key,
+                        incomplete_blob_hashes = incomplete,
+                        variant_blob_hashes = gguf_variant_blob_hashes(
+                            model.repo_id,
+                            key,
+                            hf_token,
+                            include_companions = False,
+                            allow_remote = False,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Partial check failed for {model.id} [{variant.key}]: {e}")
+                    partial = own_cached
+                if partial:
+                    remaining = (
+                        None
+                        if model.is_package
+                        else variant_remaining_bytes_from_state(model.repo_id, key, None)
+                    )
+                    if remaining is None:
+                        remaining = _audio_cpp_remaining_bytes(
+                            model.repo_id, key, missing_files, missing_companion_bytes
+                        )
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
@@ -1116,7 +1189,14 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    download_remaining_bytes = remaining,
                     downloaded = downloaded,
+                    partial = partial,
+                    partial_transport = (
+                        _partial_transport_for_variant(model.repo_id, key) if partial else None
+                    ),
+                    partial_resumable = partial
+                    and _partial_resumable_for_variant(model.repo_id, key),
                 )
             )
         return rows

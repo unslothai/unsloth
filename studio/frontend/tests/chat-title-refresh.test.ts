@@ -273,12 +273,33 @@ test("the Library's Regenerate title is off while any of the chat's panes is gen
 
 test("a second Regenerate title while one runs leaves the running request's toast alone", () => {
   const source = readFileSync(
-    new URL("../src/features/library/chats/chats-library.tsx", import.meta.url),
+    new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
     "utf8",
   ).replace(/\s+/g, " ");
   const fn = source.slice(
     source.indexOf("async function regenerateChatTitleWithToast"),
-    source.indexOf("function isDateField"),
+    source.indexOf("async function regenerateChatTitleNow"),
   );
   assert.match(fn, /if \(outcome === "busy"\) return; if \(outcome === "empty"\)/);
+});
+
+test("the chat header menu offers Regenerate title like the Library, off while generating", () => {
+  const menu = readFileSync(
+    new URL("../src/features/chat/components/chat-header-menu.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    menu,
+    /icon=\{Refresh01Icon\}\s*onSelect=\{\(\) => void regenerateChatTitleWithToast\(menu\.item\)\}\s*disabled=\{generating\}/,
+  );
+  assert.match(menu, /t\("library\.menu\.regenerateTitle"\)/);
+  assert.match(
+    menu,
+    /getSidebarItemThreadIds\(menu\.item\)\.some\(\(id\) => Boolean\(s\.runningByThreadId\[id\]\)\)/,
+  );
+  const library = readFileSync(
+    new URL("../src/features/library/chats/chats-library.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(library, /regenerateTitle: \(chat\) => void regenerateChatTitleWithToast\(chat\)/);
 });

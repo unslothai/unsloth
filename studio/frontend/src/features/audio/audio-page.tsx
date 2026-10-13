@@ -40,9 +40,10 @@ import {
 import {
   type AudioBusy,
   type AudioGenerationPhase,
+  audioEjectAvailable,
   audioGenerationPresentation,
 } from "./audio-page-policy";
-import { clipReference } from "./audio-run-request";
+import { type AudioSourceSelection, clipReference } from "./audio-run-request";
 import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
@@ -104,6 +105,7 @@ import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
+import { useAlignerDownload } from "./hooks/use-aligner-download";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
 import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
@@ -327,6 +329,8 @@ export function AudioPage({
     runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
+    sttEngines,
+    sttEngineFor,
     setLastSttRepo,
     sttLoadingGeneration,
     sttLoadAbort,
@@ -335,6 +339,8 @@ export function AudioPage({
     sttSelected,
     sttReady,
     releaseTranscribeSelection,
+    ejectTranscribeModel,
+    readSttResidency,
     ensureSttLoaded,
   } = useSttSidecar({ setBusy, activeRef });
 
@@ -372,6 +378,9 @@ export function AudioPage({
     ensureSttLoaded,
     setLastSttRepo,
     refreshSttStatus,
+    sttEngineFor,
+    readSttResidency,
+    sttLoadGeneration,
   });
 
   const {
@@ -479,8 +488,13 @@ export function AudioPage({
     isMac,
     status,
     releaseTranscribeSelection,
+    ejectTranscribeModel,
     ensureSttLoaded,
     sttGgufVariants,
+    sttEngines,
+    sttEngineFor,
+    refreshSttStatus,
+    sttLoadedModel,
     selectedSttRepoRef,
     setSelectedSttRepo,
     deferredSttLoad,
@@ -1254,7 +1268,10 @@ export function AudioPage({
     string | null
   >(null);
   const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
-  const transcribeCaps = useTranscribeCapabilities(transcribeRepo);
+  const transcribeCaps = useTranscribeCapabilities(
+    transcribeRepo,
+    transcribeRepo ? sttEngineFor(transcribeRepo) : null,
+  );
   const transcribeOptions = transcribeSwitches(
     transcribeCaps.caps,
     transcribePrefs,
@@ -1297,8 +1314,16 @@ export function AudioPage({
     label: `use ${model.name}`,
     onClick: () => void pickRecommendedModel(model.id),
   }));
-  const transcribeBlocker: GenerateBlocker | null =
-    busy === "loading"
+  const alignerDownload = useAlignerDownload(
+    transcribeCaps.caps,
+    transcribeCaps.refresh,
+    transcribeOptions.request.timestamps,
+  );
+  const alignerBlocks =
+    alignerDownload.staging && transcribeOptions.request.timestamps;
+  const transcribeBlocker: GenerateBlocker | null = alignerBlocks
+    ? { reason: "Downloading the timing aligner…" }
+    : busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
       : busy !== null
         ? null
@@ -1340,9 +1365,7 @@ export function AudioPage({
                 : null;
   const canTranscribe =
     mode === "transcribe" && busy === null && transcribeBlocker === null;
-  const handleTranscribe = () => {
-    const source = useAudioTranscribeStore.getState().source;
-    if (!source) return;
+  const startTranscription = (source: AudioSourceSelection) => {
     const { request } = transcribeOptions;
     void runTranscription(
       source,
@@ -1354,6 +1377,31 @@ export function AudioPage({
     ).then(() => {
       // A timestamped run may have downloaded the aligner.
       if (request.timestamps) transcribeCaps.refresh();
+    });
+  };
+  const startTranscriptionRef = useRef(startTranscription);
+  useEffect(() => {
+    startTranscriptionRef.current = startTranscription;
+  });
+  const handleTranscribe = () => {
+    const source = useAudioTranscribeStore.getState().source;
+    if (!source) return;
+    alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
+      // The download can outlast the click: run only while Transcribe still shows the same audio.
+      if (
+        !activeRef.current ||
+        modeRef.current !== "transcribe" ||
+        useAudioTranscribeStore.getState().source?.id !== source.id
+      )
+        return;
+      // A run would be refused while a model loads or another task runs: say so instead of dropping it.
+      if (busyRef.current !== null) {
+        toast.info("The timing aligner is ready", {
+          description: "Press Transcribe again once the current task finishes.",
+        });
+        return;
+      }
+      startTranscriptionRef.current(source);
     });
   };
   const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
@@ -1604,7 +1652,13 @@ export function AudioPage({
               value={selectorValue}
               onValueChange={handleModelSelect}
               onEject={
-                busy === null && selectorValue && !showLastPageModel
+                audioEjectAvailable({
+                  mode,
+                  busy,
+                  hasValue: Boolean(selectorValue),
+                  showLastPageModel,
+                  sttReady,
+                })
                   ? handleEject
                   : undefined
               }
