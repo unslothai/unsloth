@@ -203,7 +203,7 @@ _BLOCK_TAGS = frozenset(
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 
-# end tags in these groups pop through descendants when their target is in the matching HTML parser scope
+# end tags pop through descendants only when their target is in the matching HTML parser scope
 _SKIP_RECOVERY_END_TAGS = (
     frozenset(
         {
@@ -262,16 +262,15 @@ _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
 _TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"})
 _INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
-# half the 16K fetch result: repeated span cells must leave room for the source text after the table
+# repeated span cells use half the 16k fetch limit to leave room for text after the table
 _MAX_SPAN_CHARS = 8_000
-# a long rowspan cell is usually page layout, so only its first row keeps the text
+# long rowspan cells usually encode layout, so only their first row keeps the text
 _MAX_REPEATED_CELL_CHARS = 200
-# floor per scope candidate once the page-wide total is spent, so an earlier decoy cannot starve a later article
+# each scope keeps 256 characters after the page-wide budget is spent, preventing decoy starvation
 _MIN_SCOPE_SPAN_CHARS = 256
 _INLINE_EMPHASIS = {"strong": "**", "b": "**", "em": "*", "i": "*"}
 
-# after a word, digits joined by commas / en dashes are citations (claim<sup>1,3–5</sup>); one separator per
-# step keeps the match linear. Hyphen / minus stay exponents (10<sup>-3</sup>), and so do thousands (1,000)
+# citation lists after words use commas or en dashes; hyphens, minuses, and thousands stay exponents
 _CITATION_LIST = re.compile(r"\d+(?:\s*[–,]\s*\d+)+")
 _THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
 _PLAIN_SUFFIXES = frozenset(
@@ -698,16 +697,15 @@ class _MarkdownRenderer(HTMLParser):
         page_span_limit: int | None = None,
     ):
         super().__init__(convert_charrefs = False)
-        # getpos() of buttons that carry their heading's title, found by _TitleButtonScan
+        # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_tags: list[str] = []
-        # tag -> its indices in _skip_tags, so end tags resolve without rescanning the stack
+        # tag indices in _skip_tags avoid rescanning the stack for end tags
         self._skip_at: dict[str, list[int]] = {}
 
-        # Main-content scoping: emit only while inside a scope tag.
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
 
@@ -717,18 +715,18 @@ class _MarkdownRenderer(HTMLParser):
 
         # open non-void tags plus hidden-start indices, so an omitted </p>/</li> cannot leave the renderer stuck hidden
         self._open_tags: list[str] = []
-        # tag -> its indices in _open_tags, so scoped end-tag recovery stays constant time
+        # tag indices in _open_tags keep scoped end-tag recovery at constant time
         self._open_at: dict[str, list[int]] = {}
-        # Open tags that can be closed implicitly; zero lets _close_implicit skip the scan.
+        # zero avoids scanning when no tags can close implicitly
         self._closable_open: int = 0
         self._hidden_marks: list[int] = []
 
-        # Open <header> buffers, innermost last. Empty unless strip_header.
+        # innermost <header> buffers; empty unless strip_header
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
         self.header_decisions: list[bool] = []
         self._header_decisions = header_decisions
-        # Furniture chars removed, so a candidate is sized as the page wrote it.
+        # furniture chars removed, so a candidate is sized as the page wrote it
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
@@ -1144,19 +1142,18 @@ class _MarkdownRenderer(HTMLParser):
             frame = self._header_stack[-1]
             frame.heading_parts.append(heading_text + "\n\n")
             frame.heading_chars += len(heading_text)
-            # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
+            # preserve this in the gate so a title-only card is not counted as body prose
             self._seg_heading_texts.append(heading_text)
 
-    # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
-        """Drop the open-tag stack above *index*, keeping the closable count."""
+        """drop open tags above *index* while maintaining the closable count."""
         for name in self._open_tags[index:]:
             if positions := self._open_at.get(name):
                 positions.pop()
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
-        # a <sup> an ancestor closed (<p>x<sup>2</p>) is gone; a kept frame would fill the depth cap
+        # discard <sup> frames whose ancestor closed to avoid filling the depth cap
         while self._sup_starts and self._sup_starts[-1][0] >= index:
             self._sup_starts.pop()
 
@@ -1259,19 +1256,17 @@ class _MarkdownRenderer(HTMLParser):
         frame = self._header_stack[-1]
         chars = len(text.strip())
         frame.text_chars += chars
-        # An anchor with no usable href renders as prose, not as a link.
+        # anchors without usable hrefs render as prose
         if not (self._in_link and self._link_href):
             return
         if self._link_seq == frame.outer_link_seq:
-            # An enclosing anchor closes after the header, too late to credit.
+            # enclosing anchors close after the header, too late to credit
             frame.link_chars += chars
         else:
             self._link_header_chars += chars
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
-        """Track open/hidden/scope state; return True when the tag's content
-        should be rendered (False = suppressed). Caller runs ``_close_implicit``
-        first so recovery also fires for skipped tags."""
+        """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
         if tag not in _VOID_TAGS:
             if tag in _INDEXED_OPEN_TAGS:
                 self._open_at.setdefault(tag, []).append(len(self._open_tags))
@@ -1369,8 +1364,7 @@ class _MarkdownRenderer(HTMLParser):
                 self._skip_tags.append(tag)
             return
 
-        # Recover optional end tags before the skip decision: a skipped <nav>/<footer> still implicitly closes an open
-        # <p>, releasing its hidden mark so following siblings render.
+        # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
         self._close_implicit(tag)
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
@@ -1495,7 +1489,7 @@ class _MarkdownRenderer(HTMLParser):
             self._next_cell_seq += 1
             self._cell_seq = self._next_cell_seq
             self._cell_colspan = min(max(1, _span_attr(attr_dict, "colspan")), 1000)
-            # rowspan="0" runs to the end of the row group
+            # rowspan="0" spans the remaining row group
             self._cell_rowspan = _span_attr(attr_dict, "rowspan") or 65534
             if tag == "th":
                 self._row_has_th = True
@@ -1511,7 +1505,7 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_tags:
             at = self._skip_at.get(tag)
             templates = self._skip_at.get("template")
-            # a <template> is a scope boundary: end tags of elements outside it are ignored
+            # template is a scope boundary, so end tags outside it are ignored
             if at and (not templates or at[-1] >= templates[-1]):
                 i = at[-1]
                 if tag in _SKIP_RECOVERY_END_TAGS and not self._skip_target_in_scope(tag, i):
@@ -1520,7 +1514,7 @@ class _MarkdownRenderer(HTMLParser):
                     self._skip_at[name].pop()
                 del self._skip_tags[i:]
                 return
-            # only scoped structural end tags pop through a skipped element; form and inline end tags do not
+            # only scoped structural end tags pop skipped elements; form and inline end tags do not
             if tag not in _SKIP_RECOVERY_END_TAGS:
                 return
             if tag in _HEADING_TAGS:
@@ -1535,12 +1529,12 @@ class _MarkdownRenderer(HTMLParser):
                 return
             self._skip_tags.clear()
             self._skip_at.clear()
-        # a kept title button closes through _exit_tag
+        # kept title buttons close through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
 
         closing_sup = None
-        # O(1): only a <sup> that is still the innermost open tag converts; malformed nesting drops on unwind
+        # only the innermost open <sup> converts in O(1); malformed nesting drops on unwind
         if (
             tag == "sup"
             and self._sup_starts

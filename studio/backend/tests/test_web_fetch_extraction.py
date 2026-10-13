@@ -327,9 +327,7 @@ def test_hidden_regions_with_inline_children_end_at_the_implied_close(
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
-    # A skipped block (<nav>/<footer>) also closes an open <p>. The optional-close
-    # bookkeeping must run before the skip, or the never-closed <p hidden> keeps its
-    # hidden mark and swallows every following sibling.
+    # optional-close bookkeeping must run before skipped blocks or an unclosed hidden paragraph hides later siblings
     for skipped in ("nav", "footer"):
         html = f"<body><p hidden>secret<{skipped}>chrome</{skipped}>VISIBLE</body>"
         out = html_to_markdown(html)
@@ -423,7 +421,7 @@ def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
         start = time.perf_counter()
         html_to_markdown(build(count), main_content = True)
         timings.append(time.perf_counter() - start)
-    # Eight times the tags, well under sixty-four times the work.
+    # eight times the input should remain well below quadratic growth
     assert timings[1] < timings[0] * 24, timings
 
 
