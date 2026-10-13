@@ -6269,13 +6269,12 @@ def _load_spark_cluster():
 @pytest.mark.parametrize(("install_kind", "expected"), sorted(_RPC_INSTALL_KINDS.items()))
 @pytest.mark.parametrize("source_label", ["published", "upstream"])
 def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source_label):
-    """lib*.so* admits the client library only, so the executable has to be named or a fresh
-    install lacks it. Fork and upstream alike."""
+    """lib*.so* admits the client library only, so the executable has to be named or a fresh install
+    lacks it."""
     patterns = INSTALL_LLAMA_PREBUILT.runtime_patterns_for_choice(
         _rpc_choice(install_kind, source_label = source_label)
     )
     assert expected in patterns
-    # The legacy upstream name rides along so an older upstream tag is served too.
     legacy = "rpc-server.exe" if expected.endswith(".exe") else "rpc-server"
     assert legacy in patterns
     # And the allowlist never admits the whole tool set by accident.
@@ -6298,8 +6297,8 @@ def test_rpc_server_is_in_every_runtime_allowlist(install_kind, expected, source
 def test_rpc_server_backfill_true_when_missing_false_once_present(
     tmp_path, host_factory, install_kind, source_label, runtime_parts, library
 ):
-    """An install predating the allowlist has the client library but not the executable, so it
-    is owed a re-extract; once the binary is present it must say so, or it re-extracts forever."""
+    """An install predating the allowlist has the client library but not the executable, so it is owed
+    a re-extract; once the binary is present it must say so, or it re-extracts forever."""
     host = host_factory()
     tag = "b10798" if source_label == "upstream" else "b10798-mix-659e406"
     choice = _rpc_choice(install_kind, source_label = source_label, tag = tag)
@@ -6308,7 +6307,6 @@ def test_rpc_server_backfill_true_when_missing_false_once_present(
     runtime_dir.mkdir(parents = True)
     (runtime_dir / library).write_bytes(b"rpc client library")
     if source_label == "published":
-        # A fork tree that is otherwise complete, so the shared reason reaches the RPC check.
         ext = ".exe" if host.is_windows else ""
         (runtime_dir / f"llama-diffusion-gemma-visual-server{ext}").write_bytes(b"visual server")
 
@@ -6325,8 +6323,8 @@ def test_rpc_server_backfill_true_when_missing_false_once_present(
 
 
 def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
-    """An upstream tag from before the ggml- prefix installs rpc-server; that is the
-    same executable and spark_cluster accepts it, so it is not owed a re-extract."""
+    """An upstream tag from before the ggml- prefix installs rpc-server; that is the same executable
+    and spark_cluster accepts it, so it is not owed a re-extract."""
     host = linux_host()
     choice = _rpc_choice("linux-cpu", source_label = "upstream", tag = "b9001")
     runtime_dir = tmp_path / "llama.cpp" / "build" / "bin"
@@ -6342,10 +6340,8 @@ def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
 @pytest.mark.parametrize(
     ("source_label", "tag", "library"),
     [
-        # Built without GGML_RPC: no client library, so nothing is owed (upstream or fork).
         ("upstream", "b10798", None),
         ("published", "b10798-mix-659e406", None),
-        # Fork bundles before b10796 shipped the library without the executable.
         ("published", "b10795-mix-0123abc", "libggml-rpc.so"),
         ("published", "b9596-mix-deadbee", "libggml-rpc.so"),
         # A tag that carries no build number cannot be placed, so it is left alone.
@@ -6360,9 +6356,7 @@ def test_rpc_server_backfill_accepts_the_legacy_name(tmp_path):
     ],
 )
 def test_rpc_server_backfill_is_not_owed_without_evidence(tmp_path, source_label, tag, library):
-    """The thrash guard: a bundle that never ships the executable must not re-extract
-    on every update. Evidence (the always-copied client library, and the fork build
-    number the server first shipped in) decides, not the source label."""
+    """The thrash guard: a bundle that never ships the executable must not re-extract on every update."""
     host = linux_host()
     choice = _rpc_choice("linux-cuda", source_label = source_label, tag = tag)
     runtime_dir = tmp_path / "llama.cpp" / "build" / "bin"
@@ -6387,9 +6381,8 @@ def test_release_build_number_reads_fork_and_upstream_tags():
 
 
 def test_every_reuse_path_consults_the_bundle_backfill():
-    """Three places decide the tag-match skip (the primary plan, the fallback plans,
-    and the per-attempt guard in validate_prebuilt_attempts). Each must ask the one
-    shared check, or a backfill added to it is silently skipped on that path."""
+    """Three places decide the tag-match skip (the primary plan, the fallback plans, and the
+    per-attempt guard in validate_prebuilt_attempts)."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert source.count("bundle_backfill_reason(") == 4  # definition + 3 reuse paths
     body = source[source.index("def bundle_backfill_reason") : source.index("def _causal_chain")]
@@ -6398,9 +6391,9 @@ def test_every_reuse_path_consults_the_bundle_backfill():
 
 
 def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
-    """Layout agreement pinned on both ends: the names and directories the installer writes are
-    the ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still
-    ends up executable where rpc_server_binary() finds it."""
+    """Layout agreement pinned on both ends: the names and directories the installer writes are the
+    ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still ends up
+    executable where rpc_server_binary() finds it."""
     sc = _load_spark_cluster()
     installer_names = set()
     for host in (linux_host(), _macos_host(), _windows_host()):
@@ -6471,14 +6464,12 @@ def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeyp
     assert os.access(server, os.X_OK)
     assert (install / "build" / "bin" / "libggml-rpc.so").is_file()
     assert not (install / "build" / "bin" / "llama-cli").exists()
-    # No root-level link: nothing resolves it there and spark_cluster looks in build/bin first.
     assert not (install / "ggml-rpc-server").exists()
 
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(install))
     monkeypatch.setattr(sc.shutil, "which", lambda name: None)
     assert sc.rpc_server_binary() == str(server)
     assert sc.llama_bundle_identity(install)["rpc_server"] == str(server)
-    # And the install is complete as far as the backfill is concerned.
     assert INSTALL_LLAMA_PREBUILT.bundle_backfill_reason(install, linux_host(), choice) is None
 
 

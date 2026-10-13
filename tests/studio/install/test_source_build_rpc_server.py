@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The llama.cpp source-build fallback ships ggml-rpc-server (setup.sh / setup.ps1).
-
-Both scripts pass -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF on every configure and build the RPC
-server best-effort, from a target name read out of the tree, so a tree without one never
-fails the build. RDMA is off on EVERY platform: ggml-rpc auto-enables the transport whenever
-it finds a verbs library on the build host, which would give the artifact a hard runtime
-dependency on libibverbs/libnl (or, on a Mac, link /usr/lib/librdma.dylib and fail to load on
-any Mac without it). llama-server and llama-quantize stay the required targets; the RPC
-server is neither a health requirement nor a validation gate.
-"""
+"""The llama.cpp source-build fallback ships ggml-rpc-server (setup.sh / setup.ps1)."""
 
 import importlib.util
 import os
@@ -65,8 +56,8 @@ def _ps1_step_f(text: str) -> str:
 
 class TestSetupShConfigure:
     def test_rpc_on_and_rdma_off_are_set_once_before_the_cpu_fallback_copy(self):
-        """Both flags on the shared CMAKE_ARGS, BEFORE CPU_FALLBACK_CMAKE_ARGS copies it, so
-        every configure carries them."""
+        """Both flags on the shared CMAKE_ARGS, BEFORE CPU_FALLBACK_CMAKE_ARGS copies it, so every
+        configure carries them."""
         block = _source_build_block(_sh())
         assert block.count("-DGGML_RPC=ON") == 1
         assert block.count("-DGGML_RPC_RDMA=OFF") == 1
@@ -117,8 +108,8 @@ class TestSetupShTargets:
         assert all(line.rstrip().endswith("|| true") for line in quantize)
 
     def test_rpc_target_is_optional(self):
-        """The RPC build line is best-effort; BUILD_OK=false in the helper is only the
-        macOS no-RPC rebuild of llama-server, i.e. a failed required target."""
+        """The RPC build line is best-effort; BUILD_OK=false in the helper is only the macOS no-RPC
+        rebuild of llama-server, i.e. a failed required target."""
         helper = _bash_function(_sh(), "_llama_build_rpc_server")
         rpc = [line for line in helper.splitlines() if '--target "$_target"' in line]
         assert len(rpc) == 1
@@ -129,8 +120,8 @@ class TestSetupShTargets:
         assert "-DGGML_RPC=OFF" in helper
 
     def test_no_root_level_link_for_the_rpc_server(self):
-        """rpc_server_binary() searches build/bin first; the prebuilt path made the same
-        call (install_from_archives links nothing at the root either)."""
+        """rpc_server_binary() searches build/bin first; the prebuilt path made the same call
+        (install_from_archives links nothing at the root either)."""
         for line in _source_build_block(_sh()).splitlines():
             if "ln -sf" in line:
                 assert "rpc-server" not in line
@@ -139,7 +130,6 @@ class TestSetupShTargets:
         gate = _bash_function(_sh(), "_llama_macos_rdma_gate_ok")
         assert "GGML_RPC_RDMA" in gate and "CMakeCache.txt" in gate
         assert "otool -L" in gate and "librdma" in gate
-        # pipefail: `grep -q` exiting early would turn a librdma hit into a pass.
         assert "grep -qi 'librdma'" not in gate
 
 
@@ -346,8 +336,8 @@ class TestSetupShHelpersRun:
 
 class TestSetupPs1:
     def test_rpc_on_and_rdma_off_are_common_flags(self):
-        """Once each, between the shared flags and the CUDA selection, so both the CUDA
-        and the CPU configure carry them."""
+        """Once each, between the shared flags and the CUDA selection, so both the CUDA and the CPU
+        configure carry them."""
         text = _ps1()
         native = text.index("$CmakeArgs += '-DGGML_NATIVE=ON'")
         cuda = text.index("if ($HasNvidiaDriverEvidence -and $NvccPath) {", native)
@@ -447,9 +437,9 @@ def test_both_scripts_resolve_the_same_names():
 
 
 def test_rpc_server_is_not_a_health_requirement():
-    """runtime_payload_health_groups drives the staged validation and the existing
-    install health check; a source or prebuilt tree without the RPC server must not
-    start failing (or re-installing) because of it."""
+    """runtime_payload_health_groups drives the staged validation and the existing install health
+    check; a source or prebuilt tree without the RPC server must not start failing (or
+    re-installing) because of it."""
     spec = importlib.util.spec_from_file_location(
         "studio_install_llama_prebuilt_rpc_source_build", MODULE_PATH
     )
@@ -481,10 +471,9 @@ def test_rpc_server_is_not_a_health_requirement():
             assert not (required & names), (kind, source_label, required & names)
 
 
-# ── the upgrade path ────────────────────────────────────────────────────────────
-# A clean install builds the RPC server; an EXISTING install at the canonical
-# location is reused verbatim, which is right for llama-server and wrong for RPC.
-# Before this, such an upgrade silently ended up with no ggml-rpc-server at all.
+# ── the upgrade path ──────────────────────────────────────────────────────────── A clean install
+# builds the RPC server; an EXISTING install at the canonical location is reused verbatim, which is
+# right for llama-server and wrong for RPC.
 
 UPGRADE_FUNCTIONS = (
     "_llama_rpc_server_target",

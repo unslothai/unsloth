@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Merge the per-stage adapters from a layer-split run back into one usable checkpoint.
-
-Merging is a UNION, not an average: `build_stage_model` replaces foreign layers with
-`Identity()` rather than deleting them, so layer numbering is preserved and the stages' key
-sets are disjoint by construction. If that stops holding this refuses rather than guessing,
-because a half-populated adapter loads fine and quietly produces a worse model.
-Dependency-light on purpose: the CLI imports this on every platform.
-"""
+"""Merge the per-stage adapters from a layer-split run back into one usable checkpoint."""
 
 from __future__ import annotations
 
@@ -20,16 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ADAPTER_BIN = "adapter_model.safetensors"
 ADAPTER_CFG = "adapter_config.json"
-# Written by each rank at save time: how many stages there were meant to be, and how deep the
-# model is. Without it the only completeness check available is that the directories present
-# are contiguous from 0, which [stage0, stage1] satisfies for a three-rank run.
+# Written by each rank at save time: how many stages there were meant to be, and how deep the model
+# is.
 STAGE_META = "unsloth_stage.json"
-# Written per stage and expected to differ: the merged adapter is the union of the stages,
-# so a per-stage module list says nothing about a config mismatch.
-# `base_model_name_or_path` is where the stage was LOADED from, not what it was trained on.
-# `stage_run_inputs` stages the checkpoint onto the peer, so rank 1 records the staged path
-# and rank 0 the original: a location-only difference that would otherwise refuse every
-# adapter pair produced by `--run --save` with a local checkpoint.
+# Written per stage and expected to differ: the merged adapter is the union of the stages, so a
+# per-stage module list says nothing about a config mismatch.
 _CFG_IGNORED = frozenset({"base_model_name_or_path"})
 _LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
 
@@ -97,8 +85,8 @@ def plan_merge(root: str) -> Dict[str, Any]:
     stages = [inspect_stage(p) for p in stage_dirs(root)]
     problems: List[str] = []
 
-    # Two stages claiming one layer means the split is not what we think, and a union would
-    # silently keep whichever was written last.
+    # Two stages claiming one layer means the split is not what we think, and a union would silently
+    # keep whichever was written last.
     seen: Dict[int, str] = {}
     for st in stages:
         for n in st["layers"]:
@@ -109,10 +97,8 @@ def plan_merge(root: str) -> Dict[str, Any]:
                 )
             seen[n] = st["path"]
 
-    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank that died
-    # before saving passed the directory check and merged half a model. Reported here rather
-    # than raised in discovery so `force` can still override it, the same escape the other
-    # refusals have: a deliberate one-rank run is degenerate but not forbidden.
+    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank that died before
+    # saving passed the directory check and merged half a model.
     if len(stages) < 2:
         problems.append(
             f"only {osp.basename(stages[0]['path'])} is present, and a layer split has at least "
@@ -120,7 +106,6 @@ def plan_merge(root: str) -> Dict[str, Any]:
             f"if a rank failed before saving"
         )
 
-    # Gaps: contiguous coverage from 0 is what stage_layers() guarantees.
     covered = sorted(seen)
     if covered and covered != list(range(covered[0], covered[-1] + 1)):
         missing = sorted(set(range(covered[0], covered[-1] + 1)) - set(covered))
@@ -130,9 +115,9 @@ def plan_merge(root: str) -> Dict[str, Any]:
     if covered and covered[0] != 0:
         problems.append(f"layers 0..{covered[0]-1} are in no stage")
 
-    # The recorded world size, which is the only thing that can see a MISSING LAST stage:
-    # losing the highest-numbered one leaves the remaining directories contiguous from 0 and
-    # their layers contiguous from 0 too, so every check above passes on half a model.
+    # The recorded world size, which is the only thing that can see a MISSING LAST stage: losing the
+    # highest-numbered one leaves the remaining directories contiguous from 0 and their layers
+    # contiguous from 0 too, so every check above passes on half a model.
     worlds = {int(st["meta"]["world"]) for st in stages if isinstance(st["meta"].get("world"), int)}
     if not worlds:
         problems.append(
@@ -195,10 +180,6 @@ def merge(
             "produces a worse model. Pass force=True only if you understand the consequence."
         )
 
-    # BEFORE anything is written. The configs used to be read after `save_file`, so a stage
-    # with a missing or divergent adapter_config.json left `out` holding the new tensors
-    # beside the old config: the command reported that it had refused the merge, and the
-    # previously usable output was already corrupt.
     cfgs = []
     for st in plan["stages"]:
         path = osp.join(st["path"], ADAPTER_CFG)
@@ -235,8 +216,8 @@ def merge(
                 tensors[k] = f.get_tensor(k)
                 provenance[k] = osp.basename(st["path"])
 
-    # Both files together, tensors first and the config immediately after, so `out` never
-    # holds one run's weights beside another's config.
+    # Both files together, tensors first and the config immediately after, so `out` never holds one
+    # run's weights beside another's config.
     os.makedirs(out, exist_ok = True)
     save_file(tensors, osp.join(out, ADAPTER_BIN))
     with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
@@ -281,8 +262,8 @@ def _cmd_merge(
         print("  (--force merges anyway, for a deliberate one-rank run or a partial recovery)")
         return 1
     if not plan["ok"]:
-        # `merge()` has always taken this; nothing reached it, so the escape hatch the
-        # refusal points at could not be used from the command users are told to run.
+        # `merge()` has always taken this; nothing reached it, so the escape hatch the refusal
+        # points at could not be used from the command users are told to run.
         print("  --force: merging despite the problems above")
     if dry_run or not out:
         print(f"  would write {out or '<--out DIR>'}")

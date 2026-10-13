@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The replica front end exists so that one dead engine does not reach the client.
-
-It did not do that. Round robin chose a backend, the connect failed, and the connection was
-closed, so with two replicas every other request failed while a healthy engine sat idle. These
-tests drive a real socket through a real event loop rather than stubbing `open_connection`,
-because the behaviour under test is what a client sees.
-"""
+"""The replica front end exists so that one dead engine does not reach the client."""
 
 from __future__ import annotations
 

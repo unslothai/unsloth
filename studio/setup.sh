@@ -1223,10 +1223,7 @@ _llama_build_jobs() {
         "$(_usable_ram_mb)"
 }
 
-# "ggml-rpc-server", "rpc-server" on older trees, nothing when the tree has no
-# RPC tool. Read from the tree, not `cmake --build --target help`, because the
-# Visual Studio generator has no help target: setup.ps1 reads the same two
-# files, so the two scripts stay in step.
+# "ggml-rpc-server", "rpc-server" on older trees, nothing when the tree has no RPC tool.
 _llama_rpc_server_target() {
     local _cml
     for _cml in "$1/tools/rpc/CMakeLists.txt" "$1/examples/rpc/CMakeLists.txt"; do
@@ -1241,8 +1238,6 @@ _llama_rpc_server_target() {
     return 0
 }
 
-# Does this tree already carry an RPC server binary, in any layout the backend
-# resolves? Same directories rpc_server_binary() searches, in the same order.
 _has_local_rpc_server() {
     local _d _n
     for _d in "$1/build/bin" "$1/build/bin/Release" "$1/bin" "$1"; do
@@ -1255,13 +1250,7 @@ _has_local_rpc_server() {
     return 1
 }
 
-# An install made before this tree built ggml-rpc-server has llama-server and
-# nothing else new. Reusing it verbatim is right for llama-server and wrong for
-# RPC: the upgrade silently ends up without the binary, and nothing says so. Add
-# JUST that target to the build directory that is already configured there. This
-# is the canonical Unsloth-owned location, so building into it is allowed, and no
-# other target is touched. Best-effort throughout: a tree with no RPC target, or a
-# link that fails, leaves the reused build exactly as it was.
+# An install made before this tree built ggml-rpc-server has llama-server and nothing else new.
 _backfill_local_rpc_server() {
     local _dir=$1 _target _jobs
     if _has_local_rpc_server "$_dir"; then
@@ -1278,8 +1267,6 @@ _backfill_local_rpc_server() {
     fi
     substep "the reused build has no $_target; building it in place..."
     # NCPU is assigned in the source-build section, which the reuse path never enters.
-    # Under `set -u` expanding it here aborted the whole Studio update instead of doing
-    # the best-effort backfill, so the job count is computed locally.
     _jobs="$(_llama_build_jobs)"
     if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$_jobs"; then
         if _has_local_rpc_server "$_dir"; then
@@ -1291,11 +1278,8 @@ _backfill_local_rpc_server() {
     return 0
 }
 
-# macOS only: return 1 when the cache did not keep -DGGML_RPC_RDMA=OFF or
-# something under $1/bin still links librdma. Such a build dies at load on any
-# Mac without /usr/lib/librdma.dylib, llama-server included, because libggml
-# links libggml-rpc. No `grep -q` on the otool pipeline: under pipefail an
-# early exit would turn a hit into a pass.
+# macOS only: return 1 when the cache did not keep -DGGML_RPC_RDMA=OFF or something under $1/bin
+# still links librdma.
 _llama_macos_rdma_gate_ok() {
     local _build=$1 _linked=""
     grep -qE '^GGML_RPC_RDMA:(BOOL|UNINITIALIZED)=OFF$' "$_build/CMakeCache.txt" 2>/dev/null || return 1
@@ -1305,10 +1289,8 @@ _llama_macos_rdma_gate_ok() {
     [ -z "$_linked" ]
 }
 
-# Best-effort: it never fails the build, since a tree without the tool or a
-# failed link leaves what was built. On macOS a build that leaked librdma is
-# redone without GGML_RPC, and only a failed llama-server rebuild there sets
-# BUILD_OK=false, as any failed build does.
+# Best-effort: it never fails the build, since a tree without the tool or a failed link leaves what
+# was built.
 _llama_build_rpc_server() {
     local _label=$1 _target _args
     _target="$(_llama_rpc_server_target "$_BUILD_TMP")"
@@ -1320,7 +1302,6 @@ _llama_build_rpc_server() {
     [ "$_HOST_SYSTEM" = "Darwin" ] || return 0
     _llama_macos_rdma_gate_ok "$_BUILD_TMP/build" && return 0
     substep "the build links librdma (GGML_RPC_RDMA=OFF was not honoured); rebuilding without GGML_RPC..." "$C_WARN"
-    # The args that configured this build dir: Metal until its CPU fallback ran.
     if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then _args="$CMAKE_ARGS"; else _args="$CPU_FALLBACK_CMAKE_ARGS"; fi
     rm -rf "$_BUILD_TMP/build"
     if run_quiet_no_exit "cmake llama.cpp (no rpc)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $_args -DGGML_RPC=OFF; then
@@ -1336,8 +1317,6 @@ _llama_build_rpc_server() {
 }
 
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
-# the first GPU forward pass JIT-compiles CUDA kernels and stalls installs for
-# minutes on Blackwell. Same env as install_llama_prebuilt.py.
 _staged_validation_enabled() {
     local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
     # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
@@ -5608,13 +5587,6 @@ else
                 && [[ "$_RESOLVED_SOURCE_REF" =~ ^b([0-9]+)$ ]]; then
                 CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_BUILD_NUMBER=${BASH_REMATCH[1]}"
             fi
-            # GGML_RPC_RDMA=OFF on EVERY platform: ggml-rpc auto-enables the
-            # transport whenever it finds a verbs library on the build host,
-            # which would give the artifact a hard runtime dependency on
-            # libibverbs/libnl, or on macOS link /usr/lib/librdma.dylib, absent
-            # on consumer Macs. Both flags are set before
-            # CPU_FALLBACK_CMAKE_ARGS copies CMAKE_ARGS, so a CPU fallback
-            # build carries them too.
             CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -6025,7 +5997,6 @@ else
         if [ "$BUILD_OK" = true ] && [ -f "$LLAMA_SERVER_BIN" ]; then
             step "llama.cpp" "built"
             [ -f "$LLAMA_CPP_DIR/llama-quantize" ] && step "llama-quantize" "built"
-            # No root-level link: rpc_server_binary() searches build/bin first.
             for _rpc_name in ggml-rpc-server rpc-server; do
                 if [ -x "$LLAMA_CPP_DIR/build/bin/$_rpc_name" ]; then
                     step "rpc-server" "built ($_rpc_name)"

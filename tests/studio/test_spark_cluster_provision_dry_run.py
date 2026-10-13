@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A provisioning dry run must not change the peer.
-
-`--rsync-path` is a command rsync runs ON THE PEER before transferring anything, so `--dry-run`
-does not suppress it. Wrapping it as `mkdir -p "<parent>" && rsync` therefore created the
-directories the dry run was only supposed to report. Every rsync argv the dry run builds is
-captured here and checked, rather than asserting on a flag, because the defect was that a flag
-did not mean what it looked like it meant.
-"""
+"""A provisioning dry run must not change the peer."""
 
 from __future__ import annotations
 
@@ -110,8 +103,8 @@ def test_a_real_run_still_creates_the_parent(monkeypatch, tmp_path) -> None:
 
 
 def test_a_missing_peer_directory_is_reported_not_attempted(monkeypatch, tmp_path) -> None:
-    """With nothing on the far side there is nothing to compare against, so the dry run says
-    what the real run would create instead of failing on a destination that is not there."""
+    """With nothing on the far side there is nothing to compare against, so the dry run says what the
+    real run would create instead of failing on a destination that is not there."""
     cluster = _cluster()
     recorder, results = _run(cluster, monkeypatch, tmp_path, dry_run = True, peer_dirs_exist = False)
 
@@ -123,11 +116,10 @@ def test_a_missing_peer_directory_is_reported_not_attempted(monkeypatch, tmp_pat
     assert not results["failed"], results["failed"]
 
 
-# ── the GPU probe's fail-closed contract ────────────────────────────────────────
-# A row that cannot be read is not an absent process. nvidia-smi reports `[N/A]` for
-# used_memory in real situations, and skipping such a row and then declaring the peer idle
-# inverts the whole point of the probe: provisioning would overwrite a venv the process behind
-# that row is running out of.
+# ── the GPU probe's fail-closed contract ──────────────────────────────────────── A row that cannot
+# be read is not an absent process. nvidia-smi reports `[N/A]` for used_memory in real situations,
+# and skipping such a row and then declaring the peer idle inverts the whole point of the probe:
+# provisioning would overwrite a venv the process behind that row is running out of.
 
 
 def _probe(cluster, monkeypatch, stdout: str):
@@ -171,10 +163,8 @@ def test_a_readable_busy_peer_is_still_busy(monkeypatch) -> None:
     assert out["processes"] == [{"pid": 4242, "used_mib": 40000}], out
 
 
-# ── the NCCL probe must not leave a rank running on the peer ────────────────────
-# The peer rank is launched detached with setsid/nohup. Every way the local side can end after
-# that left it in rendezvous or NCCL timeout handling, still holding the 1 GiB probe buffer, and
-# the next provisioning run then correctly refuses the peer as busy over a probe nobody wants.
+# ── the NCCL probe must not leave a rank running on the peer ──────────────────── The peer rank is
+# launched detached with setsid/nohup.
 
 
 class _Probe:
@@ -234,9 +224,6 @@ def test_the_stop_uses_the_recorded_pid_not_a_name_match(monkeypatch) -> None:
             sent.append(" ".join(str(c) for c in cmd))
             return sp.CompletedProcess(cmd, 0)
 
-    # Through monkeypatch: `cluster.subprocess` IS the stdlib module, so a bare assignment
-    # replaced `subprocess.run` for the rest of the session and every later test that shells
-    # out silently got a stub that reports success and does nothing.
     monkeypatch.setattr(cluster.subprocess, "run", _R())
     assert cluster.stop_peer_nccl_probe("192.0.2.7", "someuser", []) is True
     joined = " ".join(sent)
@@ -250,10 +237,8 @@ def test_the_launch_records_a_pid_to_stop() -> None:
     assert "echo $! > " in source and "spark_nccl_probe.pid" in source
 
 
-# ── which host is the peer ──────────────────────────────────────────────────────
-# Setup assigns NODE_BASE_OCTET + node_index, so node 0 is .12 and node 1 is .13. Always adding
-# one is right only on node 0: from the second Spark it returned .14, which does not exist, and
-# doctor, provisioning, serving and training launched from there all aimed at it.
+# ── which host is the peer ────────────────────────────────────────────────────── Setup assigns
+# NODE_BASE_OCTET + node_index, so node 0 is .12 and node 1 is .13.
 
 
 @pytest.mark.parametrize(
@@ -272,8 +257,8 @@ def test_the_peer_is_the_other_endpoint_whichever_end_this_is(local: str, expect
 
 @pytest.mark.parametrize("bad", ["192.168.200.11", "192.168.200.x", "notanaddress", ""])
 def test_an_address_that_is_not_a_rail_endpoint_has_no_peer(bad: str) -> None:
-    """Below the base octet or unparseable is not a rail endpoint, so guessing would be worse
-    than saying nothing: callers treat None as 'no peer configured'."""
+    """Below the base octet or unparseable is not a rail endpoint, so guessing would be worse than
+    saying nothing: callers treat None as 'no peer configured'."""
     cluster = _cluster()
     assert cluster.peer_address_of(bad) is None
 
@@ -291,11 +276,9 @@ def test_the_status_path_does_not_keep_its_own_copy_of_the_rule() -> None:
     assert source.count("peer_address_of(addr)") >= 2, "the status path does not use the rule"
 
 
-# ── plaintext bulk transfer belongs on a point-to-point cable only ──────────────
-# The fast path's own SECURITY note says the unencrypted rsync daemon is acceptable ONLY
-# because the rail is a cable with no other host on it. After `setup --nodes N --switched`
-# every node shares these subnets, so the same-/24 test still passed while the fabric carried
-# other hosts. `hosts allow` and a one-shot secret restrict access; neither is confidentiality.
+# ── plaintext bulk transfer belongs on a point-to-point cable only ────────────── The fast path's
+# own SECURITY note says the unencrypted rsync daemon is acceptable ONLY because the rail is a cable
+# with no other host on it.
 
 
 def _fast(cluster, monkeypatch, config: dict):
@@ -328,8 +311,8 @@ def test_a_shared_fabric_falls_back_to_ssh(monkeypatch, config: dict) -> None:
 
 
 def test_an_unconfigured_cluster_is_not_blocked(monkeypatch) -> None:
-    """An absent or unreadable config must not disable the fast path on a real pair; the
-    switched plan is written by setup, so its absence means nobody asked for one."""
+    """An absent or unreadable config must not disable the fast path on a real pair; the switched plan
+    is written by setup, so its absence means nobody asked for one."""
     cluster = _cluster()
     assert _fast(cluster, monkeypatch, {})["ok"] is True
     assert _fast(cluster, monkeypatch, {"n_nodes": "not a number"})["ok"] is True

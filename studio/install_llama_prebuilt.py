@@ -4706,8 +4706,6 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
     return []
 
 
-# Current name first, then the pre-rename upstream name. spark_cluster.py keeps the same
-# list in _RPC_SERVER_NAMES; a test pins the two together.
 RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server")
 # First fork release shipping the executable; earlier bundles had only the client library.
 RPC_SERVER_FIRST_PUBLISHED_BUILD = 10796
@@ -4729,12 +4727,8 @@ def runtime_patterns_for_install_kind(
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Unsloth invokes llama-server, llama-quantize, the
     # DiffusionGemma visual-server (when the bundle ships it, for native
-    # DiffusionGemma serving), and ggml-rpc-server. The RPC server is an
-    # executable, so the lib*.so* glob that admits its libggml-rpc client
-    # library does NOT admit it: it must be named here or a fresh install
-    # silently lacks it. Other upstream CLIs are skipped.
+    # DiffusionGemma serving), and ggml-rpc-server.
     if install_kind in {
         "linux-cpu",
         "linux-cuda",
@@ -5582,10 +5576,8 @@ def install_from_archives(
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
     ensure_fit_params_executable(install_dir)
-    # Extraction does not keep exec bits and rpc_server_binary() skips a file
-    # without X_OK, so this needs the same chmod as the two primaries. It stays
-    # in build/bin with no root link, which is where rpc_server_binary() looks
-    # first. Optional: a bundle built without GGML_RPC has none.
+    # Extraction does not keep exec bits and rpc_server_binary() skips a file without X_OK, so this
+    # needs the same chmod as the two primaries.
     for rpc_name in rpc_server_names_for_host(host):
         rpc_server = build_bin / rpc_name
         if rpc_server.is_file():
@@ -10813,13 +10805,7 @@ def diffusion_visual_server_backfill_needed(
 def _rpc_server_owed(
     install_dir: Path, host: HostInfo, source_label: "str | None", release_tag: "str | None"
 ) -> bool:
-    """True when an install has the libggml-rpc client but not the ggml-rpc-server beside it.
-
-    Before the executable entered the copy allowlist only the library got through (lib*.so*),
-    so a tag-match skip never backfills it. The thrash guard is EVIDENCE, not the source label:
-    a bundle built without GGML_RPC ships neither, and fork bundles before
-    RPC_SERVER_FIRST_PUBLISHED_BUILD had the library without the server. Once a re-extract
-    lands the binary this returns False."""
+    """True when an install has the libggml-rpc client but not the ggml-rpc-server beside it."""
     if source_label == "published":
         build = _release_build_number(release_tag)
         if build is None or build < RPC_SERVER_FIRST_PUBLISHED_BUILD:
@@ -10842,8 +10828,8 @@ def _rpc_server_owed(
 
 
 def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
-    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen
-    bundle ships."""
+    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen bundle
+    ships."""
     patterns = runtime_patterns_for_choice(choice)
     if not any(name in patterns for name in rpc_server_names_for_host(host)):
         return False
@@ -10851,9 +10837,7 @@ def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetC
 
 
 def bundle_backfill_reason(install_dir: Path, host: HostInfo, choice: AssetChoice) -> str | None:
-    """Why a tag-matching install must still be re-extracted, or None when it is
-    complete. One check for every reuse path, so a new backfill is consulted
-    everywhere the skip is decided."""
+    """Why a tag-matching install must still be re-extracted, or None when it is complete."""
     if diffusion_visual_server_backfill_needed(install_dir, host, choice):
         return "is missing the DiffusionGemma visual-server"
     if rpc_server_backfill_needed(install_dir, host, choice):

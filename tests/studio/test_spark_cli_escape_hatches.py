@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Options a command documents have to reach the code that implements them.
-
-Four separate escapes existed only in a backend: `merge(force=True)`, `provision --force`,
-`serve --rpc-port`, and the RPC backfill's job count. Each was reachable from the module but
-not from the command users are told to run, so the documented recovery was not available at
-all. The fifth case is the mirror image: a default hard-coded to one architecture's module
-names, in a code path that accepts any architecture with a decoder layer list.
-"""
+"""Options a command documents have to reach the code that implements them."""
 
 from __future__ import annotations
 
@@ -65,7 +58,6 @@ def test_merge_force_reaches_the_merge_and_the_default_still_refuses(merge_mod, 
 
     monkeypatch.setattr(merge_mod, "merge", _merge)
 
-    # The safe default is unchanged: an incomplete stage set is still refused.
     assert merge_mod._cmd_merge("/tmp/run", "/tmp/out") == 1
     assert seen == {}
 
@@ -116,8 +108,8 @@ def test_serve_rpc_port_survives_the_delegated_parser(cluster, monkeypatch):
         return 0
 
     monkeypatch.setattr(cluster, "_cmd_serve", _serve)
-    # This is exactly what `unsloth spark serve --rpc-port 51000` appends; before the option
-    # was registered, argparse exited 2 on it and _cmd_serve was never called.
+    # This is exactly what `unsloth spark serve --rpc-port 51000` appends; before the option was
+    # registered, argparse exited 2 on it and _cmd_serve was never called.
     assert cluster.main(["serve", "--model", "m.gguf", "--rpc-port", "51000"]) == 0
     assert seen["rpc_port"] == 51000
 
@@ -131,7 +123,6 @@ def test_the_rpc_backfill_does_not_expand_an_unassigned_ncpu():
     body = source.split("_backfill_local_rpc_server() {")[1].split("\n}\n")[0]
     assert "$NCPU" not in body, "NCPU is assigned in the source-build section this path skips"
     assert "_llama_build_jobs" in body
-    # And the assignment really is later than the call site, which is what makes it fatal.
     assert source.index("NCPU=$(_llama_build_jobs)") > source.index(
         '_backfill_local_rpc_server "$LLAMA_CPP_DIR"'
     )
@@ -160,7 +151,6 @@ def test_lora_targets_are_read_off_the_model_not_assumed(pipeline):
     llama = _model_with(
         ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    # Unchanged for the architectures that already worked, in the same order.
     assert pipeline.lora_target_modules(llama) == list(pipeline.LORA_TARGETS_LLAMA)
 
     neox = _model_with(["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"])

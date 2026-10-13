@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Doctor must not call two different usernames a capability divergence.
-
-Provisioning explicitly supports a peer with a different home, so on such a pair
-`/home/alice/.unsloth/.../torchrun` and `/home/bob/.unsloth/.../torchrun` are the same
-capability. Compared as raw strings they read as a divergence, doctor returns failure, and it
-warns of a deadlock while both tools are present and equivalent.
-
-Only the home prefix is folded. A tool at `/usr/bin` on one node and inside the managed
-environment on the other is a real difference and must still be reported.
-"""
+"""Doctor must not call two different usernames a capability divergence."""
 
 from __future__ import annotations
 
@@ -82,9 +73,9 @@ def test_the_probe_reports_the_home_it_normalises_against() -> None:
     assert "home" in doctor.PARITY_SKIP, "the home itself would read as a divergence"
 
 
-# ── --data validation, which belongs before the model load ──────────────────────
-# `reps = (need + len(ids) - 1) // len(ids)` divides by the row count, so an empty file raised
-# ZeroDivisionError, and only after both ranks had loaded and materialised the model.
+# ── --data validation, which belongs before the model load ────────────────────── `reps = (need +
+# len(ids) - 1) // len(ids)` divides by the row count, so an empty file raised ZeroDivisionError,
+# and only after both ranks had loaded and materialised the model.
 
 
 def _pipeline():

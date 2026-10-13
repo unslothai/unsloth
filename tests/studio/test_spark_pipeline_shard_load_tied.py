@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`--shard-load` on a checkpoint whose lm_head is tied to the embedding.
-
-A tied head is not saved under its own name: the checkpoint stores only the embedding key. The
-loader filtered the shards by exact parameter name, so it looked for `lm_head.weight`, found
-nothing, and the meta check refused the load with `unmaterialised tensors remain`. That is most
-models, and `--shard-load` is the one path where refetching the weights is not an option.
-
-These tests save a real checkpoint and read it back through the real loader rather than
-stubbing safetensors, because the bug lives in the agreement between what is written and what
-is looked for.
-"""
+"""`--shard-load` on a checkpoint whose lm_head is tied to the embedding."""
 
 from __future__ import annotations
 
@@ -66,11 +56,9 @@ def test_a_tied_head_loads_from_the_embedding_it_is_tied_to(tmp_path) -> None:
     pipeline = _pipeline_module()
 
     saved = _saved(transformers, tmp_path, tied = True)
-    # The premise: the head really is absent from the checkpoint.
     assert "lm_head.weight" not in _keys(saved)
     assert "model.embed_tokens.weight" in _keys(saved)
 
-    # The last stage of a two-way split: no embedding, keeps the head.
     model, _, _ = pipeline.build_stage_model(
         saved,
         rank = 1,
@@ -134,10 +122,6 @@ def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
     assert isinstance(model.get_input_embeddings(), torch.nn.Identity)
 
 
-# A tied checkpoint split across ranks under --full-finetune becomes two parameters on two
-# optimizers fed by disjoint gradients. Measured through the real loader: the two ranks load
-# equal values as separate objects, and three independent AdamW steps drive them 6.00e-02
-# apart, on a model whose architecture requires them to be one tensor.
 @pytest.mark.parametrize(
     "schedule,world,expected",
     [
@@ -163,8 +147,8 @@ def test_a_tied_checkpoint_is_refused_only_where_it_would_actually_split(
 
 
 def test_lora_and_untied_checkpoints_are_not_refused() -> None:
-    """LoRA freezes the base weights, so tied weights cannot drift; an untied checkpoint has
-    nothing to keep equal in the first place."""
+    """LoRA freezes the base weights, so tied weights cannot drift; an untied checkpoint has nothing to
+    keep equal in the first place."""
     pipeline = _pipeline_module()
     mapping = pipeline.stage_to_rank_map(2, 2, "loop")
     assert pipeline.tied_split_problem(True, False, 2, mapping) is None
@@ -172,8 +156,43 @@ def test_lora_and_untied_checkpoints_are_not_refused() -> None:
 
 
 def test_the_legacy_backend_is_covered_without_a_plan() -> None:
-    """`--pp-backend legacy` builds no stage_to_rank map, and embedding and head still land on
-    the first and last rank."""
+    """`--pp-backend legacy` builds no stage_to_rank map, and embedding and head still land on the
+    first and last rank."""
     pipeline = _pipeline_module()
     assert pipeline.tied_split_problem(True, True, 2, None)
     assert pipeline.tied_split_problem(True, True, 1, None) is None
+
+
+def test_a_non_final_gpt_neox_stage_drops_its_output_head(tmp_path) -> None:
+    """GPT-NeoX calls its final norm `final_layer_norm`, and its head `embed_out` before
+    transformers 5; a stage looking only for `norm` and `lm_head` kept them on every rank."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    out = str(tmp_path / "neox")
+    transformers.GPTNeoXForCausalLM(
+        transformers.GPTNeoXConfig(
+            vocab_size = 64,
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = 4,
+            num_attention_heads = 4,
+            max_position_embeddings = 32,
+        )
+    ).save_pretrained(out, safe_serialization = True)
+    model, _, _ = pipeline.build_stage_model(
+        out,
+        rank = 0,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    head = "embed_out" if hasattr(model, "embed_out") else "lm_head"
+    assert isinstance(getattr(model, head), torch.nn.Identity)
+    assert isinstance(model.gpt_neox.final_layer_norm, torch.nn.Identity)
+    assert not any(
+        name.startswith((head, "gpt_neox.final_layer_norm")) for name, _ in model.named_parameters()
+    )

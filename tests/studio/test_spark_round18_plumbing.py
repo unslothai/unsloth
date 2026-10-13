@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Commands that are printed to be pasted, and paths that are interpolated into shells.
-
-Four of these are the same defect in four places: a path is put into a command without being
-quoted, so a Studio home or a checkpoint with a space in it silently runs something else. Two
-are the reverse, a bare name assumed to be on PATH when the installer never puts it there. The
-rest are states a probe collapsed together, and an architecture's own module names.
-"""
+"""Commands that are printed to be pasted, and paths that are interpolated into shells."""
 
 from __future__ import annotations
 
@@ -44,7 +38,6 @@ def test_generated_serve_commands_quote_a_model_path_with_a_space(cluster) -> No
                 axis,
                 line,
             )
-    # The placeholder still reads as a placeholder rather than a quoted string.
     assert any("<model>" in line for line in cluster._serve_commands("single", 1))
 
 
@@ -86,13 +79,10 @@ def test_the_peer_launch_survives_a_staged_path_with_a_space(cluster, monkeypatc
         }
     )
     remote = seen["remote"]
-    # One `bash -c` argument, and the staged path is still one word inside it.
     body = remote.split("bash -c ", 1)[1]
     assert body.startswith("'")
     inner = shlex.split(body)[0]
     assert "'/m/large model'" in inner
-    # The staged path is still ONE word after the remote shell parses the inner script, and
-    # the exit-status write follows the stage rather than being swallowed by it.
     stage = inner.split("; echo $?", 1)[0]
     assert shlex.split(stage)[-1] == "/m/large model"
 
@@ -121,8 +111,7 @@ def test_the_printed_training_commands_include_activation(cluster, monkeypatch, 
 
 
 def test_a_silent_listener_is_not_the_same_as_an_absent_one(cluster, monkeypatch) -> None:
-    """A peer that accepts and never answers HELLO holds the port, so a new server cannot
-    bind it. It used to be classed with `refused`, the normal pre-launch state."""
+    """A peer that accepts and never answers HELLO holds the port, so a new server cannot bind it."""
 
     def _probe(
         host,
@@ -173,8 +162,6 @@ def test_the_embedding_is_dropped_by_the_architectures_own_name(pipeline) -> Non
     name, _ = pipeline._first_named(owner, pipeline._EMBED_NAMES)
     assert name == "embed_in"
 
-    # And `build_stage_model` drops it by that name rather than by `embed_tokens`, which is
-    # what left the whole table resident on every rank.
     src = (REPO / "studio" / "spark_pipeline.py").read_text()
     body = src.split("def build_stage_model", 1)[1].split("\ndef ", 1)[0]
     assert "_first_named(owner, _EMBED_NAMES)" in body

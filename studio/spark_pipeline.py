@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Layer-split (pipeline-parallel) finetuning across two or more NVIDIA DGX Sparks.
-
-Why layer splitting: CAPACITY. `device_count()` is 1 on each Spark and a 70B does not fit on
-one, so it cannot be trained on a single machine at all. Stage `s` of `W` owns a contiguous
-slice of decoder layers; stage 0 also owns the embedding, the last stage the loss.
-
-`--pp-backend torch` (default) is not a preference: the hand-written `interleaved` schedule
-below deadlocked AND computed wrong gradients, because a single `loss.backward()` cannot
-span the rank cut -- there is no autograd edge across a `dist.irecv`. Upstream does an
-explicit grad send/recv with a locally rooted backward, so the defect cannot occur.
-`legacy` keeps the hand-written schedules as a control arm. Upstream APIs are reached by
-feature detection, never a version compare: torch 2.11 has no `get_mesh=` and later does.
-"""
+"""Layer-split (pipeline-parallel) finetuning across two or more NVIDIA DGX Sparks."""
 
 from __future__ import annotations
 
@@ -26,8 +14,7 @@ import os.path as osp
 import time
 from typing import List, Optional, Sequence
 
-# Architectures nest the decoder stack differently. Getting this wrong is silent -- the split
-# would "work" and train the wrong parameters -- so it raises rather than guessing.
+# Architectures nest the decoder stack differently.
 _LAYER_PATHS = (
     ("model", "layers"),  # Llama, Qwen, Mistral, Gemma...
     ("model", "decoder", "layers"),  # OPT-style
@@ -36,10 +23,7 @@ _LAYER_PATHS = (
 )
 
 
-# find_layers accepts OPT, GPT-2 and GPT-NeoX, so the stage wrapper must not assume Llama's
-# names. Getting this wrong is not always loud: OPT keeps its final normalisation in
-# `final_layer_norm`, so looking only for `norm` dropped it from the last stage silently.
-# One seed for the whole run, set before the model is built so it covers the parameters too.
+# find_layers accepts OPT, GPT-2 and GPT-NeoX, so the stage wrapper must not assume Llama's names.
 TRAIN_SEED = 3407
 _EMBED_NAMES = ("embed_tokens", "wte", "embed_in")
 _FINAL_NORM_NAMES = ("norm", "ln_f", "final_layer_norm")
@@ -48,6 +32,33 @@ _LAYER_CONTAINER_NAMES = ("layers", "h")
 
 def _first_attr(owner, names: Sequence[str]):
     return _first_named(owner, names)[1]
+
+
+def _embed_scale(config, embed) -> Optional[float]:
+    """sqrt(hidden_size) for Gemma 1/2 on transformers 4.x, which scale in the model forward a stage
+    never calls; newer releases scale inside the embedding (embed_scale) and need nothing here."""
+    if getattr(config, "model_type", None) not in ("gemma", "gemma2") or hasattr(
+        embed, "embed_scale"
+    ):
+        return None
+    return float(config.hidden_size) ** 0.5
+
+
+def _scale_embeddings(h, scale):
+    if scale is None:
+        return h
+    import torch
+    return h * torch.tensor(scale, dtype = h.dtype, device = h.device)
+
+
+def _softcap_logits(config, logits):
+    # Gemma 2/3 cap logits in ForCausalLM.forward, which a stage never calls.
+    cap = getattr(config, "final_logit_softcapping", None)
+    if not cap:
+        return logits
+    import torch
+
+    return torch.tanh(logits / cap) * cap
 
 
 def _first_named(owner, names: Sequence[str]):
@@ -67,13 +78,7 @@ def _forward_params(module) -> set:
 
 
 def _unrun_parameters(owner, run_names: Sequence[str]) -> list[str]:
-    """Direct children of the decoder stack that carry weights and that a stage never runs.
-
-    A stage runs the token embedding, the decoder layers, the rotary helper, the final
-    normalisation and the head, and nothing else. Anything else with parameters is part of the
-    forward pass that would simply be skipped, which does not raise: it trains and saves a model
-    that is not the one on disk. Checking the children rather than a list of architecture names
-    keeps this honest for models nobody has tried yet."""
+    """Direct children of the decoder stack that carry weights and that a stage never runs."""
     kept = set(run_names)
     return [
         name
@@ -92,12 +97,7 @@ def _resolve(root, path: Sequence[str]):
 
 
 def dataset_problem(path: str) -> Optional[str]:
-    """Why `--data path` cannot be trained on, or None.
-
-    Checked next to the other refusals rather than where the rows are used: the repetition
-    count divides by the row count, so an empty file raised ZeroDivisionError, and only after
-    both ranks had loaded and materialised the model. That is the most expensive part of the
-    run, spent to reach an input error."""
+    """Why `--data path` cannot be trained on, or None."""
     try:
         with open(path, encoding = "utf-8") as handle:
             for line in handle:
@@ -174,15 +174,7 @@ def has_conditional_experts(config) -> bool:
 
 
 def lora_target_modules(model) -> List[str]:
-    """The projection names to attach LoRA to, read off THIS model's decoder layers.
-
-    The list was hard-coded to the Llama names, but `find_layers()` and the stage wrapper
-    accept any architecture with a decoder layer list. A GPT-NeoX block names its linears
-    `query_key_value`, `dense`, `dense_h_to_4h`, `dense_4h_to_h`, so none of the Llama names
-    exists and PEFT aborts with "Target modules ... not found" after the model is already
-    allocated on both ranks. The Llama set is still returned verbatim when it matches, so
-    nothing changes for the architectures that worked before.
-    """
+    """The projection names to attach LoRA to, read off THIS model's decoder layers."""
     import torch.nn as nn
 
     _, layers = find_layers(model)
@@ -209,9 +201,7 @@ def interleaved_layers(
     world: int,
     virtual: int = 2,
 ) -> List[List[int]]:
-    """Layer chunks for INTERLEAVED pipeline parallelism (Megatron's schedule). A plain 2-stage
-    pipeline cannot beat `world * M/(M+1)`; `virtual` NON-CONTIGUOUS chunks per device shrink
-    the bubble to `1/(virtual*M + 1)`, at `2*virtual - 1` wire crossings instead of one."""
+    """Layer chunks for INTERLEAVED pipeline parallelism (Megatron's schedule)."""
     total_chunks = world * virtual
     if total_chunks > n_layers:
         raise RuntimeError(
@@ -224,13 +214,12 @@ def interleaved_layers(
         size = base + (1 if c < extra else 0)
         bounds.append(list(range(start, start + size)))
         start += size
-    # Chunk c lives on rank c % world, so consecutive chunks alternate devices.
     return [bounds[c] for c in range(total_chunks) if c % world == rank]
 
 
 def stage_layers(n_layers: int, rank: int, world: int) -> List[int]:
-    """Contiguous slice of layer indices, balanced by COUNT: right only for homogeneous
-    layers, where a mixed dense/sparse MoE would want a cost-weighted split."""
+    """Contiguous slice of layer indices, balanced by COUNT: right only for homogeneous layers, where a
+    mixed dense/sparse MoE would want a cost-weighted split."""
     base, extra = divmod(n_layers, world)
     start = rank * base + min(rank, extra)
     return list(range(start, start + base + (1 if rank < extra else 0)))
@@ -247,12 +236,7 @@ def _ranges(ids: Sequence[int]) -> str:
     return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in out)
 
 
-# `loop` maps stage i to rank i % world, so every hop changes rank. `v` walks out and back
-# (pp=2, 4 stages: {0:0, 1:1, 2:1, 3:0}), leaving two boundaries co-located, and upstream
-# skips send/recv entirely for those: the whole reason DualPipeV is here.
-# This duplicates upstream's `generate_stage_to_rank_mapping` rather than importing it, so the
-# plan is testable with no torch. `torch_pp_plan` cross-checks them: a silent disagreement
-# would place layers on the wrong node.
+# `loop` maps stage i to rank i % world, so every hop changes rank.
 
 
 def stage_to_rank_map(
@@ -280,7 +264,6 @@ def stage_to_rank_map(
     raise RuntimeError(f"unknown pipeline layout {style!r}")
 
 
-# --schedule -> (upstream class, stages per rank or None = --virtual-stages, layout)
 TORCH_PP_SCHEDULES = {
     "gpipe": ("GPipe", 1, "loop"),
     "1f1b": ("1F1B", 1, "loop"),
@@ -295,9 +278,7 @@ TORCH_PP_SCHEDULES = {
 def torch_pp_plan(
     schedule: str, world: int, microbatches: int, virtual_stages: int, n_layers: int
 ) -> dict:
-    """Resolve `--schedule` into a concrete stage/layer/rank assignment. Pure. Everything
-    refusable is refused before a tensor is allocated, because the alternative here is a
-    300 s silence indistinguishable from broken hardware."""
+    """Resolve `--schedule` into a concrete stage/layer/rank assignment."""
     if schedule not in TORCH_PP_SCHEDULES:
         raise RuntimeError(
             f"--schedule {schedule!r} has no torch.distributed.pipelining equivalent; "
@@ -322,7 +303,6 @@ def torch_pp_plan(
     if style == "v" and v != 2:
         raise RuntimeError(f"the V layout requires exactly 2 stages per rank, got {v}")
     if schedule == "dualpipev" and microbatches < num_stages:
-        # Enforced by ScheduleDualPipeV too; caught here so the message beats the model load.
         raise RuntimeError(
             f"--schedule dualpipev requires --microbatches >= num_stages "
             f"({microbatches} < {num_stages})."
@@ -371,11 +351,7 @@ def build_stage_model(
     keep_embed: Optional[bool] = None,
     keep_head: Optional[bool] = None,
 ):
-    """Build only this stage's slice of the model. With `shard_load` the skeleton is built on
-    meta and only the owned tensors are read out of the shards, because materialising the
-    whole model and dropping half needs more memory than the node has.
-    `keep_layers`/`keep_embed`/`keep_head` override the contiguous slice: under DualPipeV rank
-    0 owns the first AND last stage, so it needs both embedding and head, and rank 1 neither."""
+    """Build only this stage's slice of the model."""
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -407,17 +383,20 @@ def build_stage_model(
             if i not in keep:
                 layers[i] = torch.nn.Identity()
     if not keep_all_layers and not want_embed:
-        # By the architecture's own name, not `embed_tokens`: `find_layers` accepts GPT-NeoX,
-        # whose table is `embed_in`, so every rank kept and materialised the whole embedding
-        # while believing it had dropped it. `_PPStageModule` already resolves it this way.
+        # By the architecture's own name, not `embed_tokens`: `find_layers` accepts GPT-NeoX, whose
+        # table is `embed_in`, so every rank kept and materialised the whole embedding while
+        # believing it had dropped it.
         embed_name, _ = _first_named(owner, _EMBED_NAMES)
         if embed_name:
             setattr(owner, embed_name, torch.nn.Identity())
     if not keep_all_layers and not want_head:
-        if hasattr(owner, "norm"):
-            owner.norm = torch.nn.Identity()
-        if hasattr(model, "lm_head"):
-            model.lm_head = torch.nn.Identity()
+        # GPT-NeoX names these final_layer_norm and embed_out, as _PPStageModule resolves them.
+        norm_name, _ = _first_named(owner, _FINAL_NORM_NAMES)
+        if norm_name:
+            setattr(owner, norm_name, torch.nn.Identity())
+        head_name, _ = _first_named(model, ("lm_head", "embed_out"))
+        if head_name:
+            setattr(model, head_name, torch.nn.Identity())
 
     log(
         f"{n} decoder layers; this stage owns {_ranges(mine)}"
@@ -447,17 +426,7 @@ def tied_split_problem(
     world: int,
     stage_to_rank: Optional[dict] = None,
 ) -> Optional[str]:
-    """Why a tied embedding must not be split across ranks, or None when it is not.
-
-    A tied checkpoint holds ONE tensor that is read twice. Split across ranks it becomes two
-    parameters on two optimizers, fed by disjoint gradients -- the input side on the first
-    stage, the output side on the last -- with nothing keeping them equal. Nothing raises: the
-    run trains, and saves a model whose input and output embeddings have drifted apart, which
-    is a different model from the one the architecture describes.
-
-    Pure so it can be checked without torch, a cluster or a checkpoint. LoRA is exempt because
-    the base weights are frozen, and a V layout is exempt because it puts the first and last
-    stage on the same rank, which is one parameter again."""
+    """Why a tied embedding must not be split across ranks, or None when it is not."""
     if not tied or not full_finetune or world < 2:
         return None
     if stage_to_rank:
@@ -477,14 +446,7 @@ def tied_split_problem(
 
 
 def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Optional[str]:
-    """Why `--full-finetune --save` cannot produce a usable model across ranks, or None.
-
-    Each rank saves a Transformers checkpoint of its OWN stage: the other layers were replaced
-    with `Identity`, so `model.safetensors` there is a base model missing half its decoder.
-    Loading one initialises the missing layers afresh and discards the other rank's training,
-    and `spark merge` cannot join them -- it reads `adapter_model.safetensors`, and a
-    full-weight union needs sharded output and an index this does not write. Refused before
-    the run rather than after it, because the run is the expensive part."""
+    """Why `--full-finetune --save` cannot produce a usable model across ranks, or None."""
     if not full_finetune or not save or world < 2:
         return None
     return (
@@ -496,17 +458,7 @@ def full_finetune_save_problem(full_finetune: bool, save: str, world: int) -> Op
 
 
 def legacy_attention_problem(cfg, seq: int) -> Optional[str]:
-    """Why the legacy backend cannot reproduce this model's attention, or None.
-
-    Its forwards call decoder blocks with no `attention_mask`. That is correct for sdpa and
-    flash, which derive causality from `is_causal` when the mask is None, and for a sliding
-    window at or below its size, where every query already reaches every earlier token so the
-    two masks are the same matrix. It is wrong for eager, whose `eager_attention_forward` adds
-    a mask only `if attention_mask is not None`, so the run trains BIDIRECTIONALLY at a
-    flattering loss and saves something that is not a causal LM. And it is wrong above a
-    sliding window, where full causal is a different graph. The torch backend builds both
-    masks; this one is kept unchanged as a control arm, so it refuses what it cannot reproduce
-    rather than quietly training a different model."""
+    """Why the legacy backend cannot reproduce this model's attention, or None."""
     impl = getattr(cfg, "_attn_implementation", "sdpa")
     if impl not in ("sdpa", "flash_attention_2", "flash_attention_3"):
         return (
@@ -527,12 +479,7 @@ def legacy_attention_problem(cfg, seq: int) -> Optional[str]:
 
 
 def _tied_aliases(model) -> dict:
-    """`{parameter name saved under another name: the name it is saved under}`.
-
-    transformers states this itself, in two shapes: 5.x carries a `{alias: source}` mapping,
-    4.57 carries a bare list of aliases and leaves the source implied. For the list the source
-    is the input embedding, located by object identity rather than by assuming a name, since
-    that name is `model.embed_tokens.weight` on Llama and `transformer.wte.weight` elsewhere."""
+    """`{parameter name saved under another name: the name it is saved under}`."""
     declared = getattr(type(model), "_tied_weights_keys", None)
     if declared is None:
         declared = getattr(model, "_tied_weights_keys", None)
@@ -559,17 +506,9 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     wanted = {k for k, _ in model.named_parameters()} | {k for k, _ in model.named_buffers()}
     # A tied head is not saved under its own name: a checkpoint whose lm_head is the embedding
     # stores only the embedding key, so an exact-name filter looked for `lm_head.weight`, found
-    # nothing, and the meta check below refused the load. That is most models, and --shard-load
-    # is exactly the path where refetching is not an option. Aliases are read from transformers'
-    # own tie metadata, which is a {alias: source} mapping on 5.x and a list of aliases on 4.57.
-    # Not filtered by what `wanted` holds: `named_parameters` deduplicates, so a tie that is
-    # still intact hides the alias from that set entirely, and then `assign = True` replaces the
-    # source tensor and leaves the alias pointing at the old meta one, breaking the tie. Naming
-    # the alias explicitly in the state dict both materialises it and keeps it shared.
+    # nothing, and the meta check below refused the load.
     aliases = {alias: src for alias, src in _tied_aliases(model).items() if src}
     wanted |= set(aliases.values())
-    # snapshot_download takes a repo id, so handing it a path fails before a tensor is read.
-    # Local checkpoints matter most here: --shard-load exists for models too large to refetch.
     snap = (
         model_name
         if osp.isdir(model_name)
@@ -578,9 +517,7 @@ def _materialise(model, model_name, cfg, device, dtype, log):
 
     shards = sorted(glob.glob(osp.join(snap, "*.safetensors")))
     if not shards:
-        # Said plainly, and before the tensors are read. A .bin checkpoint left every
-        # parameter on meta and surfaced as `unmaterialised tensors remain`, which names the
-        # symptom and not the cause, after the model had already been allocated.
+        # Said plainly, and before the tensors are read.
         legacy = glob.glob(osp.join(snap, "*.bin"))
         raise RuntimeError(
             f"--shard-load reads safetensors, and {snap} has none"
@@ -597,14 +534,12 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         with safe_open(f, framework = "pt", device = "cpu") as sf:
             for k in sf.keys():
                 if k in wanted:
-                    # One tensor at a time: reading the half into host memory first needs TWO
-                    # copies of ~70 GiB, and the OOM killer leaves no Python traceback.
                     loaded[k] = sf.get_tensor(k).to(dtype).to(device, non_blocking = False)
                     seen += 1
     for alias, src in aliases.items():
-        # The SAME tensor object, not a copy: where a stage keeps both the embedding and the
-        # head, they must stay one parameter or training would update two halves of a weight
-        # the model requires to be shared.
+        # The SAME tensor object, not a copy: where a stage keeps both the embedding and the head,
+        # they must stay one parameter or training would update two halves of a weight the model
+        # requires to be shared.
         if alias not in loaded and src in loaded and _has_parameter(model, alias):
             loaded[alias] = loaded[src]
     model.load_state_dict(loaded, strict = False, assign = True)
@@ -630,10 +565,6 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         raise RuntimeError(f"unmaterialised tensors remain: {still[:4]}")
 
 
-# Everything down to `run_zerobubble` is the hand-written legacy backend, retained unchanged
-# as a control arm: `--pp-backend legacy --schedule gpipe` reproduces the old behaviour.
-
-
 class _Stage:
     def __init__(
         self,
@@ -652,7 +583,6 @@ class _Stage:
         self.device, self.dtype = device, dtype
         self.microbatches = microbatches
         # Interleaved mode only: global chunk indices this rank owns, and the layers in each.
-        # Contiguous mode leaves both None and takes the single-slice path.
         self.chunks = chunks or []
         self.n_chunks = n_chunks or world
         self.chunk_layers = {}
@@ -662,11 +592,9 @@ class _Stage:
         # decoder stack, so `.model` raised AttributeError before the first step of any
         # --full-finetune run on this backend. get_base_model() is the PEFT discriminator.
         self.base, self.inner = unwrap_stack(model)
+        self.embed_scale = _embed_scale(self.base.config, self.inner.embed_tokens)
         self.hidden = self.base.config.hidden_size
-        # Set by the caller. These forwards call decoder layers directly, so transformers'
-        # `gradient_checkpointing_enable()` is consulted in a forward never reached here and the
-        # flag alone would be inert: the run would report checkpointing while keeping every
-        # activation, and a shape chosen to fit only with it would OOM.
+        # Set by the caller.
         self.grad_checkpoint = False
 
     def _run_layer(self, layer, h, pos):
@@ -677,8 +605,6 @@ class _Stage:
             return out[0] if isinstance(out, tuple) else out
 
         if self.grad_checkpoint and self.model.training and torch.is_grad_enabled():
-            # use_reentrant=False: the reentrant path drops the grad_fn the p2p-boundary
-            # activation-gradient handoff depends on.
             return torch.utils.checkpoint.checkpoint(call, layer, h, pos, use_reentrant = False)
         return call(layer, h, pos)
 
@@ -686,7 +612,11 @@ class _Stage:
         import torch
 
         layers = self.chunk_layers[chunk]
-        h = self.inner.embed_tokens(ids) if chunk == 0 else hidden
+        h = (
+            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            if chunk == 0
+            else hidden
+        )
         pos = self.inner.rotary_emb(h, posid)
         for i in layers:
             h = self._run_layer(self.inner.layers[i], h, pos)
@@ -694,7 +624,7 @@ class _Stage:
             return h, None
         import torch.nn.functional as F
 
-        logits = self.base.lm_head(self.inner.norm(h))
+        logits = _softcap_logits(self.base.config, self.base.lm_head(self.inner.norm(h)))
         loss = (
             F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)).float(),
@@ -707,7 +637,11 @@ class _Stage:
     def forward(self, ids, hidden, posid):
         import torch
 
-        h = self.inner.embed_tokens(ids) if self.is_first else hidden
+        h = (
+            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            if self.is_first
+            else hidden
+        )
         pos = self.inner.rotary_emb(h, posid)
         for layer in self.inner.layers:
             if isinstance(layer, torch.nn.Identity):
@@ -717,7 +651,7 @@ class _Stage:
             return h, None
         import torch.nn.functional as F
 
-        logits = self.base.lm_head(self.inner.norm(h))
+        logits = _softcap_logits(self.base.config, self.base.lm_head(self.inner.norm(h)))
         loss = (
             F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)).float(),
@@ -729,11 +663,8 @@ class _Stage:
 
 
 def warmup_p2p(stage, dist, torch):
-    """Mirrored one-element exchange in each direction, which pins the ordered per-pair p2p
-    channel open (see the root-cause note above `_p2p_group`). The ORDER is load-bearing at
-    any `world`: DOWNSTREAM pair first (send then recv with rank+1), then UPSTREAM (recv then
-    send with rank-1), so pairs resolve from the tail backwards and no rank blocks on a peer
-    that is blocked on it. Swapping the blocks reintroduces the circular wait."""
+    """Mirrored one-element exchange in each direction, which pins the ordered per-pair p2p channel
+    open (see the root-cause note above `_p2p_group`)."""
     tiny = torch.zeros(1, dtype = stage.dtype, device = stage.device)
     if not stage.is_last:
         dist.send(tiny, dst = stage.rank + 1)
@@ -743,32 +674,13 @@ def warmup_p2p(stage, dist, torch):
         dist.send(tiny, dst = stage.rank - 1)
 
 
-# ROOT CAUSE of the first-step hangs: un-batched `isend`/`irecv` between one pair of ranks
-# share a single ORDERED p2p stream, so an op enqueued behind a receive with no matching send
-# yet never launches. PyTorch promises order-independence only for `batch_isend_irecv`.
-# gpipe survives because its two ranks mirror, sends then receives, never interleaving
-# directions; zerobubble, 1f1b and interleaved all post a receive inside the forward loop.
-#
-# A batched group is ATOMIC: it rendezvouses as a unit, so if A issues {send->B, recv<-B}
-# then B must issue the mirror {recv<-A, send->A} as ONE group at the same step. Splitting
-# either side deadlocks even though the per-direction op order still matches.
-#
-# gloo has no such ordering constraint (independent buffers, a progress thread), so a green
-# CPU run is NOT evidence that a p2p ordering change is safe. Two offline models and one CPU
-# gradient suite have each certified code that hangs here, so: a simulation may REJECT a
-# schedule, never certify one.
-#
-# What the hardware supports, stated as weakly as the evidence allows: gpipe and zerobubble
-# work and never need a send and a receive in flight at once; 1f1b and interleaved need
-# concurrent send+recv on one pair and have hung on every attempt. There is ZERO hardware
-# evidence that batched p2p groups work on this stack, so treat `_p2p_group` as unproven and
-# do not build a schedule on it. `--schedule interleaved` is refused outright.
+# ROOT CAUSE of the first-step hangs: un-batched `isend`/`irecv` between one pair of ranks share a
+# single ORDERED p2p stream, so an op enqueued behind a receive with no matching send yet never
+# launches.
 
 
 def _p2p_group(dist, ops):
-    """Issue point-to-point ops as one batched group and wait. Across groups only
-    SAME-DIRECTION order matters, and every schedule here keeps that ascending in
-    (microbatch, chunk). An empty list is a no-op, so callers can accumulate and flush late."""
+    """Issue point-to-point ops as one batched group and wait."""
     if not ops:
         return
     for work in dist.batch_isend_irecv(ops):
@@ -776,9 +688,9 @@ def _p2p_group(dist, ops):
 
 
 def _check_schedule(name, stage, batches):
-    """Refuse a configuration the schedule cannot honour, loudly and early: a 1-stage
-    "pipeline" that sends to itself, an empty microbatch list, or a chunk map for another
-    rank all otherwise produce a run that completes and trains the wrong thing."""
+    """Refuse a configuration the schedule cannot honour, loudly and early: a 1-stage "pipeline" that
+    sends to itself, an empty microbatch list, or a chunk map for another rank all otherwise produce
+    a run that completes and trains the wrong thing."""
     world, M = stage.world, len(batches)
     if world < 2:
         raise RuntimeError(
@@ -793,14 +705,12 @@ def _check_schedule(name, stage, batches):
 
 
 def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
-    """All forwards, then all backwards. Blocking `send`/`recv` match in issue order, so the
-    stages must mirror: interleaving on one side only deadlocks the communicator."""
+    """All forwards, then all backwards."""
     _check_schedule("gpipe", stage, batches)
     acts, held = [], []
     total = torch.zeros((), device = stage.device)
-    # Pre-posted: a blocking `recv` issued only when the value is wanted makes the sender wait
-    # for the receiver, serialising the stages. Pre-posting changes when the buffer is
-    # available, not the order ops are matched in, so gpipe's mirroring still holds.
+    # Pre-posted: a blocking `recv` issued only when the value is wanted makes the sender wait for
+    # the receiver, serialising the stages.
     hidden_bufs, hreq = {}, {}
     if not stage.is_first:
         for m in range(len(batches)):
@@ -821,7 +731,6 @@ def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
         acts.append((h, hidden))
         held.append(loss)
 
-    # Pre-posted for the whole backward pass, so the neighbour's sends land as produced.
     gbufs, gr = {}, {}
     if not stage.is_last:
         for m in range(len(batches)):
@@ -832,8 +741,6 @@ def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
         h, hidden = acts[m]
         if stage.is_last:
             held[m].backward()
-            # On the DEVICE: `.item()` here syncs once per microbatch, stalling the pipeline
-            # it is meant to be measuring.
             total = total + held[m].detach()
         else:
             gr[m].wait()
@@ -845,18 +752,7 @@ def run_gpipe(stage, batches, posid, mb_rows, dist, torch):
 
 
 def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
-    """One forward, one backward, with a per-rank warmup depth. CURRENTLY REFUSED: it
-    DEADLOCKS on hardware (ONEF1B_REFUSAL); SPARK_PP_DIAGNOSE=1 runs it anyway and
-    SPARK_PP_TRACE=1 shows where it stops. Stage `r` holds `world - 1 - r` forwards in flight
-    before its first backward, because microbatch m's gradient cannot return until m has
-    crossed the remaining stages both ways.
-
-    Ruled out, so nobody re-runs the chase: p2p posting order (real, but that was
-    zerobubble's bug), atomic group boundaries (honoured here), and `batch_isend_irecv` itself
-    (a standalone probe replays this exact group sequence, at real shapes and the M that
-    deadlocks, in 0.17 s). So the defect is in the NON-communication logic. A simulation may
-    reject a schedule, never certify one, so the next step is a stack from a live hang.
-    """
+    """One forward, one backward, with a per-rank warmup depth."""
     _check_schedule("1f1b", stage, batches)
     if not _ALLOW_REFUSED:
         raise RuntimeError(ONEF1B_REFUSAL)
@@ -938,7 +834,6 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
             _phase("bwd", lambda: h.backward(gout), torch)
         _trace(stage, "compute backward done")
         if hidden is not None and hidden.grad is None:
-            # An autograd wait and a missing gradient look identical from outside.
             raise RuntimeError(
                 "1f1b: the received activation got no gradient from backward. Its graph "
                 "does not reach this stage's input, so the upstream stage would train on "
@@ -981,8 +876,7 @@ def run_1f1b(stage, batches, posid, mb_rows, dist, torch):
 
 
 # SPARK_PP_TIME=1 cuda-syncs, which serialises the overlap a pipeline exists to create: an
-# instrumented run is NOT a valid throughput measurement. SPARK_PP_TRACE=1 does not sync; its
-# only job is to make a hang name itself, so the last line says which rank blocked where.
+# instrumented run is NOT a valid throughput measurement.
 _TRACE = os.environ.get("SPARK_PP_TRACE", "0") == "1"
 
 
@@ -1020,34 +914,13 @@ def _backward_one(stage, acts, held, grads, greq, m, inflight, dist, torch):
     if not stage.is_first:
         grad = hidden.grad.contiguous()  # keep the reference; see run_1f1b
         inflight.append((grad, dist.isend(grad, dst = stage.rank - 1)))
-    # Dropping the activation here rather than at end of step is what bounds 1F1B's memory to
-    # the pipeline depth instead of the microbatch count: the whole argument over GPipe.
     acts[m] = (None, None)
     held[m] = None
     return contribution
 
 
 def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
-    """Interleaved (virtual-stage) pipeline parallelism. Each rank owns `v` non-contiguous
-    chunks; chunk `c` lives on rank `c % world`.
-
-    Two silent bugs were fixed here, both of which completed the run with a falling loss.
-    (1) `loss.backward()` only walks THIS process's autograd graph, which ends at the received
-    activation: there is no autograd edge across a `dist.irecv`, so only the last chunk on the
-    last rank got gradients. An explicit backward phase is required.
-    (2) p2p ops match in POSTING ORDER per direction and NCCL ignores tags, so a data-driven
-    execution order leaked onto the wire and one microbatch's activations landed in another's
-    buffer. The fix is a canonical order both sides derive without communicating.
-
-    At `world == 2`, `(rank+1) % 2 == (rank-1) % 2`, so forward activations and backward
-    gradients share ONE FIFO. That is safe only because every rank finishes its whole forward
-    phase before starting backward: do not merge the loops without re-deriving this. All
-    `M * v` local graphs stay alive between the phases, so this is GPipe-shaped in memory.
-
-    Three rules for anyone editing, all of which gloo absorbs and NCCL hangs on: never block
-    on a receive that is not the EARLIEST outstanding one on its direction; never let
-    execution order leak onto the wire; never leave a send and a receive un-batched.
-    """
+    """Interleaved (virtual-stage) pipeline parallelism."""
     _check_schedule("interleaved", stage, batches)
     if not _ALLOW_REFUSED:
         raise RuntimeError(INTERLEAVED_REFUSAL)
@@ -1083,9 +956,6 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
     def new_buf():
         return torch.empty(mb_rows, seq, stage.hidden, dtype = stage.dtype, device = stage.device)
 
-    # A statically-derived, globally-agreed op order. Chunk c here corresponds to chunk c+1 on
-    # the successor and that mapping is order-preserving, so both ranks' same-direction
-    # sequences agree element for element without either knowing the other's state.
     fwd_tasks = [(m, c) for m in range(M) for c in chunks]
     bwd_tasks = [(m, c) for m in range(M) for c in reversed(chunks)]
 
@@ -1105,7 +975,6 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
         inp = None
         if c != 0:
             inp = new_buf()
-            # One group, so neither the send for c-1 nor the receive for c queues behind the other.
             exchange([dist.P2POp(dist.irecv, inp, prev_rank(c))])
             inp.requires_grad_(True)
         h, loss = stage.forward_chunk(batches[m], inp, posid, c)
@@ -1140,19 +1009,12 @@ def run_interleaved(stage, batches, posid, mb_rows, dist, torch):
 
 
 def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
-    """Zero-bubble pipeline parallelism (Qi et al., 2023): the only schedule whose ceiling is
-    the device count rather than `world * M/(M+1)`. A backward pass is two separable
-    computations, B (w.r.t. the stage INPUT, which the neighbour is waiting on) and W (w.r.t.
-    the WEIGHTS, which nothing waits on and can be deferred into the bubble).
-    `torch.autograd.grad` splits them directly, and `retain_graph=True` is both what makes the
-    deferral legal and its cost, since activation memory is held longer than in 1F1B."""
+    """Zero-bubble pipeline parallelism (Qi et al., 2023): the only schedule whose ceiling is the
+    device count rather than `world * M/(M+1)`."""
     _check_schedule("zerobubble", stage, batches)
     M = len(batches)
     seq = posid.shape[1]
 
-    # Pre-posted: a receive posted on demand blocks its sender. Both directions and both
-    # sides order by ascending microbatch, which is what makes untagged FIFO matching correct
-    # for any `world`.
     hbuf, hreq = {}, {}
     if not stage.is_first:
         for m in range(M):
@@ -1194,11 +1056,9 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
             payload = h.detach().contiguous()
             inflight.append((payload, dist.isend(payload, dst = stage.rank + 1)))
 
-    # The gradient receives are posted HERE, after every forward send, not inside the loop
-    # above: posting `irecv(g_m)` between `isend(h_m)` and `isend(h_{m+1})` puts an
-    # unmatchable receive in front of a send the peer is waiting for, and hung this schedule
-    # before step 1. Out here the op order per direction is GPipe's mirrored all-sends-then-
-    # all-receives, the one shape measured to work.
+    # The gradient receives are posted HERE, after every forward send, not inside the loop above:
+    # posting `irecv(g_m)` between `isend(h_m)` and `isend(h_{m+1})` puts an unmatchable receive in
+    # front of a send the peer is waiting for, and hung this schedule before step 1.
     if not stage.is_last:
         for m in range(M):
             gbuf[m] = torch.empty_like(acts[m][0])
@@ -1215,7 +1075,6 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
                     outputs = held[m], inputs = hidden, grad_outputs = gout, retain_graph = True
                 )[0]
         else:
-            # Spend the wait on deferred W work rather than idling: this is where the bubble goes.
             while not greq[m].is_completed() and deferred_w:
                 run_w(1)
             greq[m].wait()
@@ -1236,35 +1095,13 @@ def run_zerobubble(stage, batches, posid, mb_rows, dist, torch):
     return total
 
 
-# Why `torch.distributed.pipelining` is the default. Both defects in the hand-written
-# schedules above have one root cause: a single `loss.backward()` cannot span the rank cut,
-# because there is no autograd edge across a `dist.irecv`. Upstream solves that structurally
-# rather than by being more careful. ORDERING: every rank runs the SAME deterministic
-# simulation and a rank never schedules its own receive -- the sender emits it -- so an
-# unschedulable order raises "Malformed compute schedule" at construction instead of hanging.
-# GRADIENTS: backward is an explicit grad send/recv with a locally-rooted
-# `torch.autograd.backward(stage_output, grad_tensors=received_grad)`, so nothing is asked to
-# cross the process boundary.
-#
-# Gloo cannot certify a schedule against NCCL (no p2p ordering constraint), so gloo runs are
-# correctness evidence only. On hardware every arm lands on the same loss and none falls
-# FASTER: a faster-falling loss is a gradient defect, which is how the broken hand-written
-# interleaved was caught. GPipe is the arm to avoid -- it holds every microbatch's
-# activations to end of step, ~100 GiB against 1F1B's 7, which on a 121.69 GiB node is the
-# difference between fitting and not.
-#
-# GOTCHA: the V layouts CANNOT be validated on gloo. At pp=2 with 4 stages the map is
-# {0:0, 1:1, 2:1, 3:0}, so `_get_init_p2p_neighbors_ops` emits a send and a recv from rank 1
-# to ITSELF; gloo fails that with "Pair is not connected" while NCCL handles it as a local
-# copy. A gloo failure of a V schedule is not a defect in this file.
+# Why `torch.distributed.pipelining` is the default.
 
 _STAGE_MODULE_CLS = None
 
 
 def _dist_pipelining_available() -> bool:
-    """Is `torch.distributed.pipelining` importable here? Feature detection, never a version
-    string, and never at module scope: `unsloth run` imports this file on macOS and Windows,
-    where `torch.distributed` may be absent and importing torch at all is a pinned regression."""
+    """Is `torch.distributed.pipelining` importable here?"""
     try:
         import torch
         if not torch.distributed.is_available():
@@ -1278,7 +1115,7 @@ def _dist_pipelining_available() -> bool:
 def config_num_layers(cfg) -> int:
     """Decoder depth, before any model is built: the layer->stage assignment must exist before
     `build_stage_model` is told what to keep, and building the model to count its layers would
-    defeat shard loading. Raises rather than guessing an unknown attribute name."""
+    defeat shard loading."""
     for attr in ("num_hidden_layers", "n_layer", "n_layers", "num_layers"):
         n = getattr(cfg, attr, None)
         if isinstance(n, int) and n > 0:
@@ -1293,27 +1130,22 @@ def config_num_layers(cfg) -> int:
 
 
 def unwrap_stack(model):
-    """Return `(causal_lm, decoder_stack)` through PEFT and the HF wrappers. `base_model.model`
-    is right only under PEFT: on a bare `LlamaForCausalLM`, `base_model` already returns the
-    decoder stack. `get_base_model()` is absent off PEFT, so it is a safe discriminator."""
+    """Return `(causal_lm, decoder_stack)` through PEFT and the HF wrappers."""
     top = model.get_base_model() if hasattr(model, "get_base_model") else model
     owner, _ = find_layers(top)
     return top, owner
 
 
 def stage_module_cls():
-    """The `nn.Module` one pipeline stage runs. Built lazily: subclassing `nn.Module` at
-    module scope would import torch on a Mac, which a test forbids."""
+    """The `nn.Module` one pipeline stage runs."""
     global _STAGE_MODULE_CLS
     if _STAGE_MODULE_CLS is not None:
         return _STAGE_MODULE_CLS
     import torch
 
     class _PPStageModule(torch.nn.Module):
-        """A contiguous run of decoder layers, plus the embedding on the first stage and the
-        norm + lm_head on the last. `PipelineStage` takes a MANUALLY split module -- no tracer,
-        which is what makes this work where a symbolic trace of an HF model would not -- and
-        position ids are recomputed, so a ragged final microbatch cannot desync the stage."""
+        """A contiguous run of decoder layers, plus the embedding on the first stage and the norm +
+        lm_head on the last."""
 
         def __init__(self, top, owner, layer_ids, *, is_first, is_last, grad_checkpoint):
             super().__init__()
@@ -1327,12 +1159,8 @@ def stage_module_cls():
                 )
             self.layers = torch.nn.ModuleList([container[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
-            # How a block wants its rope tables is read off its own signature, because it is not
-            # one shape. Llama takes a single `position_embeddings`. Gemma 3 needs one table per
-            # attention type and expresses that two different ways across transformers releases:
-            # 5.x passes one table and a `layer_type` to select it, 4.57 passes
-            # `position_embeddings_global` and `position_embeddings_local` as separate arguments.
-            # A model with no such parameter, ALiBi being the usual one, gets none.
+            # How a block wants its rope tables is read off its own signature, because it is not one
+            # shape.
             self.position_params = _forward_params(self.layers[0]) if len(self.layers) else set()
             self.position_params = sorted(
                 p for p in self.position_params if p.startswith("position_embeddings")
@@ -1349,15 +1177,15 @@ def stage_module_cls():
             self.rotary_wants_layer_type = self.rotary_emb is not None and (
                 "layer_type" in _forward_params(self.rotary_emb)
             )
-            # Sliding-window attention is not reproduced here, and below the window it does not
-            # need to be: every query already reaches every earlier token, so the two masks are
-            # the same matrix. Above it they are not, hence the check in forward.
+            # Sliding-window attention is not reproduced here, and below the window it does not need
+            # to be: every query already reaches every earlier token, so the two masks are the same
+            # matrix.
             cfg = getattr(top, "config", None)
             window = getattr(cfg, "sliding_window", None)
             self.sliding_window = int(window) if isinstance(window, int) and window > 0 else None
-            # sdpa and flash derive causality from is_causal when attention_mask is None, but
-            # eager only masks what it is given: transformers' eager_attention_forward adds the
-            # mask under `if attention_mask is not None`, so passing None there trains the model
+            # sdpa and flash derive causality from is_causal when attention_mask is None, but eager
+            # only masks what it is given: transformers' eager_attention_forward adds the mask under
+            # `if attention_mask is not None`, so passing None there trains the model
             # bidirectionally, at a flattering loss, and the checkpoint is not a causal LM.
             impl = getattr(getattr(top, "config", None), "_attn_implementation", "sdpa")
             self.needs_causal_mask = impl not in (
@@ -1374,10 +1202,8 @@ def stage_module_cls():
             )
             if skipped:
                 # GPT-2 keeps learned positions in `wpe` and OPT in `embed_positions`, neither of
-                # which lives inside a decoder layer, so running the layers alone gives the model
-                # no position information at all. Refusing is the honest answer: making them work
-                # means reproducing each architecture's embedding path, and guessing at it would
-                # train something that is not the checkpoint.
+                # which lives inside a decoder layer, so running the layers alone gives the model no
+                # position information at all.
                 raise RuntimeError(
                     f"{type(owner).__name__} carries {sorted(skipped)}, which the pipeline stage "
                     f"does not run, so a split would train a different model than the "
@@ -1389,9 +1215,8 @@ def stage_module_cls():
             self.embed_tokens = embed if is_first else None
             self.norm = norm if is_last else None
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
-            # Llama and GPT-NeoX blocks take `position_embeddings`; an architecture that encodes
-            # position inside attention, ALiBi being the usual one, has no such parameter and
-            # passing it is a TypeError rather than a no-op.
+            self.config = getattr(top, "config", None)
+            self.embed_scale = _embed_scale(self.config, embed) if is_first else None
             self.pass_position_embeddings = True
             if len(self.layers):
                 try:
@@ -1447,7 +1272,7 @@ def stage_module_cls():
             return out[0] if isinstance(out, tuple) else out
 
         def forward(self, x):
-            h = self.embed_tokens(x) if self.is_first else x
+            h = _scale_embeddings(self.embed_tokens(x), self.embed_scale) if self.is_first else x
             if self.sliding_window is not None and h.shape[1] > self.sliding_window:
                 raise RuntimeError(
                     f"this model attends over a {self.sliding_window}-token sliding window and "
@@ -1463,8 +1288,6 @@ def stage_module_cls():
             mask = None
             if self.needs_causal_mask:
                 # Additive, upper triangle excluding the diagonal, broadcast over batch and heads.
-                # Left as None for sdpa and flash, where None is what selects the fused causal
-                # kernel and an explicit mask would only be slower.
                 length = h.shape[1]
                 mask = torch.full(
                     (length, length), torch.finfo(h.dtype).min, device = h.device, dtype = h.dtype
@@ -1474,15 +1297,13 @@ def stage_module_cls():
                 if self.rotary_wants_layer_type:
                     pos = self._rotary(layer, h, ids)
                 if ckpt:
-                    # use_reentrant=False: the reentrant path drops the grad_fn the stage's
-                    # activation-gradient handoff needs.
                     h = torch.utils.checkpoint.checkpoint(
                         self._call_layer, layer, h, pos, mask, use_reentrant = False
                     )
                 else:
                     h = self._call_layer(layer, h, pos, mask)
             if self.is_last:
-                h = self.lm_head(self.norm(h))
+                h = _softcap_logits(self.config, self.lm_head(self.norm(h)))
             return h
 
     _STAGE_MODULE_CLS = _PPStageModule
@@ -1490,9 +1311,7 @@ def stage_module_cls():
 
 
 def pp_loss_fn(logits, target):
-    """Next-token cross entropy, MEAN-reduced. This is the legacy schedules' loss minus their
-    `/ microbatches`, which upstream does itself via `scale_grads=True`; keeping `/M` here as
-    well would scale every gradient by `1/M^2`."""
+    """Next-token cross entropy, MEAN-reduced."""
     import torch.nn.functional as F
     return F.cross_entropy(
         logits[:, :-1].reshape(-1, logits.size(-1)).float(),
@@ -1501,8 +1320,7 @@ def pp_loss_fn(logits, target):
     )
 
 
-# `pp_loss_fn` mean-reduces, so gradients must be divided by the microbatch count. Set
-# explicitly, not left to the upstream default: sum-reducing the loss means False here.
+# `pp_loss_fn` mean-reduces, so gradients must be divided by the microbatch count.
 PP_SCALE_GRADS = True
 
 
@@ -1516,12 +1334,7 @@ def build_torch_schedule(
     grad_checkpoint,
     log = print,
 ):
-    """Assemble upstream `PipelineStage`s and the requested schedule for this rank.
-
-    Every upstream API touched here is feature-detected with `hasattr`/`inspect`, never a
-    version string: torch 2.11 has no `get_mesh=` on `PipelineStage` and later torch does, so
-    passing or omitting it unconditionally breaks one of them. Ask the signature.
-    """
+    """Assemble upstream `PipelineStage`s and the requested schedule for this rank."""
     import inspect
     import torch
     import torch.distributed as dist
@@ -1529,8 +1342,8 @@ def build_torch_schedule(
     from torch.distributed.pipelining import schedules as _schedules
     from torch.distributed.pipelining.microbatch import TensorChunkSpec
 
-    # Cross-check our pure layout against upstream's, which the runtime actually uses for
-    # send/recv: a disagreement trains the wrong parameters with no error at all.
+    # Cross-check our pure layout against upstream's, which the runtime actually uses for send/recv:
+    # a disagreement trains the wrong parameters with no error at all.
     gen = getattr(_schedules, "generate_stage_to_rank_mapping", None)
     if gen is not None:
         theirs = gen(dist.get_world_size(), plan["num_stages"], style = plan["style"])
@@ -1570,8 +1383,6 @@ def build_torch_schedule(
             grad_checkpoint = grad_checkpoint,
         ).to(device)
         mods.append(mod)
-        # input_args=None: the stage infers the boundary shape by propagating stage 0's real
-        # output. Hand-specifying it is how a seq-length change turns into a hang.
         stages.append(PipelineStage(mod, idx, plan["num_stages"], device, **stage_kwargs))
 
     sched_params = inspect.signature(sched_cls.__init__).parameters
@@ -1579,10 +1390,7 @@ def build_torch_schedule(
     if "args_chunk_spec" in sched_params:
         kw["args_chunk_spec"] = (TensorChunkSpec(0),)
     # `scale_grads` does not exist before torch 2.7, and 2.6 does no scaling of its own: it was
-    # added in 2.7 together with `PipelineStage.scale_grads`. Feature-detecting it and moving on
-    # therefore did not fall back to equivalent behaviour, it silently dropped the scaling while
-    # the log still said it was on, and every gradient came out `microbatches` times too large
-    # on the floor version of our own support matrix. Where upstream cannot do it, do it here.
+    # added in 2.7 together with `PipelineStage.scale_grads`.
     upstream_scales_grads = "scale_grads" in sched_params
     if upstream_scales_grads:
         kw["scale_grads"] = PP_SCALE_GRADS
@@ -1592,22 +1400,15 @@ def build_torch_schedule(
     step_params = inspect.signature(schedule.step).parameters
     step_kw = {}
     if "return_outputs" in step_params:
-        # Merged logits are `batch x seq x vocab` in fp32, tens of GiB on the loss rank for a
-        # tensor nobody reads. Only newer torch can decline it.
+        # Merged logits are `batch x seq x vocab` in fp32, tens of GiB on the loss rank for a tensor
+        # nobody reads.
         step_kw["return_outputs"] = False
 
     def scale_grads_after_step():
-        """Upstream's `PipelineStage.scale_grads` for the versions that do not have it.
-
-        Same factor, same place: once per schedule step, after every backward and before the
-        optimizer, dividing this rank's stage parameters by the microbatch count. The loop
-        zeroes gradients each step, so nothing earlier is divided twice."""
+        """Upstream's `PipelineStage.scale_grads` for the versions that do not have it."""
         if upstream_scales_grads or not PP_SCALE_GRADS or microbatches == 1:
             return
-        # By identity, not per module. A V layout puts the first and last stage on ONE rank,
-        # and a tied embedding is then the same Parameter object in both stage modules: it was
-        # divided twice, giving that tensor 1/M**2 while every other parameter got 1/M, so the
-        # tied weights trained at a different effective learning rate and nothing said so.
+        # By identity, not per module.
         seen = set()
         for mod in mods:
             for p in mod.parameters():
@@ -1639,8 +1440,8 @@ def build_torch_schedule(
     return schedule, mods, step_kw, scale_grads_after_step
 
 
-# Re-enables the refused (deadlocking) schedules so a stack can be taken without editing this
-# file mid-measurement. Never set it in anything a user runs.
+# Re-enables the refused (deadlocking) schedules so a stack can be taken without editing this file
+# mid-measurement.
 _ALLOW_REFUSED = os.environ.get("SPARK_PP_DIAGNOSE", "0") == "1"
 
 
@@ -1682,15 +1483,15 @@ SCHEDULES = {
     "zerobubble": run_zerobubble,
 }
 
-# The union of both backends' names; an upstream-only layout under `--pp-backend legacy` is
-# refused by name rather than ignored.
+# The union of both backends' names; an upstream-only layout under `--pp-backend legacy` is refused
+# by name rather than ignored.
 SCHEDULE_CHOICES = sorted(set(SCHEDULES) | set(TORCH_PP_SCHEDULES))
 PP_BACKENDS = ("torch", "legacy")
 
-# Per-backend default for --schedule. gpipe is the arm to avoid on this hardware: it holds
-# every microbatch's activations at once and peaked at 99.92 GiB against a 121.69 GiB node,
-# where 1f1b peaked at 7.34 GiB for identical work. legacy keeps gpipe because its
-# hand-written 1f1b deadlocks and is refused, so 1f1b there would be an error, not a default.
+# Per-backend default for --schedule. gpipe is the arm to avoid on this hardware: it holds every
+# microbatch's activations at once and peaked at 99.92 GiB against a 121.69 GiB node, where 1f1b
+# peaked at 7.34 GiB for identical work. legacy keeps gpipe because its hand-written 1f1b deadlocks
+# and is refused, so 1f1b there would be an error, not a default.
 DEFAULT_SCHEDULE = {"torch": "1f1b", "legacy": "gpipe"}
 
 
@@ -1699,11 +1500,8 @@ def default_schedule(pp_backend: str) -> str:
 
 
 # Hybrid-attention models (Qwen3.5 and friends) run fused linear-attention kernels when
-# flash-linear-attention and causal-conv1d are importable and a slow torch fallback when they
-# are not. Measured cost of the fallback on two DGX Sparks, Qwen3.5-9B, 1f1b, M=4, batch 64,
-# seq 512, gradient checkpointing, both nodes pinned at 300,1690: 877 tok/s with the fast
-# path against 418 without, and peak memory 14.02 GiB against 17.08. transformers says so
-# once, at warning level, in the middle of the weight-loading output, where it is lost.
+# flash-linear-attention and causal-conv1d are importable and a slow torch fallback when they are
+# not.
 FAST_PATH_PENALTY = "2.1x slower (877 -> 418 tok/s measured on Qwen3.5-9B, two Sparks)"
 FAST_PATH_INSTALL = "pip install flash-linear-attention causal-conv1d"
 
@@ -1711,10 +1509,7 @@ FAST_PATH_INSTALL = "pip install flash-linear-attention causal-conv1d"
 def fast_path_warning(
     model_type: Optional[str], fast_path_available: Optional[bool], missing: Sequence[str]
 ) -> Optional[str]:
-    """The line to print when a model that HAS a fused attention fast path is about to run
-    without it. Pure. ``fast_path_available`` is None for every architecture that has no such
-    path, and those must never be nagged about a package that would do nothing for them, so
-    only an explicit False produces a warning."""
+    """The line to print when a model that HAS a fused attention fast path is about to run without it."""
     if fast_path_available is not False:
         return None
     named = ", ".join(missing) if missing else "its fused kernels"
@@ -1732,9 +1527,7 @@ def check_fast_path(
     log = print,
     use_cpu: bool = False,
 ) -> Optional[str]:
-    """Advisory only: warn when this interpreter will take the slow attention path. Wrapped so
-    that no failure here can stop a training run, and asks transformers the same question
-    transformers asks itself, so it cannot fire on a model with no fast path to lose."""
+    """Advisory only: warn when this interpreter will take the slow attention path."""
     if use_cpu:
         return None  # the fused kernels are CUDA-only; the gloo path has nothing to lose
     try:
@@ -1777,8 +1570,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--microbatches", type = int, default = 4)
     p.add_argument("--seq", type = int, default = 512)
     p.add_argument("--lr", type = float, default = 1e-4)
-    # Deliberately None, resolved by `default_schedule()` once --pp-backend is known: the
-    # right default differs per backend and argparse cannot express that.
+    # Deliberately None, resolved by `default_schedule()` once --pp-backend is known: the right
+    # default differs per backend and argparse cannot express that.
     p.add_argument(
         "--schedule",
         choices = SCHEDULE_CHOICES,
@@ -2175,8 +1968,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
-    # Refuse impossible combinations before a model loads or a collective is issued;
-    # otherwise they surface as a hang on the wire.
     if world < 2:
         raise SystemExit(
             f"spark_pipeline needs WORLD_SIZE >= 2 (got {world}); a one-stage pipeline is "
@@ -2188,17 +1979,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit(f"--virtual-stages must be >= 1 (got {args.virtual_stages})")
     use_torch_pp = args.pp_backend == "torch"
     if args.data and not use_torch_pp:
-        # The legacy stages take the loss from their own input ids, so there is nowhere to
-        # put -100 for the padding and a short example would train on pad targets.
         raise SystemExit("--data needs --pp-backend torch; legacy cannot mask padded labels")
     if args.data:
         problem = dataset_problem(args.data)
         if problem:
             raise SystemExit(problem)
-    # Fail before the tokenizer and model load, so the reason appears in a second instead of
-    # a silent process. The refusals apply to the LEGACY backend only: the same schedule
-    # names work under the torch backend, so refusing them outright would refuse a working
-    # configuration.
+    # Fail before the tokenizer and model load, so the reason appears in a second instead of a
+    # silent process.
     if not use_torch_pp:
         if args.schedule not in SCHEDULES:
             raise SystemExit(
@@ -2247,17 +2034,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token is None:
-        # Base decoder-only checkpoints ship without one, and padding then raises before
-        # the first step. EOS is the usual stand-in; the labels below mask it out anyway.
+        # Base decoder-only checkpoints ship without one, and padding then raises before the first
+        # step.
         tok.pad_token = tok.eos_token
-    # Right padding keeps every real token preceded only by real tokens, so a causal model
-    # needs no padding mask for the representations; only the labels have to exclude pads.
+    # Right padding keeps every real token preceded only by real tokens, so a causal model needs no
+    # padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
 
     # Before the weights load, so the sentence is not buried in the loading output.
     check_fast_path(args.model, log = log, use_cpu = use_cpu)
 
-    # One read, used by the layout, the tied check and the stage metadata below.
     from transformers import AutoConfig
 
     base_config = AutoConfig.from_pretrained(args.model)
@@ -2265,8 +2051,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     plan = my_plan = None
     if use_torch_pp:
-        # Every rank runs the same pure function on the same arguments, so the layout agrees
-        # across the cluster without a collective and nothing is negotiated on the wire.
         n_layers = n_layers_total
         try:
             plan = torch_pp_plan(
@@ -2276,8 +2060,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise SystemExit(str(exc))
         my_plan = plan_for_rank(plan, rank)
 
-    # Checked before the model is built, so a run that cannot be correct stops in seconds
-    # rather than after a 70B load.
+    # Checked before the model is built, so a run that cannot be correct stops in seconds rather
+    # than after a 70B load.
     tied_problem = tied_split_problem(
         bool(getattr(base_config, "tie_word_embeddings", False)),
         bool(args.full_finetune),
@@ -2291,9 +2075,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if legacy_problem:
             raise SystemExit(legacy_problem)
     if args.data and getattr(tok, "chat_template", None) is None:
-        # `apply_chat_template` raises on a base tokenizer, and it did so only after both ranks
-        # had loaded and materialised the model. Nothing documents an instruction-tuned
-        # requirement -- the CLI says `{q, a}` JSONL -- so the check belongs here.
+        # `apply_chat_template` raises on a base tokenizer, and it did so only after both ranks had
+        # loaded and materialised the model.
         raise SystemExit(
             f"--data formats each row with the tokenizer's chat template, and {args.model} "
             f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
@@ -2303,15 +2086,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if save_problem:
         raise SystemExit(save_problem)
 
-    # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would
-    # remove layers this rank needs; the legacy interleaved path has no such set and keeps
-    # the whole stack instead.
-    #
-    # Seeded HERE, before anything is constructed. `get_peft_model` initialises the LoRA A
-    # matrices the moment it is called, so a seed set after it made the run reproducible in
-    # its synthetic token ids and its dropout but not in the parameters actually being
-    # optimised: two torchrun processes, and two runs of the same command, started from
-    # different adapter weights while the code hard-codes a seed.
+    # Multi-stage layouts own non-contiguous chunks, so the contiguous drop-to-Identity would remove
+    # layers this rank needs; the legacy interleaved path has no such set and keeps the whole stack
+    # instead.
     torch.manual_seed(TRAIN_SEED)
     model, cfg, _ = build_stage_model(
         args.model,
@@ -2341,26 +2118,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 target_modules = lora_target_modules(model),
             ),
         )
-    # from_pretrained hands back an eval-mode model while the shard-load path builds one in
-    # training mode, so without this the run's dropout depended on which loader was chosen.
     model.train()
     if args.grad_checkpoint and use_torch_pp:
         # `_PPStageModule` calls the decoder layers directly, so transformers'
-        # `gradient_checkpointing_enable()` is consulted in a `forward` never reached here
-        # and would be inert; the stage module wraps each layer itself.
+        # `gradient_checkpointing_enable()` is consulted in a `forward` never reached here and would
+        # be inert; the stage module wraps each layer itself.
         log("gradient checkpointing enabled per decoder layer (use_reentrant=False)")
     elif args.grad_checkpoint:
-        # The legacy stage also calls decoder layers directly, so it wraps each one itself for
-        # the same reason. The transformers flag below is still set, because that backend's
-        # non-layer submodules do go through the model forward.
+        # The legacy stage also calls decoder layers directly, so it wraps each one itself for the
+        # same reason.
         base_model = getattr(model, "base_model", model)
         inner_model = getattr(base_model, "model", base_model)
         if hasattr(inner_model, "gradient_checkpointing_enable"):
             inner_model.gradient_checkpointing_enable()
         elif hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
-        # use_reentrant=False: the reentrant version drops the grad_fn the p2p-boundary
-        # activation-gradient handoff depends on.
         if hasattr(inner_model, "gradient_checkpointing_kwargs"):
             inner_model.gradient_checkpointing_kwargs = {"use_reentrant": False}
         log(
@@ -2372,8 +2144,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         torch.cuda.empty_cache()
 
     trainable = [p for p in model.parameters() if p.requires_grad]
-    # `torch.cuda.memory_allocated()` raises without a CUDA device, and the gloo path is how
-    # the schedules are unit-tested.
     resident = f"{torch.cuda.memory_allocated()/2**30:.2f} GiB" if not use_cpu else "cpu"
     log(
         f"{sum(p.numel() for p in model.parameters())/1e9:.2f} B params resident "
@@ -2385,11 +2155,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit("--batch must be divisible by --microbatches")
     mb_rows = args.batch // args.microbatches
 
-    # A split only pays while the work is COMPUTE-bound. Below the GB10 roofline crossover a
-    # step is limited by weight traffic, and the two stages read their halves sequentially for
-    # the same microbatch, so total bytes per step is unchanged and the split cannot help.
-    # Too many microbatches therefore fills the pipeline while starving each one. Warn rather
-    # than override: a user may be trading throughput for memory deliberately.
+    # A split only pays while the work is COMPUTE-bound.
     ROOFLINE_CROSSOVER_TOKENS = 436
     mb_tokens = mb_rows * args.seq
     if mb_tokens < ROOFLINE_CROSSOVER_TOKENS:
@@ -2463,14 +2229,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)
 
-    # Again, so the synthetic data does not depend on how many draws the model construction
-    # above happened to take.
+    # Again, so the synthetic data does not depend on how many draws the model construction above
+    # happened to take.
     torch.manual_seed(TRAIN_SEED)
     need = args.batch * args.steps
     if args.data:
-        # `dataset_problem()` accepts a file with a trailing blank line, since it only needs
-        # one nonblank row; this used to hand every raw line to `json.loads`, so the
-        # JSONDecodeError arrived after both ranks had materialised the model.
+        # `dataset_problem()` accepts a file with a trailing blank line, since it only needs one
+        # nonblank row; this used to hand every raw line to `json.loads`, so the JSONDecodeError
+        # arrived after both ranks had materialised the model.
         rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
@@ -2485,16 +2251,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             padding = "max_length",
             truncation = True,
             max_length = args.seq,
-            # The template already rendered BOS/EOS into the text. Tokenizing with the default
-            # `add_special_tokens=True` added a second set -- a duplicated BOS on Llama-style
-            # templates -- so every supervised example was a sequence the model never sees at
-            # inference.
+            # The template already rendered BOS/EOS into the text.
             add_special_tokens = False,
         )
         ids = enc.input_ids
-        # Padded positions are not text. Without this the target is the padded input, so a short
-        # example trains the model to emit pad for most of its length and the reported loss is
-        # dominated by them.
+        # Padded positions are not text.
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
         ids_all = ids.repeat(reps, 1)[:need].to(device)
@@ -2511,19 +2272,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for step in range(args.steps):
         opt.zero_grad(set_to_none = True)
         if use_torch_pp:
-            # Upstream chunks the whole batch; that chunking must agree with `target`'s, and
-            # one implementation owning both is how they stay agreed.
+            # Upstream chunks the whole batch; that chunking must agree with `target`'s, and one
+            # implementation owning both is how they stay agreed.
             whole = ids_all[step * args.batch : (step + 1) * args.batch]
             whole_labels = labels_all[step * args.batch : (step + 1) * args.batch]
             losses = [] if is_loss_rank else None
-            # Only the rank holding stage 0 may supply positional inputs; every other stage's
-            # input is the wire. `target` goes to every rank but is read only by the one
-            # computing the loss, which under a V layout is rank 0, not the last rank.
+            # Only the rank holding stage 0 may supply positional inputs; every other stage's input
+            # is the wire.
             step_args = (whole,) if rank == plan["first_rank"] else ()
             pp_schedule.step(*step_args, target = whole_labels, losses = losses, **pp_step_kw)
             pp_scale_grads()
-            # One mean-reduced loss per microbatch, so the step loss is their mean. That
-            # equals what the legacy schedules return, keeping the two backends comparable.
             loss = (sum(losses) / len(losses)) if losses else None
         else:
             batches = [
@@ -2563,10 +2321,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out = osp.join(args.save, f"stage{rank}")
         os.makedirs(out, exist_ok = True)
         model.save_pretrained(out)
-        # How many stages there were meant to be. Without it the merge could only check that
-        # the directories it found were contiguous from 0, which [stage0, stage1] satisfies
-        # for a three-rank run: the last rank's layers were simply absent and the merged
-        # adapter was untrained there, with nothing raised.
+        # How many stages there were meant to be.
         with open(osp.join(out, "unsloth_stage.json"), "w", encoding = "utf-8") as handle:
             json.dump({"rank": rank, "world": world, "n_layers": n_layers_total}, handle)
         log(f"saved stage {rank} to {out}")

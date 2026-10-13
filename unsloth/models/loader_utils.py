@@ -338,10 +338,6 @@ def is_automatic_device_map(device_map):
     return DEVICE_TYPE_TORCH != "cpu" and device_map == DEVICE_TYPE_TORCH
 
 
-# Two cabled Sparks are two hosts with one GB10 each, so `device_count()` is 1 on both and a
-# multi-device map ("balanced", "auto") has nothing to split across: it silently collapses
-# onto cuda:0, giving the user no splitting and no message. Say so, and name what does work.
-# The gate costs a non-Spark host two string compares and no I/O.
 _SPREADING_DEVICE_MAPS = AUTOMATIC_DEVICE_MAPS - {"sequential"}
 _SPARK_NOTICE_SHOWN = [False]
 
@@ -389,8 +385,6 @@ def notify_device_map_cannot_span_sparks(device_map):
     try:
         _notify_device_map_cannot_span_sparks(device_map)
     except Exception:
-        # A cosmetic notice on every platform's model-load path: nothing it discovers is
-        # worth failing a load that would otherwise succeed, so it fails silent.
         pass
 
 
@@ -413,10 +407,10 @@ def _notify_device_map_cannot_span_sparks(device_map):
         'Unsloth: `device_map="%s"` cannot span two DGX Sparks. They are separate hosts\n'
         "         with one GB10 each, so this process sees 1 GPU and the whole model stays\n"
         "         on cuda:0. To use both Sparks:\n"
-        # NOT FSDP. spark_cluster says in as many words that Unsloth does not support it
-        # (#4858), and this notice is read by someone whose model did not fit, so pointing
-        # them at a sharding mode that does not exist sends them into a DDP launch that
-        # replicates the whole model and OOMs again. --layer-split is the mode that shards.
+        # NOT FSDP. spark_cluster says in as many words that Unsloth does not support it (#4858),
+        # and this notice is read by someone whose model did not fit, so pointing them at a sharding
+        # mode that does not exist sends them into a DDP launch that replicates the whole model and
+        # OOMs again. --layer-split is the mode that shards.
         "           training  : `unsloth spark train --layer-split <model>` shards the\n"
         "                       decoder across both; plain DDP replicates it and still\n"
         "                       needs the whole model to fit one Spark\n"

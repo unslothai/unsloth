@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Flags and probes that were parsed, printed or promised and then not acted on.
-
-Four of a kind, all silent. `--grad-checkpoint` reached argparse and stopped there. The seed
-was set after the LoRA adapters had already been initialised, so the one thing it was there to
-make reproducible was the one thing it did not cover. `--shard-load` on a .bin checkpoint
-failed with `unmaterialised tensors remain`, which names the symptom. And the fast-path probe
-imported one symbol out of a group transformers imports together, so a node where the real
-import fails could report a matching gate.
-"""
+"""Flags and probes that were parsed, printed or promised and then not acted on."""
 
 from __future__ import annotations
 
@@ -38,9 +30,6 @@ def cluster():
 @pytest.fixture
 def doctor():
     return _load("doctor_for_plumbing", "unsloth_cli/commands/doctor.py")
-
-
-# ── --grad-checkpoint ───────────────────────────────────────────────────────────
 
 
 def test_grad_checkpoint_reaches_the_stage_process(cluster, monkeypatch) -> None:
@@ -91,25 +80,19 @@ def test_the_public_wrapper_exposes_the_option() -> None:
     assert 'extra.append("--grad-checkpoint")' in train
 
 
-# ── the seed ────────────────────────────────────────────────────────────────────
-
-
 def test_the_seed_is_set_before_the_model_is_built() -> None:
-    """`get_peft_model` initialises the adapter matrices when it is called, so a seed after
-    it leaves the trained parameters different on every rank and every run."""
-    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
-    seeds = [i for i, line in enumerate(source.splitlines()) if "manual_seed(TRAIN_SEED)" in line]
-    build = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "model, cfg, _ = build_stage_model(" in line
-    )
-    peft = next(i for i, line in enumerate(source.splitlines()) if "get_peft_model(" in line)
-    assert seeds, "the run no longer seeds at all"
-    assert min(seeds) < build < peft, (seeds, build, peft)
-
-
-# ── --shard-load on a .bin checkpoint ───────────────────────────────────────────
+    """`get_peft_model` initialises the adapter matrices when it is called, so a seed after it leaves
+    the trained parameters different on every rank and every run."""
+    lines = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8").splitlines()
+    seeds = [i for i, line in enumerate(lines) if "manual_seed(TRAIN_SEED)" in line]
+    builds = [i for i, line in enumerate(lines) if "model, cfg, _ = build_stage_model(" in line]
+    assert seeds and builds, "the run no longer seeds, or no longer builds a stage"
+    for build in builds:
+        # Per training entry point: a seed just above the build, and the adapter after it.
+        assert any(build - 5 <= seed < build for seed in seeds), (seeds, build)
+        assert any(
+            "get_peft_model(" in line or "apply_lora(" in line for line in lines[build:]
+        ), build
 
 
 def test_a_bin_checkpoint_is_rejected_by_name(tmp_path) -> None:
@@ -130,14 +113,10 @@ def test_a_bin_checkpoint_is_rejected_by_name(tmp_path) -> None:
     assert "unmaterialised" not in message
 
 
-# ── the fast-path probe ─────────────────────────────────────────────────────────
-
-
 def test_the_probe_imports_what_transformers_imports(doctor) -> None:
-    """modeling_qwen3_next.py takes causal_conv1d_fn and causal_conv1d_update in ONE try, so
-    a missing `_update` leaves both None; and it reaches the delta rule through
-    `fla.ops.gated_delta_rule`, a different module from `fla.ops`."""
-    # The runtime half is base64'd into the outer probe, so read it at the source.
+    """modeling_qwen3_next.py takes causal_conv1d_fn and causal_conv1d_update in ONE try, so a missing
+    `_update` leaves both None; and it reaches the delta rule through `fla.ops.gated_delta_rule`, a
+    different module from `fla.ops`."""
     source = doctor.FASTPATH_RUNTIME_SOURCE
     assert "from causal_conv1d import causal_conv1d_fn, causal_conv1d_update" in source
     assert "from fla.ops.gated_delta_rule import chunk_gated_delta_rule" in source
@@ -152,8 +131,8 @@ def test_the_metadata_probe_still_imports_nothing(doctor) -> None:
 
 
 def test_the_peer_probe_resolves_the_login_like_every_other_ssh(doctor, monkeypatch) -> None:
-    """Without USER or USERNAME -- a service, a cron job, a container -- it used the literal
-    account `nvidia` and reported UNKNOWN on a pair whose other SSH works."""
+    """Without USER or USERNAME -- a service, a cron job, a container -- it used the literal account
+    `nvidia` and reported UNKNOWN on a pair whose other SSH works."""
     monkeypatch.delenv("USER", raising = False)
     monkeypatch.delenv("USERNAME", raising = False)
     monkeypatch.setattr(doctor, "_ssh_login", lambda: "alice")
@@ -174,19 +153,15 @@ def test_the_peer_probe_resolves_the_login_like_every_other_ssh(doctor, monkeypa
     assert "alice@192.168.200.13" in seen["argv"]
 
 
-# ── the peer launch ─────────────────────────────────────────────────────────────
-
-
 def test_a_custom_studio_home_with_a_space_stays_one_shell_word(
     cluster, monkeypatch, tmp_path
 ) -> None:
-    """Bare, `[ -f {act} ] && . {act}` split it into words, the peer venv was not activated,
-    and the launch failed on a torchrun that a non-interactive SSH PATH does not have."""
+    """Bare, `[ -f {act} ] && . {act}` split it into words, the peer venv was not activated, and the
+    launch failed on a torchrun that a non-interactive SSH PATH does not have."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "my studio"))
     quoted = cluster.venv_activate_sh()
     assert quoted.startswith('"') and quoted.endswith('"')
     fragment = f"[ -f {quoted} ] && . {quoted}"
-    # What the peer's shell sees, inside the `bash -c '...'` the callers build.
     assert subprocess.run(["bash", "-c", f"{fragment}; true"]).returncode == 0
     words = subprocess.run(
         ["bash", "-c", f"set -- {quoted}; echo $#"], capture_output = True, text = True
@@ -206,8 +181,8 @@ def test_the_default_still_expands_home_on_the_peer(cluster, monkeypatch) -> Non
 
 
 def test_the_peer_stage_is_stopped_when_the_local_one_fails(cluster, monkeypatch) -> None:
-    """It was launched under `setsid nohup` and abandoned, so it held its model and CUDA
-    context until the distributed timeout and the next provision refused the peer as busy."""
+    """It was launched under `setsid nohup` and abandoned, so it held its model and CUDA context until
+    the distributed timeout and the next provision refused the peer as busy."""
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
     monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
@@ -233,8 +208,8 @@ def test_the_peer_stage_is_stopped_when_the_local_one_fails(cluster, monkeypatch
 
 
 def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> None:
-    """Rank 1 writes its own stage under --save after the last step; killing it there would
-    truncate the half of the checkpoint it owns."""
+    """Rank 1 writes its own stage under --save after the last step; killing it there would truncate
+    the half of the checkpoint it owns."""
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
     monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
@@ -259,8 +234,8 @@ def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> Non
 
 
 def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, tmp_path) -> None:
-    """Both ranks got the same --data and --model, and rank 1 runs from its own $HOME with
-    only the venv, the bundle and the kernel caches copied to it."""
+    """Both ranks got the same --data and --model, and rank 1 runs from its own $HOME with only the
+    venv, the bundle and the kernel caches copied to it."""
     data = tmp_path / "rows.jsonl"
     data.write_text('{"q": "a", "a": "b"}\n', encoding = "utf-8")
     checkpoint = tmp_path / "ckpt"
@@ -286,8 +261,8 @@ def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, 
 
 
 def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_path) -> None:
-    """Cached only on the initiating Spark, the peer would refetch it at internet speed over
-    a link that moves 444 MB/s, or fail."""
+    """Cached only on the initiating Spark, the peer would refetch it at internet speed over a link
+    that moves 444 MB/s, or fail."""
     monkeypatch.setenv("HOME", str(tmp_path))
     cached = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--m"
     cached.mkdir(parents = True)
@@ -338,8 +313,8 @@ def test_a_failed_stage_is_reported_and_not_silently_skipped(
 def test_the_peer_stages_are_collected_after_a_successful_run(
     cluster, monkeypatch, tmp_path
 ) -> None:
-    """`spark merge` reads every stage from ONE local directory and says it needs no second
-    Spark, while rank 1 wrote its stage on the peer."""
+    """`spark merge` reads every stage from ONE local directory and says it needs no second Spark,
+    while rank 1 wrote its stage on the peer."""
     monkeypatch.setattr(cluster, "_ssh_user", lambda: "someuser")
     monkeypatch.setattr(cluster, "venv_activate_sh", lambda: '"$HOME/a"')
     monkeypatch.setattr(cluster.time, "sleep", lambda s: None)
@@ -397,8 +372,8 @@ class _Cfg:
 
 
 def test_eager_attention_is_refused_on_the_legacy_backend() -> None:
-    """Its forwards pass no attention_mask, and `eager_attention_forward` adds one only
-    `if attention_mask is not None`, so the run would train bidirectionally."""
+    """Its forwards pass no attention_mask, and `eager_attention_forward` adds one only `if
+    attention_mask is not None`, so the run would train bidirectionally."""
     pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
     problem = pipeline.legacy_attention_problem(_Cfg(_attn_implementation = "eager"), 512)
     assert problem and "bidirectional" in problem
@@ -406,8 +381,8 @@ def test_eager_attention_is_refused_on_the_legacy_backend() -> None:
 
 @pytest.mark.parametrize("impl", ["sdpa", "flash_attention_2", "flash_attention_3"])
 def test_the_kernels_that_derive_causality_are_untouched(impl: str) -> None:
-    """No regression: with attention_mask None these select the causal kernel themselves,
-    which is why the legacy backend was correct for them and is kept as a control arm."""
+    """No regression: with attention_mask None these select the causal kernel themselves, which is why
+    the legacy backend was correct for them and is kept as a control arm."""
     pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
     assert pipeline.legacy_attention_problem(_Cfg(_attn_implementation = impl), 4096) is None
 
@@ -416,14 +391,12 @@ def test_a_sequence_past_the_sliding_window_is_refused() -> None:
     pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
     cfg = _Cfg(_attn_implementation = "sdpa", sliding_window = 1024)
     assert pipeline.legacy_attention_problem(cfg, 2048)
-    # At or below the window the two masks are the same matrix.
     assert pipeline.legacy_attention_problem(cfg, 1024) is None
 
 
 def test_a_model_that_cannot_fit_the_split_still_needs_a_full_finetune_refusal() -> None:
     pipeline = _load("spark_pipeline_for_attn", "studio/spark_pipeline.py")
     assert pipeline.full_finetune_save_problem(True, "out", 2)
-    # Single node saves a complete checkpoint, and LoRA merges.
     assert pipeline.full_finetune_save_problem(True, "out", 1) is None
     assert pipeline.full_finetune_save_problem(False, "out", 2) is None
     assert pipeline.full_finetune_save_problem(True, "", 2) is None
@@ -452,8 +425,8 @@ def test_the_launch_records_the_pid_it_would_stop() -> None:
 
 
 def test_parity_only_does_not_run_the_runtime_imports() -> None:
-    """`--parity-only` is documented as "No GPU work, no NCCL run", and the runtime half of
-    the fast-path probe imports torch and the native kernel packages on both nodes."""
+    """`--parity-only` is documented as "No GPU work, no NCCL run", and the runtime half of the
+    fast-path probe imports torch and the native kernel packages on both nodes."""
     for relative in ("unsloth_cli/commands/doctor.py", "unsloth_cli/commands/spark.py"):
         source = (REPO / relative).read_text(encoding = "utf-8")
         assert "check_fastpath(peer_ip, runtime = deep or not parity_only)" in source, relative

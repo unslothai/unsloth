@@ -243,9 +243,8 @@ if not _windows_studio_mutation_entry:
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
         "against Unsloth.",
     )
-    # Registering this costs a non-Spark machine nothing: every subcommand no-ops with a
-    # message, and the module it defers to is stdlib-only.
-    # Top-level: a slow machine's owner reaches for `unsloth doctor` first. No-ops off a Spark.
+    # Registering this costs a non-Spark machine nothing: every subcommand no-ops with a message,
+    # and the module it defers to is stdlib-only.
     app.add_typer(
         doctor_app,
         name = "doctor",
