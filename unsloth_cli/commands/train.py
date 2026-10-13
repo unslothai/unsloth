@@ -81,9 +81,41 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
+def _launch_rank() -> Optional[int]:
+    # A size alone is not a launch: a stale PMI_SIZE or WORLD_SIZE in a shell would pin every run to one folder.
+    rank = os.environ.get("RANK")
+    size = os.environ.get("WORLD_SIZE")
+    if rank is not None and size is not None:
+        try:
+            rank, size = int(rank), int(size)
+        except ValueError:
+            return None
+        return rank if 0 <= rank < size and size > 1 else None
+    is_launch, rank, _size = mlx_distributed_info()
+    return rank if is_launch and (_size or 0) > 1 else None
+
+
+def _torchelastic_store():
+    # torchrun's agent store spans every node of one launch and nothing outside it.
+    if os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True":
+        return None
+    try:
+        from datetime import timedelta
+
+        from torch.distributed import TCPStore
+        return TCPStore(
+            os.environ["MASTER_ADDR"],
+            int(os.environ["MASTER_PORT"]),
+            is_master = False,
+            timeout = timedelta(minutes = 30),
+        )
+    except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
+        return None
+
+
 def _launcher_start_time() -> int:
     # Ranks reach this after their own model load, seconds apart, so their clocks disagree; the
-    # launcher (torchrun, mlx.launch, mpirun) that spawned every rank on this node does not.
+    # launcher (mlx.launch, mpirun) that spawned every rank on this node does not.
     try:
         import psutil
         return int(psutil.Process(os.getppid()).create_time())
@@ -91,26 +123,35 @@ def _launcher_start_time() -> int:
         return int(time.time())
 
 
-def _default_output_dir(model_name: str) -> str:
-    ensure_studio_backend_path()
-    from utils.paths import default_run_dir_name, ensure_dir, resolve_output_dir
-
-    with studio_backend_imports("unsloth train"):
-        from studio.backend.core.training.dataset_bounds import world_size_from_env
-
-    distributed = world_size_from_env() > 1
-    stamp = _launcher_start_time() if distributed else int(time.time())
+def _reserve_run_dir(name: str) -> str:
+    from utils.paths import ensure_dir, resolve_output_dir
+    stamp = int(time.time())
     while True:
-        path = resolve_output_dir(f"{default_run_dir_name(model_name)}_{stamp}")
-        # Ranks of one launch must agree on the folder, so only a single process reserves one.
-        if distributed:
-            return str(path)
+        path = resolve_output_dir(f"{name}_{stamp}")
         ensure_dir(path.parent)
         try:
             path.mkdir()
             return str(path)
         except FileExistsError:
             stamp += 1
+
+
+def _default_output_dir(model_name: str) -> str:
+    ensure_studio_backend_path()
+    from utils.paths import default_run_dir_name, resolve_output_dir
+
+    name = default_run_dir_name(model_name)
+    rank = _launch_rank()
+    if rank is None:
+        return _reserve_run_dir(name)
+    # Ranks of one launch must agree on the folder: rank 0 reserves it and hands it to the rest.
+    store = _torchelastic_store()
+    if store is None:
+        return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
+    key = "unsloth_cli/output_dir"
+    if rank == 0 and not store.check([key]):
+        store.set(key, _reserve_run_dir(name))
+    return store.get(key).decode()
 
 
 @add_options_from_config(Config)
