@@ -13,11 +13,9 @@ import { useInventoryVersion } from "../stores/inventory-events";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
   additionalAssetDownloads,
-  checkpointFirst,
   selectDownloadEntries,
 } from "../download-manager/required-assets";
 import { RequiredAssetsDownloadDialog } from "../download-manager/required-assets-dialog";
-import { withPlanBreakdown } from "../download-manager/download-breakdown";
 import { enqueueHubDownload } from "../download-manager/use-hub-download-queue";
 import type { StagedDownloadEntry } from "../download-manager/use-staged-download";
 export type AssetRuntime = "images" | "video" | "audio";
@@ -39,7 +37,6 @@ export function useRequiredAssetsDownload({
   const inventoryVersion = useInventoryVersion();
   const sequence = useRef(0);
   const starting = useRef(false);
-  const checkpointBytes = useRef<number | undefined>(undefined);
   const fetchPlan = useCallback(async () => {
     const body = {
       model_path: repoId,
@@ -105,15 +102,6 @@ export function useRequiredAssetsDownload({
       ++sequence.current;
     };
   }, [fetchPlan, runtime]);
-  // The queue runs the checkpoint first and drops unticked assets, so each job's earlier and later
-  // parts are sized from that final list, not from the plan's order.
-  const enqueuePlan = (entries: StagedDownloadEntry[]) => {
-    if (!entries.length) return;
-    enqueueHubDownload(
-      withPlanBreakdown(checkpointFirst(entries), checkpointBytes.current),
-      { repoId, filename },
-    );
-  };
   const request = async (fallback: () => void) => {
     if (!runtime) {
       fallback();
@@ -130,15 +118,14 @@ export function useRequiredAssetsDownload({
         repoId: e.repo_id,
         files: e.files,
         bytes: e.bytes,
-        fileBytes: e.file_bytes,
         ggufFilename: e.gguf_filename,
         checkpoint:
           e.checkpoint ??
           (filename ? e.files.includes(filename) : e.repo_id === repoId),
       }));
-      checkpointBytes.current = p.checkpoint_bytes;
       if (additionalAssetDownloads(entries).length) setPending(entries);
-      else if (entries.length) enqueuePlan(entries);
+      else if (entries.length)
+        enqueueHubDownload(entries, { repoId, filename });
       else fallback();
     } catch (e) {
       if (sequence.current !== id) return;
@@ -167,7 +154,11 @@ export function useRequiredAssetsDownload({
           setPending(null);
         }}
         onConfirm={(include) => {
-          if (pending) enqueuePlan(selectDownloadEntries(pending, include));
+          if (pending)
+            enqueueHubDownload(selectDownloadEntries(pending, include), {
+              repoId,
+              filename,
+            });
           setPending(null);
         }}
       />

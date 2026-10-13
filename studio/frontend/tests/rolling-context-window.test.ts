@@ -13,7 +13,7 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx");
+const COMPACTION_DIVIDER = readSrc("components/assistant-ui/compaction-divider.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const DERIVED = readSrc("components/assistant-ui/message-derived.ts");
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
@@ -150,8 +150,8 @@ test("a rescued turn cannot silence the compactions that follow it", () => {
 });
 
 test("the notice and the toast read the same predicate as the boundary", () => {
-  assert.match(COMPACTION_NOTICE, /promptWasShortened\(truncation\)/);
-  assert.doesNotMatch(COMPACTION_NOTICE, /truncation\?\.fits/);
+  assert.match(COMPACTION_DIVIDER, /promptWasShortened\(truncation\)/);
+  assert.doesNotMatch(COMPACTION_DIVIDER, /truncation\?\.fits/);
   assert.match(adapter, /promptWasShortened\(chunk\.context_truncated\)/);
 });
 
@@ -217,16 +217,15 @@ test("compaction counts accumulate and stay absent on a plain rolling window", (
 
 test("the compaction notice renders from persisted metadata, not from a message", () => {
   // Read off metadata.custom so it can never become part of the conversation.
-  assert.match(THREAD, /custom\?\.contextTruncation/);
-  assert.match(THREAD, /<CompactionNotice truncation=\{contextTruncation\}/);
-  assert.match(COMPACTION_NOTICE, /This conversation got long, so it was compacted/);
+  assert.match(DERIVED, /\.custom\.contextTruncation/);
+  assert.match(THREAD, /<CompactionDivider truncation=\{truncation\} \/>/);
+  assert.match(COMPACTION_DIVIDER, /Context compacted/);
 });
 
 test("the compaction notice uses the shared boundary/checkpoint predicate", () => {
   // Replayed fits stay quiet; a new boundary or checkpoint is a new compaction.
-  assert.match(THREAD, /const showsNotice = useAuiState/);
-  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
-  assert.match(THREAD, /compactionNoticeMessageIds\(thread\.messages\)\.has\(messageId\)/);
+  assert.match(THREAD, /compactionDividerRows\(thread\.messages\)\.get\(message\.id\)/);
+  assert.match(DERIVED, /const notices = compactionNoticeMessageIds\(messages\)/);
   assert.match(DERIVED, /shouldShowCompactionNotice\(value, previousDropped\)/);
   // Walked in order, not against the preceding message: turns between two moves report
   // the same count and must not reset the baseline.
@@ -299,17 +298,7 @@ const functionBody = (source: string, name: string): string => {
 test("the notice is a NOTICE, never part of the conversation", () => {
   const exporter = readSrc("features/chat/utils/conversation-markdown-export.ts");
 
-  // 1. A sibling of the rendered content parts, not one of them: inside
-  //    MessagePrimitive.Parts everything that walks parts would pick it up.
-  const noticeAt = THREAD.indexOf("<CompactionNotice");
-  const partsAt = THREAD.indexOf("<MessagePrimitive.Parts", noticeAt);
-  assert.ok(noticeAt > 0 && partsAt > noticeAt);
-  assert.ok(
-    !/<MessagePrimitive\.Parts[^>]*>[\s\S]*<CompactionNotice/.test(THREAD),
-    "the notice must not be rendered inside the message's content parts",
-  );
-
-  // 2. Nothing that builds a request may read the key it renders from. Bounded to the
+  // 1. Nothing that builds a request may read the key it renders from. Bounded to the
   //    function bodies: slicing to end-of-file also catches the streaming handler,
   //    which reads contextTruncation legitimately on the way IN.
   for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
@@ -321,12 +310,13 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     );
   }
 
-  // 3. Nor may the user-facing export, which is the other way text leaves a thread.
+  // 2. Nor may the user-facing export, which is the other way text leaves a thread.
   assert.ok(!exporter.includes("contextTruncation"));
   assert.ok(!exporter.includes("compacted"));
 
-  // 4. Suppressed while editing, so it cannot be saved back as message text.
-  assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
+  // 3. Drawn in the row slot, beside the message rather than inside it, so an edit cannot
+  //    save it back as message text.
+  assert.match(THREAD, /<CompactionRowDivider \/>\s*\{body\}/);
 });
 
 test("an irreducible fit reports a diagnosis, and it is dropped once something fits", () => {

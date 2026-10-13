@@ -108,6 +108,7 @@ __all__ = [
     "planned_prefetch_depth",
     "trim_config_for_block_swap",
     "attach_offload_layers",
+    "mark_auto_offload_for_ddp",
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
@@ -551,7 +552,13 @@ _FLEX_LARGE_HEAD_DIM_ENV_VAR = "UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM"
 # gemma2 measured slower under flex. gemma4 shares one _attn_implementation across all layers, so
 # flex would also pull its 25 sliding layers off unsloth_zoo's faster gemma4_flash_sliding router,
 # which is registered under "sdpa".
-_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = ("gemma2", "gemma4", "gemma4_text")
+_FLEX_LARGE_HEAD_DIM_EXCLUDED_MODELS = (
+    "gemma2",
+    "gemma4",
+    "gemma4_text",
+    "gemma4_unified",
+    "gemma4_unified_text",
+)
 # Interface dispatch, and a BlockMask from create_causal_mask rather than a hand-built 4D mask.
 _FLEX_INTERFACE_MARKERS = ("ALL_ATTENTION_FUNCTIONS", "create_causal_mask")
 _FLEX_SUPPORT_FORCED = set()
@@ -3833,7 +3840,7 @@ try:
             "Then confirm if it's correctly installed by running:\n"
             "python -m xformers.info\n\n"
             "Longer error message:\n" + str(error)
-        )
+        ) from error
     import xformers.ops.fmha as xformers
 
     xformers_attention = xformers.memory_efficient_attention
@@ -3845,6 +3852,20 @@ except Exception as e:
     if UNSLOTH_ENABLE_LOGGING:
         print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
         print(str(e))
+    elif DEVICE_TYPE == "cuda" and str(e).startswith("Unsloth:") and e.__cause__ is None:
+        # The version guards above (e.g. Blackwell FA3 dispatch) carry their own fix; install-kernels would not apply it.
+        print(str(e))
+    elif DEVICE_TYPE == "cuda":
+        # xformers' own warning is silenced above; usually PyPI's cu128 wheel beside a cu130 torch (#4381).
+        _built_for = re.search(r"PyTorch (\S+) with CUDA \S+ \(you have", str(e))
+        print(
+            "Unsloth: xformers is installed but cannot load with torch "
+            f"{torch_version}{f' (it was built for {_built_for.group(1)})' if _built_for else ''}, "
+            "so PyTorch attention is used instead.\n"
+            "To install a matching xformers, run `unsloth install-kernels xformers`, "
+            "or `pip uninstall xformers` to hide this. UNSLOTH_ENABLE_LOGGING=1 shows the full error."
+        )
+        del _built_for
     xformers = None
     xformers_attention = None
     xformers_version = None
@@ -5265,6 +5286,8 @@ def patch_gradient_accumulation_fix(Trainer):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
+            _block_swap_for_trainer_backend(self)
+            _enable_ddp_batched_grad_copy(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7852,6 +7875,114 @@ def _attach_block_swap(model, offload_layers, prefetch_depth):
     return swapper
 
 
+_DDP_BGC_KWARG = "batched_grad_copy"
+_DDP_BGC_HANDLER_CLASSES = {}
+_DDP_BGC_PRINTED = False
+
+
+def _ddp_batched_grad_copy_reason(accelerator):
+    """Why DDP must not get batched_grad_copy = True, or None. Opt-in: UNSLOTH_DDP_BATCHED_GRAD_COPY=1."""
+    if os.environ.get("UNSLOTH_DDP_BATCHED_GRAD_COPY", "0") != "1":
+        return "off"
+    if accelerator is None:
+        return "no accelerator"
+    # Plain DDP only: FSDP / DeepSpeed / Megatron / XLA never build torch DDP from ddp_handler.
+    distributed_type = str(getattr(getattr(accelerator, "distributed_type", None), "value", ""))
+    if not distributed_type.startswith("MULTI_"):
+        return f"distributed type {distributed_type or None}"
+    state = getattr(accelerator, "state", None)
+    for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
+        if (
+            getattr(state, plugin, None) is not None
+            or getattr(accelerator, plugin, None) is not None
+        ):
+            return plugin
+    try:
+        parameters = inspect.signature(
+            torch.nn.parallel.DistributedDataParallel.__init__
+        ).parameters
+    except (TypeError, ValueError):
+        return "torch DDP signature unavailable"
+    if _DDP_BGC_KWARG not in parameters:
+        return f"torch {torch.__version__} DDP has no {_DDP_BGC_KWARG}"
+    return None
+
+
+def _ddp_batched_grad_copy_handler(handler):
+    """The DDP kwargs handler with batched_grad_copy = True, never an instance attribute (to_kwargs diffs __dict__ against a fresh default)."""
+    from accelerate.utils import DistributedDataParallelKwargs
+
+    if handler is None:
+        handler = DistributedDataParallelKwargs()
+    if not isinstance(handler, DistributedDataParallelKwargs):
+        return handler
+    if _DDP_BGC_KWARG in getattr(type(handler), "__dataclass_fields__", {}):
+        setattr(handler, _DDP_BGC_KWARG, True)
+        return handler
+    cls = type(handler)
+    if getattr(cls, "_unsloth_batched_grad_copy", False):
+        return handler
+    subclass = _DDP_BGC_HANDLER_CLASSES.get(cls)
+    if subclass is None:
+
+        def to_kwargs(self):
+            kwargs = super(subclass, self).to_kwargs()
+            kwargs[_DDP_BGC_KWARG] = True
+            return kwargs
+
+        subclass = type(
+            cls.__name__,
+            (cls,),
+            {
+                "to_kwargs": to_kwargs,
+                "_unsloth_batched_grad_copy": True,
+                "__module__": cls.__module__,
+            },
+        )
+        _DDP_BGC_HANDLER_CLASSES[cls] = subclass
+    handler.__class__ = subclass
+    return handler
+
+
+def _enable_ddp_batched_grad_copy(trainer):
+    """Pass batched_grad_copy = True (torch >= 2.13) to the DDP accelerate builds in prepare, when opted in."""
+    global _DDP_BGC_PRINTED
+    accelerator = getattr(trainer, "accelerator", None)
+    try:
+        reason = _ddp_batched_grad_copy_reason(accelerator)
+        if reason is not None:
+            if reason != "off" and not _DDP_BGC_PRINTED:
+                _DDP_BGC_PRINTED = True
+                print(f"Unsloth: DDP batched_grad_copy = False ({reason}).")
+            return False
+        accelerator.ddp_handler = _ddp_batched_grad_copy_handler(accelerator.ddp_handler)
+        # transformers 4.x replaces ddp_handler in _wrap_model, after __init__ and before prepare: re-apply there.
+        prepare_model = accelerator.prepare_model
+        if not getattr(prepare_model, "_unsloth_batched_grad_copy", False):
+
+            @functools.wraps(prepare_model)
+            def _prepare_model_batched_grad_copy(*args, **kwargs):
+                try:
+                    accelerator.ddp_handler = _ddp_batched_grad_copy_handler(
+                        accelerator.ddp_handler
+                    )
+                except Exception:
+                    pass
+                return prepare_model(*args, **kwargs)
+
+            _prepare_model_batched_grad_copy._unsloth_batched_grad_copy = True
+            accelerator.prepare_model = _prepare_model_batched_grad_copy
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print("Unsloth: DDP batched_grad_copy = True (UNSLOTH_DDP_BATCHED_GRAD_COPY=1).")
+        return True
+    except Exception as e:
+        if not _DDP_BGC_PRINTED:
+            _DDP_BGC_PRINTED = True
+            print(f"Unsloth: DDP batched_grad_copy = False ({e}).")
+        return False
+
+
 _REPLAN_FAILED_PRINTED = False
 _PAIRED_FORWARD_TRAINERS = ("DPOTrainer", "ORPOTrainer", "CPOTrainer")
 
@@ -7868,6 +7999,90 @@ def _replan_auto_offload_safely(trainer):
                 "keeping the current plan."
             )
         return None
+
+
+def mark_auto_offload_for_ddp(model, ddp_auto):
+    """Mark an "auto" DDP plan on every rank, even zero-swap ones, so all build the same ignore list."""
+    if ddp_auto and model is not None:
+        model._unsloth_offload_layers_auto_ddp = True
+    return model
+
+
+def _ignore_block_swap_params_for_ddp(model):
+    """Keep frozen decoder weights out of DDP's init broadcast: ranks may swap different layers to
+    0-element placeholders. The list must match on every rank, so it follows the request and
+    architecture, never this rank's plan. Returns the names added."""
+    from .loader_utils import is_distributed
+
+    if model is None or find_decoder_layers is None or not is_distributed():
+        return []
+    if not getattr(model, "_unsloth_offload_layers_auto_ddp", False) and (
+        getattr(model, "_unsloth_offload_layers_auto", None) is None
+    ):
+        return []
+    # Before PEFT froze the base only swapped layers are frozen, so the list would differ per rank.
+    if getattr(model, "peft_config", None) is None:
+        return []
+    try:
+        layer_params = {id(p) for p in find_decoder_layers(model).parameters()}
+    except Exception:
+        return []
+    # Trainable decoder weights (bias, modules_to_save) need DDP sync; refuse on every rank alike.
+    trainable = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and p.requires_grad and "lora_" not in name
+    ]
+    if trainable:
+        raise ValueError(
+            "Unsloth: offload_layers = 'auto' under DDP keeps the frozen decoder weights out of DDP, "
+            f"but {len(trainable)} decoder weights are trainable (e.g. {trainable[0]}). Use "
+            "bias = 'none' and no modules_to_save inside the decoder layers, or offload_layers = 0."
+        )
+    names = [
+        name
+        for name, p in model.named_parameters()
+        if id(p) in layer_params and not p.requires_grad
+    ]
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    return added
+
+
+def _block_swap_for_trainer_backend(trainer):
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
+    refuse, since sharding would flatten the 0-element placeholders."""
+    model = getattr(trainer, "model", None)
+    backend = (
+        "FSDP"
+        if getattr(trainer, "is_fsdp_enabled", False)
+        else "DeepSpeed"
+        if getattr(trainer, "is_deepspeed_enabled", False)
+        else None
+    )
+    if backend is None:
+        return _ignore_block_swap_params_for_ddp(model)
+    swapper = getattr(model, "_unsloth_block_swap", None) if model is not None else None
+    swapped = len(getattr(swapper, "indices", None) or ())
+    # Every auto rank refuses, even zero-swap ones: a one-sided refusal would hang the peers.
+    auto = model is not None and (
+        getattr(model, "_unsloth_offload_layers_auto_ddp", False)
+        or getattr(model, "_unsloth_offload_layers_auto", None) is not None
+    )
+    if auto:
+        raise ValueError(
+            f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
+            f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
+            "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    return []
 
 
 def _trainer_offload_replan_skip(trainer):
@@ -8896,22 +9111,27 @@ def _is_unarmed(module):
     )
 
 
-def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+def resolve_training_gradient_checkpointing(
+    model,
+    use_gradient_checkpointing,
+    modules = None,
+):
     """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
     if use_gradient_checkpointing is not None:
         return use_gradient_checkpointing
     if hasattr(model, "_unsloth_gradient_checkpointing"):
         return model._unsloth_gradient_checkpointing
     # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
-    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    modules = model.modules() if modules is None else modules
+    checkpointing = [m for m in modules if _calls_checkpoint_function(m)]
     if checkpointing:
         return any(not _is_unarmed(m) for m in checkpointing)
     return True
 
 
-def arm_gradient_checkpointing(model):
+def arm_gradient_checkpointing(model, modules = None):
     """Install the checkpoint function a load with checkpointing off never gave the layers."""
-    if not any(_is_unarmed(m) for m in model.modules()):
+    if not any(_is_unarmed(m) for m in (model.modules() if modules is None else modules)):
         return False
     # Outer model, not get_base_model(): Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
     try:
@@ -8937,3 +9157,151 @@ def set_module_gradient_checkpointing(module, value):
         return False
     module.gradient_checkpointing = value
     return True
+
+
+@functools.lru_cache(maxsize = None)
+def _mode_switch_class_info(cls):
+    """(train, eval, gc, setattr, walk) for switch_training_mode, per class.
+
+    train: True when train() and the child traversal are nn.Module's, "kernels" for PreTrainedModel.train
+    (adds a kernel re-cast only under `use_kernels`), False otherwise. eval: eval() is nn.Module's or
+    PreTrainedModel's. gc: the class has gradient_checkpointing, None for classes with their own
+    __getattr__ / __getattribute__ (PEFT wrappers delegate it). setattr: `training` is a plain instance
+    attribute. walk: modules() / parameters() enumerate the registered tree, as the raw _modules walk does.
+    """
+    try:
+        from transformers import PreTrainedModel
+        pretrained = (PreTrainedModel.train, PreTrainedModel.eval)
+    except Exception:
+        pretrained = (None, None)
+    module = torch.nn.Module
+    children = cls.children is module.children and cls.named_children is module.named_children
+    if not children:
+        train = False
+    elif cls.train is module.train:
+        train = True
+    else:
+        train = "kernels" if cls.train is pretrained[0] else False
+    plain_eval = cls.eval is module.eval or cls.eval is pretrained[1]
+    plain_lookup = (
+        cls.__getattr__ is module.__getattr__ and cls.__getattribute__ is module.__getattribute__
+    )
+    gc = hasattr(cls, "gradient_checkpointing") if plain_lookup else None
+    descriptor = inspect.getattr_static(cls, "training", None)
+    plain_setattr = cls.__setattr__ is module.__setattr__ and not hasattr(
+        type(descriptor), "__set__"
+    )
+    plain_walk = all(
+        getattr(cls, name) is getattr(module, name)
+        for name in ("modules", "named_modules", "parameters", "named_parameters", "_named_members")
+    )
+    return train, plain_eval, gc, plain_setattr, plain_walk
+
+
+def _has_gradient_checkpointing(module, on_class):
+    # hasattr() for a plain nn.Module, without its slow AttributeError path.
+    if on_class is None:
+        return hasattr(module, "gradient_checkpointing")
+    return (
+        on_class
+        or "gradient_checkpointing" in module.__dict__
+        or "gradient_checkpointing" in module._parameters
+        or "gradient_checkpointing" in module._buffers
+        or "gradient_checkpointing" in module._modules
+    )
+
+
+def switch_training_mode(
+    model,
+    training,
+    defer = False,
+):
+    """for_inference / for_training's model.train() / eval() plus their gradient_checkpointing and
+    `_fast_lora` scans (every GRPO step) in one walk; returns the modules with a gradient_checkpointing flag.
+
+    `training` is written directly only where nn.Module.train would do nothing else; any other train()
+    (class or instance override such as the frozen-norm partial, kernels on, own child traversal) runs for
+    its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
+    (modules, apply) so for_training can still set the mode last.
+    """
+    if not isinstance(model, torch.nn.Module):
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        apply = model.train if training else model.eval
+        if defer:
+            return checkpointing, apply
+        apply()
+        return checkpointing
+    # Mode writes in nn.Module.train's preorder, shared modules once per path, so custom train() calls run
+    # where the recursion would run them. The gc / _fast_lora scan sees each module once, as modules() does.
+    ops, checkpointing = [], []
+    seen = set()
+    plain_walk = True
+    stack = [(model, False)]
+    while stack:
+        module, covered = stack.pop()
+        if module is None:
+            continue
+        train, plain_eval, gc, plain_setattr, walk = _mode_switch_class_info(type(module))
+        plain_walk = plain_walk and walk
+        if not covered:
+            if (
+                train is False
+                or "train" in module.__dict__
+                or (train == "kernels" and getattr(module, "use_kernels", False))
+                or (
+                    module is model
+                    and not training
+                    and (not plain_eval or "eval" in module.__dict__)
+                )
+            ):
+                ops.append((module, None))
+                covered = True
+            else:
+                ops.append((module, plain_setattr))
+        if id(module) in seen:
+            if covered or len(ops) > 64 * len(seen):  # nothing left to record, or a cycle
+                continue
+        else:
+            seen.add(id(module))
+            if _has_gradient_checkpointing(module, gc):
+                checkpointing.append(module)
+            if training:
+                for param in module._parameters.values():
+                    if param is not None and "_fast_lora" in param.__dict__:
+                        del param._fast_lora
+        if module._modules:
+            children = [child for child in module._modules.values() if child is not None]
+            if len(children) > 1:
+                # named_children() yields a module registered under two names once per parent.
+                children = list({id(child): child for child in children}.values())
+                children.reverse()
+            stack.extend([(child, covered) for child in children])
+    if not plain_walk:
+        # Some class enumerates modules / parameters its own way: scan as the old code did.
+        checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
+        if training:
+            for param in model.parameters():
+                if hasattr(param, "_fast_lora"):
+                    del param._fast_lora
+
+    def apply():
+        if (ops and ops[0][0] is model and ops[0][1] is None) or len(ops) > 64 * len(seen):
+            model.train() if training else model.eval()
+            return
+        for module, plain_setattr in ops:
+            if plain_setattr is None:
+                module.train(training)
+            # nn.Module.__setattr__ only routes Parameters / Modules / buffers; a bool lands in __dict__.
+            elif plain_setattr:
+                module.__dict__["training"] = training
+            else:
+                module.training = training
+
+    if defer:
+        return checkpointing, apply
+    apply()
+    return checkpointing

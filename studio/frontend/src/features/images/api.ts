@@ -369,8 +369,6 @@ export interface DiffusionDownloadPlan {
     repo_id: string;
     files: string[];
     bytes: number;
-    /** Size of each file counted in `bytes`. Absent on an older backend. */
-    file_bytes?: Record<string, number>;
     gguf_filename: string | null;
     /** Whether this entry holds the selected model. Only the planner knows, because a gated pick is
      *  staged from an ungated mirror under a different repo id. Absent on an older backend. */
@@ -611,6 +609,12 @@ export interface DiffusionTrainingStartRequest {
   seed?: number;
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
+  random_flip?: boolean;
+  // Chance of training a sample on the empty prompt (DiT families; MiniMax-H3 refuses it). 0 when omitted.
+  cfg_dropout?: number;
+  lora_dropout?: number;
+  // Not sdxl. "auto" = family inference schedule; omitted = family default.
+  flow_shift?: number | "auto";
   lr_scheduler?: string;
   lr_warmup_steps?: number;
   // DiT-family quantised base precision (nf4 QLoRA by default). Ignored for sdxl, which uses mixed_precision.
@@ -624,6 +628,8 @@ export interface DiffusionTrainingStartRequest {
   cache_variants?: number;
   // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
   enable_tf32?: boolean;
+  // Omitted: on for a new run; a resume keeps its checkpoint's.
+  bucketing?: boolean;
   // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
   // stop-and-save always writes one, so Resume stays available either way.
   save_steps?: number;
@@ -838,6 +844,8 @@ export interface DiffusionTrainableFamily {
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
+  // Undefined on an older backend (control hidden).
+  supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
   max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the
