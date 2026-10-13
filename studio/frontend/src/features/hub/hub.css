@@ -917,6 +917,18 @@
     box-shadow: none;
   }
 
+  .hub-download-fab-ring {
+    position: absolute;
+    inset: -1px;
+    width: calc(100% + 2px);
+    height: calc(100% + 2px);
+    transform: rotate(-90deg);
+    pointer-events: none;
+    fill: none;
+    stroke: var(--status-success);
+    stroke-width: 2;
+  }
+
   .hub-download-fab-badge {
     position: absolute;
     top: -3px;

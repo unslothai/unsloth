@@ -31,6 +31,12 @@ import {
   hydrateDownloadManager,
   useDownloadManagerStore,
 } from "./download-manager-controller";
+import {
+  AUTO_FOLD_MS,
+  aggregateFraction,
+  foldSnapshot,
+  shouldPopOpen,
+} from "./download-panel-fold";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
 import { assetLabel } from "./required-assets";
@@ -256,8 +262,39 @@ export function DownloadManagerPanel({
   const jobs = useDownloadManagerStore((s) => s.jobs);
   const queued = [...hubQueued, ...queuedStagedEntries(stagedQueues, jobs)];
   const activeCount = useDownloadManagerStore(selectActiveJobCount) + queued.length;
+  // Opened from the icon: the user asked to watch it, so it stays open until they fold it.
+  const [userOpened, setUserOpened] = useState(false);
+  const [engaged, setEngaged] = useState(false);
+  const snapshot = foldSnapshot(jobKeys, jobs, queued.length);
+  const empty = jobKeys.length === 0 && queued.length === 0;
+  const steady = !empty && snapshot.attention.length === 0;
+  const changeKey = `${snapshot.jobKeys.join("\u0001")}|${snapshot.queued}|${snapshot.attention.join("\u0001")}`;
+  // Adjusted during render, not in an effect: https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [seen, setSeen] = useState(() => ({ key: changeKey, snapshot }));
+  if (seen.key !== changeKey) {
+    setSeen({ key: changeKey, snapshot });
+    if (empty) {
+      setUserOpened(false);
+      setCollapsed(false);
+      setEngaged(false);
+    } else if (shouldPopOpen(seen.snapshot, snapshot)) {
+      setCollapsed(false);
+    }
+  }
+
+  const foldPending = !collapsed && steady && !engaged && !userOpened;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changeKey restarts the countdown when a download is added.
+  useEffect(() => {
+    if (!foldPending) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCollapsed(true), AUTO_FOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [foldPending, changeKey]);
 
   if (!enabled || (jobKeys.length === 0 && queued.length === 0)) return null;
+
+  const fraction = collapsed ? aggregateFraction(Object.values(jobs)) : null;
 
   const headerLabel =
     activeCount > 0
@@ -281,9 +318,27 @@ export function DownloadManagerPanel({
             <button
               type="button"
               aria-label={headerLabel}
-              onClick={() => setCollapsed(false)}
+              onClick={() => {
+                setUserOpened(true);
+                setCollapsed(false);
+              }}
               className="hub-download-fab pointer-events-auto"
             >
+              {fraction !== null && (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 44 44"
+                  className="hub-download-fab-ring"
+                >
+                  <circle
+                    cx="22"
+                    cy="22"
+                    r="21"
+                    pathLength={100}
+                    strokeDasharray={`${Math.round(fraction * 100)} 100`}
+                  />
+                </svg>
+              )}
               <HugeiconsIcon
                 icon={Download01Icon}
                 strokeWidth={1.75}
@@ -299,7 +354,17 @@ export function DownloadManagerPanel({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
+        <div
+          className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden"
+          onPointerEnter={() => setEngaged(true)}
+          onPointerLeave={() => setEngaged(false)}
+          onFocus={() => setEngaged(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setEngaged(false);
+            }
+          }}
+        >
           <div className="flex items-center gap-2 border-b border-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-edge-gain,1)),transparent)] py-2 pl-4 pr-3">
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
@@ -307,7 +372,11 @@ export function DownloadManagerPanel({
             <button
               type="button"
               aria-label="Collapse downloads"
-              onClick={() => setCollapsed(true)}
+              onClick={() => {
+                setUserOpened(false);
+                setEngaged(false);
+                setCollapsed(true);
+              }}
               className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
