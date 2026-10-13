@@ -543,6 +543,24 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo.
+    canonicalId: "Lightricks/LTX-2.5-Diffusers",
+    displayName: "LTX 2.5 distilled",
+    description: "Text- and image-to-video with audio",
+    scope: "video",
+    capabilities: { audio: true },
+    artifacts: [
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, { label: "BF16 - Diffusers" }),
+      bf16Single(
+        "Lightricks/LTX-2.5",
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+        75,
+        { label: "BF16 - Single file" },
+      ),
+    ],
+  },
+  {
     canonicalId: "Lightricks/LTX-2",
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
