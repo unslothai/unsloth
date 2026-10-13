@@ -246,7 +246,12 @@ def test_loop_executes_fragmented_calls_and_replays_signed_and_hosted_blocks(
             await client.close()
 
     lines = asyncio.run(run())
-    assert executed == [("python", {"query": "one"}), ("web_search", {"query": "two"})]
+    # The two calls form one parallel round, so they may start in either order; the
+    # transcript below is what must keep call order.
+    assert sorted(executed, key = lambda call: call[0]) == [
+        ("python", {"query": "one"}),
+        ("web_search", {"query": "two"}),
+    ]
     assert len(bodies) == (3 if repeat_calls and max_calls > 2 else 2)
     assistant, results = bodies[1]["messages"][1:3]
     assert assistant["role"] == "assistant"
