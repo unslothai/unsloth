@@ -509,6 +509,17 @@ export const sv = {
     precisionAuto: "Modellens standard",
     precisionHelp:
       "Modellens standard behåller lagrad precision. Andra alternativ konverterar okvantiserade vikter vid inläsning.",
+    kvCache: "KV-cache",
+    kvCacheFp8: "FP8 (halva minnet)",
+    kvCacheHelp:
+      "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne. Utan kalibrerade skalor i checkpointen kan svaren bli något mindre exakta.",
+    gpuMemory: "GPU-minnesgräns",
+    gpuMemoryAuto: "Automatisk",
+    gpuMemoryHelp:
+      "Det mesta av varje vald GPU som motorn får använda. Automatisk använder det som är ledigt; sänk den för att lämna plats åt andra program.",
+    seed: "Seed",
+    seedPlaceholder: "Motorns standard",
+    seedHelp: "Anger motorns slumpfrö. Samtidiga chattar kan fortfarande ändra samplade svar.",
     default: "Standard",
     installRequired: "installation krävs",
     ownerRequired: "Be Studio-ägaren att installera den här motorn.",
@@ -645,7 +656,6 @@ export const sv = {
     queueingHintShared: "Kön behålls.",
   },
   rewind: {
-    menuItem: "Spola tillbaka…",
     title: "Spola tillbaka",
     pickDescription: "Välj ett meddelande att spola tillbaka till.",
     pickEmpty: "Det finns inga meddelanden att spola tillbaka till än.",
@@ -2157,6 +2167,8 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
+        chartToggle: "Diagram",
+        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",
@@ -3217,7 +3229,7 @@ export const sv = {
         recommended: "Rekommenderas",
         device: "Kör på",
         deviceDescription:
-          "GPU svarar snabbare men håller sitt minne reserverat tills omstart.",
+          "GPU svarar snabbare och frigör sitt minne när modellen avlastas.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Körmiljö",

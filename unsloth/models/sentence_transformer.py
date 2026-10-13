@@ -1114,9 +1114,14 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        transformer_class = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
+
+        # A repo's Transformer subclass, built around our model.
+        if transformer_class is not None:
+            Transformer = transformer_class
 
         # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
         from transformers import AutoProcessor, AutoTokenizer
@@ -1370,7 +1375,7 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Name ST's Transformer without importing anything, since importing to compare is the same
-        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        execution the gate refuses. Any other spelling (or a subclass) is caught by `issubclass` in
         _load_modules, after gating; refusals all live in _resolve_module_class."""
         if not isinstance(class_ref, str):
             return False
@@ -2071,7 +2076,13 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    is_transformer_module = module_class is Transformer
+                    # Stock load() would re-read the weights unpatched; a subclass's own load() may restore its state, so keep it.
+                    is_transformer_module = (
+                        isinstance(module_class, type)
+                        and issubclass(module_class, Transformer)
+                        and inspect.getattr_static(module_class, "load", None)
+                        is inspect.getattr_static(Transformer, "load", None)
+                    )
 
                 if is_transformer_module:
                     transformer_module = FastSentenceTransformer._create_transformer_module(
@@ -2084,6 +2095,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        transformer_class = module_class,
                     )
                     modules[name] = transformer_module
                 else:

@@ -164,6 +164,7 @@ const PREFS_KEYS: string[] = [
   ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
+  "unsloth_profile_activity_chart",
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications

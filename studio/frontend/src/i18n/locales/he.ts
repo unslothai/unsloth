@@ -502,6 +502,16 @@ export const he = {
     precisionAuto: "ברירת המחדל של המודל",
     precisionHelp:
       "ברירת המחדל של המודל שומרת על הדיוק המאוחסן. אפשרויות אחרות ממירות משקלים שלא עברו קוונטיזציה בעת הטעינה.",
+    kvCache: "מטמון KV",
+    kvCacheFp8: "FP8 (חצי מהזיכרון)",
+    kvCacheHelp: "FP8 שומר את מטמון ההקשר ב-8 סיביות, כך שבערך פי שניים הקשר נכנס באותו זיכרון. בלי סקאלות מכוילות בצ'קפוינט, התשובות עלולות להיות מעט פחות מדויקות.",
+    gpuMemory: "מגבלת זיכרון GPU",
+    gpuMemoryAuto: "אוטומטי",
+    gpuMemoryHelp:
+      "החלק המרבי מכל GPU נבחר שהמנוע רשאי להשתמש בו. אוטומטי משתמש במה שפנוי; הורד אותו כדי להשאיר מקום לתוכניות אחרות.",
+    seed: "זרע אקראי",
+    seedPlaceholder: "ברירת המחדל של המנוע",
+    seedHelp: "קובע את הזרע האקראי של המנוע. צ'אטים במקביל עדיין יכולים לשנות תשובות שנדגמו.",
     default: "ברירת מחדל",
     installRequired: "נדרשת התקנה",
     ownerRequired: "בקש מבעל ה-Studio להתקין מנוע זה.",
@@ -630,7 +640,6 @@ export const he = {
     queueingHintShared: "התור נשמר.",
   },
   rewind: {
-    menuItem: "החזרה לאחור…",
     title: "החזרה לאחור",
     pickDescription: "בחרו הודעה לחזור אליה.",
     pickEmpty: "עדיין אין הודעות לחזור אליהן.",
@@ -2087,6 +2096,8 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
+        chartToggle: "תרשים",
+        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -3117,7 +3128,7 @@ export const he = {
         recommended: "מומלץ",
         device: "הרץ על",
         deviceDescription:
-          "GPU עונה מהר יותר, אך שומר את הזיכרון שלו שמור עד להפעלה מחדש.",
+          "GPU עונה מהר יותר ומשחרר את הזיכרון שלו כשהמודל נפרק.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "סביבת ריצה",
