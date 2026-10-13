@@ -18023,7 +18023,9 @@ def _check_signal_escape_patterns(code: str):
     # and the alias machinery below has nothing to say about it. One pass over the text, against
     # three walks of the tree and a second visitor pass.
     # Whether a recognised egress call is possible AT ALL in this tree. Read below.
-    network_possible = _network_candidates_possible(_tree_nodes(tree))
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
+    tree_nodes = _tree_nodes(tree)
+    network_possible = _network_candidates_possible(tree_nodes)
 
     signal_tampering = []
     exception_catching = []
@@ -18615,7 +18617,6 @@ def _check_signal_escape_patterns(code: str):
         if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
     )
     _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
-    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
     _PROXY_KEYWORDS = ("proxy", "proxies")
     _DESTINATION_ATTRS = {
         "proxies": frozenset(
@@ -19198,18 +19199,56 @@ def _check_signal_escape_patterns(code: str):
             return False
         return "://" not in target
 
-    def _local_database_names(nodes) -> frozenset:
+    def _local_database_names(nodes):
         imported: set[str] = set()
         other: set[str] = set()
         for node in nodes:
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    root = alias.name.partition(".")[0]
-                    name = alias.asname or root
-                    (imported if root in _LOCAL_DATABASE_MODULES else other).add(name)
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
             else:
                 other.update(_binding_names(node))
-        return frozenset(imported - other)
+        return frozenset(imported - other), frozenset(imported)
+
+    def _local_database_scope_bindings(root):
+        imported: set[str] = set()
+        other: set[str] = set()
+        args = getattr(root, "args", None)
+        if args is not None:
+            slots = (
+                list(args.posonlyargs)
+                + list(args.args)
+                + list(args.kwonlyargs)
+                + [args.vararg, args.kwarg]
+            )
+            other.update(arg.arg for arg in slots if arg is not None)
+        body = getattr(root, "body", ())
+        stack = list(body) if isinstance(body, list) else [body]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                name = getattr(node, "name", None)
+                if name is not None:
+                    other.add(name)
+                for field, value in ast.iter_fields(node):
+                    if field == "body":
+                        continue
+                    if isinstance(value, list):
+                        stack.extend(item for item in value if isinstance(item, ast.AST))
+                    elif isinstance(value, ast.AST):
+                        stack.append(value)
+                continue
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            else:
+                other.update(_binding_names(node))
+            stack.extend(ast.iter_child_nodes(node))
+        return frozenset(imported), frozenset(other)
 
     # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
     # module path leading to it.
@@ -19454,7 +19493,9 @@ def _check_signal_escape_patterns(code: str):
             # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
             # and overwriting the entry resolved the call to the unrecognised socket function.
             self.func_aliases: dict[str, set[str]] = {}
-            self.local_databases: "frozenset | None" = None
+            self.local_databases: "tuple[frozenset, frozenset] | None" = None
+            self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]]" = {}
+            self.local_database_scopes: "dict[int, ast.AST] | None" = None
             # Name -> every string literal it can hold, None when unreadable. `url =
             # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
             # All three are read ONLY to answer a question about a recognised egress call, so
@@ -19851,8 +19892,38 @@ def _check_signal_escape_patterns(code: str):
             if not isinstance(owner, ast.Name):
                 return False
             if self.local_databases is None:
-                self.local_databases = _local_database_names(_tree_nodes(tree))
-            return owner.id in self.local_databases
+                self.local_databases = _local_database_names(tree_nodes)
+            trusted, imported_anywhere = self.local_databases
+            if owner.id in trusted:
+                return True
+            if owner.id not in imported_anywhere:
+                return False
+            if self.local_database_scopes is None:
+                self.local_database_scopes = {
+                    **{
+                        id(node): node
+                        for node in tree_nodes
+                        if isinstance(
+                            node,
+                            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+                        )
+                    },
+                    0: tree,
+                }
+            last = len(self.scope_stack) - 1
+            for index in range(last, -1, -1):
+                scope = self.scope_stack[index]
+                root = self.local_database_scopes[scope]
+                if isinstance(root, ast.ClassDef) and index != last:
+                    continue
+                if scope not in self.local_database_bindings:
+                    self.local_database_bindings[scope] = _local_database_scope_bindings(root)
+                imported, other = self.local_database_bindings[scope]
+                if owner.id in other:
+                    return False
+                if owner.id in imported:
+                    return True
+            return False
 
         def _is_shadowed(
             self,
