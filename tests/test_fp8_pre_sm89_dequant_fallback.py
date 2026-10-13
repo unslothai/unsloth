@@ -113,15 +113,25 @@ def test_float8_e5m2_is_never_diverted(monkeypatch, capability):
 @pytest.mark.parametrize(
     "gcn_arch, capability, triton_version, expected",
     [
-        ("gfx950", (9, 5), "3.5.0", "triton"),  # MI350X / MI355X: OCP fp8 native
-        ("gfx1201", (12, 0), "3.5.0", "triton"),  # RX 9070 XT (RDNA4): OCP fp8 native
-        ("gfx942:sramecc+:xnack-", (9, 4), "3.5.0", "triton"),  # MI300X: emulated e4m3fn, correct
-        ("gfx942:sramecc+:xnack-", (9, 4), "3.2.0", "torch"),  # torch 2.6 ROCm: no fp8e4nv
-        ("gfx950", (9, 5), "3.3.1", "torch"),  # before the arch-wide fp8 support
-        ("gfx90a:sramecc+:xnack-", (9, 0), "3.5.0", "torch"),  # MI210 / MI250X (CDNA2)
-        ("gfx1100", (11, 0), "3.5.0", "torch"),  # RX 7900 XTX (RDNA3)
-        ("gfx1151", (11, 5), "3.5.0", "torch"),  # Strix Halo (RDNA3.5)
-        ("gfx1030", (10, 3), "3.5.0", "torch"),  # RX 6900 XT (RDNA2)
+        # triton 3.5+ lists fp8e4nv on every AMD arch (emulated without OCP fp8 hardware).
+        ("gfx950", (9, 5), "3.5.0", "triton"),  # MI350X / MI355X
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.5.0", "triton"),  # MI300X
+        ("gfx90a:sramecc+:xnack-", (9, 0), "3.5.0", "triton"),  # MI210 / MI250X (CDNA2)
+        ("gfx1151", (11, 5), "3.6.0", "triton"),  # Strix Halo: verified on real hardware
+        ("gfx1030", (10, 3), "3.5.0", "triton"),  # RX 6900 XT (RDNA2)
+        # triton 3.4: gfx942 / gfx950 / gfx12 only.
+        ("gfx1201", (12, 0), "3.4.0", "triton"),  # RX 9070 XT (RDNA4)
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.4.0", "triton"),
+        ("gfx1151", (11, 5), "3.4.0", "torch"),
+        ("gfx90a:sramecc+:xnack-", (9, 0), "3.4.0", "torch"),
+        # triton 3.3: CDNA3 / CDNA4 only.
+        ("gfx950", (9, 5), "3.3.1", "triton"),
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.3.1", "triton"),
+        ("gfx1201", (12, 0), "3.3.1", "torch"),
+        ("gfx1100", (11, 0), "3.3.1", "torch"),
+        # triton 3.2 (torch 2.6 ROCm): fp8e5 only.
+        ("gfx942:sramecc+:xnack-", (9, 4), "3.2.0", "torch"),
+        ("gfx950", (9, 5), "3.2.0", "torch"),
     ],
 )
 def test_rocm_routes_on_gfx_arch_not_capability(
@@ -151,7 +161,10 @@ def test_rocm_unknown_arch_takes_the_torch_path(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "get_device_properties", _boom)
     weight, scale = _make()
-    assert _route(monkeypatch, (9, 4), weight, scale, hip = "6.4.0") == "torch"
+    # Only triton 3.3 / 3.4 need the arch; 3.5+ supports fp8e4nv everywhere without asking.
+    assert (
+        _route(monkeypatch, (9, 4), weight, scale, hip = "6.4.0", triton_version = "3.4.0") == "torch"
+    )
 
 
 @pytest.mark.parametrize(
@@ -330,7 +343,7 @@ def test_rocm_forward_without_fp8e4nv_skips_act_quant(monkeypatch, gcn_arch):
     monkeypatch.setattr(torch.version, "hip", "6.4.0")
     props = types.SimpleNamespace(gcnArchName = gcn_arch)
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda *a, **k: props)
-    monkeypatch.setattr(fp8.triton, "__version__", "3.5.0")
+    monkeypatch.setattr(fp8.triton, "__version__", "3.4.0")
 
     weight, scale = _make()
     X = torch.randn(4, 256, device = "cuda", dtype = torch.bfloat16)

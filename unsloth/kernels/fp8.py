@@ -465,18 +465,21 @@ fp8_block_matmul = (
 
 
 def _rocm_fp8e4nv_kernel_supported(device):
-    # AMD triton compiles fp8e4nv (OCP e4m3fn) natively on CDNA4 (gfx950) and RDNA4 (gfx12);
-    # CDNA3 (gfx942, MI300X / MI325X) is fnuz-native and gets software-emulated conversions plus
-    # an fp16-emulated tl.dot from triton 3.4 on. Older triton (torch <= 2.7 ROCm) rejects fp8e4nv
-    # on most archs, and CDNA2 / RDNA2 / RDNA3 (gfx90a, gfx10xx, gfx11xx incl. Strix Halo) are not
-    # supported fp8 targets upstream, so those take the torch dequant path.
+    # AMD triton's supported_fp8_dtypes (third_party/amd/backend/compiler.py): no fp8e4nv before 3.3;
+    # 3.3 adds gfx940-942 / gfx950, 3.4 gfx942 / gfx950 / gfx12*, and 3.5+ lists it on every arch
+    # (software-emulated without OCP fp8 hardware; ran correctly on gfx1151 with triton 3.6).
     try:
-        if Version(triton.__version__) < Version("3.4.0"):
+        version = Version(triton.__version__).release[:2]
+        if version >= (3, 5):
+            return True
+        if version < (3, 3):
             return False
         arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
     except Exception:
         return False
-    return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+    if version >= (3, 4):
+        return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+    return arch in ("gfx940", "gfx941", "gfx942", "gfx950")
 
 
 @functools.lru_cache(maxsize = None)
