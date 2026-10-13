@@ -581,6 +581,82 @@ def _without_image_parts(messages) -> list[dict]:
     return out
 
 
+_CANVAS_MASK = "\u2591"
+_CANVAS_FRAME_INTERVAL_S = 0.1
+
+
+def _accepts_on_frame(generate_text) -> bool:
+    """An older core takes no canvas callback; its samplers would swallow the keyword unused."""
+    import inspect
+
+    candidates = [generate_text]
+    try:
+        from unsloth.models import diffusion_samplers
+        candidates.append(diffusion_samplers.generate_text)
+    except ImportError:
+        pass
+    for fn in candidates:
+        try:
+            if "on_frame" in inspect.signature(fn).parameters:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _render_canvas(tokenizer, tokens, mask_id) -> str:
+    """Decoded canvas with every still-masked position drawn as one placeholder glyph."""
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    parts, run = [], []
+    for token in tokens:
+        if mask_id is not None and token == mask_id:
+            if run:
+                parts.append(tokenizer.decode(run, skip_special_tokens = True))
+                run = []
+            parts.append(_CANVAS_MASK)
+        else:
+            run.append(token)
+    if run:
+        parts.append(tokenizer.decode(run, skip_special_tokens = True))
+    return "".join(parts)
+
+
+def _diffusion_frame_relay(
+    tokenizer,
+    sink,
+    interval_s = None,
+):
+    """on_frame for the core sampler: renders and hands one frame per interval to ``sink``, dropping the rest.
+    Never raises into the sampler, so a broken consumer cannot fail the generation."""
+    import time
+
+    last = [0.0]
+    if interval_s is None:
+        interval_s = _CANVAS_FRAME_INTERVAL_S
+
+    def on_frame(frame):
+        now = time.monotonic()
+        if now - last[0] < interval_s:
+            return
+        last[0] = now
+        try:
+            sink(
+                {
+                    "type": "diffusion_frame",
+                    "block": int(frame.get("block", 0)),
+                    "step": int(frame.get("step", 0)),
+                    "total": int(frame.get("total", 0)),
+                    "text": _render_canvas(
+                        tokenizer, frame.get("tokens") or (), frame.get("mask_id")
+                    ),
+                }
+            )
+        except Exception as exc:
+            logger.debug("Dropped a diffusion canvas frame: %s", exc)
+
+    return on_frame
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -599,6 +675,8 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
         self.last_generation_stats = None
+        # Set by the worker for one request that asked for live canvas frames; called with each frame event.
+        self.diffusion_frame_sink = None
 
         # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):
         # RLock reentrancy would let concurrent compare-mode requests race on
@@ -2501,6 +2579,10 @@ class InferenceBackend:
             )
         except ImportError:  # an older core: no cancellation error to catch
             cancelled_error = ()
+        frame_kwargs = {}
+        sink = getattr(self, "diffusion_frame_sink", None)
+        if sink is not None and _accepts_on_frame(generate_text):
+            frame_kwargs["on_frame"] = _diffusion_frame_relay(model_info["tokenizer"], sink)
         with self._generation_lock:
             if _adapter_state is not None:
                 self._apply_adapter_state(_adapter_state)
@@ -2513,6 +2595,7 @@ class InferenceBackend:
                     max_new_tokens = int(max_new_tokens or 256),
                     temperature = float(temperature or 0.0),
                     stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+                    **frame_kwargs,
                 )
             except cancelled_error:
                 return

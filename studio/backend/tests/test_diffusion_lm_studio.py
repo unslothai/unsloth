@@ -811,3 +811,183 @@ def test_formatting_retries_in_one_process_when_workers_cannot_pickle():
             len,
             {"num_proc": 4},
         )
+
+
+class _FrameSampler:
+    calls = []
+
+    @staticmethod
+    def generate_text(
+        model,
+        tokenizer,
+        prompt = None,
+        messages = None,
+        stop_callback = None,
+        on_frame = None,
+        **kwargs,
+    ):
+        _FrameSampler.calls.append({"on_frame": on_frame, **kwargs})
+        if on_frame is not None:
+            on_frame({"block": 0, "step": 1, "total": 4, "tokens": [7, 99, 99, 8], "mask_id": 99})
+            on_frame({"block": 0, "step": 2, "total": 4, "tokens": [7, 5, 99, 8], "mask_id": 99})
+        return "The answer is 4."
+
+
+class _CanvasTokenizer:
+    def decode(
+        self,
+        ids,
+        skip_special_tokens = True,
+    ):
+        return "".join(f"<{i}>" for i in ids)
+
+
+@_needs_torch
+def test_canvas_frames_reach_the_sink_rendered_with_mask_glyphs(monkeypatch):
+    from core.inference import inference as inference_mod
+
+    backend, _ = _inference_backend(monkeypatch)
+    backend.models["m"]["tokenizer"] = _CanvasTokenizer()
+    monkeypatch.setattr(diffusion_lm, "require_diffusion_api", lambda name: _FrameSampler)
+    monkeypatch.setattr(inference_mod, "_CANVAS_FRAME_INTERVAL_S", 0.0)
+    frames = []
+    backend.diffusion_frame_sink = frames.append
+    out = list(backend.generate_stream("x", max_new_tokens = 8))
+    assert out == ["The answer is 4."]
+    glyph = inference_mod._CANVAS_MASK
+    assert [f["text"] for f in frames] == [f"<7>{glyph}{glyph}<8>", f"<7><5>{glyph}<8>"]
+    assert frames[0] == {
+        "type": "diffusion_frame",
+        "block": 0,
+        "step": 1,
+        "total": 4,
+        "text": frames[0]["text"],
+    }
+
+    # No sink (a strict client, or the request did not ask): the sampler gets no callback.
+    backend.diffusion_frame_sink = None
+    _FrameSampler.calls = []
+    assert list(backend.generate_stream("x", max_new_tokens = 8)) == ["The answer is 4."]
+    assert _FrameSampler.calls[-1]["on_frame"] is None
+
+
+@_needs_torch
+def test_an_older_core_without_on_frame_is_never_passed_one(monkeypatch):
+    backend, _ = _inference_backend(monkeypatch)
+    backend.diffusion_frame_sink = lambda frame: None
+    from core.inference import inference as inference_mod
+
+    monkeypatch.setattr(inference_mod, "_accepts_on_frame", lambda fn: False)
+    assert list(backend.generate_stream("x", max_new_tokens = 8))
+    assert "on_frame" not in _Sampler.calls[-1]
+
+
+def test_frame_relay_throttles_and_never_raises_into_the_sampler():
+    from core.inference.inference import _diffusion_frame_relay
+
+    sent = []
+    relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 3600)
+    relay({"block": 0, "step": 0, "total": 2, "tokens": [1], "mask_id": None})
+    relay({"block": 0, "step": 1, "total": 2, "tokens": [2], "mask_id": None})
+    assert [f["text"] for f in sent] == ["<1>"]
+
+    def broken(frame):
+        raise OSError("queue closed")
+
+    _diffusion_frame_relay(_CanvasTokenizer(), broken, interval_s = 0)(
+        {"block": 0, "step": 0, "total": 1, "tokens": [1], "mask_id": None}
+    )
+
+
+def test_worker_installs_the_frame_sink_only_for_the_requesting_generation():
+    from core.inference import worker as worker_mod
+    class _Backend:
+        diffusion_frame_sink = None
+        last_generation_stats = None
+
+        def generate_chat_response(self, **kwargs):
+            if self.diffusion_frame_sink is not None:
+                self.diffusion_frame_sink(
+                    {"type": "diffusion_frame", "block": 0, "step": 0, "total": 1, "text": "a"}
+                )
+            yield "done"
+
+    for asked in (True, False):
+        backend, sent = _Backend(), []
+        cmd = {"request_id": "r1", "messages": [{"role": "user", "content": "hi"}]}
+        if asked:
+            cmd["diffusion_frames"] = True
+        worker_mod._handle_generate(
+            backend, cmd, SimpleNamespace(put = sent.append), threading.Event()
+        )
+        types = [r["type"] for r in sent]
+        assert types == (
+            ["diffusion_frame", "token", "gen_done"] if asked else ["token", "gen_done"]
+        )
+        if asked:
+            assert sent[0]["request_id"] == "r1" and sent[0]["text"] == "a"
+        assert backend.diffusion_frame_sink is None
+
+
+def test_token_stream_yields_frames_only_when_asked():
+    from core.inference import orchestrator as orch
+
+    def run(frames):
+        events = iter(
+            [
+                {
+                    "type": "diffusion_frame",
+                    "request_id": "r",
+                    "block": 0,
+                    "step": 0,
+                    "total": 2,
+                    "text": "a",
+                    "ts": 1,
+                },
+                {"type": "token", "request_id": "r", "text": "final"},
+                {"type": "gen_done", "request_id": "r", "stats": None},
+            ]
+        )
+        stream = orch.InferenceOrchestrator._consume_token_stream(
+            SimpleNamespace(
+                _proc = None,
+                _resp_queue = None,
+                _mark_worker_started = lambda _event: None,
+                _forget_request = lambda *_a: None,
+            ),
+            lambda _timeout: next(events),
+            lambda: None,
+            crash_context = "test",
+            frames = frames,
+        )
+        return list(stream)
+
+    assert run(True) == [
+        {"type": "diffusion_frame", "block": 0, "step": 0, "total": 2, "text": "a"},
+        "final",
+    ]
+    assert run(False) == ["final"]
+
+
+def test_the_command_asks_for_frames_only_for_a_single_reply():
+    from core.inference import orchestrator as orch
+
+    build = orch.InferenceOrchestrator._build_generate_cmd
+    me = SimpleNamespace(effective_parallel_slots = 1)
+    assert build(me, "r", None, diffusion_frames = True)["diffusion_frames"] is True
+    assert "diffusion_frames" not in build(me, "r", None)
+    assert "diffusion_frames" not in build(me, "r", None, diffusion_frames = True, rows = [{}, {}])
+
+
+def test_plain_stream_forwards_frames_only_to_event_clients():
+    from routes import inference as routes_mod
+
+    src = inspect.getsource(routes_mod)
+    branch = src[src.index("# Per-step canvas, as on the GGUF path") :][:400]
+    assert "if _sf_ui_events:" in branch and "_drop_keepalive.due()" in branch
+    gate = src[
+        src.index("_sf_frame_kwargs = (") : src.index(
+            "if payload.use_adapter is not None:", src.index("_sf_frame_kwargs = (")
+        )
+    ]
+    assert "payload.stream" in gate and "_sf_ui_events" in gate and "(payload.n or 1) == 1" in gate
