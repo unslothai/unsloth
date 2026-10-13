@@ -2506,7 +2506,8 @@ export function AppSidebar() {
     [setManualOrder, chatRowSlots, chatRowLists],
   );
 
-  // Passive listener: dictation's Escape reads defaultPrevented first and must outrank a selection.
+  // Escape leaves a selection via a passive listener: dictation's Escape reads defaultPrevented first
+  // and a live recording must outrank a stale selection.
   const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
   useEffect(() => {
     if (!selectionActive) return;
