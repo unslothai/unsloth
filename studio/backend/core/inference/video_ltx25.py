@@ -20,6 +20,7 @@ Everything here is gated on the ``ltx-2.5`` family; no other family reaches this
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue as _queue
 import threading
@@ -1208,6 +1209,77 @@ def condition_pipe(pipe: Any) -> Any:
     return cond
 
 
+# Headroom kept free beside the held DiT while stage 2 runs the connectors and the upsampler next to it.
+STAGE_HOLD_MARGIN_BYTES = 2 * 2**30
+
+
+def _module_bytes(module: Any) -> int:
+    try:
+        return sum(p.numel() * p.element_size() for p in module.parameters())
+    except Exception:  # noqa: BLE001 -- not a module (tests / absent component)
+        return 0
+
+
+def _stage_two_fits_beside_dit(pipe: Any, upsampler: Any) -> bool:
+    """Whether the DiT stage 1 onloaded can stay for stage 2: the connectors and the upsampler, which run before the
+    DiT is needed again, fit in what the card has left (free plus the allocator's idle cache) with a margin."""
+    try:
+        import torch
+
+        param = next(pipe.transformer.parameters())
+        if param.device.type != "cuda":
+            return False
+        free, _total = torch.cuda.mem_get_info(param.device)
+        idle = torch.cuda.memory_reserved(param.device) - torch.cuda.memory_allocated(param.device)
+    except Exception:  # noqa: BLE001 -- no CUDA / no DiT: keep the stock offload
+        return False
+    need = (
+        _module_bytes(getattr(pipe, "connectors", None))
+        + _module_bytes(upsampler)
+        + STAGE_HOLD_MARGIN_BYTES
+    )
+    return free + max(0, idle) >= need
+
+
+@contextlib.contextmanager
+def _stage_boundary(pipe: Any, runner: Any, upsampler: Any):
+    """Under model CPU offload, stage 1's pipeline call ends by offloading every component, so stage 2 uploaded the
+    whole DiT again (~0.9 s for the 22 GB int8 DiT on a B200, every request). Hold it across the boundary when the
+    connectors and the upsampler still fit beside it; else offload as before. The condition pipeline (image-to-video)
+    has no hook list of its own and so never offloads there: the same check frees pipe's hooks when they do not fit."""
+    hooks = getattr(pipe, "_all_hooks", None)
+    if not hooks:
+        yield
+        return
+    if runner is not pipe:
+        try:
+            yield
+        finally:
+            if not _stage_two_fits_beside_dit(pipe, upsampler):
+                pipe.maybe_free_model_hooks()
+        return
+    original = pipe.maybe_free_model_hooks
+    had_own = "maybe_free_model_hooks" in getattr(pipe, "__dict__", {})
+
+    def at_stage_end() -> None:
+        if not _stage_two_fits_beside_dit(pipe, upsampler):
+            original()
+            return
+        # Keep the stateful-cache reset the stock call starts with; skip only the offload.
+        for component in getattr(pipe, "components", {}).values():
+            if hasattr(component, "_reset_stateful_cache"):
+                component._reset_stateful_cache()
+
+    pipe.maybe_free_model_hooks = at_stage_end
+    try:
+        yield
+    finally:
+        if had_own:
+            pipe.maybe_free_model_hooks = original
+        else:
+            del pipe.maybe_free_model_hooks
+
+
 def _guidance_off(call_params: Any) -> dict[str, float]:
     keys = {
         "stg_scale": 0.0,
@@ -1243,6 +1315,7 @@ def render(
     frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``).
     ``on_stage(width, height)`` runs before each denoise stage with the size that stage denoises at (live previews
     unpack the packed latents with it)."""
+    failed = False
     try:
         return _render(
             pipe,
@@ -1254,11 +1327,15 @@ def render(
             cancel = cancel,
             on_stage = on_stage,
         )
+    except BaseException:
+        failed = True
+        raise
     finally:
-        if image is not None:
+        if image is not None or failed:
             # The condition pipeline shares pipe's modules but not its offload-hook list, so on every exit (dev,
             # single stage, two stage, cancel) pipe's own hooks are reset here, or its last onloaded module stays on
-            # the card.
+            # the card. A text render that stops between its stages (cancel, error) may hold the DiT stage 1
+            # onloaded (_stage_boundary): reset it too.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:
@@ -1408,7 +1485,7 @@ def _render(
     if cb is not None:
         stage1["callback_on_step_end"] = cb
     _keep(half_w, half_h, frames)
-    with ltx23_verbatim_sigmas(pipe):
+    with ltx23_verbatim_sigmas(pipe), _stage_boundary(pipe, runner, upsampler):
         video_latents, audio_latents = runner(**stage1)
     if cancel is not None and cancel.is_set():
         from .video_families import VIDEO_CANCELLED_MSG

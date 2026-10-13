@@ -1248,6 +1248,82 @@ def test_each_stage_names_its_size_before_it_runs(monkeypatch):
     assert out.frames == ["final"] and len(pipe.calls) == 2
 
 
+class _OffloadedPipe(_FakePipe):
+    """A model-offloaded pipe: like diffusers, every call ends by resetting the offload hooks."""
+
+    def __init__(self, scheduler):
+        super().__init__(scheduler)
+        self._all_hooks = ["hook"]
+        self.components = {}
+        self.free_log = []
+
+    def __call__(self, **kw):
+        out = super().__call__(**kw)
+        self.maybe_free_model_hooks()
+        return out
+
+    def maybe_free_model_hooks(self):
+        self.freed += 1
+        self.free_log.append(len(self.calls))
+
+
+@pytest.mark.parametrize("fits", [True, False])
+def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_two_fits(monkeypatch, fits):
+    # Stage 1's call ends by offloading every component; stage 2 then re-uploaded the whole DiT.
+    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: fits)
+    pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
+    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
+    assert len(pipe.calls) == 2
+    # Held: only stage 2's own reset ran. Not held: both stages reset, as before.
+    assert pipe.free_log == ([2] if fits else [1, 2])
+    assert "maybe_free_model_hooks" not in pipe.__dict__
+    # No model offload: nothing is patched or checked.
+    plain = _FakePipe(SimpleNamespace(keep_tokens = None))
+    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda *a: pytest.fail("checked without offload"))
+    v25.render(plain, _kwargs(), dev = False, upsampler = _Upsampler())
+    assert plain.freed == 0
+
+
+@pytest.mark.parametrize("fits", [True, False])
+def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
+    # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
+    # when stage 2 would not fit beside the DiT.
+    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: fits)
+    pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
+    cond = _FakePipe(pipe.scheduler)
+    pipe._unsloth_ltx25_condition_pipe = cond
+    v25.render(pipe, _kwargs(), dev = False, image = object(), upsampler = _Upsampler())
+    assert pipe.calls == [] and len(cond.calls) == 2
+    assert pipe.freed == (1 if fits else 2)
+
+
+def test_a_text_render_cancelled_between_stages_resets_the_offload_hooks(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(v25, "_stage_two_fits_beside_dit", lambda pipe, upsampler: True)
+    cancel = threading.Event()
+
+    class _CancellingUpsampler(_Upsampler):
+        def __call__(self, latents):
+            cancel.set()
+            return super().__call__(latents)
+
+    pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        v25.render(pipe, _kwargs(), dev = False, upsampler = _CancellingUpsampler(), cancel = cancel)
+    # Stage 1 held the DiT; the cancel resets the hooks instead of leaving it on the card.
+    assert pipe.freed == 1 and len(pipe.calls) == 1
+
+
+def test_stage_two_fit_counts_the_connectors_and_the_upsampler(monkeypatch):
+    import torch
+
+    pipe = SimpleNamespace(transformer = torch.nn.Linear(2, 2), connectors = torch.nn.Linear(4, 4))
+    # Off CUDA (the DiT's parameters on the host) there is nothing to hold.
+    assert v25._stage_two_fits_beside_dit(pipe, None) is False
+    assert v25._module_bytes(torch.nn.Linear(4, 4)) == (16 + 4) * 4 and v25._module_bytes(None) == 0
+
+
 def test_two_stage_i2v_conditions_both_stages(monkeypatch):
     pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
