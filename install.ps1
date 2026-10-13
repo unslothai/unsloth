@@ -9827,8 +9827,8 @@ main()
         # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
         # VAR=value resolves as a command name here and sets nothing.
         # Both claims below are conditional: an explicit index pin reaches the ROCm install
-        # path further down even for an arch Unsloth has no wheels for, and studio/setup.ps1
-        # THROWS on the Vulkan variable on Windows ARM64, where no bundle is published.
+        # path further down even for an arch Unsloth has no wheels for, and on Windows ARM64 the
+        # Vulkan variable fails the install until a release carries the ARM64 Vulkan bundle.
         $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                        (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
         $unsupArm64 = (Get-HostMachineArch) -eq "arm64"

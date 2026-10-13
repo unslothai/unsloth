@@ -4995,8 +4995,8 @@ if ($HasNvidiaSmi) {
     # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
     # VAR=value resolves as a command name here and sets nothing.
     # Both claims are conditional: an explicit index pin is honoured for any arch, and
-    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
-    # is published, so the usual advice would abort the next update instead of helping.
+    # on Windows ARM64 the Vulkan variable fails the install until a release carries the
+    # ARM64 Vulkan bundle, so the usual advice would abort the next update instead of helping.
     $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                    (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     if ($unsupPinned) {
@@ -10119,18 +10119,9 @@ if ($LocalLlamaCppLinked) {
         # marker, so forwarding a second copy from here could only ever disagree
         # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $windowsArm64 = (
-            $env:OS -eq "Windows_NT" -and
-            (
-                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
-                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
-            )
-        )
         if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
-            } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
