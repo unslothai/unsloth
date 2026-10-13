@@ -2671,17 +2671,27 @@ _ZE_MASK_ROOT_RE = re.compile(r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|(0[0-7]*)|([1-9][0
 def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[int]:
     """Root device IDs a ZE_AFFINITY_MASK selects, filtered the way Level Zero does: in root order with duplicates collapsed ("2,0,0" -> [0, 2]), entries parsed like stoul base 0 ("0x1", "01" and "+1" -> 1), ids at or past ``root_count`` dropped. Only meaningful in COMPOSITE hierarchy, which callers must gate on."""
     roots: set = set()
+    # stoul's unsigned long: 32-bit on Windows (LLP64), 64-bit elsewhere.
+    ulong_limit = 2**32 if sys.platform == "win32" else 2**64
     for token in (mask or "").split(","):
-        match = _ZE_MASK_ROOT_RE.match(token.strip().split(".", 1)[0])
-        if match:
-            sign, hex_digits, octal, decimal = match.groups()
-            root = int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
-            # stoul negates in 64-bit unsigned arithmetic: "-1" wraps past every root, "-0" is 0.
-            if sign == "-":
-                root = -root % 2**64 if root < 2**64 else 2**64
-            # No host has 2**32 roots, so a wrapped or overflowing value is out of range even without a bound.
-            if root < 2**32:
-                roots.add(root)
+        # C isspace only: stoul does not skip Unicode whitespace.
+        match = _ZE_MASK_ROOT_RE.match(token.strip(" \t\n\v\f\r").split(".", 1)[0])
+        if not match:
+            continue
+        sign, hex_digits, octal, decimal = match.groups()
+        digits = hex_digits or octal or decimal
+        # More digits than any unsigned long in any base: stoul throws out_of_range.
+        if len(digits.lstrip("0")) > 24:
+            continue
+        root = int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
+        if root >= ulong_limit:
+            continue
+        # Negation is unsigned: "-1" wraps past every root, "-0" is 0.
+        if sign == "-":
+            root = -root % ulong_limit
+        # No host has 2**32 roots, so a wrapped value is out of range even without a bound.
+        if root < 2**32:
+            roots.add(root)
     return sorted(root for root in roots if root_count is None or root < root_count)
 
 

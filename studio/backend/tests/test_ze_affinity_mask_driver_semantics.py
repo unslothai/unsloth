@@ -144,6 +144,23 @@ def test_parse_ze_mask_roots(mask, roots):
     assert hw._parse_ze_mask_roots(mask) == roots
 
 
+@pytest.mark.parametrize(
+    ("platform", "mask", "roots"),
+    [
+        ("win32", "-4294967295", [1]),  # 32-bit unsigned long
+        ("linux", "-4294967295", []),
+        ("win32", "-18446744073709551615", []),  # out_of_range on Windows
+        ("linux", "1" + "0" * 5000, []),  # past Python's int-digit limit
+        ("linux", "\u20031", []),  # not C whitespace
+        ("linux", "\t1", [1]),
+        ("linux", "0" * 40 + "1", [1]),
+    ],
+)
+def test_parse_ze_mask_roots_follows_the_platform_stoul(monkeypatch, platform, mask, roots):
+    monkeypatch.setattr(hw.sys, "platform", platform)
+    assert hw._parse_ze_mask_roots(mask) == roots
+
+
 def test_non_linux_hosts_have_no_root_bound(monkeypatch):
     monkeypatch.setattr(hw.sys, "platform", "win32")
     assert hw._intel_root_device_bound() is None
