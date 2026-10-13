@@ -2250,6 +2250,11 @@ def test_only_a_finished_job_drops_its_saved_record(hub, monkeypatch):
     assert end(tiny[1], 0, False) == "complete"
     assert acm._saved_job_row(tiny[1]) is None
     assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    # The status poll that learns of the completion resolves the target again: it must not save it back.
+    from hub.services.models import downloads
+
+    assert asyncio.run(downloads._audio_cpp_target(row, "tiny/Q8_0")) == tiny
+    assert acm._saved_job_row(tiny[1]) is None
     # This process keeps its own copy, and a new download of the key records it again.
     assert acm.folder_row_for_download(*tiny) == (row, "tiny/Q8_0")
     acm.download_target(row, "tiny/Q8_0")

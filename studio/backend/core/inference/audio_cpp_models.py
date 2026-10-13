@@ -2532,6 +2532,7 @@ def download_target(
     identifier: Optional[str],
     variant: Optional[str],
     hf_token: Optional[str] = None,
+    persist: bool = True,
 ) -> Optional[tuple[str, str]]:
     """``(repo, variant key)`` the Hub GGUF downloader fetches for an umbrella folder row, else None.
 
@@ -2552,7 +2553,8 @@ def download_target(
         row = (model.id, model.variant.key)
         with _job_rows_lock:
             _job_rows[(model.repo_id.lower(), key.lower())] = row
-        if _saved_job_row(key) != row:
+        # Saved only at a job's start: a status poll after completion would recreate the dropped file.
+        if persist and _saved_job_row(key) != row:
             _save_job_row(key, row)
     return model.repo_id, key
 
