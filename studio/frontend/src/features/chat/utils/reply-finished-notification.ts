@@ -35,7 +35,6 @@ function windowIsInBackground(): boolean {
   );
 }
 
-// Called when a run starts, never per token.
 export function cancelReplyFinishedNotification(): void {
   if (pending !== null) {
     clearTimeout(pending);
@@ -43,8 +42,6 @@ export function cancelReplyFinishedNotification(): void {
   }
 }
 
-// Runs once when a reply ends, never per token. Off by default, and silent while the user is
-// looking at the window: the reply on screen already says it finished.
 export function notifyReplyFinished(): void {
   if (!useChatPreferencesStore.getState().notifyWhenReplyFinishes) {
     return;
@@ -82,9 +79,7 @@ function sendReplyFinished(): void {
     return;
   }
   try {
-    // No tag: a same-tag replacement alerts only with renotify, so a later reply would arrive
-    // silently while an earlier notification is still showing. The settle window already merges
-    // bursts.
+    // No tag: a same-tag replacement alerts only with renotify, so a later reply would be silent.
     const notification = new api(TITLE, { body: BODY });
     notification.onclick = () => {
       window.focus();
@@ -95,8 +90,7 @@ function sendReplyFinished(): void {
   }
 }
 
-// Called from the settings switch, a user gesture, so the browser or OS can show its prompt.
-// Resolves false when notifications cannot be shown, so the switch does not claim otherwise.
+// Called from the settings switch (a user gesture, so the prompt can show); false reverts it.
 export async function requestReplyFinishedPermission(): Promise<boolean> {
   if (isTauri) {
     return primeNativeNotificationPermission();
