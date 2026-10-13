@@ -3091,8 +3091,11 @@ export function useChatModelRuntime() {
             ) {
               recordLastLocalModelLoad({
                 id: modelId,
+                // An MLX precision folder (6-bit/) carries a variant on a load that is not GGUF.
                 kind:
-                  loadResponse.is_gguf || isGguf || ggufVariant
+                  loadResponse.is_gguf ||
+                  isGguf ||
+                  (ggufVariant && loadResponse.is_mlx !== true)
                     ? "gguf"
                     : "model",
                 ggufVariant: ggufVariant ?? null,
