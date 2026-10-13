@@ -51,7 +51,7 @@ def _stored_mostly_fp32(filename: Any) -> bool:
 def _with_pread(safe_open: Any) -> Any:
     @functools.wraps(safe_open)
     def pread_safe_open(filename: Any, *args: Any, **kwargs: Any) -> Any:
-        # transformers 5.6 - 5.16 pass backend="mmap" explicitly; 5.17 already picks pread on Windows (#48341).
+        # transformers 5.13 - 5.16 pass backend="mmap" explicitly; 5.17 already picks pread on Windows (#48341).
         if kwargs.get("backend") in (None, "mmap") and _stored_mostly_fp32(filename):
             kwargs["backend"] = "pread"
         return safe_open(filename, *args, **kwargs)
