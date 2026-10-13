@@ -267,6 +267,34 @@ def test_frames_throttle_and_stop():
         _Frames(None, cancel).step(x, 4, 8, 0, 0, 5, MASK_ID)
 
 
+def test_cached_block_sample_frames_through_generate_text_progress():
+    # generate_text hands samplers its Progress (not on_frame): frames must still reach the caller.
+    from unsloth.models.diffusion_infer import make_progress
+
+    base = _ToyBlockModel(seed = 0).eval()
+    ids = torch.randint(3, MASK_ID, (1, 5))
+    frames = []
+    progress = make_progress(frames.append, None, 0.0, MASK_ID, 11)
+    out = cached_block_sample(
+        base,
+        ids,
+        family = "sdar",
+        max_new_tokens = 11,
+        steps = 4,
+        block_length = 4,
+        temperature = 0.0,
+        mask_id = MASK_ID,
+        eos_ids = [],
+        confidence_threshold = 0.9,
+        progress = progress,
+    )
+    progress.close()
+    ends = [f for f in frames if f["step"] == f["total"]]
+    assert len(ends) == 3 and ends[-1]["tokens"] == out[0].tolist()[:11]
+    assert all(0 <= f["step"] < f["total"] for f in frames if f not in ends)
+    assert all(set(f) == {"block", "step", "total", "tokens", "mask_id"} for f in frames)
+
+
 class _ToyDream(torch.nn.Module):
     """Bidirectional toy with Dream's call shape: model(input_ids, attention_mask) -> (hidden,), lm_head."""
 

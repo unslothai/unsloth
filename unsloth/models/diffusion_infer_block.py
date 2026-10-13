@@ -37,6 +37,7 @@ _CACHED_BLOCK_KWARGS = (
     "top_p",
     "on_frame",
     "check_stop",
+    "progress",
 )
 
 
@@ -48,8 +49,11 @@ class _Frames:
         on_frame,
         check_stop,
         interval = 0.1,
+        progress = None,
     ):
         self.on_frame, self.check_stop, self.interval = on_frame, check_stop, interval
+        # generate_text's Progress: its own throttle, and the GPU never waits for a frame's host copy.
+        self.progress = progress
         self.last = 0.0
 
     def step(
@@ -65,6 +69,9 @@ class _Frames:
     ):
         if self.check_stop is not None:
             self.check_stop()
+        if self.progress is not None:
+            self.progress.frame(block, step, total, x[:, prompt_length:end], force = force)
+            return
         if self.on_frame is None:
             return
         now = time.monotonic()
@@ -303,6 +310,7 @@ def cached_block_sample(
     top_p = 1.0,
     on_frame = None,
     check_stop = None,
+    progress = None,
 ):
     from transformers import DynamicCache
 
@@ -341,7 +349,7 @@ def cached_block_sample(
     schedule = torch.full((steps,), block_length // steps, dtype = torch.long)
     schedule[: block_length % steps] += 1
     counts = schedule.to(device)[:, None, None].expand(steps, batch, 1)
-    frames = _Frames(on_frame, check_stop)
+    frames = _Frames(on_frame, check_stop, progress = progress)
     eos = torch.tensor(eos_ids, device = device) if eos_ids else None
 
     if graph is not None:

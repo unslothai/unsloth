@@ -55,6 +55,7 @@ def dream_fast_sample(
     eps = 1e-3,
     on_frame = None,
     check_stop = None,
+    progress = None,
 ):
     batch, prompt_length = input_ids.shape
     x = F.pad(input_ids, (0, max_new_tokens), value = mask_id)
@@ -67,7 +68,7 @@ def dream_fast_sample(
         count = int(masked * (1 - s / t)) if i < steps - 1 else int(masked)
         counts.append(count)
         masked = masked - count
-    frames = _Frames(on_frame, check_stop)
+    frames = _Frames(on_frame, check_stop, progress = progress)
     generated = x[:, prompt_length:]
     remasked = torch.zeros((), dtype = torch.bool, device = x.device)
     for i, count in enumerate(counts):
