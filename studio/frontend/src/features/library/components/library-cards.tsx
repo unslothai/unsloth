@@ -27,6 +27,7 @@ import {
   GLASS_SURFACE,
   OVERLAY_CONTROL,
   RAISED_SURFACE,
+  SELECTED_TINT,
 } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
@@ -154,6 +155,7 @@ function CardFrame({
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
+          selected && SELECTED_TINT,
         )}
       >
         {children}
