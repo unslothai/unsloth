@@ -184,7 +184,9 @@ import {
   readAllSidebarRows,
   type SidebarRowSlot,
   sidebarRowQuery,
+  holdRowsPastLoadedChats,
   mergeManualOrderTail,
+  settledManualOrder,
   SIDEBAR_PAGE_SIZE,
   usePinnedChatsStore,
   usePinnedProjectsStore,
@@ -2040,6 +2042,16 @@ export function AppSidebar() {
   // until a drop says otherwise; a chat sort other than Manual keeps the chats after them.
   // Pinning is its own grouping: a pinned folder stays here whichever way the sidebar organizes,
   // and "In one list" only takes the Projects section away.
+  // which manual lists still page their chats: their later folders and pages wait (see holdRowsPastLoadedChats)
+  const pinnedHasMore = chatRowLists.pinned?.hasMore;
+  const sectionHasMoreKey = customSections
+    .filter((section) => chatRowLists[`section:${section.id}`]?.hasMore)
+    .map((section) => section.id)
+    .join("\n");
+  const sectionHasMore = useMemo(
+    () => new Set(sectionHasMoreKey ? sectionHasMoreKey.split("\n") : []),
+    [sectionHasMoreKey],
+  );
   const pinnedRows = useMemo(() => {
     const rows: PinnedRow[] = [];
     for (const project of pinnedProjectBase) {
@@ -2052,10 +2064,22 @@ export function AppSidebar() {
     for (const page of pinnedPages) {
       if (!sectionByPageId[page.id]) rows.push({ kind: "page", id: page.id, page });
     }
-    return pinnedSort === "manual"
-      ? applyManualOrder(rows, displayManualOrder[PINNED_ORDER_SCOPE], (row) => row.id)
-      : rows;
-  }, [pinnedProjectBase, sortedPinnedChatItems, pinnedPages, sectionByPageId, pinnedSort, displayManualOrder]);
+    if (pinnedSort !== "manual") return rows;
+    const order = displayManualOrder[PINNED_ORDER_SCOPE];
+    return holdRowsPastLoadedChats(
+      applyManualOrder(rows, order, (row) => row.id),
+      order,
+      Boolean(pinnedHasMore),
+    );
+  }, [
+    pinnedProjectBase,
+    sortedPinnedChatItems,
+    pinnedPages,
+    sectionByPageId,
+    pinnedSort,
+    displayManualOrder,
+    pinnedHasMore,
+  ]);
   const pinnedRowIds = useMemo(() => pinnedRows.map((row) => row.id), [pinnedRows]);
   // Each custom section is one list of folders and chats, as Pinned is: folders lead until a drop
   // says otherwise. A pinned row stays in Pinned and keeps its section for when it is unpinned.
@@ -2092,15 +2116,21 @@ export function AppSidebar() {
         ),
         ...(pages.get(section.id) ?? []),
       ];
+      const order = displayManualOrder[scope];
       rows.set(
         section.id,
         section.sort === "manual"
-          ? applyManualOrder(list, displayManualOrder[scope], (row) => row.id)
+          ? holdRowsPastLoadedChats(
+              applyManualOrder(list, order, (row) => row.id),
+              order,
+              sectionHasMore.has(section.id),
+            )
           : list,
       );
     }
     return rows;
   }, [
+    sectionHasMore,
     customSections,
     projects,
     listedChatItems,
@@ -2580,7 +2610,7 @@ export function AppSidebar() {
       void readAllSidebarRowIds(query)
         .then((all) => {
           const current = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
-          settle(mergeManualOrderTail(mergeManualOrderTail(ids, all), current));
+          settle(settledManualOrder(ids, all, current));
         })
         .catch(() => settle(shown));
     },

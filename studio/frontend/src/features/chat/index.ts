@@ -525,7 +525,9 @@ export {
 } from "./hooks/use-sidebar-row-pages";
 export {
   SIDEBAR_PAGE_SIZE,
+  holdRowsPastLoadedChats,
   mergeManualOrderTail,
+  settledManualOrder,
   sidebarRowQuery,
   type SidebarRowQuery,
 } from "./utils/sidebar-row-query";

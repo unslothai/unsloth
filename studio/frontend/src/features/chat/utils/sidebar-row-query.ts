@@ -72,3 +72,37 @@ export function mergeManualOrderTail(
   }
   return out;
 }
+
+/** A manual list whose chats are still paging draws only what comes before its last loaded chat: a
+ *  folder or page ranked later waits for the page that reaches it instead of sitting above chats
+ *  that have not loaded. Unranked folders lead, as `applyManualOrder` sorts them. */
+export function holdRowsPastLoadedChats<T extends { id: string; kind: string }>(
+  rows: readonly T[],
+  order: readonly string[] | undefined,
+  hasMore: boolean,
+): T[] {
+  if (!hasMore) return [...rows];
+  const rank = new Map((order ?? []).map((id, index) => [id, index]));
+  const key = (row: T) => rank.get(row.id) ?? -1;
+  const chats = rows.filter((row) => row.kind === "chat");
+  const edge = chats.length ? key(chats[chats.length - 1]) : -1;
+  return rows.filter(
+    (row) =>
+      row.kind === "chat" || (key(row) === -1 && row.kind === "project") || key(row) < edge,
+  );
+}
+
+/** The order a drag saves once a paged list's ids are all known: the dragged rows, then the
+ *  unloaded chats with no rank (they sort first), then everything else where it was, so a row
+ *  held back past the loaded chats keeps its place among them. */
+export function settledManualOrder(
+  dragged: readonly string[],
+  all: readonly string[],
+  current: readonly string[],
+): string[] {
+  const ranked = new Set(current);
+  return mergeManualOrderTail(
+    mergeManualOrderTail(dragged, all.filter((id) => !ranked.has(id))),
+    current,
+  );
+}

@@ -39,17 +39,27 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     controllerRef.current = controller;
     try {
       const wanted = Math.max(SIDEBAR_LIMIT, loadedCountRef.current);
-      const runs: TrainingRunSummary[] = [];
+      let runs: TrainingRunSummary[] = [];
       let runTotal = 0;
-      while (runs.length < wanted) {
-        const result = await listTrainingRuns(
-          Math.min(MAX_REQUEST_LIMIT, wanted - runs.length),
-          runs.length,
-          controller.signal,
-        );
-        runs.push(...result.runs);
-        runTotal = result.total;
-        if (result.runs.length === 0 || runs.length >= result.total) break;
+      // offsets shift if a run is added or removed between requests: read again from the top
+      for (let attempt = 0; attempt < 3; attempt++) {
+        runs = [];
+        let firstTotal: number | null = null;
+        let shifted = false;
+        while (runs.length < wanted) {
+          const result = await listTrainingRuns(
+            Math.min(MAX_REQUEST_LIMIT, wanted - runs.length),
+            runs.length,
+            controller.signal,
+          );
+          firstTotal ??= result.total;
+          shifted ||= result.total !== firstTotal;
+          const seen = new Set(runs.map((run) => run.id));
+          runs.push(...result.runs.filter((run) => !seen.has(run.id)));
+          runTotal = result.total;
+          if (result.runs.length === 0 || runs.length >= result.total) break;
+        }
+        if (!shifted) break;
       }
       if (controller.signal.aborted) {
         return;

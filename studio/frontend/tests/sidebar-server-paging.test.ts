@@ -713,3 +713,92 @@ test("a running Compare pane keeps its opened pair row, which is opened by pair 
   assert.match(src, /if \(item\.threadIds\?\.some\(\(id\) => running\.has\(id\)\)\) rows\.add\(item\.id\);/);
   assert.match(src, /const running = new Set\(runningRowKey\.split\("\\n"\)\);\n\s*setOpenedChatIds\(\(opened\) => keepOpenedChats\(touchOpenedChat\(opened, slotActiveId\), running\)\);/);
 });
+
+test("a page emptied by chats deleted here does not end the list: the next page still loads", async () => {
+  // the server still returns 20 chats deleted locally; the client filters them out, cursor moved on
+  const fetchPage = async (_q: unknown, limit: number, cursor: string | null) => {
+    const at = cursor ? Number(cursor) : 0;
+    return {
+      rows: at === 0 ? [] : rows(limit, `p${at}-`),
+      nextCursor: String(at + limit),
+      hasMore: at < 60,
+    };
+  };
+  const list = new RowPager<unknown, Row>(fetchPage, {}, "q", { initialLimit: 20, pageSize: 20 });
+  await list.start();
+  assert.equal(list.getState().rows.length, 20, "the emptied first page ended the read");
+  assert.equal(list.getState().rows[0].id, "p20-0");
+  // a page that comes back empty without moving the cursor still ends it, so nothing loops
+  const stuck = new RowPager<unknown, Row>(
+    async () => ({ rows: [], nextCursor: "same", hasMore: true }),
+    {},
+    "q",
+    { initialLimit: 20, pageSize: 20 },
+  );
+  await stuck.start();
+  assert.equal(stuck.getState().rows.length, 0);
+});
+
+test("a manual list still paging holds back folders and pages ranked past its last loaded chat", () => {
+  const { holdRowsPastLoadedChats } = rowQuery;
+  const order = ["c1", "f1", "c2", "c3", "f2", "c4", "p1"];
+  const shown = [
+    { id: "f0", kind: "project" }, // unranked folders lead
+    { id: "c1", kind: "chat" },
+    { id: "f1", kind: "project" },
+    { id: "c2", kind: "chat" },
+    { id: "f2", kind: "project" },
+    { id: "p1", kind: "page" },
+  ];
+  // c3 and c4 are not loaded yet: f2 and p1 come after c3 on main, so they wait
+  assert.deepEqual(
+    holdRowsPastLoadedChats(shown, order, true).map((row) => row.id),
+    ["f0", "c1", "f1", "c2"],
+  );
+  // once every chat is loaded, nothing is held
+  assert.deepEqual(holdRowsPastLoadedChats(shown, order, false).map((row) => row.id), shown.map((row) => row.id));
+  // unranked chats sort first, so with one of those last loaded, only unranked folders show beside them
+  assert.deepEqual(
+    holdRowsPastLoadedChats([{ id: "f0", kind: "project" }, { id: "u1", kind: "chat" }, { id: "p0", kind: "page" }], order, true).map((row) => row.id),
+    ["f0", "u1"],
+  );
+});
+
+test("a drag saved from a partly loaded manual list keeps held-back rows where they were", () => {
+  const { settledManualOrder } = rowQuery;
+  // saved: c1 f1 c2 c3 f2 c4; loaded and dragged: c2 above c1 (f1 shown, f2 held back)
+  const current = ["c1", "f1", "c2", "c3", "f2", "c4"];
+  const all = ["u1", "c1", "c2", "c3", "c4"]; // the server's chat order: unranked u1 first
+  assert.deepEqual(settledManualOrder(["u1", "c2", "c1", "f1"], all, current), [
+    "u1",
+    "c2",
+    "c1",
+    "f1",
+    "c3",
+    "f2",
+    "c4",
+  ]);
+  // an unloaded unranked chat (shown first on main) goes ahead of the saved tail, not after it
+  assert.deepEqual(settledManualOrder(["c2", "c1"], ["u1", "u2", "c1", "c2", "c3"], ["c1", "c2", "c3"]), [
+    "c2",
+    "c1",
+    "u1",
+    "u2",
+    "c3",
+  ]);
+});
+
+test("a training refresh past one request re-reads from the top if the run count moved under it", () => {
+  const src = readSrc("features/training/hooks/use-training-history-sidebar.ts");
+  assert.match(src, /for \(let attempt = 0; attempt < 3; attempt\+\+\) \{/);
+  assert.match(src, /shifted \|\|= result\.total !== firstTotal;/);
+  assert.match(src, /runs\.push\(\.\.\.result\.runs\.filter\(\(run\) => !seen\.has\(run\.id\)\)\);/);
+  assert.match(src, /if \(!shifted\) break;/);
+});
+
+test("Pinned and manual sections hold rows past their last loaded chat, and a drag saves around them", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(rows, order, \(row\) => row\.id\),\n\s*order,\n\s*Boolean\(pinnedHasMore\),/);
+  assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(list, order, \(row\) => row\.id\),\n\s*order,\n\s*sectionHasMore\.has\(section\.id\),/);
+  assert.match(src, /settle\(settledManualOrder\(ids, all, current\)\);/);
+});

@@ -111,12 +111,14 @@ export class RowPager<Q, T extends { id: string }> {
     let total: number | null = null;
     while (rows.length < count && hasMore && generation === this.generation) {
       const limit = Math.min(this.maxRequestLimit, count - rows.length);
+      const from = next;
       const page = await this.fetchPage(this.query, limit, next);
       rows = dedupeAppend(rows, page.rows);
       next = page.nextCursor;
       hasMore = page.hasMore && page.nextCursor !== null;
       total = page.total ?? total;
-      if (page.rows.length === 0) break;
+      // a page emptied by chats deleted here still moves the cursor on; only one that did not ends it
+      if (page.rows.length === 0 && next === from) break;
     }
     return { rows, cursor: next, hasMore, total };
   }
