@@ -269,8 +269,16 @@ works only when the agent runs on the Unsloth Studio computer** and connects ove
 loopback. From any other computer, send the data or an Unsloth Studio id instead.
 An MCP request is limited to 4 MiB, so inline data has to fit in that. Send
 larger media as an Unsloth Studio id, or as a path from the Unsloth Studio computer. A remote
-agent can upload a large audio file to `POST /v1/audio/inputs` with its API key
-and pass the returned id as `input_id`.
+agent can upload a large audio file, up to 200 MiB, to `POST /v1/audio/inputs` with its API key
+and pass the returned `id` as `input_id`. The route takes the file's raw bytes as
+the request body with a `Content-Length`, not a multipart form or JSON, and an
+optional `name` query parameter:
+
+```bash
+curl -X POST "http://127.0.0.1:8888/v1/audio/inputs?name=meeting.mp3" \
+  -H "Authorization: Bearer $UNSLOTH_API_KEY" \
+  --data-binary @meeting.mp3
+```
 
 `transcribe` sends files up to 25 MB directly. Larger files, and audio given by
 id, are uploaded to Unsloth Studio first, and their transcript is saved to Audio
