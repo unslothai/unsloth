@@ -7550,7 +7550,7 @@ def hf_token_env(token):
 
 
 def hf_token_for_load(from_pretrained):
-    # Hub reads inside the load that take no token (vLLM, unsloth_zoo, fp8 conversion) see the passed token; the saved login is left as it was.
+    # tokenless reads in vLLM, unsloth_zoo, and fp8 use passed token without changing saved login.
     @functools.wraps(from_pretrained)
     def wrapper(*args, **kwargs):
         token = kwargs.get("token")

@@ -2949,7 +2949,7 @@ class FastBaseModel:
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,

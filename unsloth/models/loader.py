@@ -19,7 +19,7 @@ from ._utils import (
     get_transformers_model_type,
     hf_login,
     hf_token_for_load,
-    # Single source of truth is _utils.py; re-exported so callers importing it from here keep working and so _is_sdpa_excluded can honor it without a loader -> _utils cycle.
+    # `_utils.py` owns this value; re-exporting preserves imports here and avoids a loader-to-`_utils` cycle.
     DISABLE_SDPA_MODEL_NAMES,
 )
 from ._custom_dtype import register_custom_dtype
@@ -969,13 +969,13 @@ class FastLanguageModel(FastLlamaModel):
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
         dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
+        load_in_4bit = True,  # 4-bit QLoRA
+        load_in_8bit = False,  # 8-bit LoRA
+        load_in_16bit = False,  # 16-bit LoRA
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         rope_scaling = None,
         fix_tokenizer = True,
@@ -1849,13 +1849,13 @@ class FastModel(FastBaseModel):
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
         dtype = None,
-        load_in_4bit = True,  # 4bit QLoRA
-        load_in_8bit = False,  # 8bit  LoRA
-        load_in_16bit = False,  # 16bit LoRA
+        load_in_4bit = True,  # 4-bit QLoRA
+        load_in_8bit = False,  # 8-bit LoRA
+        load_in_16bit = False,  # 16-bit LoRA
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         rope_scaling = None,  # [TODO] No effect
         fix_tokenizer = True,
