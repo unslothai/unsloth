@@ -834,14 +834,14 @@ export function installPageAgent(): PageAgent {
       const ref = typeof command.ref === "string" ? command.ref : "";
       switch (command.op) {
         case "status": {
-          // The proxied shell's count of the page's fetch/XHR started in the last `recentMs`
-          // (routes/browser_network.py): content may still be on its way.
+          // The proxied shell's count of the page's fetch/XHR open and started at or after `since`
+          // (Date.now(); routes/browser_network.py): content may still be on its way.
           const pending = host[Symbol.for("unsloth.browser.pending")];
-          const recentMs = typeof command.recentMs === "number" ? Math.min(Math.max(command.recentMs, 0), 60_000) : 0;
+          const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
           return {
             ok: true,
             quietMs: Math.round(performance.now() - lastMutation),
-            pending: typeof pending === "function" ? Number(pending(recentMs)) || 0 : 0,
+            pending: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
             title: document.title,
           };
         }

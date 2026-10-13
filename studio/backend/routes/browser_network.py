@@ -10,11 +10,13 @@ BROWSER_NETWORK_JS = r"""
         const nativeFetch = window.fetch.bind(window);
         const NativeXHR = window.XMLHttpRequest;
         // Start times of the page's requests in flight, so the agent can wait for content still coming.
+        // The wall clock, which the panel shares, captured before a page script can replace it.
+        const clock = Date.now.bind(Date);
         const inflight = new Set();
-        const track = () => { const entry = { at: performance.now() }; inflight.add(entry); return () => inflight.delete(entry); };
-        // Only recent ones: a long poll or a stream stays open for as long as the page does.
+        const track = () => { const entry = { at: clock() }; inflight.add(entry); return () => inflight.delete(entry); };
+        // Only those started since the agent's action: a long poll the page already had open isn't its.
         Object.defineProperty(window, Symbol.for("unsloth.browser.pending"), {
-          value: (ageMs) => { const now = performance.now(); let n = 0; for (const r of inflight) if (now - r.at < ageMs) n++; return n; },
+          value: (since) => { let n = 0; for (const r of inflight) if (r.at >= since) n++; return n; },
         });
         // fetch() resolves at the headers; a list is drawn only once its body is read, so a read counts too.
         // The page calls it in the same microtask run as fetch resolves, before any agent command arrives.

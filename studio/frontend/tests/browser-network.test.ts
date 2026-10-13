@@ -58,7 +58,7 @@ function setup() {
   class Progress extends Event {}
   runInNewContext(source, {
     window, parent, cfg: { url: "https://huggingface.co/models" }, document: { baseURI: "https://huggingface.co/models" },
-    post: (message: Record<string, unknown>) => posted.push(message), performance: { now: () => now },
+    post: (message: Record<string, unknown>) => posted.push(message), Date: { now: () => now },
     Request, Response: PageResponse, Headers, URL, Uint8Array, TextDecoder, AbortController, DOMException, Event, ProgressEvent: Progress,
     Blob, atob, setTimeout, clearTimeout, Symbol, Object, JSON, String, Promise, Array, Map, Set, Math, Number, TypeError,
   });
@@ -67,7 +67,7 @@ function setup() {
   const ok = (body: string, status = 200) => ({
     status, url: "https://huggingface.co/models-json", headers: { "content-type": "application/json" }, body: btoa(body),
   });
-  const pending = (ageMs: number) => (window as unknown as Record<symbol, (age: number) => number>)[Symbol.for("unsloth.browser.pending")](ageMs);
+  const pending = (since: number) => (window as unknown as Record<symbol, (since: number) => number>)[Symbol.for("unsloth.browser.pending")](since);
   const page = window as unknown as PageWindow;
   return { window: page, posted, native, reply, ok, pending, advance: (ms: number) => (now += ms) };
 }
@@ -115,29 +115,31 @@ test("writes, credentials and other sites keep the native request", async () => 
   assert.equal(t.native.length, 4);
 });
 
-test("only recent requests count as pending, so a long poll can't hold the agent", async () => {
+test("only requests started since the action count, however long they stay open", async () => {
   const t = setup();
   const stream = t.window.fetch("/stream");
   await flush();
-  assert.equal(t.pending(3000), 1);
-  t.advance(3500);
-  assert.equal(t.pending(3000), 0);
+  // A long poll the page already had open isn't the action's.
+  t.advance(1000);
+  assert.equal(t.pending(1000), 0);
   // Cross-origin requests count too: a list fetched from another API is still content on its way.
   const api = t.window.fetch("https://api.github.com/x");
-  assert.equal(t.pending(3000), 1);
+  t.advance(60_000);
+  assert.equal(t.pending(1000), 1);
+  assert.equal(t.pending(0), 2);
   t.reply(t.posted[0].id, t.ok("{}"));
   await Promise.all([stream, api]);
-  assert.equal(t.pending(60_000), 0);
+  assert.equal(t.pending(0), 0);
 });
 
 test("reading a response's body still counts, since the page draws only once it has it", async () => {
   const t = setup();
   const response = await t.window.fetch("https://api.github.com/repos/x/git/trees/y");
-  assert.equal(t.pending(3000), 0);
+  assert.equal(t.pending(0), 0);
   const body = response.text();
-  assert.equal(t.pending(3000), 1);
+  assert.equal(t.pending(0), 1);
   assert.equal(await body, "native");
-  assert.equal(t.pending(3000), 0);
+  assert.equal(t.pending(0), 0);
 });
 
 test("an XHR keeps the responseType set before open and fires its events in order", async () => {
@@ -149,7 +151,7 @@ test("an XHR keeps the responseType set before open and fires its events in orde
   xhr.addEventListener("readystatechange", () => states.push(xhr.readyState));
   const done = new Promise((resolve) => xhr.addEventListener("loadend", resolve));
   xhr.send();
-  assert.equal(t.pending(3000), 1);
+  assert.equal(t.pending(0), 1);
   t.reply(t.posted[0].id, t.ok('{"models":[{"id":"Qwen/Qwen3-VL-8B-Instruct"}]}'));
   await done;
   assert.deepEqual(states, [2, 3, 4]);
@@ -158,7 +160,7 @@ test("an XHR keeps the responseType set before open and fires its events in orde
   assert.equal(xhr.response.models[0].id, "Qwen/Qwen3-VL-8B-Instruct");
   assert.equal(xhr.getResponseHeader("Content-Type"), "application/json");
   await flush();
-  assert.equal(t.pending(3000), 0);
+  assert.equal(t.pending(0), 0);
 });
 
 test("reopening an XHR mid-flight drops the old read without events; HTML is a document only on request", async () => {

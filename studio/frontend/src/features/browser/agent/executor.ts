@@ -16,6 +16,7 @@ import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
 import { askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
+import { waitForPage } from "./page-wait";
 
 export type BrowserAction = {
   id: string;
@@ -188,9 +189,10 @@ async function postResult(action: BrowserAction, result: Result): Promise<void> 
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const findTab = (tabId: string) => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+
 function agentTab(): BrowserTab | null {
-  const { tabId } = useBrowserAgentStore.getState();
-  return useBrowserStore.getState().tabs.find((tab) => tab.id === tabId) ?? null;
+  return findTab(useBrowserAgentStore.getState().tabId ?? "") ?? null;
 }
 
 function tabUrl(tab: BrowserTab): string {
@@ -211,12 +213,12 @@ async function waitForLoad(tabId: string, signal?: AbortSignal): Promise<Browser
   await sleep(150);
   while (Date.now() - started < LOAD_TIMEOUT_MS) {
     if (signal?.aborted) return null;
-    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+    const tab = findTab(tabId);
     if (!tab) return null;
     if (!tab.loading) return tab;
     await sleep(100);
   }
-  return useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId) ?? null;
+  return findTab(tabId) ?? null;
 }
 
 // The page agent's own error messages (page-agent.ts). Errors reach the model outside the
@@ -320,49 +322,39 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
   }
 }
 
-/** What the page is doing: "loading" while a request it made in the last `recentMs` is open (a list it
- *  fetches and then draws), "changing" while its DOM moved in the last SETTLE_QUIET_MS. Only recent
- *  requests count: a long poll or an analytics beacon is not content the action is waiting on. */
-async function activity(tab: BrowserTab, recentMs: number): Promise<"idle" | "changing" | "loading"> {
-  const status = await pageCall(tab, { op: "status", recentMs }).catch(() => null);
-  if (!status) return "idle";
-  if ((status.pending ?? 0) > 0) return "loading";
-  return (status.quietMs ?? 0) < SETTLE_QUIET_MS ? "changing" : "idle";
+/** Waits on the page at `url` in `tabId` for what an action sent at `since` set off: every request
+ *  the page started since then, and its DOM, given `changingMaxMs` to rest. */
+function waitOnPage(tabId: string, url: string, since: number, changingMaxMs: number, signal?: AbortSignal) {
+  return waitForPage({
+    maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, now: Date.now, sleep,
+    status: () => {
+      const tab = findTab(tabId);
+      return tab ? pageCall(tab, { op: "status", since }).catch(() => null) : Promise.resolve(null);
+    },
+    moved: () => {
+      const tab = findTab(tabId);
+      return !tab || tab.loading || tabUrl(tab) !== url;
+    },
+    aborted: () => Boolean(signal?.aborted),
+  });
 }
 
-/** Until the page stops changing after an action, following any navigation it started. */
-async function settle(tabId: string, urlBefore: string, signal?: AbortSignal): Promise<BrowserTab | null> {
-  const acted = Date.now();
+/** Until the page stops changing after an action that went out at `since`, following any
+ *  navigation it started. */
+async function settle(tabId: string, urlBefore: string, since: number, signal?: AbortSignal): Promise<BrowserTab | null> {
   await sleep(120);
-  const started = Date.now();
-  while (Date.now() - started < SETTLE_MAX_MS) {
-    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
-    if (!tab) return null;
-    if (tab.loading || tabUrl(tab) !== urlBefore) return waitForLoad(tabId, signal);
-    // Requests the action set off, not the ones the page already had open.
-    if ((await activity(tab, Date.now() - acted)) === "idle") return tab;
-    await sleep(120);
-  }
-  return useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId) ?? null;
+  const state = await waitOnPage(tabId, urlBefore, since, SETTLE_MAX_MS, signal);
+  if (state === "moved" && findTab(tabId)) return waitForLoad(tabId, signal);
+  return findTab(tabId) ?? null;
 }
 
-/** After a load, until the page has filled itself in (a list a script fetches after load reads as
- *  empty until then): up to SETTLE_MAX_MS for its requests, but only FILL_QUIET_MAX_MS for a DOM that
- *  never rests (an animation), which a read handles fine. True when it was still loading at the end. */
-async function untilFilled(tab: BrowserTab, signal?: AbortSignal): Promise<boolean> {
-  const started = Date.now();
-  while (!signal?.aborted) {
-    const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
-    // Moved on: observe() reports that, and the next action checks where it went.
-    if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) return false;
-    // The page is new, so its open requests are its own loading.
-    const state = await activity(now, SETTLE_MAX_MS);
-    const waited = Date.now() - started;
-    if (state === "idle" || (state === "changing" && waited >= FILL_QUIET_MAX_MS)) return false;
-    if (waited >= SETTLE_MAX_MS) return true;
-    await sleep(120);
-  }
-  return false;
+/** After a load that began at `since`, until the page has filled itself in (a list a script fetches
+ *  after load reads as empty until then): up to SETTLE_MAX_MS for its requests, but only
+ *  FILL_QUIET_MAX_MS for a DOM that never rests (an animation), which a read handles fine. True when
+ *  requests were still open at the end. A page that moved on is left to observe(), and the next
+ *  action checks where it went. */
+async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal): Promise<boolean> {
+  return (await waitOnPage(tab.id, tabUrl(tab), since, FILL_QUIET_MAX_MS, signal)) === "loading";
 }
 
 async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
@@ -401,7 +393,7 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   }
   const answer = await pageCall(tab, op);
   if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
-  const fresh = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? tab;
+  const fresh = findTab(tab.id) ?? tab;
   // A page that moved during the read is one nobody checked: its words and links stay out.
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
@@ -467,9 +459,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
     admit(url, gate);
+    const since = Date.now();
     const tab = await open(url, signal);
     if (!tab) return { ok: false, error: "the browser tab closed." };
-    return arrive(tab, url, action, context);
+    return arrive(tab, url, action, context, since);
   }
 
   if (action.op === "history") return readHistory(action, signal);
@@ -509,6 +502,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal);
       if (refused) return { ok: false, error: refused };
     }
+    const since = Date.now();
     // A native move starts when the view reports it; loading from now, so the wait below sees it.
     if ((nativeMove || (native && action.op === "reload")) && hasNativeView(tab.id)) store.updateTab(tab.id, { loading: true });
     if (nativeMove) nativeAction(tab.id, action.op as "back" | "forward");
@@ -517,7 +511,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     else if (action.op === "forward") store.goForward(tab.id);
     else store.reload(tab.id);
     const loaded = await waitForLoad(tab.id, signal);
-    return loaded ? arrive(loaded, before, action, context) : { ok: false, error: "the browser tab closed." };
+    return loaded ? arrive(loaded, before, action, context, since) : { ok: false, error: "the browser tab closed." };
   }
 
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
@@ -531,13 +525,14 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     case "find":
       return observe(ready, undefined, { op: "find", query: action.query ?? "" });
     case "scroll": {
+      const since = Date.now();
       const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
       if (!moved.ok) return { ok: false, error: moved.error };
-      const after = await settle(ready.id, before, signal);
+      const after = await settle(ready.id, before, since, signal);
       if (!after) return { ok: false, error: "the browser tab closed." };
       // A page can navigate on scroll: the new address is checked like any other arrival.
       const now = tabUrl(after);
-      if (now && now !== before) return arrive(after, before, action, context, moved.note);
+      if (now && now !== before) return arrive(after, before, action, context, since, moved.note);
       return observe(after, moved.note);
     }
     case "screenshot":
@@ -599,6 +594,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (formGate) admit(formAction, formGate);
   if (linkGate) admit(info.href, linkGate);
 
+  // Before the action goes out, after any question: a request its handler starts at once is the action's too.
+  const since = Date.now();
   let note: string | undefined;
   if (action.op === "click") {
     const clicked = await pageCall(ready, { op: "click", ref, directLinks: !useNativeBrowser.getState().enabled });
@@ -610,9 +607,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate);
+      const sent = Date.now();
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
-      return loaded ? arrive(loaded, clicked.navigate, action, context) : { ok: false, error: "the browser tab closed." };
+      return loaded ? arrive(loaded, clicked.navigate, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }
     note = clicked.note;
   } else if (action.op === "type") {
@@ -630,10 +628,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   } else {
     return { ok: false, error: `unknown browser action ${action.op}.` };
   }
-  const after = await settle(ready.id, before, signal);
+  const after = await settle(ready.id, before, since, signal);
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
-  if (now && now !== before) return arrive(after, before, action, context, note);
+  if (now && now !== before) return arrive(after, before, action, context, since, note);
   return observe(after, note);
 }
 
@@ -644,6 +642,7 @@ async function arrive(
   requested: string,
   action: BrowserAction,
   context: ActionContext,
+  since: number,
   note?: string,
 ): Promise<Result> {
   const url = tabUrl(tab);
@@ -660,7 +659,7 @@ async function arrive(
     if (host) reachedHosts.add(host);
     record(action.op, url);
   }
-  return observeLoaded(tab, note, context.signal);
+  return observeLoaded(tab, since, note, context.signal);
 }
 
 /** The page the tab shows now, before the model reads or acts on it: the page may have moved on
@@ -679,7 +678,8 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   return null;
 }
 
-async function observeLoaded(tab: BrowserTab, note?: string, signal?: AbortSignal): Promise<Result> {
+/** `since`: when the navigation went out; the page's requests from then on are its loading. */
+async function observeLoaded(tab: BrowserTab, since: number, note?: string, signal?: AbortSignal): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
     return {
@@ -689,8 +689,8 @@ async function observeLoaded(tab: BrowserTab, note?: string, signal?: AbortSigna
       note: `${note ? `${note} ` : ""}This address is a file (${tab.documentType}), shown to the user; the browser tools can't read it. web_search with this url can.`,
     };
   }
-  if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, signal))) {
-    note = [note, "The page was still loading when read; snapshot again if something is missing."].filter(Boolean).join(" ");
+  if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, since, signal))) {
+    note = [note, "The page still had requests open when read; snapshot again if something is missing."].filter(Boolean).join(" ");
   }
   return observe(tab, note);
 }
@@ -712,7 +712,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   }
   if (!blob) return { ok: false, error: "the screenshot failed." };
   // A page that moved during the capture is one nobody checked or masked: no picture of it.
-  const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+  const now = findTab(tab.id);
   if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
   }
