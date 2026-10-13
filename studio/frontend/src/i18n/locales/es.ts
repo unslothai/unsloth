@@ -53,7 +53,7 @@ export const es = {
     agentSettings: {
       title: "Uso del navegador",
       enable: "Permitir que los modelos usen el navegador",
-      enableDescription: "Los modelos abren páginas en su propia pestaña del panel del navegador, las leen y hacen clic y escriben por ti. También en el menú + del compositor.",
+      enableDescription: "Los modelos abren páginas en su propia pestaña del navegador, las leen y hacen clic y escriben por ti. También en el menú + del compositor.",
       history: "Historial de navegación",
       historyDescription: "Elige si los modelos pueden leer tu historial del navegador",
       alwaysAsk: "Preguntar siempre",
@@ -4160,7 +4160,6 @@ export const es = {
       chatAboutThis: "Chatear sobre esto",
       chatWithModel: "Chatear con este modelo",
       addToFavorites: "Añadir a Favoritos",
-      regenerateTitle: "Regenerar título",
       removeFromFavorites: "Quitar de Favoritos",
       download: "Descargar",
       addToFolder: "Añadir a carpeta",

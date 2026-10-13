@@ -74,6 +74,8 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
+    # The catalog id a load by path should keep advertising (Open WebUI /models/load).
+    _advertised_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -6152,21 +6154,23 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
-    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
-    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    # Bounded so one request cannot buffer a multi-GB payload; ~32 MiB fits a 4096px source.
     first_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
-        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
-        "family that takes no keyframes.",
+        description = "Base64/data-URL image the clip starts from (image-to-video). With width "
+        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
+        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
+        "frame (status supports_first_frame).",
     )
     last_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
-        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
-        "follows the first and is centre cover-cropped onto the canvas.",
+        description = "Base64/data-URL image the clip ends on (MiniMax-H3 only, status "
+        "supports_last_frame). Valid on its own (generate up TO a frame) or with first_frame "
+        "(first-and-last-frame video), in which case it follows the first and is centre "
+        "cover-cropped onto the canvas.",
     )
 
     # Separate lists preserve the model's image, video, then audio packing order.
@@ -6418,6 +6422,12 @@ class VideoGenerationDefaults(BaseModel):
     canvas_max_pixels: Optional[int] = Field(
         None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
     )
+    canvas_from_presets: bool = Field(
+        False,
+        description = "True when a first frame without width/height takes the resolution preset "
+        "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
+        "canvas_short_edge rule",
+    )
     flow_shift: Optional[float] = Field(
         None,
         description = "Released video-schedule sigma shift, or null when the family does not "
@@ -6516,6 +6526,17 @@ class VideoStatusResponse(BaseModel):
         False,
         description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
         "(gates the image-to-video controls)",
+    )
+    supports_first_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a first_frame (image-to-video): "
+        "MiniMax-H3 keyframes, or a family's declared image-to-video pipeline (Wan2.2-TI2V-5B, "
+        "LTX-2 / LTX-2.3) built over the loaded components",
+    )
+    supports_last_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a last_frame. Only MiniMax-H3's "
+        "keyframe partition does; the image-to-video pipelines condition on a first frame alone",
     )
     supports_references: bool = Field(
         False,

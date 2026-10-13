@@ -236,7 +236,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}

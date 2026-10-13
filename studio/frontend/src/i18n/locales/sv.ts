@@ -51,7 +51,7 @@ export const sv = {
     agentSettings: {
       title: "Webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",
-      enableDescription: "Modeller öppnar sidor i en egen flik i webbläsarpanelen, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
+      enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
       historyDescription: "Välj om modeller får läsa webbläsarens historik",
       alwaysAsk: "Fråga alltid",
@@ -4342,7 +4342,6 @@ export const sv = {
       chatAboutThis: "Chatta om detta",
       chatWithModel: "Chatta med den här modellen",
       addToFavorites: "Lägg till i Favoriter",
-      regenerateTitle: "Generera om titel",
       removeFromFavorites: "Ta bort från Favoriter",
       download: "Hämta",
       addToFolder: "Lägg till i mapp",
