@@ -239,7 +239,8 @@ def load_fp8_transformer(
     leftover = [n for n, p in model.named_parameters() if p.device.type == "meta"]
     if leftover:
         raise ValueError(f"parameters left unloaded: {leftover[:5]}")
-    return model.to(device)
+    # from_pretrained hands back an eval-mode module; match it (the trainer calls train() itself).
+    return model.to(device).eval()
 
 
 def dequantize_placeholders(model) -> int:
