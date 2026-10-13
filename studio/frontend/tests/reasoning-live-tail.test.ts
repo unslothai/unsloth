@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The live Thinking box (#11703): bounded only while the `auto` setting holds a block open for
-// its stream, lifted by a hand open, and never an inner scroller (#11704 review).
+// The Thinking box (#11703): bounded under the `auto` setting however the block was opened, lifted
+// only by its own Expand toggle, and never an inner scroller (#11704 review).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,28 +21,17 @@ const { reasoningTailCapped, resolveReasoningOpen } = await import(
 const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
 const transcript = readSrc("components/assistant-ui/reasoning-transcript.tsx");
 
-test("only a block the auto setting opened for its stream is bounded", () => {
+test("only the auto setting bounds a block, whether the stream or a hand opened it", () => {
   for (const visibility of DISPLAY_VISIBILITIES) {
-    for (const override of [null, false, true]) {
-      for (const isStreaming of [false, true]) {
-        const open = resolveReasoningOpen({
-          isStreaming,
-          visibility,
-          override,
-        });
-        const capped = reasoningTailCapped({ visibility, override });
-        const shown = open && capped;
-        assert.equal(
-          shown,
-          visibility === "auto" && override === null && isStreaming,
-          `${visibility} override=${override} streaming=${isStreaming}`,
-        );
-      }
-    }
+    assert.equal(
+      reasoningTailCapped({ visibility }),
+      visibility === "auto",
+      visibility,
+    );
   }
 });
 
-test("the box clips at the top instead of scrolling, and Show full is a hand open", () => {
+test("the box clips at the top instead of scrolling, and Expand toggles without a permanent open", () => {
   const tail = reasoning.slice(
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
@@ -54,25 +43,16 @@ test("the box clips at the top instead of scrolling, and Show full is a hand ope
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
     reasoning,
-    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility, override \}\);/,
+    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/,
   );
-  assert.match(
-    reasoning,
-    /<ReasoningTail\s+capped=\{capped\}\s+onShowFull=\{\(\) => handleOpenChange\(true\)\}/,
-  );
-  assert.match(reasoning, /bounded=\{capped\}/);
-});
-
-test("Show full hands keyboard focus to the block header before its button unmounts", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
-  assert.match(
-    tail,
-    /event\.currentTarget === document\.activeElement\)[\s\S]*?closest\('\[data-slot="reasoning-root"\]'\)[\s\S]*?querySelector<HTMLElement>\('\[data-slot="reasoning-trigger"\]'\)[\s\S]*?\.focus\(\{ preventScroll: true \}\);\s*onShowFull\(\);/,
-  );
-  assert.match(tail, /focus-visible:ring-1 focus-visible:ring-ring/);
+  // The toggle stays mounted in both states, so Collapse is always reachable after Expand.
+  assert.match(tail, /\{cappable && overflowing && \(/);
+  assert.match(tail, /onClick=\{\(\) => onExpandedChange\(!expanded\)\}/);
+  assert.match(tail, /aria-expanded=\{expanded\}/);
+  assert.match(tail, /\{expanded \? "Collapse thinking" : "Expand thinking"\}/);
+  assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
+  // A new round starts bounded again.
+  assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
 });
 
 test("focus landing in the clipped lines lifts the cap instead of staying invisible", () => {
@@ -82,7 +62,7 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
   );
   assert.match(
     tail,
-    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onShowFull\(\);/,
+    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onExpandedChange\(true\);/,
   );
 });
 

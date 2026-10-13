@@ -64,7 +64,11 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
+} from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -526,32 +530,40 @@ function ReasoningBody({
 
 // The newest lines of a live trace in a fixed box (#11703), clipped at the top rather than an inner
 // scroller, which split the reading anchor across two containers and wrote its own scroll (#11704).
+// Expand and Collapse toggle the box without opening the block for good, so the toggle never goes away.
 function ReasoningTail({
-  capped,
-  onShowFull,
+  cappable,
+  expanded,
+  onExpandedChange,
   children,
 }: {
-  capped: boolean;
-  onShowFull: () => void;
+  /** The setting bounds this block; `expanded` lifts the bound by hand. */
+  cappable: boolean;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   children: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const capped = cappable && !expanded;
+  // Sticky while expanded: unbounded, the box cannot measure against its cap, and a trace only grows.
   const [overflowing, setOverflowing] = useState(false);
   useLayoutEffect(() => {
     const box = boxRef.current;
     const content = box?.firstElementChild as HTMLElement | null | undefined;
-    if (!capped || !box || !content) {
+    if (!cappable) {
       setOverflowing(false);
       return;
     }
+    if (!capped || !box || !content) return;
     const check = () => setOverflowing(content.offsetHeight > box.clientHeight);
     const observer = new ResizeObserver(check);
     observer.observe(content);
     observer.observe(box);
     check();
     return () => observer.disconnect();
-  }, [capped]);
+  }, [cappable, capped]);
   const clipped = capped && overflowing;
+  const ToggleIcon = expanded ? ChevronsDownUpIcon : ChevronsUpDownIcon;
   return (
     <>
       <div
@@ -560,13 +572,13 @@ function ReasoningTail({
         data-capped={capped ? "" : undefined}
         data-overflowing={clipped ? "" : undefined}
         onFocus={(event) => {
-          // Clipped lines cannot scroll into view: a link focused up there shows the full trace.
+          // Clipped lines cannot scroll into view: a link focused up there expands the trace.
           if (
             clipped &&
             event.target.getBoundingClientRect().top <
               event.currentTarget.getBoundingClientRect().top
           )
-            onShowFull();
+            onExpandedChange(true);
         }}
         className={cn(
           capped &&
@@ -577,22 +589,17 @@ function ReasoningTail({
       >
         {children}
       </div>
-      {clipped && (
+      {cappable && overflowing && (
         <button
           type="button"
           data-slot="reasoning-show-full"
-          onClick={(event) => {
-            // The button unmounts with the cap: keep keyboard focus on this block's header.
-            if (event.currentTarget === document.activeElement)
-              boxRef.current
-                ?.closest('[data-slot="reasoning-root"]')
-                ?.querySelector<HTMLElement>('[data-slot="reasoning-trigger"]')
-                ?.focus({ preventScroll: true });
-            onShowFull();
-          }}
-          className="mt-2 cursor-pointer font-medium text-trace-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-expanded={expanded}
+          onClick={() => onExpandedChange(!expanded)}
+          // An action, not more trace: the muted ink sits a step above the trace text it follows.
+          className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          Show full thinking
+          <ToggleIcon aria-hidden={true} className="size-3.5 shrink-0" />
+          {expanded ? "Collapse thinking" : "Expand thinking"}
         </button>
       )}
     </>
@@ -790,6 +797,7 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
+  const [tailExpanded, setTailExpanded] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -812,6 +820,7 @@ const ReasoningGroupBlock = ({
     setWasStreaming(isReasoningStreaming);
     if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setOverride(null);
+      setTailExpanded(false);
     }
   }
 
@@ -831,7 +840,7 @@ const ReasoningGroupBlock = ({
 
   // Fold mode keeps its rounds inline: the lead's box could not hold the rounds folded after it.
   // A closing block keeps the cap it had while open: a hand close must not re-cap a full trace.
-  const cappedNow = !foldLead && reasoningTailCapped({ visibility, override });
+  const cappedNow = !foldLead && reasoningTailCapped({ visibility });
   const [closingCapped, setClosingCapped] = useState(cappedNow);
   if (isOpen && closingCapped !== cappedNow) {
     setClosingCapped(cappedNow);
@@ -912,8 +921,12 @@ const ReasoningGroupBlock = ({
         ref={reasoningContentRef}
       >
         <ReasoningTail
-          capped={capped}
-          onShowFull={() => handleOpenChange(true)}
+          cappable={capped}
+          expanded={tailExpanded}
+          onExpandedChange={(expanded) => {
+            setTailExpanded(expanded);
+            if (expanded) handleOpenChange(true);
+          }}
         >
           <ReasoningBody
             transcript={transcript}
@@ -923,7 +936,7 @@ const ReasoningGroupBlock = ({
               messageHasRenderableRenderHtmlTool
             }
             isStreaming={isReasoningStreaming}
-            bounded={capped}
+            bounded={capped && !tailExpanded}
           >
             {children}
           </ReasoningBody>
