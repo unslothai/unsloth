@@ -144,7 +144,6 @@ def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
     Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
     from utils import host_memory
-
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
 
 
@@ -4701,7 +4700,6 @@ def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypat
 
 def _host_ram(monkeypatch, ram):
     from core.inference import video_minimax_h3
-
     monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (ram, 1 << 50))
 
 
@@ -4730,7 +4728,9 @@ def test_a_resident_render_and_a_resident_start_check_their_host_ram(monkeypatch
     resident = ["--diffusion-fa", "--max-vram", "-1"]
     _host_ram(monkeypatch, 1 << 30)
     with pytest.raises(H3NativeMemoryRefusal):
-        _h3_offloaded_render_flags(_render_runtime(), resident, render_resident = True, memory_mode = "auto")
+        _h3_offloaded_render_flags(
+            _render_runtime(), resident, render_resident = True, memory_mode = "auto"
+        )
     with pytest.raises(H3NativeMemoryRefusal):
         _h3_launch_flags(_render_runtime(), resident, "auto")
     _host_ram(monkeypatch, 4 << 30)
@@ -4763,12 +4763,17 @@ def test_a_resident_render_frees_an_idle_offloaded_server_before_its_ram_check(m
 
     slot = _OffloadedSlot(busy = False)
     monkeypatch.setattr(
-        video_minimax_h3, "h3_native_host_budgets", lambda: ((1 << 30) if slot.alive else (8 << 30), 0)
+        video_minimax_h3,
+        "h3_native_host_budgets",
+        lambda: ((1 << 30) if slot.alive else (8 << 30), 0),
     )
     resident = ["--diffusion-fa", "--max-vram", "-1"]
-    assert _h3_offloaded_render_flags(
-        _render_runtime(slot = slot), resident, render_resident = True, memory_mode = "auto"
-    ) == resident
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), resident, render_resident = True, memory_mode = "auto"
+        )
+        == resident
+    )
     assert slot.released
 
 
@@ -4795,9 +4800,12 @@ def test_the_kill_switch_turns_off_every_render_time_guard(monkeypatch):
     )
     slot = _OffloadedSlot(busy = False)
     offloaded = ["--offload-to-cpu", "--diffusion-fa"]
-    assert _h3_offloaded_render_flags(
-        _render_runtime(slot = slot), list(offloaded), render_resident = False, memory_mode = "auto"
-    ) == offloaded
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), list(offloaded), render_resident = False, memory_mode = "auto"
+        )
+        == offloaded
+    )
     assert _h3_offloaded_render_flags(
         _render_runtime(slot = slot), ["--diffusion-fa"], render_resident = True, memory_mode = "auto"
     ) == ["--diffusion-fa"]

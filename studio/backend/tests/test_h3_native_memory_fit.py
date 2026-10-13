@@ -368,7 +368,9 @@ _ENFORCING_CHILD = {
         ({**_ENFORCING_CHILD, "memory/p/c/memory.swappiness": "60"}, 10 * GIB),
     ],
 )
-def test_cgroup_v1_swappiness_zero_on_an_enforcing_level_admits_no_swap(tmp_path, swappiness, expected):
+def test_cgroup_v1_swappiness_zero_on_an_enforcing_level_admits_no_swap(
+    tmp_path, swappiness, expected
+):
     """https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v1/memory.html#swappiness: 0 keeps a level's limit
     reclaim from swapping. Any level with a finite limit counts; one without a limit reclaims nothing."""
     (tmp_path / "cg" / "memory" / "p" / "c").mkdir(parents = True)
@@ -381,7 +383,9 @@ def test_cgroup_v1_swappiness_zero_on_an_enforcing_level_admits_no_swap(tmp_path
     "limit, expected",
     [(str(30 * GIB), 0), ("9223372036854771712", 64 * GIB)],
 )
-def test_cgroup_v1_swappiness_zero_on_a_namespaced_root_counts_when_it_enforces(tmp_path, limit, expected):
+def test_cgroup_v1_swappiness_zero_on_a_namespaced_root_counts_when_it_enforces(
+    tmp_path, limit, expected
+):
     """A v1 container sees its own cgroup as the mount root (/proc/self/cgroup reads "/"); its swappiness 0 counts
     once that root enforces a limit, while an unlimited host root's value stays irrelevant."""
     files = {

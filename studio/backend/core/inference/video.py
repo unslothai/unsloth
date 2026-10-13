@@ -1473,7 +1473,6 @@ def _h3_offloaded_render_flags(
 
 def _h3_check_render_overhead(hint: str = "") -> None:
     from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_render_overhead_refusal
-
     refusal = h3_native_render_overhead_refusal()
     if refusal:
         raise H3NativeMemoryRefusal(refusal + hint)

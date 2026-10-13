@@ -1402,7 +1402,12 @@ def _sysfs_pci_slot(device_dir: Path) -> Optional[str]:
 def h3_native_fit_check_enabled(env: Optional[dict] = None) -> bool:
     """The one kill switch for every H3 native memory guard (UNSLOTH_H3_NATIVE_FIT_CHECK=0 turns them all off)."""
     environ = env if env is not None else os.environ
-    return str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() not in ("0", "false", "no", "off")
+    return str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def amdgpu_gtt_reading(

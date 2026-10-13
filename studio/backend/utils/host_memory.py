@@ -199,7 +199,10 @@ def cgroup_swap_allowance_bytes(
                 _integer(_first_line(os.path.join(directory, name)), limit = True) is not None
                 for name in ("memory.limit_in_bytes", "memory.memsw.limit_in_bytes")
             )
-            if enforcing and _integer(_first_line(os.path.join(directory, "memory.swappiness"))) == 0:
+            if (
+                enforcing
+                and _integer(_first_line(os.path.join(directory, "memory.swappiness"))) == 0
+            ):
                 return 0
         ram_room: Optional[int] = None
         combined_room: Optional[int] = None

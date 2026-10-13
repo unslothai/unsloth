@@ -110,7 +110,6 @@ def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
     Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
     from utils import host_memory
-
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
 
 
