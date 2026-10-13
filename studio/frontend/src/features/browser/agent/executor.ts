@@ -517,6 +517,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
   if (!ready) return { ok: false, error: "the browser tab closed." };
+  // The page the tab shows once loaded: a load that was under way may have landed elsewhere.
+  const here = tabUrl(ready);
   const moved = await stillAllowed(ready, action, context);
   if (moved) return { ok: false, error: moved };
 
@@ -528,22 +530,21 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     case "scroll": {
       const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
       if (!moved.ok) return { ok: false, error: moved.error };
-      const after = await settle(ready.id, before, signal);
+      const after = await settle(ready.id, here, signal);
       if (!after) return { ok: false, error: "the browser tab closed." };
       // A page can navigate on scroll: the new address is checked like any other arrival.
       const now = tabUrl(after);
-      if (now && now !== before) return arrive(after, before, action, context, moved.note);
+      if (now && now !== here) return arrive(after, here, action, context, moved.note);
       return observe(after, moved.note);
     }
     case "screenshot":
       return screenshot(ready);
-    // Where the tab is now: it may have finished loading somewhere else since `before`.
     case "move":
-      return moveTo(ready, action, context, tabUrl(ready));
+      return moveTo(ready, action, context, here);
     case "drag":
-      return dragBetween(ready, action, context, tabUrl(ready));
+      return dragBetween(ready, action, context, here);
     case "evaluate":
-      return runScript(ready, action, context, tabUrl(ready));
+      return runScript(ready, action, context, here);
   }
 
   // Acting on an element: what it is decides whether the user is asked first.
@@ -560,23 +561,23 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   }
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
-  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, before, action.policy, permissions()));
+  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions()));
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
     // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
-    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, before, action.policy, permissions()));
-    gates.push(gateElement("select", chosen, before, action.policy, permissions()));
+    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, here, action.policy, permissions()));
+    gates.push(gateElement("select", chosen, here, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
-  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, before, action.policy, permissions()));
+  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, here, action.policy, permissions()));
   // Deleting is editing: a password or card field the agent can't type into it can't empty either.
   if (action.op === "press" && (action.key === "Backspace" || action.key === "Delete")) {
-    gates.push(gateElement("type", info, before, action.policy, permissions()));
+    gates.push(gateElement("type", info, here, action.policy, permissions()));
     // Outside a text field it is an app's delete shortcut, asked like a Delete button.
     if (!TEXT_ROLES.has(info.role)) {
-      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, before, action.policy, permissions()));
+      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, here, action.policy, permissions()));
     }
   }
   // Enter in a field sends its form, so it is held to what a submit button would be.
@@ -588,17 +589,17 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   // loads; the proxied frame's clicks come back as `navigate` and are gated below.
   const followsLink =
     /^https?:/i.test(info.href) &&
-    info.href.split("#")[0] !== before.split("#")[0] &&
+    info.href.split("#")[0] !== here.split("#")[0] &&
     ((action.op === "click" && useNativeBrowser.getState().enabled) || (activates && info.role === "link"));
   const linkGate = followsLink ? gateNavigation(info.href, navigationContext(action, context)) : null;
   if (linkGate) gates.push(linkGate);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
-    formAction && hostOfUrl(formAction) !== hostOfUrl(before) ? gateNavigation(formAction, navigationContext(action, context)) : null;
+    formAction && hostOfUrl(formAction) !== hostOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
   if (formAction) {
     // A submit button's own click gate already asks what a submit would.
-    if (!info.submits) gates.push(gateElement("submit", info, before, action.policy, permissions()));
+    if (!info.submits) gates.push(gateElement("submit", info, here, action.policy, permissions()));
     if (formGate) gates.push(formGate);
   }
   for (const gate of gates) {
@@ -625,7 +626,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate);
-      useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: before }, { replace: false });
+      useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
       return loaded ? arrive(loaded, clicked.navigate, action, context) : { ok: false, error: "the browser tab closed." };
     }
@@ -645,10 +646,10 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   } else {
     return { ok: false, error: `unknown browser action ${action.op}.` };
   }
-  const after = await settle(ready.id, before, signal);
+  const after = await settle(ready.id, here, signal);
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
-  if (now && now !== before) return arrive(after, before, action, context, note);
+  if (now && now !== here) return arrive(after, here, action, context, note);
   return observe(after, note);
 }
 
@@ -714,12 +715,14 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
   const hits: string[] = [];
+  const infos: string[] = [];
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
     const refused = await pass(gateElement("click", described.info, before, action.policy, permissions()), signal);
     if (refused) return { ok: false, error: refused };
     hits.push(described.hit ?? "");
+    infos.push(JSON.stringify(described.info));
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0] });
@@ -744,11 +747,11 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   };
   if (signal?.aborted) return cancel(STOPPED);
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
-  // Many apps show their drop zones (Trash, Send to) only once a drag starts: what is at the end
-  // now is what takes the drop, so it is asked about if it isn't what was asked about before.
+  // Many apps show their drop zones (Trash, Send to) only once a drag starts, or relabel one: what
+  // is at the end now takes the drop, so it is asked about unless it is exactly what was asked about.
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
-  if (target.hit !== hits[1]) {
+  if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
     const refused = await pass(gateElement("click", target.info, before, action.policy, permissions()), signal);
     if (refused) return cancel(refused);
   }

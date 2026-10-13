@@ -68,6 +68,8 @@ export type AgentAnswer = {
 export type PageAgent = {
   run: (command: Record<string, unknown>) => Record<string, unknown>;
   evaluate: (id: string, doc: unknown, run: () => unknown) => Record<string, unknown>;
+  /** Whether this is the document `doc` names, for the native path's check before the script is sent. */
+  owns: (doc: unknown) => boolean;
 };
 
 /** Returns the agent it built, so the proxied frame keeps its own reference rather than trusting
@@ -550,7 +552,9 @@ export function installPageAgent(): PageAgent {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
     // A click on text inside a button or label reaches that control (a label's being its field or
     // button), which may submit.
-    const holder = found.closest("button, label") ?? found;
+    // A point lands on whatever is drawn, often an icon inside a control: gate the control.
+    const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
+    const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;
     const form = (field.form ?? el.closest("form")) as HTMLFormElement | null;
@@ -611,7 +615,7 @@ export function installPageAgent(): PageAgent {
   };
 
   /** Returns false when the page cancelled it. `buttons` is 1 while the mouse is held down. */
-  const mouse = (el: Element, type: string, at?: Point, buttons = 0): boolean => {
+  const mouse = (el: Element, type: string, at?: Point, buttons = 0, relatedTarget: Element | null = null): boolean => {
     const rect = el.getBoundingClientRect();
     const init = {
       bubbles: !/(enter|leave)$/.test(type),
@@ -621,6 +625,7 @@ export function installPageAgent(): PageAgent {
       clientY: at ? at.y : rect.top + rect.height / 2,
       button: 0,
       buttons,
+      relatedTarget,
       view: window,
     };
     const event = type.startsWith("pointer")
@@ -658,18 +663,18 @@ export function installPageAgent(): PageAgent {
       const before = lineage(old);
       const after = lineage(el);
       if (old) {
-        mouse(old, "pointerout", at, buttons);
-        mouse(old, "mouseout", at, buttons);
+        mouse(old, "pointerout", at, buttons, el);
+        mouse(old, "mouseout", at, buttons, el);
         for (const node of before.filter((node) => !after.includes(node))) {
-          mouse(node, "pointerleave", at, buttons);
-          mouse(node, "mouseleave", at, buttons);
+          mouse(node, "pointerleave", at, buttons, el);
+          mouse(node, "mouseleave", at, buttons, el);
         }
       }
-      mouse(el, "pointerover", at, buttons);
-      mouse(el, "mouseover", at, buttons);
+      mouse(el, "pointerover", at, buttons, old);
+      mouse(el, "mouseover", at, buttons, old);
       for (const node of after.filter((node) => !before.includes(node)).reverse()) {
-        mouse(node, "pointerenter", at, buttons);
-        mouse(node, "mouseenter", at, buttons);
+        mouse(node, "pointerenter", at, buttons, old);
+        mouse(node, "mouseenter", at, buttons, old);
       }
       hovered = el;
     }
@@ -765,6 +770,13 @@ export function installPageAgent(): PageAgent {
       return { ok: true };
     }
     if (html) {
+      // What is under the end now decides, as a browser's last dragover would.
+      if (html.over !== el) {
+        if (html.over) dragEvent(html.over, "dragleave", at, html.data);
+        dragEvent(el, "dragenter", at, html.data);
+        html.over = el;
+      }
+      html.accepted = !dragEvent(el, "dragover", at, html.data);
       if (html.accepted) dragEvent(el, "drop", at, html.data);
       dragEvent(html.source, "dragend", at, html.data);
       return html.accepted ? { ok: true } : { ok: true, note: "Nothing at the end point took the drop." };
@@ -1145,7 +1157,8 @@ export function installPageAgent(): PageAgent {
 
   // For native views, which look it up on every call. A page that defines KEY first still wins
   // there: the agent shares the page's world, so its answers are untrusted.
-  const agent: PageAgent = { run, evaluate };
+  const owns = (doc: unknown): boolean => typeof doc === "string" && refOf(document.documentElement) === doc;
+  const agent: PageAgent = { run, evaluate, owns };
   if (!Object.prototype.hasOwnProperty.call(host, KEY)) Object.defineProperty(host, KEY, { value: agent, enumerable: false });
   return agent;
 }

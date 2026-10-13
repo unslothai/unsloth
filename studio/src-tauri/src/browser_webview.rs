@@ -1707,7 +1707,8 @@ pub async fn browser_view_agent<R: Runtime>(
 // browser_evaluate: the model's script, which the user approved word for word in the panel, as the
 // body of an async function the installed agent runs and keeps the outcome of for the panel to
 // poll. Spliced in like the agent code so a CSP without 'unsafe-eval' can't block it; a syntax
-// error fails the whole script, so the page never sees half of it.
+// error fails the whole script, so the page never sees half of it. Spliced source can close any
+// wrapper around it, so the document check runs as a script of its own first (EVAL_CHECK_SCRIPT).
 const EVAL_SCRIPT: &str = r#"(() => {
   const agent = window[Symbol.for("unsloth.agent")];
   if (!agent || typeof agent.evaluate !== "function") return JSON.stringify({ installed: false, result: null });
@@ -1717,6 +1718,11 @@ __CODE__
 })()"#;
 // browser_agent.py allows 8000 characters, of up to 4 bytes each.
 const MAX_EVAL_CODE: usize = 32_000;
+const EVAL_CHECK_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.owns !== "function") return JSON.stringify(false);
+  return JSON.stringify(agent.owns(__DOC__) === true);
+})()"#;
 
 fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
     // The agent's ref for the approved document, as `r` and digits.
@@ -1758,6 +1764,11 @@ pub async fn browser_view_eval<R: Runtime>(
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
     let script = eval_script(&id, &doc, &code)?;
+    // Not the approved document: the script is never sent.
+    let check = EVAL_CHECK_SCRIPT.replacen("__DOC__", &format!("\"{doc}\""), 1);
+    if eval_json(&page, check).await? != serde_json::Value::Bool(true) {
+        return Ok(serde_json::json!({ "installed": false, "result": null }));
+    }
     eval_json(&page, script).await
 }
 
