@@ -1020,6 +1020,7 @@ def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
         items,
         pad_token_id,
         batch_size = 4,
+        processor = None,
     ):
         seen.append(batch_size)
         raise StopIteration
