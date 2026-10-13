@@ -33,11 +33,12 @@ _AUTH_VALUE = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,
 _AUTH_PARAM = rf"{_AUTH_TOKEN}={_AUTH_VALUE}"
 # Stops before a following label, which the credential passes below redact on their own.
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*{_AUTH_TOKEN}[ \t]+
+    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[A-Za-z]{_AUTH_TOKEN}?[ \t]+
     (?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
     |client[\s_-]?secret|private[\s_-]?key|refresh[\s_-]?token|session[\s_-]?token
     |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)
-    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*(?=[\s,;]|$)(?![ \t]*=)
+    (?<!key=)(?<!token=)(?<!secret=)(?<!password=)(?<!authorization=))"""
 )
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
