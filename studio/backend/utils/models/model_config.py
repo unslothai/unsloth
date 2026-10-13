@@ -3452,12 +3452,14 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    # A cached Transformers, diffusers or adapter checkpoint can still load from that cache.
-    if any(
-        (snap / name).is_file()
-        for snap in _iter_hf_cache_snapshots(repo_id)
-        for name in ("config.json", "model_index.json", "adapter_config.json")
-    ):
+    from hub.utils.mlx_variants import is_precision_folder
+
+    # A cached Transformers, diffusers or adapter checkpoint, or an MLX precision folder
+    # (``6-bit/``), can still load from that cache.
+    names = ["config.json", "model_index.json", "adapter_config.json"]
+    if is_precision_folder(gguf_variant):
+        names.append(f"{gguf_variant.strip()}/config.json")
+    if any((snap / name).is_file() for snap in _iter_hf_cache_snapshots(repo_id) for name in names):
         return False
     return bool(gguf_variant) or bool(
         _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])

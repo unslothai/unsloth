@@ -30,12 +30,23 @@ def test_precision_folder_loads_and_generates(monkeypatch, tmp_path):
     from huggingface_hub import snapshot_download
 
     from core.inference.mlx_inference import MLXInferenceBackend
+    from utils import hf_cache_settings
     from utils.models.model_config import ModelConfig
 
-    # A repo laid out like the one in the issue: the same checkpoint in 4bit/, nothing at the root.
-    snapshot = tmp_path / "snapshot"
-    shutil.copytree(snapshot_download(_TINY), snapshot / "4bit")
-    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: snapshot)
+    tiny = snapshot_download(_TINY)
+    # The repo as a precision pick leaves it in the cache: only 4bit/ downloaded, nothing at the root.
+    hub = tmp_path / "hub"
+    repo_dir = hub / f"models--{_REPO.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / ("a" * 40)
+    shutil.copytree(tiny, snapshot / "4bit")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("a" * 40)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: hf_cache_settings.HuggingFaceCachePaths(tmp_path, hub, tmp_path / "xet", "studio"),
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
     config = ModelConfig.from_identifier(_REPO, gguf_variant = "4bit")
     assert config.identifier == _REPO

@@ -295,3 +295,48 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
     plain = model_config.ModelConfig.from_identifier(_REPO)
     assert plain.gguf_variant is None
     assert checked == [_REPO]
+
+
+def _cached_repo(monkeypatch, tmp_path, repo, folder):
+    """``repo`` in a private Hub cache with only ``folder/`` downloaded, as a precision pick leaves it."""
+    from utils import hf_cache_settings
+
+    hub = tmp_path / "hub"
+    repo_dir = hub / f"models--{repo.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / ("a" * 40)
+    (snapshot / folder).mkdir(parents = True)
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("a" * 40)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: hf_cache_settings.HuggingFaceCachePaths(tmp_path, hub, tmp_path / "xet", "studio"),
+    )
+    return snapshot / folder
+
+
+def test_a_downloaded_precision_folder_loads_offline(monkeypatch, tmp_path):
+    from utils.models import model_config
+
+    folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
+    (folder / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "quantization": {"bits": 6}})
+    )
+    (folder / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    def _no_hub(*args, **kwargs):
+        raise AssertionError("an offline load of a downloaded folder must not reach the Hub")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_hub)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _no_hub)
+    monkeypatch.setattr(model_config, "is_model_cached", lambda *a, **k: True)
+
+    config = model_config.ModelConfig.from_identifier(_REPO, gguf_variant = "6-bit")
+    assert config.identifier == _REPO
+    assert config.gguf_variant == "6-bit"
+    assert config.is_gguf is False
+
+    from hub.utils.mlx_variants import download_precision_folder
+
+    assert download_precision_folder(_REPO, "6-bit", None) == str(folder)
