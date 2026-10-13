@@ -182,8 +182,14 @@ BROWSER_NETWORK_JS = r"""
             this.dispatchEvent(new ProgressEvent("loadstart"));
             // The body as bytes, with the Content-Type the browser would give it.
             const bytes = bodiless(state.method) || body == null ? Promise.resolve(null) : (async () => {
-              const request = new Request(state.url, { method: "POST", body });
-              const type = request.headers.get("content-type");
+              // XHR serializes a Document, which Fetch's bodies don't take, as UTF-8 HTML or XML.
+              const html = body instanceof Document && body.contentType === "text/html";
+              const content = !(body instanceof Document) ? body
+                : html ? (body.doctype ? "<!DOCTYPE " + body.doctype.name + ">" : "") + (body.documentElement?.outerHTML ?? "")
+                : new XMLSerializer().serializeToString(body);
+              const request = new Request(state.url, { method: "POST", body: content });
+              const type = !(body instanceof Document) ? request.headers.get("content-type")
+                : (html ? "text/html" : "application/xml") + ";charset=UTF-8";
               if (type && !state.headers.some(([name]) => name.toLowerCase() === "content-type")) state.headers.push(["Content-Type", type]);
               return request.arrayBuffer();
             })();

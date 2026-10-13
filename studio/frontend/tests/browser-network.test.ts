@@ -52,6 +52,27 @@ class StrictXHR extends NativeXHR {
   }
 }
 
+/** Stand-ins for the page's Document and XMLSerializer, enough for an XHR's Document body. */
+class PageDocument {
+  contentType: string;
+  markup: string;
+  constructor(contentType: string, markup: string) {
+    this.contentType = contentType;
+    this.markup = markup;
+  }
+  get doctype() {
+    return this.contentType === "text/html" ? { name: "html" } : null;
+  }
+  get documentElement() {
+    return { outerHTML: this.markup };
+  }
+}
+class PageXMLSerializer {
+  serializeToString(document: PageDocument) {
+    return `<?xml version="1.0"?>${document.markup}`;
+  }
+}
+
 /** `pageUrl`: the page's address; with none (a local file) nothing goes through the panel. */
 function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null) {
   let now = 0;
@@ -77,7 +98,7 @@ function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null)
     window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
     cfg: { url: pageUrl }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
-    setTimeout, clearTimeout,
+    setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer,
   });
   /** The panel's answer to request `id`, as the shell relays it. */
   const reply = (id: unknown, answer: Record<string, unknown>, source: unknown = parent) =>
@@ -365,6 +386,22 @@ test("a response a redirect brought from another site reads as a CORS one", asyn
   assert.equal(response.type, "cors");
   assert.equal(response.redirected, true);
   assert.equal(response.url, "https://cdn.test/file");
+});
+
+test("an XHR's Document body is sent serialized, as UTF-8 HTML or XML", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  for (const [document, markup, type] of [
+    [new PageDocument("application/xml", "<envelope/>"), '<?xml version="1.0"?><envelope/>', "application/xml;charset=UTF-8"],
+    [new PageDocument("text/html", "<html><body>hi</body></html>"), "<!DOCTYPE html><html><body>hi</body></html>", "text/html;charset=UTF-8"],
+  ] as const) {
+    const xhr = new t.window.XMLHttpRequest() as PageXHR;
+    xhr.open("POST", "/soap");
+    xhr.send(document as unknown as string);
+    await tick();
+    const sent = t.posted.at(-1) as Record<string, unknown>;
+    assert.equal(new TextDecoder().decode(sent.body as ArrayBuffer), markup);
+    assert.deepEqual(plain(sent.headers), [["Content-Type", type]]);
+  }
 });
 
 test("an XHR always follows redirects, as the browser's does", async () => {
