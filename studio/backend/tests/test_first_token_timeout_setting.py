@@ -80,6 +80,9 @@ def test_explicit_api_env_override_is_preserved(monkeypatch):
     monkeypatch.setenv(inference._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, "42")
     assert inference._first_token_timeout_s() == 42
     assert limit.timeout_seconds() == math.inf
+    assert inference._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV in inference._friendly_error(
+        httpx.ReadTimeout("first token")
+    )
 
 
 def test_unlimited_socket_wait_keeps_connect_timeout():
