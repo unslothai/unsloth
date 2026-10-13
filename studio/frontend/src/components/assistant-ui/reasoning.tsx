@@ -832,6 +832,7 @@ const ReasoningGroupBlock = ({
   if (lastVisibility !== visibility) {
     setLastVisibility(visibility);
     setOverride(null);
+    setTailExpanded(false);
   }
 
   // Whatever the setting says, until this block is toggled by hand.
