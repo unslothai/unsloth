@@ -288,6 +288,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Basic YTpi response {"received":"YTpi"}'
     )
     assert "YTpi" not in _sanitize_public_query("Authorization: Basic YTpi returned received=YTpi")
+    assert _sanitize_public_query("Authorization: design patterns") == "patterns"
+    assert _sanitize_public_query("Authorization: OAuth 2.0 best practices") == "2.0 best practices"
     trailing = "Authorization: Basic abcdefghijklmnop. server echoed abcdefghijklmnop"
     assert "abcdefghijklmnop" not in _sanitize_public_query(trailing)
     structured = (
