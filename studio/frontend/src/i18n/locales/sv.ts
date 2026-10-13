@@ -2306,6 +2306,17 @@ export const sv = {
         total: "{value} totalt",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Exakt samtidighet",
+          description: "Kostar genomströmning när chattar körs samtidigt, och gäller från nästa modellinläsning.",
+          hint: "Be llama-server om avkodning vars resultat inte beror på de andra chattarna som delar KV-cachen, så att en chatt ger samma tokens ensam som bredvid tre grannar. Auto frågar och fortsätter utan om servern vägrar; På frågar och låter inläsningen misslyckas i stället; Av frågar aldrig.",
+          auto: "Auto",
+          off: "Av",
+          on: "På",
+          envLocked: "Styrs av miljövariabeln UNSLOTH_LLAMA_EXACT_CONCURRENCY, så det här valet används inte.",
+          reloadRequired: "Läs in modellen igen för att tillämpa den nya inställningen.",
+          parkingRequired: "Kräver att llama-server kan parkera chattar, vilket är avstängt som standard: starta Studio med {variable}. Fram till dess gäller bara Av.",
+        },
         title: "GGUF-inferensmotor",
         label: "Beräkningsbakände",
         description:
