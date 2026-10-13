@@ -454,6 +454,10 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
+# Sources outside the HF cache that /api/hub/local/delete removes (local_model_actions.py).
+LOCAL_DELETE_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
@@ -470,7 +474,7 @@ def _capabilities_for_format(
     return LocalModelCapabilities(
         can_train = can_train,
         can_chat = can_chat and is_complete,
-        can_delete = source == "hf_cache",
+        can_delete = source == "hf_cache" or source in LOCAL_DELETE_SOURCES,
         can_download = False,
         requires_variant = requires_variant,
         supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,

@@ -248,3 +248,44 @@ def test_primary_backend_loading_the_model_blocks_delete(lm_root, monkeypatch):
     assert actions._primary_loading(str(model))
     backend.loading_models = []
     assert not actions._primary_loading(str(model))
+
+
+def _listing_of(monkeypatch, *rows):
+    async def listing(models_dir: str = "./models"):
+        return LocalModelListResponse(models_dir = "", hf_cache_dir = "", models = list(rows))
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
+
+
+def test_symlink_alias_into_an_hf_cache_unlinks_only_the_alias(lm_root, tmp_path, monkeypatch):
+    _, _, folder = lm_root
+    snapshot = tmp_path / "hf" / "models--a--b" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    alias = folder / "alias"
+    alias.symlink_to(snapshot, target_is_directory = True)
+    _listing_of(monkeypatch, _row(alias, "custom"))
+    asyncio.run(actions.delete_local_model_response(str(alias)))
+    assert not alias.is_symlink() and snapshot.is_dir()
+
+
+def test_symlinked_split_shards_lose_every_alias_but_keep_targets(lm_root, tmp_path, monkeypatch):
+    _, _, folder = lm_root
+    store = tmp_path / "store"
+    store.mkdir()
+    links = []
+    for i in (1, 2):
+        real = store / f"big-0000{i}-of-00002.gguf"
+        real.write_bytes(b"GGUF")
+        link = folder / real.name
+        link.symlink_to(real)
+        links.append(link)
+    _listing_of(monkeypatch, _row(links[0], "custom"))
+    asyncio.run(actions.delete_local_model_response(str(links[0])))
+    assert not any(link.is_symlink() for link in links)
+    assert all((store / link.name).is_file() for link in links)
+
+
+def test_local_sources_advertise_can_delete():
+    from hub.services.models.common import _capabilities_for_format
+    for source in ("lmstudio", "custom", "ollama", "hermes", "omlx", "models_dir", "hf_cache"):
+        assert _capabilities_for_format("gguf", source).can_delete

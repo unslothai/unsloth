@@ -17,12 +17,12 @@ from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo
 from hub.services.models import account_access, deletion, local_inventory, ollama
+from hub.services.models import common as model_common
 from hub.utils.host_paths import scrub_paths
 
 logger = get_logger(__name__)
 
-# Every on-device source outside the HF cache, which has its own guarded delete-cached route.
-LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
+LOCAL_SOURCES = model_common.LOCAL_DELETE_SOURCES
 
 
 def _identity(raw: str | os.PathLike) -> str:
@@ -66,7 +66,13 @@ def _protected_roots(custom_folders: list[dict]) -> set[str]:
 
 
 def _delete_blocking(target: Path, protected: set[str]) -> None:
-    resolved = _identity(target)
+    is_link = target.is_symlink()
+    # A symlink alias is judged by where it sits, not where it points: only the alias is removed.
+    resolved = (
+        os.path.join(_identity(target.parent), os.path.normcase(target.name))
+        if is_link
+        else _identity(target)
+    )
     # A custom folder can reach into an HF cache; those files go through delete-cached, which
     # coordinates with downloads and the shared blobs.
     for root in _hf_cache_roots():
@@ -83,14 +89,13 @@ def _delete_blocking(target: Path, protected: set[str]) -> None:
                 status_code = 400,
                 detail = "This model is a scanned folder itself; remove the folder instead",
             )
-    if target.is_symlink():
-        target.unlink()
-    elif target.is_dir():
+    if target.is_dir() and not is_link:
         shutil.rmtree(target)
-    elif target.exists():
+    elif is_link or target.exists():
         from utils.models.model_config import colocated_split_shards
 
         # A split GGUF row names its first shard; llama.cpp needs the rest, so they go too.
+        # unlink() on a symlinked shard removes the alias, never its target.
         shards, _ = colocated_split_shards(target)
         for shard in shards or [target]:
             shard.unlink(missing_ok = True)
