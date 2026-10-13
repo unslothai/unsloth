@@ -1232,11 +1232,22 @@ def test_each_stage_names_its_size_before_it_runs(monkeypatch):
     # Live previews unpack the packed latents with the stage size: half for stage 1, full for stage 2.
     pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
     stages = []
-    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler(), on_stage = lambda w, h: stages.append((w, h)))
+    v25.render(
+        pipe,
+        _kwargs(),
+        dev = False,
+        upsampler = _Upsampler(),
+        on_stage = lambda w, h: stages.append((w, h)),
+    )
     assert stages == [(640, 352), (1280, 704)]
     # dev: one full-size stage
     stages.clear()
-    v25.render(pipe, dict(_kwargs(), num_inference_steps = 30), dev = True, on_stage = lambda w, h: stages.append((w, h)))
+    v25.render(
+        pipe,
+        dict(_kwargs(), num_inference_steps = 30),
+        dev = True,
+        on_stage = lambda w, h: stages.append((w, h)),
+    )
     assert stages == [(1280, 704)]
 
     # a failing hint never fails the render
@@ -1268,7 +1279,9 @@ class _OffloadedPipe(_FakePipe):
 
 
 @pytest.mark.parametrize("fits", [True, False])
-def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_two_fits(monkeypatch, fits):
+def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_two_fits(
+    monkeypatch, fits
+):
     # Stage 1's call ends by offloading every component; stage 2 then re-uploaded the whole DiT.
     monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
@@ -1279,7 +1292,9 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
     assert "maybe_free_model_hooks" not in pipe.__dict__
     # No model offload: nothing is patched or checked.
     plain = _FakePipe(SimpleNamespace(keep_tokens = None))
-    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda *a: pytest.fail("checked without offload"))
+    monkeypatch.setattr(
+        MS, "companions_fit_beside_denoiser", lambda *a: pytest.fail("checked without offload")
+    )
     v25.render(plain, _kwargs(), dev = False, upsampler = _Upsampler())
     assert plain.freed == 0
 
@@ -1318,7 +1333,11 @@ def test_a_text_render_cancelled_between_stages_resets_the_offload_hooks(monkeyp
 
 def test_the_hold_passes_the_connectors_and_the_upsampler_as_companions(monkeypatch):
     seen = []
-    monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: seen.append(companions) or True)
+    monkeypatch.setattr(
+        MS,
+        "companions_fit_beside_denoiser",
+        lambda pipe, companions: seen.append(companions) or True,
+    )
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     pipe.connectors = object()
     up = _Upsampler()
@@ -1336,14 +1355,21 @@ class _EncodingPipe(_FakePipe):
 
     def encode_prompt(self, **kw):
         import torch
-
         self.encodes += 1
         return torch.full((1, 2, 3), float(self.encodes)), torch.ones(1, 2), None, None
 
-    def __call__(self, prompt = None, **kw):
-        embeds = self.encode_prompt(prompt = prompt, negative_prompt = None, device = "cpu", prompt_embeds = None)
+    def __call__(
+        self,
+        prompt = None,
+        **kw,
+    ):
+        embeds = self.encode_prompt(
+            prompt = prompt, negative_prompt = None, device = "cpu", prompt_embeds = None
+        )
         self.got.append(embeds[0].clone())
-        embeds[0].add_(100)  # a stage editing its own tensors in place must not reach the next stage
+        embeds[0].add_(
+            100
+        )  # a stage editing its own tensors in place must not reach the next stage
         return super().__call__(prompt = prompt, **kw)
 
 
@@ -1353,7 +1379,9 @@ def test_both_stages_share_one_encode():
     pipe = _EncodingPipe(SimpleNamespace(keep_tokens = None))
     v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
     assert pipe.encodes == 1 and len(pipe.got) == 2
-    assert torch.equal(pipe.got[0], pipe.got[1]) and torch.equal(pipe.got[1], torch.full((1, 2, 3), 1.0))
+    assert torch.equal(pipe.got[0], pipe.got[1]) and torch.equal(
+        pipe.got[1], torch.full((1, 2, 3), 1.0)
+    )
     assert "encode_prompt" not in pipe.__dict__
     # A later request encodes again (the memo lives for one render), and a dev render never memoises.
     v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
