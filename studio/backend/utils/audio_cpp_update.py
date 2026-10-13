@@ -287,9 +287,18 @@ def _refresh_release_cache(repo: Optional[str]) -> None:
         logger.debug("audio.cpp update: release refresh failed", error = str(exc))
 
 
-def _install(phase: dict, set_progress, unloaded: bool) -> dict:
+def _installed_identity() -> tuple[Optional[str], Optional[str]]:
+    """``(published_repo, release_tag)`` of the managed runtime's install record."""
     from core.inference import audio_cpp_server
 
+    binary = audio_cpp_server.find_audio_cpp_server_binary()
+    record = audio_cpp_server.read_install_record(binary) if binary else {}
+    repo = record.get("published_repo")
+    return (repo if isinstance(repo, str) else None), _tag(record)
+
+
+def _install(phase: dict, set_progress, unloaded: bool) -> dict:
+    before = _installed_identity()
     cmd = [sys.executable, str(phase["script"]), "--install-dir", str(phase["install_dir"])]
     if phase.get("accelerator"):
         cmd.extend(["--accelerator", phase["accelerator"]])
@@ -311,10 +320,10 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
         raise _AudioPhaseError(str(exc), reload_required = unloaded) from exc
     _refresh_release_cache(phase.get("repo"))
 
-    binary = audio_cpp_server.find_audio_cpp_server_binary()
-    new_tag = _tag(audio_cpp_server.read_install_record(binary)) if binary else None
+    new_repo, new_tag = _installed_identity()
     reload_hint = " Reload your model to use it." if unloaded else ""
-    if new_tag == phase["from_tag"]:
+    # Repo and tag together: switching UNSLOTH_AUDIO_CPP_REPO can replace a runtime with another repo's same tag.
+    if (new_repo, new_tag) == before:
         # Exit 0 also means the release lookup could not answer and the intact tree was kept.
         message = (
             f"audio.cpp could not be updated right now, so the existing {new_tag} "

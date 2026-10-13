@@ -353,14 +353,18 @@ def run_env(managed, monkeypatch):
     monkeypatch.setattr(stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: _Sidecar(events))
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: events.append("unload") or False)
 
-    def _installer(new_tag = "v0.9.1-unsloth.1", error = None):
+    def _installer(
+        new_tag = "v0.9.1-unsloth.1",
+        error = None,
+        published_repo = _REPO,
+    ):
         def _stream(cmd, env, *, set_progress, timeout_seconds):
             events.append("install")
             calls.update(cmd = cmd, env = env, flag = audio_cpp_server.UPDATE_IN_PROGRESS.is_set())
             if error is not None:
                 raise error
             set_progress(0.5)
-            _write_record(managed.tree, release_tag = new_tag)
+            _write_record(managed.tree, release_tag = new_tag, published_repo = published_repo)
 
         monkeypatch.setattr(update_flow, "stream_installer", _stream)
 
@@ -484,6 +488,21 @@ def test_a_kept_tree_is_not_reported_as_updated(run_env):
         "audio.cpp could not be updated right now, so the existing v0.9.0-unsloth.1 "
         "install was kept. Try again later."
     )
+
+
+def test_a_same_tag_from_another_repo_is_reported_as_updated(managed, run_env, monkeypatch):
+    # UNSLOTH_AUDIO_CPP_REPO switched to a repo whose newest release has the installed tag.
+    _write_record(
+        managed.tree,
+        published_repo = "0xShug0/audio.cpp",
+        release_tag = _LATEST,
+        asset = f"audio-{_LATEST}-bin-ubuntu-x64-cpu-portable.tar.gz",
+    )
+    monkeypatch.setattr(aupd, "_target", lambda: ("someone/audio.cpp", None))
+    phase = aupd.chained_phase_plan()["phase"]
+    run_env.installer(new_tag = _LATEST, published_repo = "someone/audio.cpp")
+    result = aupd.run_chained_phase(phase, lambda fraction: None)
+    assert result["message"] == f"Updated audio.cpp to {_LATEST}."
 
 
 def test_a_kept_tree_still_asks_for_a_reload_after_an_unload(run_env, monkeypatch):
