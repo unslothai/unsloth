@@ -95,3 +95,9 @@ test("a closing block keeps the cap it had while open", () => {
   const open = reasoning.indexOf("const isOpen = resolveReasoningOpen(");
   assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
 });
+
+test("Expand thinking draws the composer's expand mark", () => {
+  const composer = readSrc("features/chat/shared-composer.tsx");
+  assert.match(reasoning, /<ExpandToggleIcon expanded=\{expanded\}/);
+  assert.match(composer, /<ExpandToggleIcon\s+expanded=\{isWritingExpanded\}/);
+});

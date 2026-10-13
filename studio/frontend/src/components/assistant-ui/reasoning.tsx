@@ -64,11 +64,8 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import {
-  ChevronDownIcon,
-  ChevronsDownUpIcon,
-  ChevronsUpDownIcon,
-} from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
+import { ExpandToggleIcon } from "@/lib/expand-toggle-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -563,7 +560,6 @@ function ReasoningTail({
     return () => observer.disconnect();
   }, [cappable, capped]);
   const clipped = capped && overflowing;
-  const ToggleIcon = expanded ? ChevronsDownUpIcon : ChevronsUpDownIcon;
   return (
     <>
       <div
@@ -598,7 +594,7 @@ function ReasoningTail({
           // An action, not more trace: the muted ink sits a step above the trace text it follows.
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <ToggleIcon aria-hidden={true} className="size-3.5 shrink-0" />
+          <ExpandToggleIcon expanded={expanded} className="size-3.5 shrink-0" />
           {expanded ? "Collapse thinking" : "Expand thinking"}
         </button>
       )}
