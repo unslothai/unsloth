@@ -6,6 +6,7 @@ active-block-only output head, and regional compile of the backbone for inferenc
 
 import contextlib
 import os
+import threading
 import time
 
 import torch
@@ -120,6 +121,7 @@ def make_progress(
 
 
 _SIDE_STREAMS = {}
+_CAPTURE_LOCKS = {}
 
 
 def side_stream(device):
@@ -131,6 +133,14 @@ def side_stream(device):
     if stream is None:
         stream = _SIDE_STREAMS[index] = torch.cuda.Stream(index)
     return stream
+
+
+def capture_lock(device):
+    """Serialises warm-up + capture on a device's shared side stream: two first-time captures from different
+    threads would otherwise interleave on it and invalidate each other."""
+    device = torch.device(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _CAPTURE_LOCKS.setdefault(index, threading.Lock())
 
 
 def graphs_disabled():
@@ -173,7 +183,7 @@ class GraphedForward:
 
     def _capture(self, x):
         # The model's GPU, not whichever device is current: capture and warm-up streams live on one device.
-        with torch.cuda.device(x.device):
+        with capture_lock(x.device), torch.cuda.device(x.device):
             static_x = x.clone()
             stream = side_stream(x.device)
             stream.wait_stream(torch.cuda.current_stream())

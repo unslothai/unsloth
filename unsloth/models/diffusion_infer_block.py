@@ -27,6 +27,7 @@ import torch.nn.functional as F
 
 from .diffusion_infer import (
     DiffusionGenerationCancelled,
+    capture_lock,
     graphs_disabled,
     host_synced_moe,
     side_stream,
@@ -136,11 +137,15 @@ def _llada2_runner(base, ids, mask, position_ids, cache):
     """LLaDA2's model forward only takes a square [B, 1, L, L] mask, so a cached step drives its layers directly
     with the same mask preparation and logits dtype as its forward."""
     inner = base.model
-    # The remote modeling module is already loaded: the model's class lives in it.
-    module = sys.modules[type(inner).__module__]
     hidden = inner.word_embeddings(ids)
-    past = cache.get_seq_length() if cache is not None else 0
-    mask = module._prepare_4d_causal_attention_mask_for_sdpa(mask, ids.shape, hidden, past)
+    # LLaDA2.0's remote code prepares the 4D additive mask with this helper; LLaDA2.1's dropped it
+    # (create_bidirectional_mask) and its layers add the 4D mask as given, as the graph path passes it.
+    prepare = getattr(
+        sys.modules.get(type(inner).__module__), "_prepare_4d_causal_attention_mask_for_sdpa", None
+    )
+    if prepare is not None:
+        past = cache.get_seq_length() if cache is not None else 0
+        mask = prepare(mask, ids.shape, hidden, past)
     position_embeddings = inner.rotary_emb(hidden, position_ids)
     for layer in inner.layers:
         hidden = layer(
@@ -217,7 +222,7 @@ class _Llada2Graph:
         self.device = device
         # One generate at a time per graph: its inputs, cache and logits are shared buffers.
         self.lock = threading.Lock()
-        with torch.cuda.device(device):
+        with capture_lock(device), torch.cuda.device(device):
             stream = side_stream(device)
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):

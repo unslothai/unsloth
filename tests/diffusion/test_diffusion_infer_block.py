@@ -760,3 +760,32 @@ def test_dream_fast_path_follows_the_generation_config(monkeypatch, config, fast
     )
     assert out[0].tolist() == ([7] * 4 if fast else [8] * 4)
     assert seen.get("eps") == eps
+
+
+def test_llada2_cached_path_without_the_legacy_mask_helper(monkeypatch):
+    # LLaDA2.1's remote code no longer exports _prepare_4d_causal_attention_mask_for_sdpa; the additive block
+    # mask goes to the layers as built, and the result still matches the recompute sampler.
+    import sys
+
+    monkeypatch.delattr(sys.modules[__name__], "_prepare_4d_causal_attention_mask_for_sdpa")
+    base = _ToyBlockModel(seed = 3).eval()
+    torch.manual_seed(1)
+    ids = torch.randint(3, MASK_ID, (2, 11))
+    kwargs = dict(
+        max_new_tokens = 13,
+        steps = 8,
+        block_length = 8,
+        temperature = 0.0,
+        mask_id = MASK_ID,
+        eos_ids = [],
+        confidence_threshold = 0.3,
+    )
+    with torch.no_grad():
+        reference = S._block_sample(base, None, ids, None, mask_format = "additive", **kwargs)
+    assert torch.equal(reference, cached_block_sample(base, ids, family = "llada2", **kwargs))
+
+
+def test_capture_lock_is_one_lock_per_device():
+    from unsloth.models.diffusion_infer import capture_lock
+    assert capture_lock("cuda:0") is capture_lock(torch.device("cuda", 0))
+    assert capture_lock("cuda:0") is not capture_lock("cuda:1")

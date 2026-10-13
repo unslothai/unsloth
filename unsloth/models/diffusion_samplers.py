@@ -670,7 +670,10 @@ def generate_text(
     `frame_interval_s` plus once per finished block, always on this thread and never after return. Every
     family streams frames except DiffusionGemma (transformers' own generate) and the
     UNSLOTH_DIFFUSION_KV_CACHE=0 block fallback; stop_callback works for all of them.
-    `compile`: "auto" (CUDA only), True, False, or a torch.compile mode such as "reduce-overhead"."""
+    `compile`: "auto" (default; CUDA Graph replay of the unchanged forward where it is exact and faster: the
+    LLaDA backbone and LLaDA2's cached block), True / "graphs" (the same), False (eager). A torch.compile mode
+    such as "reduce-overhead" compiles the LLaDA / LLaDA-MoE decoder layers (fused kernels, so greedy output
+    can drift); the other families run their own fastest exact path and ignore it."""
     name = diffusion_profile_name(model)
     sampler = _SAMPLERS.get(name)
     if sampler is None:
