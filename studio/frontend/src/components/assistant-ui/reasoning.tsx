@@ -523,6 +523,17 @@ function ReasoningBody({
   );
 }
 
+// Toggling the flex box restyles the whole trace, so it only drops for a live Expand and is
+// only restored by the next cap, never by the stream ending.
+function useTailFlexBox(capped: boolean, streaming: boolean): boolean {
+  const [flexBox, setFlexBox] = useState(capped);
+  const next = capped || (!streaming && flexBox);
+  if (next !== flexBox) {
+    setFlexBox(next);
+  }
+  return next;
+}
+
 // A fixed box (#11703): the newest lines while streaming, the start once finished. Clipped, not an inner
 // scroller, which split the reading anchor across two containers (#11704).
 function ReasoningTail({
@@ -558,6 +569,7 @@ function ReasoningTail({
     return () => observer.disconnect();
   }, [cappable, capped]);
   const clipped = capped && overflowing;
+  const flexBox = useTailFlexBox(capped, streaming);
   return (
     <>
       <div
@@ -576,8 +588,10 @@ function ReasoningTail({
             onExpandedChange(true);
         }}
         className={cn(
-          capped &&
-            "flex max-h-[min(18rem,40vh)] flex-col overflow-hidden [&>*]:shrink-0",
+          // The child rule stays on too: it is inert outside a flex box and toggling it restyles every row.
+          cappable && "[&>*]:shrink-0",
+          cappable && flexBox && "flex flex-col",
+          capped && "max-h-[min(18rem,40vh)] overflow-hidden",
           capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
             (streaming

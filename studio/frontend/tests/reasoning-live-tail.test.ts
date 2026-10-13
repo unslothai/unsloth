@@ -35,10 +35,12 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
-  assert.match(
-    tail,
-    /flex max-h-\[[^\]]+\] flex-col overflow-hidden/,
-  );
+  assert.match(tail, /capped && "max-h-\[[^\]]+\] overflow-hidden"/);
+  // Expand/Collapse on a finished box must not toggle the flex box or the child rule: either
+  // restyles every row of the trace.
+  assert.match(tail, /cappable && "\[&>\*\]:shrink-0"/);
+  assert.match(reasoning, /const next = capped \|\| \(!streaming && flexBox\);/);
+  assert.match(tail, /cappable && flexBox && "flex flex-col"/);
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
     reasoning,
