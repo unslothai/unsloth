@@ -296,6 +296,31 @@ def test_picker_labels_the_root_rows_dev_and_the_subfolder_rows_distilled(tmp_pa
     }
 
 
+def test_a_plain_local_clone_keeps_the_distilled_default_and_dev_labels(tmp_path):
+    """A curated repo copied to an ordinary folder (``/models/unsloth/LTX-2.5-GGUF``, not an HF cache path) is
+    recognised by its trailing org/repo, so the local listing labels the root dev and defaults to distilled/."""
+    from hub.utils.gguf import default_gguf_subdir, gguf_root_label, list_local_gguf_variants
+
+    clone = tmp_path / "models" / "unsloth" / "LTX-2.5-GGUF"
+    (clone / "distilled").mkdir(parents = True)
+    for name in (
+        "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf",
+        "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf",
+    ):
+        (clone / name).write_bytes(b"GGUF" + b"\0" * 64)
+    assert default_gguf_subdir(str(clone)) == "distilled"
+    assert gguf_root_label(str(clone)) == "dev"
+    assert default_gguf_subdir("C:\\models\\unsloth\\LTX-2.5-GGUF") == "distilled"
+    variants, _ = list_local_gguf_variants(str(clone))
+    assert {v.quant: v.display_label for v in variants} == {
+        "UD-Q4_K_XL": "UD-Q4_K_XL · dev",
+        DISTILLED_DEFAULT_KEY: "UD-Q4_K_XL · distilled",
+    }
+    # Unrelated folders and bare names keep the root default.
+    assert default_gguf_subdir(str(tmp_path / "models" / "other" / "Repo")) is None
+    assert default_gguf_subdir("LTX-2.5-GGUF") is None
+
+
 def test_unsupported_message_names_both_25_artifacts():
     from core.inference.video_families import unsupported_ltx_message
     text = unsupported_ltx_message("2.6", "x")

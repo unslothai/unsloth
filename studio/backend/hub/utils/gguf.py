@@ -330,6 +330,19 @@ def _repo_id_of(name: object) -> Optional[str]:
     return text
 
 
+def _repo_id_candidates(name: object) -> list:
+    """``_repo_id_of(name)``, plus the trailing ``org/repo`` of a plain local clone such as
+    ``/models/unsloth/LTX-2.5-GGUF``, so a copied curated repo keeps its per-repo defaults."""
+    rid = _repo_id_of(name)
+    out = [rid] if rid else []
+    if rid and rid == str(name).strip().rstrip("/\\"):
+        segments = [s for s in re.split(r"[/\\]", rid) if s]
+        tail = "/".join(segments[-2:])
+        if len(segments) >= 2 and tail != rid:
+            out.append(tail)
+    return out
+
+
 def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
     """The subdirectory a bare id of any of *repo_ids* defaults to, or None for the repo root.
 
@@ -339,9 +352,10 @@ def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
     from core.inference.video_families import gguf_default_subdir_for_repo
 
     for name in repo_ids:
-        subdir = gguf_default_subdir_for_repo(_repo_id_of(name))
-        if subdir:
-            return subdir
+        for rid in _repo_id_candidates(name):
+            subdir = gguf_default_subdir_for_repo(rid)
+            if subdir:
+                return subdir
     return None
 
 
@@ -351,9 +365,10 @@ def gguf_root_label(*repo_ids: object) -> Optional[str]:
     from core.inference.video_families import gguf_root_label_for_repo
 
     for name in repo_ids:
-        label = gguf_root_label_for_repo(_repo_id_of(name))
-        if label:
-            return label
+        for rid in _repo_id_candidates(name):
+            label = gguf_root_label_for_repo(rid)
+            if label:
+                return label
     return None
 
 
