@@ -745,15 +745,31 @@ def _render_canvas(tokenizer, tokens, mask_id) -> str:
     return "".join(parts)
 
 
+def _diffusion_eos_ids(model, tokenizer, chat) -> tuple:
+    """The ids ``generate_text`` cuts its reply at (EOS, plus the turn-end token for chat); empty on a core
+    without them, where frames are then shown uncut."""
+    import importlib
+    try:
+        samplers = importlib.import_module("unsloth.models.diffusion_samplers")
+        base = samplers.unwrap_diffusion_model(model)
+        ids = list(samplers._eos_ids(base, tokenizer))
+        if chat:
+            ids += [i for i in samplers._turn_end_ids(tokenizer) if i not in ids]
+        return tuple(ids)
+    except Exception:
+        return ()
+
+
 def _diffusion_frame_relay(
     tokenizer,
     sink,
     interval_s = None,
     stop = None,
+    eos_ids = (),
 ):
     """on_frame for the core sampler: renders and hands one frame per interval to ``sink``, dropping the rest.
     Never raises into the sampler, so a broken consumer cannot fail the generation. Each frame is cut at the
-    request's stop sequences, as the final reply will be."""
+    first ``eos_ids`` token and at the request's stop sequences, as the final reply will be."""
     import time
 
     # The first frame always goes out, however recently the monotonic clock started.
@@ -769,7 +785,12 @@ def _diffusion_frame_relay(
             return
         last[0] = now
         try:
-            text = _render_canvas(tokenizer, frame.get("tokens") or (), frame.get("mask_id"))
+            tokens = list(frame.get("tokens") or ())
+            for index, token in enumerate(tokens):
+                if token in eos_ids:
+                    tokens = tokens[:index]
+                    break
+            text = _render_canvas(tokenizer, tokens, frame.get("mask_id"))
             for sequence in stop or ():
                 if sequence and sequence in text:
                     text = text[: text.index(sequence)]
@@ -2734,7 +2755,12 @@ class InferenceBackend:
         sink = getattr(self, "diffusion_frame_sink", None)
         if sink is not None and _accepts_on_frame(generate_text):
             frame_kwargs["on_frame"] = _diffusion_frame_relay(
-                model_info["tokenizer"], sink, stop = stop
+                model_info["tokenizer"],
+                sink,
+                stop = stop,
+                eos_ids = _diffusion_eos_ids(
+                    model_info["model"], model_info["tokenizer"], messages is not None
+                ),
             )
         with self._generation_lock:
             if _adapter_state is not None:

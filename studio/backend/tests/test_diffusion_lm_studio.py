@@ -915,6 +915,31 @@ def test_frame_relay_sends_zero_based_steps_and_honours_stop_sequences():
     assert sent[-1]["text"] == "<1>"
 
 
+def test_frame_relay_cuts_frames_at_the_first_eos():
+    from core.inference.inference import _diffusion_frame_relay
+
+    sent = []
+    relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 0, eos_ids = (9,))
+    # A masked slot before the EOS stays a placeholder; nothing after the EOS is shown.
+    relay({"block": 0, "step": 0, "total": 2, "tokens": [1, 0, 9, 4, 5], "mask_id": 0})
+    assert sent[-1]["text"] == "<1>\u2591"
+
+
+def test_diffusion_eos_ids_match_the_sampler_cut(monkeypatch):
+    from core.inference import inference as inference_mod
+
+    samplers = types.ModuleType("unsloth.models.diffusion_samplers")
+    samplers.unwrap_diffusion_model = lambda model: model
+    samplers._eos_ids = lambda base, tokenizer: [7]
+    samplers._turn_end_ids = lambda tokenizer: [7, 8]
+    monkeypatch.setitem(sys.modules, "unsloth.models.diffusion_samplers", samplers)
+    assert inference_mod._diffusion_eos_ids(object(), object(), chat = True) == (7, 8)
+    assert inference_mod._diffusion_eos_ids(object(), object(), chat = False) == (7,)
+    # A core without these helpers shows frames uncut rather than failing.
+    monkeypatch.setitem(sys.modules, "unsloth.models.diffusion_samplers", types.ModuleType("old"))
+    assert inference_mod._diffusion_eos_ids(object(), object(), chat = True) == ()
+
+
 def test_worker_installs_the_frame_sink_only_for_the_requesting_generation():
     from core.inference import worker as worker_mod
     class _Backend:
