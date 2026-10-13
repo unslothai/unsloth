@@ -118,5 +118,9 @@ test("an audio page's loaded quant names the trigger only for the model it belon
     selector,
     /const triggerGgufVariant =\s*loadedGgufVariantOverride !== undefined\s*\? selected &&\s*loadedModelIdOverride &&\s*selected\.toLowerCase\(\) === loadedModelIdOverride\.toLowerCase\(\)\s*\? loadedGgufVariantOverride\s*: null\s*: activeGgufVariant;/,
   );
-  assert.match(selector, /const desc = `GGUF · \$\{triggerGgufVariant\}`;/);
+  // An MLX precision label belongs to the chat's own load, never to a task-owned quant.
+  assert.match(
+    selector,
+    /const isMlx =\s*activeVariantIsMlx && loadedGgufVariantOverride === undefined;\s*const desc = `\$\{isMlx \? "MLX" : "GGUF"\} · \$\{triggerGgufVariant\}`;/,
+  );
 });
