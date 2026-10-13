@@ -4546,6 +4546,56 @@ def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
     ) == list(running)
 
 
+class _ResidentSlot:
+    """A live resident sd-server: ``busy`` keeps it alive through a release (it stops at its render's end)."""
+
+    def __init__(self, busy):
+        self.busy = busy
+        self.alive = True
+        self.released = []
+
+    def alive_signature(self):
+        return ("bin", (), ("--diffusion-fa", "--max-vram", "-1"), ()) if self.alive else None
+
+    def release(self, reason):
+        self.released.append(reason)
+        if not self.busy:
+            self.alive = False
+        return True
+
+    def is_alive(self):
+        return self.alive
+
+
+def test_an_offloaded_render_frees_an_idle_resident_server_before_its_reading(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    slot = _ResidentSlot(busy = False)
+    _live_gtt(monkeypatch, 0)
+    roomy = 1 << 50
+    monkeypatch.setattr(
+        video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 0 if slot.alive else roomy
+    )
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+    )
+    assert slot.released and "--clip-on-cpu" not in flags
+
+
+def test_an_offloaded_render_behind_a_busy_resident_server_says_a_render_is_running(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    slot = _ResidentSlot(busy = True)
+    _live_gtt(monkeypatch, 0)
+    with pytest.raises(H3NativeMemoryRefusal, match = "still running"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+        )
+    assert slot.released
+
+
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
     from core.inference.video import _h3_offloaded_render_flags
     from core.inference import video_minimax_h3

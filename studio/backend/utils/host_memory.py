@@ -207,6 +207,40 @@ def cgroup_swap_allowance_bytes(
     return allowance
 
 
+def cgroup_v1_memsw_headroom_bytes(
+    cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
+) -> Optional[int]:
+    """The tightest cgroup v1 RAM+swap (``memsw``) headroom on this cgroup and its ancestors, the most RAM and swap
+    together this process can still charge; None without a finite memsw limit. Unreadable membership is read as
+    the namespace root; a finite limit whose usage cannot be read yields 0."""
+    cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
+    proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
+    try:
+        with open(proc_self_cgroup, "r", encoding = "utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    relative = None if lines else "/"
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and "memory" in parts[1].split(","):
+            relative = parts[2]
+            break
+    if relative is None:
+        return None
+    best: Optional[int] = None
+    for directory in _directories(os.path.join(cgroup_root, "memory"), relative):
+        limit = _integer(
+            _first_line(os.path.join(directory, "memory.memsw.limit_in_bytes")), limit = True
+        )
+        if limit is None:
+            continue
+        used = _integer(_first_line(os.path.join(directory, "memory.memsw.usage_in_bytes")))
+        room = 0 if used is None else max(limit - used, 0)
+        best = room if best is None else min(best, room)
+    return best
+
+
 def cgroup_headroom_mib(budgets: Optional[list[tuple[int, int]]] = None) -> Optional[int]:
     """What an enforcing cgroup still lets this process charge (the tightest remainder), else None."""
     budgets = cgroup_memory_budgets() if budgets is None else budgets

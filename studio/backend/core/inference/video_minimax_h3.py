@@ -1417,11 +1417,32 @@ def amdgpu_gtt_free_bytes(
         total = _sysfs_int(total_path)
         if not total or total <= 0:
             continue
+        # Unreadable use reads as the whole pool here; amdgpu_gtt_used_unknown lets the fit stay conservative.
         used = _sysfs_int(device / "mem_info_gtt_used") or 0
         free = max(total - max(used, 0), 0)
         if best is None or free < best:
             best = free
     return best
+
+
+def amdgpu_gtt_used_unknown(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> bool:
+    """True when an amdgpu card ``amdgpu_gtt_free_bytes`` would read reports its GTT total but not a readable
+    ``mem_info_gtt_used``, so its free figure is only an upper bound."""
+    want = pci_slot.lower() if pci_slot else None
+    for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
+        device = total_path.parent
+        if _sysfs_int(device / "vendor") != 0x1002:
+            continue
+        slot = _sysfs_pci_slot(device) if want is not None else None
+        if want is not None and slot != want and not (slot or "").startswith(want + "."):
+            continue
+        total = _sysfs_int(total_path)
+        if not total or total <= 0:
+            continue
+        used = _sysfs_int(device / "mem_info_gtt_used")
+        if used is None or used < 0:
+            return True
+    return False
 
 
 def vulkan_device_is_amd(description: Optional[str]) -> bool:
@@ -1474,6 +1495,7 @@ def h3_native_memory_fit(
     pinned_free_bytes: Optional[int],
     host_ram_bytes: Optional[int],
     host_swap_bytes: int = 0,
+    pinned_used_unknown: bool = False,
     env: Optional[dict] = None,
 ) -> H3NativeFit:
     """Fit offloaded sd-cli flags to the host: pinned weights must fit RAM alone (swap covers only CPU-run modules)
@@ -1506,7 +1528,10 @@ def h3_native_memory_fit(
         return None
 
     def gtt_ok(te_on_cpu: bool) -> bool:
-        return budget is None or pinned(te_on_cpu) <= budget
+        if budget is None:
+            return True
+        # Unreadable GTT use: the reading is the whole pool, so only the smaller (encoder on the CPU) set is trusted.
+        return pinned(te_on_cpu) <= budget and (te_on_cpu or not pinned_used_unknown)
 
     def ok(te_on_cpu: bool) -> bool:
         return host_problem(te_on_cpu) is None and gtt_ok(te_on_cpu)
@@ -1516,7 +1541,18 @@ def h3_native_memory_fit(
     ram = _gib(int(host_ram_bytes)) if host_ram_bytes is not None else "unknown"
     limit = _gib(int(pinned_free_bytes)) if vulkan_gtt else None
     if not te_given and ok(True):
-        if not gtt_ok(False):
+        if not gtt_ok(False) and pinned_used_unknown and pinned(False) <= budget:
+            note = (
+                f"text encoder on the CPU: this card's GTT use could not be read, so only the smaller GPU-mapped "
+                f"set is trusted ({_gib(pinned(True))} of a {limit} pool)"
+            )
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: this card does not report "
+                f"how much of its GPU-accessible system memory (GTT) is in use, so the {_gib(pinned(False))} this "
+                f"mode maps cannot be checked. Set Memory mode to Auto or Low VRAM, which runs the text encoder on "
+                f"the CPU ({_gib(pinned(True))})."
+            )
+        elif not gtt_ok(False):
             note = (
                 f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
                 f"(GTT), {_gib(pinned(False))} here against {limit} free"
@@ -1604,17 +1640,32 @@ class H3NativeFitInputs:
 
 
 def h3_native_host_budgets() -> "tuple[Optional[int], int]":
-    """(RAM, swap) a native render may still take: RAM cgroup-capped and without Studio's own RSS, swap bounded by
-    the cgroup against that same RAM budget. (None, 0) when RAM cannot be read."""
+    """(RAM, swap) a native render may still take: RAM cgroup-capped, without Studio's own RSS, and on cgroup v1 no
+    more than the RAM+swap (memsw) headroom; swap bounded by the cgroup against that RAM budget, so the two never
+    sum past what the cgroup can charge. (None, 0) only when RAM cannot be read; unreadable swap is 0 swap."""
     try:
-        import psutil
-        from utils.host_memory import cgroup_swap_allowance_bytes
-
         ram = h3_native_host_available_bytes()
-        swap = cgroup_swap_allowance_bytes(int(psutil.swap_memory().free), ram_budget = ram)
-        return ram, swap
     except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
         return None, 0
+    from utils.host_memory import cgroup_swap_allowance_bytes, cgroup_v1_memsw_headroom_bytes
+
+    try:
+        combined = cgroup_v1_memsw_headroom_bytes()
+    except Exception:  # noqa: BLE001
+        combined = None
+    if combined is not None:
+        ram = min(ram, combined)
+    try:
+        import psutil
+
+        free_swap = int(psutil.swap_memory().free)
+    except Exception:  # noqa: BLE001 - no swap reading: count none, keep the RAM check
+        free_swap = 0
+    try:
+        swap = cgroup_swap_allowance_bytes(free_swap, ram_budget = ram)
+    except Exception:  # noqa: BLE001
+        swap = 0
+    return ram, swap
 
 
 def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
@@ -1628,6 +1679,7 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
         te_bytes = inputs.te_bytes,
         vae_bytes = inputs.vae_bytes,
         pinned_free_bytes = amdgpu_gtt_free_bytes(inputs.gtt_pci_slot) if inputs.check_gtt else None,
+        pinned_used_unknown = inputs.check_gtt and amdgpu_gtt_used_unknown(inputs.gtt_pci_slot),
         host_ram_bytes = ram,
         host_swap_bytes = swap,
     )

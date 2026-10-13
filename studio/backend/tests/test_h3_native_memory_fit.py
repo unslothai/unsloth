@@ -404,6 +404,111 @@ def test_cgroup_v1_swap_is_measured_against_the_ram_the_fit_actually_budgets(tmp
     assert cgroup_swap_allowance_bytes(100 * GIB, **paths) == 30 * GIB
 
 
+def test_cgroup_v1_memsw_headroom_is_the_tightest_level(tmp_path):
+    from utils.host_memory import cgroup_v1_memsw_headroom_bytes
+
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/p/memory.memsw.limit_in_bytes": str(40 * GIB),
+            "memory/p/memory.memsw.usage_in_bytes": str(35 * GIB),
+            "memory/p/c/memory.memsw.limit_in_bytes": str(100 * GIB),
+            "memory/p/c/memory.memsw.usage_in_bytes": str(10 * GIB),
+        },
+        proc = "4:memory:/p/c\n",
+    )
+    assert cgroup_v1_memsw_headroom_bytes(**paths) == 5 * GIB
+
+
+def test_cgroup_v1_memsw_headroom_fails_closed_and_is_absent_without_a_limit(tmp_path):
+    from utils.host_memory import cgroup_v1_memsw_headroom_bytes
+
+    unreadable = _cgroup(
+        tmp_path / "a",
+        {"memory/x/memory.memsw.limit_in_bytes": str(40 * GIB)},
+        proc = "4:memory:/x\n",
+    )
+    assert cgroup_v1_memsw_headroom_bytes(**unreadable) == 0
+    (tmp_path / "b").mkdir()
+    v2_only = _cgroup(tmp_path / "b", {"user.slice/memory.max": "max"})
+    assert cgroup_v1_memsw_headroom_bytes(**v2_only) is None
+
+
+def test_ram_is_capped_by_the_v1_memsw_headroom(monkeypatch):
+    """80 GiB of RAM room but only 5 GiB RAM+swap room (the process swapped a lot): RAM and swap together may not
+    exceed the 5 GiB the cgroup can still charge."""
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_available_bytes", lambda: 80 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_v1_memsw_headroom_bytes", lambda *a, **k: 5 * GIB)
+    monkeypatch.setattr(
+        host_memory,
+        "cgroup_swap_allowance_bytes",
+        lambda free, *a, ram_budget = None, **k: min(free, max(5 * GIB - ram_budget, 0)),
+    )
+    ram, swap = video_minimax_h3.h3_native_host_budgets()
+    assert (ram, swap) == (5 * GIB, 0)
+
+
+def test_an_unreadable_swap_reading_keeps_the_ram_check(monkeypatch):
+    import psutil
+
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    def broken():
+        raise OSError("no /proc/swaps")
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_available_bytes", lambda: 30 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_v1_memsw_headroom_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(psutil, "swap_memory", broken)
+    assert video_minimax_h3.h3_native_host_budgets() == (30 * GIB, 0)
+
+
+def test_an_unreadable_gtt_use_is_reported(tmp_path):
+    from core.inference.video_minimax_h3 import amdgpu_gtt_used_unknown
+
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB)
+    _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 1 * GIB)
+    assert amdgpu_gtt_used_unknown("0000:03:00", sysfs_root = str(tmp_path)) is True
+    assert amdgpu_gtt_used_unknown("0000:c5:00", sysfs_root = str(tmp_path)) is False
+    assert amdgpu_gtt_used_unknown(sysfs_root = str(tmp_path)) is True
+    dev = tmp_path / "class" / "drm" / "card1" / "device"
+    (dev / "mem_info_gtt_used").write_text("garbage\n", encoding = "utf-8")
+    assert amdgpu_gtt_used_unknown("0000:c5:00", sysfs_root = str(tmp_path)) is True
+
+
+def _fit_unknown_use(flags, mode, *, gtt):
+    return h3_native_memory_fit(
+        flags,
+        accelerator = "vulkan",
+        memory_mode = mode,
+        pinned_free_bytes = gtt,
+        pinned_used_unknown = True,
+        host_ram_bytes = 60 * GIB,
+        env = {},
+        **Q4,
+    )
+
+
+def test_unknown_gtt_use_trusts_only_the_smaller_set_in_auto():
+    """A 64 GiB pool whose use cannot be read: the 33 GiB full set would fit the total, but only the encoder-on-CPU
+    set is trusted."""
+    fit = _fit_unknown_use(AUTO, "auto", gtt = 64 * GIB)
+    assert fit.flags == AUTO + ("--clip-on-cpu",) and "could not be read" in fit.note
+
+
+def test_unknown_gtt_use_refuses_an_explicit_mode_that_keeps_the_encoder_on_the_gpu():
+    fit = _fit_unknown_use(AUTO, "balanced", gtt = 64 * GIB)
+    assert "does not report" in fit.refusal and "Low VRAM" in fit.refusal
+
+
+def test_unknown_gtt_use_leaves_low_vram_alone_and_refuses_past_the_total():
+    assert _fit_unknown_use(LOW_VRAM, "low_vram", gtt = 64 * GIB).flags == LOW_VRAM
+    assert "ttm.pages_limit" in _fit_unknown_use(LOW_VRAM, "low_vram", gtt = 12 * GIB).refusal
+
+
 def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):
     from core.inference import video_minimax_h3
     from utils import host_memory

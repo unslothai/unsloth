@@ -1396,6 +1396,20 @@ def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optiona
     return physical_card_name(ordinal)
 
 
+def _release_h3_server_slot(slot: Any, reason: str) -> str:
+    """Release an H3 sd-server slot without waiting on a render: "stopped" (memory freed now), "pending" (mid-render
+    or starting; stops at the render's end, nothing freed yet) or "none" (no server)."""
+    if slot is None:
+        return "none"
+    try:
+        if not slot.release(reason):
+            return "none"
+        return "pending" if slot.is_alive() else "stopped"
+    except Exception as exc:  # noqa: BLE001 - a release failure leaves the reading as it was
+        logger.warning("video.h3_native_server_release_failed: %s", exc)
+        return "none"
+
+
 def _h3_offloaded_render_flags(
     runtime: Any,
     render_flags: "list[str]",
@@ -1408,6 +1422,7 @@ def _h3_offloaded_render_flags(
     freed since lifts a refusal; a live offloaded sd-server already holds its weights and keeps its own flags."""
     from .sd_cpp_args import device_backend_flags
     from .video_minimax_h3 import (
+        H3_NATIVE_RENDER_RUNNING_HINT,
         H3NativeMemoryRefusal,
         h3_native_live_fit,
         h3_native_offloaded_render_flags,
@@ -1431,8 +1446,14 @@ def _h3_offloaded_render_flags(
     if live is not None and "--offload-to-cpu" in live[2]:
         # A reading now would count the server's own placed weights against it.
         return list(live[2])
+    released = "none"
+    if live is not None:
+        # A resident server: slot.get() replaces it on the signature change anyway, so free it before the reading.
+        released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
     fit = h3_native_live_fit(inputs, "auto")
     if fit.refusal:
+        if released == "pending":
+            raise H3NativeMemoryRefusal(fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
         raise H3NativeMemoryRefusal(fit.refusal)
     if fit.note:
         logger.info("video.h3_native_memory_fit (render): %s", fit.note)
@@ -11296,16 +11317,7 @@ class VideoBackend:
         stop at the render's end, "none" when there was no server. Never waits on a render."""
         with self._lock:
             state = self._state
-        slot = getattr(getattr(state, "pipe", None), "server_slot", None)
-        if slot is None:
-            return "none"
-        try:
-            if not slot.release(reason):
-                return "none"
-            return "pending" if slot.is_alive() else "stopped"
-        except Exception as exc:  # noqa: BLE001 - a release failure leaves the reading as it was
-            logger.warning("video.h3_native_server_release_failed: %s", exc)
-            return "none"
+        return _release_h3_server_slot(getattr(getattr(state, "pipe", None), "server_slot", None), reason)
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation
