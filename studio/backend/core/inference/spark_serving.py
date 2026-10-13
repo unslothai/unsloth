@@ -1132,6 +1132,16 @@ async def replicate_secret_files(peer: str, files: Sequence[str]) -> Optional[st
     return None
 
 
+def _read_keys(files: Sequence[str]) -> Dict[str, bytes]:
+    out: Dict[str, bytes] = {}
+    for path in files:
+        try:
+            out[path] = Path(path).read_bytes()
+        except OSError:
+            continue
+    return out
+
+
 async def replicate_generated_files(peer: str, files: Sequence[str]) -> Optional[str]:
     """Write each file to the peer at the SAME path, or name the first that would not go."""
     for path in files:
@@ -2186,6 +2196,8 @@ class SparkServing:
         self.peer: Optional[str] = None
         self.attached_backend: Any = None
         self.attached_port: Optional[int] = None
+        # The key files the peer replica was launched with and their bytes, see _refresh_peer_key.
+        self.peer_keys: Dict[str, bytes] = {}
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -2809,6 +2821,7 @@ class SparkServing:
                 )
                 logger.warning("spark serving: %s", self.reason)
                 return
+        self.peer_keys = _read_keys(secrets_needed)
         needed = [p for p in needed if p not in set(generated) | set(secrets_needed)]
         # Size and mtime, not just existence.
         mismatch: List[str] = []
@@ -3051,6 +3064,29 @@ class SparkServing:
         if port and port != self.attached_port and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
             self.attached_port = int(port)
+            await self._refresh_peer_key()
+
+    async def _refresh_peer_key(self) -> None:
+        """A respawned primary rewrites its key file with a new key, so the replica, which read the
+        old one at startup, would answer every routed request 401: recopy it and restart the peer."""
+        process, peer = self.peer_process, self.peer
+        if process is None or not peer or not self.peer_keys:
+            return
+        now = _read_keys(list(self.peer_keys))
+        if now == self.peer_keys:
+            return
+        failed = await replicate_secret_files(peer, list(now))
+        if failed:
+            logger.warning(
+                "spark serving: the new llama-server key could not reach %s: %s", peer, failed
+            )
+            return
+        self.peer_keys = now
+        try:
+            await process.stop(timeout = 5.0)
+            await process.start()
+        except Exception as exc:
+            logger.warning("spark serving: peer restart for the new key failed: %s", exc)
 
     def _argv_names_our_peer(self, argv: Sequence[str]) -> bool:
         """Whether an ``--rpc`` in *argv* points at the rpc-server this module launched."""
@@ -3127,6 +3163,7 @@ class SparkServing:
                     logger.warning("spark serving: peer teardown failed", exc_info = True)
             self.attached_backend = None
             self.attached_port = None
+            self.peer_keys = {}
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
             self.split_config, self.split_config_reason = None, None
             if self.topology != "single":

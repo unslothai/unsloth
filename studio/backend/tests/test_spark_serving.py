@@ -4282,3 +4282,34 @@ def test_the_launch_key_reaches_the_peer_over_stdin_only(monkeypatch, tmp_path):
     remote, stdin = calls[0]
     assert stdin == b"s3cret" and "s3cret" not in remote
     assert remote.startswith("umask 077") and "chmod 600" in remote
+
+
+def test_a_respawned_primary_key_is_recopied_and_the_replica_restarted(monkeypatch, tmp_path):
+    """The respawn rewrites the key file in place with a new key; the replica read the old one."""
+    key = tmp_path / "llama_api_key_0123"
+    key.write_bytes(b"old")
+    events = []
+
+    class _Peer:
+        async def stop(self, timeout = None):
+            events.append("stop")
+
+        async def start(self):
+            events.append("start")
+
+    async def copy(peer, files):
+        events.append(("copy", peer, [Path(f).read_bytes() for f in files]))
+        return None
+
+    monkeypatch.setattr(ss, "replicate_secret_files", copy)
+    state = ss.SparkServing()
+    state.peer, state.peer_process = "192.168.200.13", _Peer()
+    state.peer_keys = {str(key): b"old"}
+
+    run(state._refresh_peer_key())
+    assert events == [], "an unchanged key must not restart the replica"
+
+    key.write_bytes(b"new")
+    run(state._refresh_peer_key())
+    assert events == [("copy", "192.168.200.13", [b"new"]), "stop", "start"]
+    assert state.peer_keys == {str(key): b"new"}

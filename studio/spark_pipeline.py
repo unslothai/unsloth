@@ -1917,6 +1917,8 @@ def _main_data_parallel(args) -> int:
         whole_y = labels_all[step * args.batch : (step + 1) * args.batch]
         mine = whole[rank * per_rank : (rank + 1) * per_rank]
         mine_y = whole_y[rank * per_rank : (rank + 1) * per_rank]
+        # Whole-step token mean: the ranks' gradient average divides by world again.
+        set_pp_batch_tokens(whole_y, world * mb_per_rank)
         acc = torch.zeros((), device = device, dtype = torch.float32)
         for m in range(mb_per_rank):
             x = mine[m * mb_rows : (m + 1) * mb_rows]

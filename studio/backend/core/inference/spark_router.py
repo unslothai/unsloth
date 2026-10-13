@@ -96,7 +96,8 @@ class RouterError(Exception):
 
 
 class UpstreamUnreachable(RouterError):
-    """No backend accepted the connection."""
+    """No backend accepted the connection. Answered by closing without a response, NOT a 502: the
+    caller then sees the RemoteProtocolError of a dead llama-server and _respawn_if_dead still runs."""
 
     def __init__(self, message: str):
         super().__init__(502, message)
