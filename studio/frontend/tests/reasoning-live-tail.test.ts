@@ -52,6 +52,13 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
   assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
 });
 
+test("changing the setting drops a hand Expand along with the hand open", () => {
+  assert.match(
+    reasoning,
+    /if \(lastVisibility !== visibility\) \{\s*setLastVisibility\(visibility\);\s*setOverride\(null\);\s*setTailExpanded\(false\);\s*\}/,
+  );
+});
+
 test("focus landing in the clipped lines lifts the cap instead of staying invisible", () => {
   const tail = reasoning.slice(
     reasoning.indexOf("function ReasoningTail("),
