@@ -624,6 +624,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
       return { ok: false, error: CHANGED_UNDER_POINT };
     }
+    if (signal?.aborted) return { ok: false, error: STOPPED };
   }
   if (formGate) admit(formAction, formGate);
   if (linkGate) admit(info.href, linkGate);
@@ -689,7 +690,7 @@ type ShotView = {
   scrolls?: number;
   doc?: string;
 };
-const pointScale = new Map<string, ShotView & { scale: number }>();
+const pointScale = new Map<string, ShotView & { scaleX: number; scaleY: number }>();
 const MAX_SHOT_EDGE = 1024;
 
 async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
@@ -700,7 +701,7 @@ async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: 
   const status = await pageCall(tab, { op: "status" });
   const keys = ["width", "height", "scrollX", "scrollY", "scrolls", "doc"] as const;
   if (keys.some((key) => status[key] !== shot[key])) return STALE_SHOT;
-  return { x: x * shot.scale, y: y * shot.scale };
+  return { x: x * shot.scaleX, y: y * shot.scaleY };
 }
 
 const STALE_SHOT = "the page changed since the screenshot those x and y come from; take a new one.";
@@ -1000,14 +1001,15 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
       scrolls: size.scrolls,
       doc: size.doc,
     };
-    pointScale.set(tab.id, { ...at, scale: cssWidth / bitmap.width });
+    pointScale.set(tab.id, { ...at, scaleX: cssWidth / bitmap.width, scaleY: cssHeight / bitmap.height });
     if (width === bitmap.width && height === bitmap.height) return blob;
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
     const scaled = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (scaled) pointScale.set(tab.id, { ...at, scale: cssWidth / width });
+    // Width and height round apart, so each axis keeps its own scale.
+    if (scaled) pointScale.set(tab.id, { ...at, scaleX: cssWidth / width, scaleY: cssHeight / height });
     return scaled ?? blob;
   } finally {
     bitmap.close();
