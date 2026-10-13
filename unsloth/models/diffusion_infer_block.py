@@ -62,7 +62,7 @@ class _Frames:
         self.on_frame, self.check_stop, self.interval = on_frame, check_stop, interval
         # generate_text's Progress: its own throttle, and the GPU never waits for a frame's host copy.
         self.progress = progress
-        self.last = 0.0
+        self.last = -math.inf  # the first frame always goes out, however recently the clock started
 
     def check(self):
         if self.check_stop is not None:
