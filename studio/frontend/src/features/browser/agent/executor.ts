@@ -790,8 +790,14 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     await pageCall(tab, { op: "pointer", phase: "cancel", ...from }).catch(() => null);
     return { ok: false, error };
   };
+  // A new document gets nothing; the same one (a hash or pushState move) has its drag cancelled.
+  const left = async (): Promise<Result> => {
+    const error = "the page changed during the drag, so it was not finished; take a snapshot.";
+    const status = await pageCall(tab, { op: "status" }).catch(() => null);
+    return doc && status?.doc === doc ? cancel(error) : { ok: false, error };
+  };
   if (signal?.aborted) return cancel(STOPPED);
-  if (!doc || !(await samePage())) return { ok: false, error: "the page changed during the drag, so it was not finished; take a snapshot." };
+  if (!doc || !(await samePage())) return left();
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged.
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
@@ -804,8 +810,9 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
       if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
     }
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
-    if (!(await samePage())) return { ok: false, error: "the page changed during the drag, so it was not finished; take a snapshot." };
+    if (!(await samePage())) return left();
   }
+  if (signal?.aborted) return cancel(STOPPED);
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, up.note);

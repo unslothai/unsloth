@@ -8,6 +8,7 @@ import { test } from "node:test";
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { stopBrowserAgent } = await import("../src/features/browser/agent/agent-store.ts");
 
 const globals = globalThis as Record<string, unknown>;
 const policy = { allowedDomains: [], blockedDomains: [] };
@@ -62,4 +63,49 @@ test("a drag between fractional points reaches its end and is released", async (
   assert.equal(posted.at(-1)?.result.error, undefined);
   const up = sent.find((op) => op.op === "pointer" && op.phase === "up");
   assert.deepEqual(up && [up.x, up.y], [1.9, 10]);
+});
+
+/** Drags on the tab the first test opened, with `onOp` seeing each page command; returns what was sent and the result. */
+async function drag(id: string, runKey: string, onOp: (op: Record<string, unknown>, sent: string[]) => void) {
+  const posted: { result: { ok: boolean; error?: string } }[] = [];
+  globals.__authFetch = async (_url: string, init: { body: string }) => {
+    posted.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  };
+  const sent: string[] = [];
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    sent.push(`${op.op}${op.phase ? `:${op.phase}` : ""}`);
+    onOp(op, sent);
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
+    return { installed: true, result: { ok: true, text: "page", links: [] } };
+  };
+  const tabId = useBrowserStore.getState().tabs[0].id;
+  useBrowserStore.getState().updateTab(tabId, { displayUrl: null });
+  await runBrowserAction(
+    { id, sessionId: "s", op: "drag", x: 10, y: 10, toX: 200, toY: 10, direction: "down", policy },
+    { runKey, userText: "open https://example.com/board" },
+  );
+  return { sent, result: posted.at(-1)?.result };
+}
+
+test("a drag whose page moves its address without a new document is cancelled, not released", async () => {
+  const { sent, result } = await drag("p1", "r", (op) => {
+    if (op.op === "pointer" && op.phase === "down") {
+      const tabId = useBrowserStore.getState().tabs[0].id;
+      useBrowserStore.getState().updateTab(tabId, { displayUrl: "https://example.com/board#moved" });
+    }
+  });
+  assert.equal(result?.ok, false);
+  assert.ok(sent.includes("pointer:cancel"), sent.join(", "));
+  assert.ok(!sent.includes("pointer:up"));
+});
+
+test("Stop during the checks before the drop cancels the drag instead of releasing it", async () => {
+  const { sent, result } = await drag("p2", "r", (op, sent) => {
+    if (op.op === "status" && sent.includes("pointer:move")) stopBrowserAgent();
+  });
+  assert.equal(result?.ok, false);
+  assert.ok(sent.includes("pointer:cancel"), sent.join(", "));
+  assert.ok(!sent.includes("pointer:up"));
 });
