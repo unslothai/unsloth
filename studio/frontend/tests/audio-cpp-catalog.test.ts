@@ -19,6 +19,7 @@ import {
   AUDIO_CPP_UNOFFERED_FOLDERS,
   audioCppDictationModelFor,
   audioCppDisplayName,
+  audioCppHubPath,
   audioCppModelFor,
   audioCppSizeLabel,
   audioCppWorkflowsFor,
@@ -138,6 +139,17 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(isAudioCppFolderId(AUDIO_CPP_REPO), false);
   assert.equal(isAudioCppFolderId(`${AUDIO_CPP_REPO}/`), false);
   assert.equal(isAudioCppFolderId("unslothai/Qwen3-ASR-0.6B-GGUF"), false);
+  assert.equal(
+    audioCppHubPath(`${AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF`),
+    `${AUDIO_CPP_REPO}/tree/main/Qwen3-TTS-12Hz-0.6B-Base-GGUF`,
+  );
+  assert.equal(
+    audioCppHubPath(`${ACE_STEP}/turbo`),
+    `${AUDIO_CPP_REPO}/tree/main/ACE-Step1.5-GGUF`,
+  );
+  assert.equal(audioCppHubPath(AUDIO_CPP_REPO), null);
+  assert.equal(audioCppHubPath(MINIMAX_GGUF), null);
+  assert.equal(audioCppHubPath("unsloth/Qwen3-8B-GGUF"), null);
   assert.equal(audioCppModelFor("OpenMOSS-Team/MOSS-TTS-Nano-100M"), null);
   assert.equal(audioCppModelFor(""), null);
   assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
@@ -829,7 +841,12 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.equal(audioCppRuntimeProblem("OpenMOSS-Team/MOSS-TTS-Nano-100M", missing), null);
   assert.equal(audioCppRuntimeProblem(null, missing), null);
   const route = readText("../../backend/routes/inference.py");
-  assert.match(route, /"audio_cpp_runtime": _audio_cpp_runtime_status\(\)/);
+  // Read off the event loop: choosing the launch backend can run the binary.
+  assert.match(
+    route,
+    /audio_cpp_runtime = await asyncio\.to_thread\(_audio_cpp_runtime_status\)/,
+  );
+  assert.match(route, /"audio_cpp_runtime": audio_cpp_runtime,/);
   const page = readAudioWorkspaceSource();
   assert.match(page, /audioCppRuntime\.current = stt\.audio_cpp_runtime \?\? null;/);
   assert.match(

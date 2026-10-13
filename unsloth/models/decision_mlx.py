@@ -49,40 +49,13 @@ from unsloth._decision_common import (
     _option_keys,
     _parsed,
     _predicted,
+    _row_images,
     _served_lengths,
     _served_temperatures,
     _target,
     _target_for,
     is_clef_checkpoint,
 )
-
-
-def _row_images(row: dict) -> list:
-    # A row's "images": PIL images, data URLs, or the {"bytes": ..., "path": ...} an undecoded image column holds.
-    images = _parsed(row.get("images"))
-    if images is None:
-        return []
-    found = []
-    for image in images if isinstance(images, (list, tuple)) else [images]:
-        if isinstance(image, dict) and set(image) <= {"bytes", "path"}:
-            import io
-
-            from PIL import Image
-
-            data = image.get("bytes")
-            # A nullable image column holds an empty struct where a row has no image.
-            try:
-                image = (
-                    Image.open(io.BytesIO(data) if data is not None else image["path"])
-                    if data is not None or image.get("path")
-                    else None
-                )
-            except Image.DecompressionBombError as exc:
-                # Not an OSError: without this one oversized image aborts the whole dataset.
-                raise ValueError(str(exc)) from None
-        if image is not None:
-            found.append(image)
-    return found
 
 
 def _decision_clef_items(rows, options: Callable, encode: Callable, validate, report, skip) -> list:

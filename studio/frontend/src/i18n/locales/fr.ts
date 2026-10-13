@@ -59,6 +59,9 @@ export const fr = {
       alwaysAsk: "Toujours demander",
       alwaysAllow: "Toujours autoriser",
       never: "Jamais",
+      scripts: "Exécuter des scripts",
+      scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
       site: "Site ou motif",
@@ -67,6 +70,7 @@ export const fr = {
       browsing: "Navigation",
       actions: "Actions",
       downloads: "Téléchargements",
+      unlabelled: "Clics sans libellé",
       askNewSites: "Demander pour les nouveaux sites",
       requiresApproval: "Approbation requise",
       blocked: "Bloqué",
@@ -88,6 +92,8 @@ export const fr = {
         submit: "Autoriser Unsloth à envoyer ce formulaire sur {host} ?",
         click: "Autoriser Unsloth à cliquer sur « {name} » sur {host} ?",
         history: "Autoriser Unsloth à lire votre historique de navigation ?",
+        script: "Autoriser Unsloth à exécuter ce script sur {host} ?",
+        pointer: "Autoriser Unsloth à cliquer sur des zones sans libellé de {host}, comme un canevas ?",
       },
     },
     title: "Navigateur",
@@ -547,10 +553,60 @@ export const fr = {
     queueingOnHint: "Les nouveaux messages attendent leur tour.",
     queueingHintShared: "La file d’attente est conservée.",
   },
+  rewind: {
+    menuItem: "Revenir en arrière…",
+    title: "Revenir en arrière",
+    pickDescription: "Choisissez un message auquel revenir.",
+    pickEmpty: "Il n'y a pas encore de message auquel revenir.",
+    attachmentOnly: "Pièces jointes uniquement",
+    chooseDescription: "Le message s'ouvre en modification pour que vous puissiez le renvoyer. Les réponses actuelles restent accessibles avec les flèches de branche.",
+    modeBoth: "Conversation et fichiers",
+    modeConversation: "Conversation uniquement",
+    modeFiles: "Fichiers uniquement",
+    checking: "Vérification des modifications de fichiers…",
+    checkFailed: "Impossible de vérifier les modifications de fichiers : {error}",
+    noFileChanges: "Aucune modification de fichier après ce message",
+    summary: "Fichiers à restaurer : {restore}. À supprimer : {remove}. À recréer : {recreate}.",
+    conflicts: "Modifiés depuis, seront ignorés",
+    untracked: "Impossible à restaurer",
+    scopeNote: "Les programmes en cours, les paquets installés et tout ce qui se trouve hors du dossier de ce chat ne sont pas modifiés.",
+    back: "Retour",
+    cancel: "Annuler",
+    confirm: "Revenir en arrière",
+    waitForResponse: "Attendez la fin de la réponse en cours",
+    restoredOne: "1 fichier restauré",
+    restoredMany: "{count} fichiers restaurés",
+    nothingRestored: "Aucun fichier à restaurer",
+    skippedCount: "{count} ignorés",
+    restoreFailed: "Impossible de restaurer les fichiers",
+    undo: "Annuler",
+    undone: "Restauration des fichiers annulée",
+    undoFailed: "Impossible d'annuler la restauration des fichiers",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
+  },
+  welcome: {
+    goodToSeeYou: "Ravi de vous voir",
+    goodToSeeYouName: "Ravi de vous voir, {name}",
+    readyWhenYouAre: "Prêt quand vous l’êtes",
+    onYourMind: "Qu’avez-vous en tête aujourd’hui ?",
+    howCanIHelp: "Comment puis-je vous aider ?",
+    goodMorning: "Bonjour",
+    goodMorningName: "Bonjour, {name}",
+    goodEvening: "Bonsoir",
+    goodEveningName: "Bonsoir, {name}",
+    tonight: "Quel est le programme ce soir ?",
+    nightOwl: "Mode noctambule ?",
+    lateNightIdeas: "Des idées nocturnes ?",
+    upLate: "Encore debout avec une idée ?",
+    nightShift: "Le service de nuit commence",
+    nightShiftName: "Le service de nuit commence, {name}",
+    temporaryChat: "Chat temporaire",
+    temporaryChatDescription:
+      "Ce chat n’apparaîtra pas dans votre historique et n’est pas enregistré. Il disparaît quand vous le quittez.",
   },
   picker: {
     onDevice: "Sur l'appareil",
@@ -1974,6 +2030,8 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
+        chartToggle: "Graphique",
+        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",
@@ -2406,8 +2464,11 @@ export const fr = {
       title: "Agents",
       description:
         "Connectez des agents de codage comme Claude Code et Codex à un modèle local avec unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code fait exception : cette commande ajoute le modèle servi à la liste des modèles de Copilot Chat dans VS Code (chatLanguageModels.json).",
       intro:
-        "connecte Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
+        "connecte Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
       readDocs: "Lire la documentation",
       copy: "Copier",
       copied: "Copié",
@@ -2491,7 +2552,7 @@ export const fr = {
         persist:
           "Conserve d'une exécution à l'autre les données d'agent gérées par Unsloth.",
         asSubagent:
-          "Garde l'agent parent sur son modèle actuel et enregistre Unsloth comme sous-agent local (Claude Code, Codex et OpenCode).",
+          "Garde l'agent parent sur son modèle actuel et enregistre Unsloth comme sous-agent local (Claude Code, Codex, OpenCode et Pi).",
         apiKey:
           "Fournit votre clé API Unsloth, ou lit la variable UNSLOTH_API_KEY.",
         reasoning:
@@ -2583,6 +2644,13 @@ export const fr = {
         "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
       scrollToBottomButtonKeywords:
         "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
+      replyNotification: "Notifier quand une réponse est terminée",
+      replyNotificationDescription:
+        "Affiche une notification système quand une réponse se termine alors qu'Unsloth est réduit ou en arrière-plan.",
+      replyNotificationBlocked:
+        "Les notifications sont bloquées. Autorisez-les pour Unsloth dans les réglages du navigateur ou du système, puis réessayez.",
+      replyNotificationKeywords:
+        "notification notifier alerte terminé fini prêt réponse arrière-plan réduit notify notification alert done finished reply background",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -2603,14 +2671,14 @@ export const fr = {
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
       toolResultLimit: "Longueur de la sortie des outils",
-      toolResultLimitDescription: "Caractères d'un résultat Python ou Terminal que le modèle lit. Par défaut : {count}.",
-      toolResultLimitHint: "Une sortie plus longue est enregistrée dans un fichier que le modèle peut lire par parties. Une limite plus élevée s'applique aux modèles exécutés dans Unsloth, et les petites fenêtres de contexte reçoivent toujours moins. Les modèles d'API gardent la valeur par défaut sauf si vous la baissez.",
+      toolResultLimitDescription: "Caractères d'un résultat Python, Terminal ou d'outil MCP que le modèle lit. Par défaut : {count}.",
+      toolResultLimitHint: "Une sortie Python ou Terminal plus longue est enregistrée dans un fichier que le modèle peut lire par parties. Une limite plus élevée s'applique aux modèles exécutés dans Unsloth, et les petites fenêtres de contexte reçoivent toujours moins. Les modèles d'API gardent la valeur par défaut sauf si vous la baissez.",
       toolResultLimitDefault: "{count} (par défaut)",
       toolResultLimitLocked: "Défini par UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Impossible de charger la longueur de la sortie des outils.",
       toolResultLimitSaveError: "Impossible d'enregistrer la longueur de la sortie des outils.",
       toolResultLimitKeywords:
-        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "sortie résultat tronquer tronqué limite caractères longueur tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Replié",
         auto: "Déplier pendant l’exécution",

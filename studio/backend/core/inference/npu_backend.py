@@ -49,6 +49,9 @@ _VALIDATED_MARKER = "npu_validated.json"
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
+# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
+# limit (FastFlowLM 1.0.7; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+_FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
     ("amd_device_found", "No AMD XDNA 2 NPU was found."),
@@ -220,6 +223,14 @@ def _positive_int(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+def _max_context_length(checkpoint: str, reported: Any) -> Optional[int]:
+    reported = _positive_int(reported)
+    limit = _FLM_CONTEXT_LIMITS.get(checkpoint)
+    if limit is None:
+        return reported
+    return min(reported, limit) if reported else limit
 
 
 class LemonadeNpuBackend:
@@ -601,7 +612,9 @@ class LemonadeNpuBackend:
                     size_gb = float(size) if isinstance(size, (int, float)) else None,
                     downloaded = downloaded,
                     labels = labels,
-                    max_context_length = _positive_int(row.get("max_context_window")),
+                    max_context_length = _max_context_length(
+                        checkpoint, row.get("max_context_window")
+                    ),
                     resume_percent = files.resume_percent() if files else None,
                 )
             )

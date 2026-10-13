@@ -56,6 +56,9 @@ export const en = {
       alwaysAsk: "Always ask",
       alwaysAllow: "Always allow",
       never: "Never",
+      scripts: "Run scripts",
+      scriptsDescription: "Choose whether models can run scripts on pages. You see each script before it runs",
+      askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
       permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",
       site: "Site or pattern",
@@ -64,6 +67,7 @@ export const en = {
       browsing: "Browsing",
       actions: "Actions",
       downloads: "Downloads",
+      unlabelled: "Unlabelled clicks",
       askNewSites: "Ask for new sites",
       requiresApproval: "Requires approval",
       blocked: "Blocked",
@@ -85,6 +89,8 @@ export const en = {
         submit: "Let Unsloth submit this form on {host}?",
         click: "Let Unsloth click “{name}” on {host}?",
         history: "Let Unsloth read your browsing history?",
+        script: "Let Unsloth run this script on {host}?",
+        pointer: "Let Unsloth click unlabelled parts of {host}, such as a canvas?",
       },
     },
     title: "Browser",
@@ -589,10 +595,64 @@ export const en = {
     queueingOnHint: "New messages wait their turn.",
     queueingHintShared: "The queue is kept.",
   },
+  // /rewind and the prompt More menu's Rewind item.
+  rewind: {
+    menuItem: "Rewind…",
+    title: "Rewind",
+    pickDescription: "Choose a message to rewind to.",
+    pickEmpty: "There are no messages to rewind to yet.",
+    attachmentOnly: "Attachments only",
+    chooseDescription:
+      "The message opens for editing so you can resend it. The current replies stay available with the branch arrows.",
+    modeBoth: "Conversation and files",
+    modeConversation: "Conversation only",
+    modeFiles: "Files only",
+    checking: "Checking file changes…",
+    checkFailed: "Could not check file changes: {error}",
+    noFileChanges: "No file changes after this message",
+    summary: "Files to restore: {restore}. To remove: {remove}. To recreate: {recreate}.",
+    conflicts: "Changed since, will be skipped",
+    untracked: "Cannot be restored",
+    scopeNote:
+      "Running programs, installed packages and anything outside this chat's folder are not changed.",
+    back: "Back",
+    cancel: "Cancel",
+    confirm: "Rewind",
+    waitForResponse: "Wait for the current response to finish",
+    restoredOne: "Restored 1 file",
+    restoredMany: "Restored {count} files",
+    nothingRestored: "No files needed restoring",
+    skippedCount: "{count} skipped",
+    restoreFailed: "Could not restore files",
+    undo: "Undo",
+    undone: "File restore undone",
+    undoFailed: "Could not undo the file restore",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+  },
+  // The empty chat's greeting; {name} is the user's nickname or first name.
+  welcome: {
+    goodToSeeYou: "Good to see you",
+    goodToSeeYouName: "Good to see you, {name}",
+    readyWhenYouAre: "Ready when you are",
+    onYourMind: "What’s on your mind today?",
+    howCanIHelp: "How can I help?",
+    goodMorning: "Good morning",
+    goodMorningName: "Good morning, {name}",
+    goodEvening: "Good evening",
+    goodEveningName: "Good evening, {name}",
+    tonight: "What’s on for tonight?",
+    nightOwl: "Night owl mode?",
+    lateNightIdeas: "Late night ideas?",
+    upLate: "Up late with an idea?",
+    nightShift: "The night shift begins",
+    nightShiftName: "The night shift begins, {name}",
+    temporaryChat: "Temporary chat",
+    temporaryChatDescription:
+      "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
     onDevice: "On Device",
@@ -1989,6 +2049,8 @@ export const en = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Week of {date} · {tokens}",
+        chartToggle: "Chart",
+        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -2418,8 +2480,11 @@ export const en = {
       title: "Agents",
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code is the exception: this command adds the served model to VS Code's Copilot Chat model list (chatLanguageModels.json).",
       intro:
-        "connects Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -2496,7 +2561,7 @@ export const en = {
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
         asSubagent:
-          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         reasoning:
           "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
@@ -2583,6 +2648,13 @@ export const en = {
         "Show a button to jump back to the latest message after you scroll up.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show",
+      replyNotification: "Notify when a reply finishes",
+      replyNotificationDescription:
+        "Show a system notification when a reply finishes while Unsloth is minimized or in the background.",
+      replyNotificationBlocked:
+        "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
+      replyNotificationKeywords:
+        "notify notification alert done finished complete ready response reply background minimized desktop sound",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2604,14 +2676,14 @@ export const en = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       toolResultLimit: "Tool output length",
-      toolResultLimitDescription: "Characters of one Python or Terminal result the model reads. Default is {count}.",
-      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
+      toolResultLimitDescription: "Characters of one Python, Terminal or MCP tool result the model reads. Default is {count}.",
+      toolResultLimitHint: "Longer Python and Terminal output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
       toolResultLimitDefault: "{count} (default)",
       toolResultLimitLocked: "Set by UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Failed to load the tool output length.",
       toolResultLimitSaveError: "Failed to save the tool output length.",
       toolResultLimitKeywords:
-        "tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Collapsed",
         auto: "Expand while running",

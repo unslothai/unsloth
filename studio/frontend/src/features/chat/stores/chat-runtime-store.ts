@@ -1126,7 +1126,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   // Same for deep research, which apply() also holds back, or toggling any other pill erases
-  // the stored true. Unless the user just cleared it by enabling Search, Code or Images.
+  // the stored true. Unless the user just cleared it by enabling Search, Tools or Images.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
@@ -1908,7 +1908,7 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+/** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess

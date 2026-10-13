@@ -106,6 +106,7 @@ export function PageFrame({
   html,
   url,
   base,
+  ownBase = false,
   refresh,
   title,
   tabId,
@@ -119,6 +120,7 @@ export function PageFrame({
   html: string;
   url: string | null;
   base: string | null;
+  ownBase?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -219,6 +221,7 @@ export function PageFrame({
             html,
             url,
             base,
+            ownBase,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

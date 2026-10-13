@@ -250,8 +250,10 @@ class TestOldCallers:
         plain_signature = inspect.signature(LlamaCppBackend.generate_chat_completion)
         plain = list(plain_signature.parameters)
         at = plain.index("admission_output_allowance")
-        assert plain[at - 1 : at + 2] == [
+        # main appended `compact_context` after `_allow_respawn_retry` first; ours follow it.
+        assert plain[at - 2 : at + 2] == [
             "_allow_respawn_retry",
+            "compact_context",
             "admission_output_allowance",
             "on_prompt_fitted",
         ], f"a parameter was inserted rather than appended; around it: {plain[at - 2 : at + 3]}"
@@ -267,8 +269,10 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
+        # main's `compact_context` was appended after `sandbox_level`; ours come after it.
+        assert names.index("compact_context") == names.index("sandbox_level") + 1
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
-        for later in names[names.index("sandbox_level") + 1 :]:
+        for later in names[names.index("compact_context") + 1 :]:
             assert signature.parameters[later].default is None, f"{later} was not appended"
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 

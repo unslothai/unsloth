@@ -37,6 +37,7 @@ _ENV_CLEAR = (
     "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH",
     "TORCHDYNAMO_DISABLE",
     "UNSLOTH_DIFFUSION_AUTOOPT_DISCOVER",
+    "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT",
 )
 
 
@@ -157,8 +158,13 @@ def _engaged(result: Any) -> bool:
 
 def _teardown() -> None:
     """Restore every process-global patch a case may have installed (old and new teardown entry points)."""
-    from core.inference import diffusion_arch_patches, diffusion_eager_patches
+    from core.inference import (
+        diffusion_arch_patches,
+        diffusion_eager_patches,
+        diffusion_gguf_compile,
+    )
 
+    diffusion_gguf_compile.uninstall_all()
     diffusion_eager_patches.uninstall_patches()
     diffusion_arch_patches.uninstall_arch_patches()
     for mod_name in (
@@ -446,6 +452,14 @@ def snapshot(entry: Callable) -> dict:
         "_HELPERS",
         {"patch": _patch_function, "restore": _restore_original},
     )
+    # diffusers' GGUF utils need the optional `gguf` package; without a stand-in every gguf=1 case is host-dependent.
+    from core.inference import diffusion_gguf_compile
+
+    fake_gguf_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_gguf_utils.dequantize_gguf_tensor = lambda tensor: tensor
+    patch.setattr(diffusion_gguf_compile, "_gguf_utils", lambda: fake_gguf_utils)
+    patch.setattr(diffusion_gguf_compile, "_compiled_dequant_installed", False)
+    patch.setattr(diffusion_gguf_compile, "_compile_error", None)
     saved_env = {k: os.environ.pop(k, None) for k in _ENV_CLEAR}
     patch.setattr(torch.cuda, "is_available", lambda: True)
     patch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
@@ -487,7 +501,7 @@ def snapshot(entry: Callable) -> dict:
 def captured() -> dict:
     if not FIXTURE.exists():
         pytest.fail(f"missing parity fixture {FIXTURE}")
-    return json.loads(FIXTURE.read_text())
+    return json.loads(FIXTURE.read_text(encoding = "utf-8"))
 
 
 def test_fixture_covers_every_registered_family(captured):
@@ -499,6 +513,9 @@ def test_fixture_covers_every_registered_family(captured):
 
 
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
+    # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
+    # self-disable, so every case differs. Backend CI has no diffusers.
+    pytest.importorskip("diffusers")
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
@@ -508,6 +525,7 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
 
 def test_legacy_sequence_still_matches_fixture(captured):
     """The fixture is not stale: the old sequence over today's primitives still produces it."""
+    pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
     diffs = [case for case in want if got.get(case) != want[case]]
