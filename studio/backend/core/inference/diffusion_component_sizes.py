@@ -129,11 +129,20 @@ class ComponentSizes:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.components))
 
-    def resident_gb(self, names: Iterable[str], itemsize: int = 2) -> float:
-        return sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components) / _GB
+    def resident_gb(
+        self,
+        names: Iterable[str],
+        itemsize: int = 2,
+    ) -> float:
+        return (
+            sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components)
+            / _GB
+        )
 
 
-def _accumulate(name: str, headers: Iterable[tuple[str, Optional[dict]]]) -> Optional[ComponentSize]:
+def _accumulate(
+    name: str, headers: Iterable[tuple[str, Optional[dict]]]
+) -> Optional[ComponentSize]:
     stored = float_params = nonfloat = 0
     by_dtype: dict[str, int] = {}
     files: list[str] = []
@@ -189,7 +198,9 @@ def _stem_order(folder: str) -> tuple[str, str]:
 
 
 def select_weight_files(
-    names: Iterable[str], index_files: Optional[Iterable[str]] = None, folder: str = ""
+    names: Iterable[str],
+    index_files: Optional[Iterable[str]] = None,
+    folder: str = "",
 ) -> list[str]:
     """The safetensors files ``from_pretrained`` reads in one component folder (default variant). ``index_files``
     are the shard names an index lists; when given they win (a stray shard of an older layout is not counted)."""
@@ -201,7 +212,9 @@ def select_weight_files(
         return []  # an index naming a file not present: incomplete, unknown
     for stem in _stem_order(folder):
         default = sorted(
-            n for n in names if _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-"))
+            n
+            for n in names
+            if _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-"))
         )
         if default:
             return default
@@ -217,7 +230,11 @@ def _index_shards(text: str) -> Optional[list[str]]:
         return None
 
 
-def _pick_files(names: Iterable[str], read_text: Callable[[str], str], folder: str = "") -> list[str]:
+def _pick_files(
+    names: Iterable[str],
+    read_text: Callable[[str], str],
+    folder: str = "",
+) -> list[str]:
     """Weight files of one folder. An index wins when every shard it lists is present (a folder can carry two
     indexes, e.g. a transformers ``model`` one and a stale diffusers one: the complete one is what loads)."""
     names = list(names)
@@ -238,7 +255,9 @@ def _pick_files(names: Iterable[str], read_text: Callable[[str], str], folder: s
     return [] if indexed else select_weight_files(names, folder = folder)
 
 
-def local_component_sizes(root: Any, components: Optional[Iterable[str]] = None) -> Optional[ComponentSizes]:
+def local_component_sizes(
+    root: Any, components: Optional[Iterable[str]] = None
+) -> Optional[ComponentSizes]:
     """Component sizes of a local diffusers directory (every top-level folder holding safetensors, or just
     ``components``). None when the directory is unreadable or holds no weights. Never raises."""
     try:
@@ -268,7 +287,6 @@ def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
     """The newest cached snapshot of ``repo_id`` (None when not cached); no network."""
     try:
         from .diffusion_small_host import resolve_snapshot_dir
-
         return resolve_snapshot_dir(repo_id, cache_dir)
     except Exception:  # noqa: BLE001
         return None
@@ -295,25 +313,40 @@ def _token_id(token: Any) -> Optional[str]:
     import hashlib
 
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
 _HUB_LOCK = threading.Lock()
 
 
 def hub_disabled() -> bool:
     """Ranged Hub reads are off when the Hub is offline or ``UNSLOTH_DIFFUSION_HEADER_FETCH=0``."""
-    if (os.environ.get("UNSLOTH_DIFFUSION_HEADER_FETCH") or "").strip().lower() in ("0", "off", "false", "no"):
+    if (os.environ.get("UNSLOTH_DIFFUSION_HEADER_FETCH") or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return True
     return (os.environ.get("HF_HUB_OFFLINE") or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-def _hub_header(repo_id: str, filename: str, revision: str, token: Any, size: int, deadline: float) -> Optional[dict]:
+def _hub_header(
+    repo_id: str, filename: str, revision: str, token: Any, size: int, deadline: float
+) -> Optional[dict]:
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers
 
-        from .prequant_header_probe import MAX_SAFETENSORS_HEADER_BYTES, _hub_range_reader, _json_within
+        from .prequant_header_probe import (
+            MAX_SAFETENSORS_HEADER_BYTES,
+            _hub_range_reader,
+            _json_within,
+        )
 
         reader = _hub_range_reader(
-            hf_hub_url(repo_id, filename, revision = revision), dict(build_hf_headers(token = token)), deadline
+            hf_hub_url(repo_id, filename, revision = revision),
+            dict(build_hf_headers(token = token)),
+            deadline,
         )
         (length,) = struct.unpack("<Q", reader(0, 7))
         if not 0 < length <= MAX_SAFETENSORS_HEADER_BYTES or 8 + length > size:
@@ -344,7 +377,12 @@ def hub_component_sizes(
     import time
 
     wanted = set(components) if components is not None else None
-    key = (repo_id, revision, tuple(sorted(wanted)) if wanted is not None else None, _token_id(token))
+    key = (
+        repo_id,
+        revision,
+        tuple(sorted(wanted)) if wanted is not None else None,
+        _token_id(token),
+    )
     immutable = bool(revision and _SHA_RE.match(str(revision)))
     with _HUB_LOCK:
         if key in _HUB_CACHE:
@@ -368,7 +406,6 @@ def _hub_component_sizes(
     deadline = time.monotonic() + timeout_seconds
     try:
         from huggingface_hub import HfApi
-
         info = HfApi(token = token).model_info(
             repo_id, revision = revision, files_metadata = True, timeout = timeout_seconds
         )
@@ -416,6 +453,7 @@ def _read_hub_sizes(
     out: dict[str, ComponentSize] = {}
     try:
         for folder, files in sorted(by_folder.items()):
+
             def _read_index(n: str, folder: str = folder) -> str:
                 # fetched, never cached: a stray index in the HF cache would read as a started download
                 response = get_session().get(
@@ -436,7 +474,12 @@ def _read_hub_sizes(
             size = _accumulate(
                 folder,
                 (
-                    (f, _hub_header(repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline))
+                    (
+                        f,
+                        _hub_header(
+                            repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline
+                        ),
+                    )
                     for f in picked
                 ),
             )
@@ -467,7 +510,11 @@ def component_sizes(
         return local_component_sizes(path, components)
     snap = local_snapshot_dir(str(repo_or_dir), cache_dir)
     local = local_component_sizes(snap, components) if snap is not None else None
-    need = tuple(required) if required is not None else (tuple(components) if components is not None else ())
+    need = (
+        tuple(required)
+        if required is not None
+        else (tuple(components) if components is not None else ())
+    )
     if local is not None and all(c in local.components for c in need):
         return local
     if allow_hub:
@@ -533,16 +580,19 @@ def video_header_components_gb(
     if bool(getattr(fam, "has_audio", False)) and sizes.get("audio_vae") is None:
         return None
     vae_itemsize = 4 if bool(getattr(fam, "vae_force_fp32", False)) else 2
-    vae_gb = sum(
-        sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2) for n in vae
-    ) / _GB
+    vae_gb = (
+        sum(sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2) for n in vae)
+        / _GB
+    )
     return (sizes.resident_gb(denoisers), sizes.resident_gb(text), vae_gb)
 
 
 IMAGE_ROLE_DENOISER = ("transformer", "transformer_2", "unconditional_transformer", "unet", "prior")
 
 
-def image_header_components_gb(sizes: Optional[ComponentSizes]) -> Optional[tuple[float, float, float]]:
+def image_header_components_gb(
+    sizes: Optional[ComponentSizes],
+) -> Optional[tuple[float, float, float]]:
     """``(denoiser(s), text encoders, vae)`` bf16-resident GB of an image pipeline, the ``_FAMILY_BF16_GB`` layout;
     None unless a denoiser, a text encoder and a VAE are all present."""
     if sizes is None:
@@ -588,7 +638,13 @@ def reconcile_with_table(
     return tuple(max(float(h), float(t)) for h, t in zip(rounded, table))  # type: ignore[return-value]
 
 
-def reconcile_scalar(header: Optional[float], table: float, *, is_base: bool, key: Any = None) -> float:
+def reconcile_scalar(
+    header: Optional[float],
+    table: float,
+    *,
+    is_base: bool,
+    key: Any = None,
+) -> float:
     """``reconcile_with_table`` for one term (a per-component constant such as LTX-2.5's latent upsampler)."""
     out = reconcile_with_table(
         None if header is None else (float(header),), (float(table),), is_base = is_base, key = key
@@ -635,7 +691,13 @@ def video_components_gb(
         return table
 
 
-def component_gb(repo: Any, component: str, *, itemsize: int = 2, default: Optional[float] = None) -> Optional[float]:
+def component_gb(
+    repo: Any,
+    component: str,
+    *,
+    itemsize: int = 2,
+    default: Optional[float] = None,
+) -> Optional[float]:
     """One component's resident GB from local headers (no network), else ``default``."""
     try:
         sizes = component_sizes(repo, components = (component,))
