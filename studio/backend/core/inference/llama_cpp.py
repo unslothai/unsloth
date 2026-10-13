@@ -41155,8 +41155,10 @@ class LlamaCppBackend:
                     # stall text over would read the same sentence as a repeat and
                     # swallow the one post-tool nudge.
                     _last_reprompt_text = ""
-                    # A tool ran this turn, so it counts against the caller's budget.
-                    _turn_executed_real_tool = True
+                    # A tool ran this turn, so it counts against the caller's budget. Loading
+                    # MCP tools does not, or a budget of one could never call what it found.
+                    if decision.tool_name != "mcp_tool_search":
+                        _turn_executed_real_tool = True
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())

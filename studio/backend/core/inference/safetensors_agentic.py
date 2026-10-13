@@ -1811,7 +1811,9 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.

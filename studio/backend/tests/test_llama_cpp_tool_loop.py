@@ -7330,3 +7330,37 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
     assert calls == [
         ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
     ]
+
+
+def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
+    """Loading deferred MCP tools is not a tool round (#10997)."""
+    from core.inference import tools as tools_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "description": "[A] Ping.",
+            "parameters": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
+    streams = [
+        _structured_tool_call("mcp_tool_search", {"query": "ping"}, "call_search"),
+        _structured_tool_call("mcp__srv1__ping", {}, "call_ping"),
+        [_sse({"content": "Pinged."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "ok")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "ping it"}],
+        [tools_mod._mcp_tool_search_spec([])],
+        max_tool_iterations = 1,
+    )
+
+    assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
+    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
