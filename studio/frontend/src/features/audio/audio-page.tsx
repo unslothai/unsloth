@@ -16,6 +16,7 @@ import { buildAudioTourSteps } from "./tour";
 import { useSidebar } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
 import { type InferenceStatusResponse, getInferenceStatus } from "@/features/chat";
+import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
@@ -462,6 +463,15 @@ export function AudioPage({
       if (runtime === "stt") void refreshSttStatus();
     });
   }, [active, refreshStatus, refreshSttStatus]);
+
+  // Transcribe lists On Device from the STT status, not the picker inventory: refresh it on cache changes.
+  const inventoryVersion = useInventoryVersion();
+  const seenInventoryVersion = useRef(inventoryVersion);
+  useEffect(() => {
+    if (!active || seenInventoryVersion.current === inventoryVersion) return;
+    seenInventoryVersion.current = inventoryVersion;
+    void refreshSttStatus();
+  }, [active, inventoryVersion, refreshSttStatus]);
 
   const {
     replayQueuedTtsPick,
