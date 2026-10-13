@@ -601,7 +601,10 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
     partial.indexOf("setPendingManualOrder(") < partial.indexOf("readAllSidebarRowIds("),
   );
   assert.equal(partial.slice(0, partial.indexOf("readAllSidebarRowIds(")).match(/setManualOrder\(scope/g)?.length ?? 0, 1);
-  assert.match(partial, /\.catch\(\(\) => settle\(shown\)\)/);
+  // a read that keeps failing saves nothing: the partial order is dropped, the saved one stands
+  assert.doesNotMatch(partial, /settle\(shown\)/);
+  assert.match(partial, /if \(attempt >= 2\) throw error;/);
+  assert.match(partial, /setPendingManualOrder\(\(\{ \[scope\]: _dropped, \.\.\.rest \}\) => rest\);\n\s*toast\.error\("Couldn't save the new order"\);/);
   // the displayed sort reads the pending order
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
 });
@@ -835,5 +838,8 @@ test("a training refresh moves its offset by the server rows read, and a repeate
 
 test("a failed empty-history probe stops an older answer from showing \"No chats yet\"", () => {
   const src = readSrc("components/app-sidebar.tsx");
-  assert.match(src, /\.catch\(\(\) => \{\n\s*if \(!cancelled\) setHasUnlistedChats\(null\);\n\s*\}\);/);
+  assert.match(src, /\.catch\(\(\) => \{\n\s*if \(!cancelled && mine === latest\) setHasUnlistedChats\(null\);\n\s*\}\);/);
+  // and only the newest probe answers, so an older one landing late cannot overwrite it
+  assert.match(src, /const mine = \+\+latest;/);
+  assert.match(src, /if \(!cancelled && mine === latest\) \{\n\s*setHasUnlistedChats\(pages\.some/);
 });

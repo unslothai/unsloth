@@ -1653,19 +1653,24 @@ export function AppSidebar() {
   useEffect(() => {
     if (!sidebarLooksEmpty) return;
     let cancelled = false;
+    let latest = 0;
     // re-asked on every history change: archiving or deleting can flip it while the list stays empty
     const probe = () => {
+      // only the newest probe answers: an older one landing late describes an older history
+      const mine = ++latest;
       void Promise.all(
         [sidebarRowQuery({}), sidebarRowQuery({ archived: true })].map((query) =>
           fetchSidebarRowPage(query, 1, null),
         ),
       )
         .then((pages) => {
-          if (!cancelled) setHasUnlistedChats(pages.some((page) => page.rows.length > 0));
+          if (!cancelled && mine === latest) {
+            setHasUnlistedChats(pages.some((page) => page.rows.length > 0));
+          }
         })
         // a failed probe knows nothing, so an older answer stops speaking for this history
         .catch(() => {
-          if (!cancelled) setHasUnlistedChats(null);
+          if (!cancelled && mine === latest) setHasUnlistedChats(null);
         });
     };
     probe();
@@ -2610,12 +2615,28 @@ export function AppSidebar() {
         setManualOrder(scope, order);
         setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
       };
-      void readAllSidebarRowIds(query)
+      // a partial order would rank every unloaded row ahead of the ones just arranged, so it is never
+      // saved: a read that keeps failing leaves the saved order as it was
+      const readAll = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await readAllSidebarRowIds(query);
+          } catch (error) {
+            if (attempt >= 2) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+          }
+        }
+      };
+      void readAll()
         .then((all) => {
           const current = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
           settle(settledManualOrder(ids, all, current));
         })
-        .catch(() => settle(shown));
+        .catch(() => {
+          if (writes.get(scope) !== generation) return;
+          setPendingManualOrder(({ [scope]: _dropped, ...rest }) => rest);
+          toast.error("Couldn't save the new order");
+        });
     },
     [setManualOrder, chatRowSlots, chatRowLists],
   );
