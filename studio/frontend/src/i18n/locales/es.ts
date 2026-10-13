@@ -2652,14 +2652,14 @@ export const es = {
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
       toolResultLimit: "Longitud de la salida de herramientas",
-      toolResultLimitDescription: "Caracteres de un resultado de Python o Terminal que lee el modelo. El valor predeterminado es {count}.",
-      toolResultLimitHint: "La salida más larga se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",
+      toolResultLimitDescription: "Caracteres de un resultado de Python, Terminal o herramienta MCP que lee el modelo. El valor predeterminado es {count}.",
+      toolResultLimitHint: "La salida más larga de Python y Terminal se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",
       toolResultLimitDefault: "{count} (predeterminado)",
       toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "No se pudo cargar la longitud de la salida de herramientas.",
       toolResultLimitSaveError: "No se pudo guardar la longitud de la salida de herramientas.",
       toolResultLimitKeywords:
-        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Contraído",
         auto: "Expandir mientras se ejecuta",
