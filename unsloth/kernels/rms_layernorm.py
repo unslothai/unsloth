@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import hashlib
 import os
 import warnings
@@ -63,7 +64,8 @@ def _rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
-def _rms_layernorm_backward(
+@triton.jit
+def _rms_backward_row(
     dY,
     dY_row_stride: tl.constexpr,
     dX,
@@ -71,26 +73,14 @@ def _rms_layernorm_backward(
     X,
     X_row_stride: tl.constexpr,
     W,
-    W_row_stride: tl.constexpr,
     r,
     r_row_stride: tl.constexpr,
+    row_idx,
+    col_offsets,
+    mask,
     n_cols: tl.constexpr,
-    eps: tl.constexpr,
     GEMMA: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    Fast RMS Layernorm kernel for the backward pass
-    Inspiration from a Triton tutorial:
-    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    """
-    row_idx = tl.program_id(0)
-    if LONG_INDEXING:
-        row_idx = row_idx.to(tl.int64)
-    col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
-
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
@@ -116,6 +106,82 @@ def _rms_layernorm_backward(
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var / n_cols * (n_cols * dY_W - normed * rowsum_dY_normed)
     tl.store(dX + col_offsets, output, mask = mask)
+    # dL/dW for this row, (1 + W) for Gemma included; dead code unless TRAIN_W.
+    return dY_row * normed
+
+
+def _rms_layernorm_backward(
+    dY,
+    dY_row_stride: tl.constexpr,
+    dX,
+    dX_row_stride: tl.constexpr,
+    X,
+    X_row_stride: tl.constexpr,
+    W,
+    W_row_stride: tl.constexpr,
+    r,
+    r_row_stride: tl.constexpr,
+    dW,
+    n_rows,
+    rows_per_program,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    TRAIN_W: tl.constexpr,
+):
+    """
+    Fast RMS Layernorm kernel for the backward pass
+    Inspiration from a Triton tutorial:
+    https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    TRAIN_W: persistent programs each sum dW over their rows into one fp32 partial
+    (fla-org/flash-linear-attention layer_norm_bwd_kernel_row); off compiles to one row per program.
+    """
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    if TRAIN_W:
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+        row_start = pid * rows_per_program
+        for row_idx in range(row_start, tl.minimum(row_start + rows_per_program, n_rows)):
+            dW_acc += _rms_backward_row(
+                dY,
+                dY_row_stride,
+                dX,
+                dX_row_stride,
+                X,
+                X_row_stride,
+                W,
+                r,
+                r_row_stride,
+                row_idx,
+                col_offsets,
+                mask,
+                n_cols,
+                GEMMA,
+            )
+        tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = mask)
+    else:
+        _rms_backward_row(
+            dY,
+            dY_row_stride,
+            dX,
+            dX_row_stride,
+            X,
+            X_row_stride,
+            W,
+            r,
+            r_row_stride,
+            pid,
+            col_offsets,
+            mask,
+            n_cols,
+            GEMMA,
+        )
 
 
 _rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
@@ -123,6 +189,7 @@ _rms_layernorm_backward = triton.heuristics(
     {
         "GEMMA": lambda args: bool(args["GEMMA"]),
         "LONG_INDEXING": lambda args: bool(args["LONG_INDEXING"]),
+        "TRAIN_W": lambda args: bool(args["TRAIN_W"]),
     }
 )(_rms_layernorm_backward)
 
@@ -240,7 +307,7 @@ def _rms_layernorm_forward_rows(
 
 
 @triton.jit
-def _rms_layernorm_backward_rows(
+def _rms_backward_rows_block(
     dY,
     dY_row_stride: tl.constexpr,
     dX,
@@ -249,19 +316,14 @@ def _rms_layernorm_backward_rows(
     X_row_stride: tl.constexpr,
     W,
     r,
+    rows,
     n_rows,
     n_cols: tl.constexpr,
-    eps: tl.constexpr,
     GEMMA: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    if LONG_INDEXING:
-        pid = pid.to(tl.int64)
-    rows = pid * ROWS + tl.arange(0, ROWS)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
     col_mask = col_offsets < n_cols
@@ -290,6 +352,88 @@ def _rms_layernorm_backward_rows(
         tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
     else:
         tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
+    # Masked rows load zeros, so they add nothing; dead code unless TRAIN_W.
+    return tl.sum(dY_rows * normed, axis = 0)
+
+
+@triton.jit
+def _rms_layernorm_backward_rows(
+    dY,
+    dY_row_stride: tl.constexpr,
+    dX,
+    dX_row_stride: tl.constexpr,
+    X,
+    X_row_stride: tl.constexpr,
+    W,
+    r,
+    dW,
+    n_rows,
+    blocks_per_program,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS: tl.constexpr,
+    WARPS: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    TRAIN_W: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    if TRAIN_W:
+        dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+        block_start = pid * blocks_per_program
+        block_end = tl.minimum(block_start + blocks_per_program, tl.cdiv(n_rows, ROWS))
+        for block in range(block_start, block_end):
+            dW_acc += _rms_backward_rows_block(
+                dY,
+                dY_row_stride,
+                dX,
+                dX_row_stride,
+                X,
+                X_row_stride,
+                W,
+                r,
+                block * ROWS + tl.arange(0, ROWS),
+                n_rows,
+                n_cols,
+                GEMMA,
+                BLOCK_SIZE,
+                ROWS,
+                WARPS,
+            )
+        col_offsets = tl.arange(0, BLOCK_SIZE)
+        tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = col_offsets < n_cols)
+    else:
+        _rms_backward_rows_block(
+            dY,
+            dY_row_stride,
+            dX,
+            dX_row_stride,
+            X,
+            X_row_stride,
+            W,
+            r,
+            pid * ROWS + tl.arange(0, ROWS),
+            n_rows,
+            n_cols,
+            GEMMA,
+            BLOCK_SIZE,
+            ROWS,
+            WARPS,
+        )
+
+
+@triton.jit
+def _rms_sum_dw_partials(partials, dW, n_programs, n_cols, BLOCK_SIZE: tl.constexpr):
+    # Fixed program order, so eager and torch.compile give the same bytes.
+    cols = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = cols < n_cols
+    acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
+    for i in range(n_programs):
+        acc += tl.load(partials + i * n_cols + cols, mask = mask, other = 0)
+    tl.store(dW + cols, acc.to(dW.dtype.element_ty), mask = mask)
 
 
 # Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
@@ -454,6 +598,24 @@ def _rms_forward(
     return Y, r
 
 
+# Persistent programs per SM for the trainable-weight backward; partials are programs x n_cols fp32.
+_DW_PROGRAMS_PER_SM = 4
+
+
+@functools.lru_cache(maxsize = None)
+def _sm_count(device):
+    try:
+        return int(torch.cuda.get_device_properties(device).multi_processor_count)
+    except Exception:
+        return 128
+
+
+def _dw_launch(units, device):
+    # units = rows (one-row kernel) or row blocks (multirow); returns (programs, units per program).
+    per_program = triton.cdiv(units, max(1, min(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)))
+    return triton.cdiv(units, per_program), per_program
+
+
 def _rms_backward(
     dY,
     dX,
@@ -464,16 +626,23 @@ def _rms_backward(
     gemma,
     wrap,
     multirow = None,
+    train_w = False,
 ):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
+    # train_w: also returns dL/dW (W.dtype); else None and the kernels compile without it.
     n_rows, n_cols = dY.shape
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
     long = long_indexing(dY, dX, X, block = _INDEX_MARGIN)
+    partials = None
     if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
+        programs, per_program = triton.cdiv(n_rows, ROWS), 1
+        if train_w:
+            programs, per_program = _dw_launch(programs, dY.device)
+            partials = torch.empty((programs, n_cols), dtype = torch.float32, device = dY.device)
         try:
-            wrap(_rms_layernorm_backward_rows)[((n_rows + ROWS - 1) // ROWS,)](
+            wrap(_rms_layernorm_backward_rows)[(programs,)](
                 dY,
                 dY.stride(0),
                 dX,
@@ -482,7 +651,9 @@ def _rms_backward(
                 X.stride(0),
                 W,
                 r,
+                r if partials is None else partials,
                 n_rows,
+                per_program,
                 n_cols,
                 eps,
                 GEMMA = gemma,
@@ -490,15 +661,21 @@ def _rms_backward(
                 ROWS = ROWS,
                 WARPS = WARPS,
                 LONG_INDEXING = long,
+                TRAIN_W = train_w,
                 num_warps = num_warps,
             )
-            return
         except Exception as error:
             if _multirow_must_raise(error, wrap):
                 raise
             _multirow_disable(f"launch failed: {error!r}")
+        else:
+            return _rms_sum_partials(partials, W, wrap)
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    wrap(_rms_layernorm_backward)[(n_rows,)](
+    programs, per_program = n_rows, 1
+    if train_w:
+        programs, per_program = _dw_launch(n_rows, dY.device)
+        partials = torch.empty((programs, n_cols), dtype = torch.float32, device = dY.device)
+    wrap(_rms_layernorm_backward)[(programs,)](
         dY,
         dY.stride(0),
         dX,
@@ -509,34 +686,32 @@ def _rms_backward(
         W.stride(0),
         r,
         r.stride(0),
+        r if partials is None else partials,
+        n_rows,
+        per_program,
         n_cols,
         eps,
         GEMMA = gemma,
         LONG_INDEXING = long,
         BLOCK_SIZE = BLOCK_SIZE,
+        TRAIN_W = train_w,
         num_warps = num_warps,
     )
+    return _rms_sum_partials(partials, W, wrap)
+
+
+def _rms_sum_partials(partials, W, wrap):
+    if partials is None:
+        return None
+    programs, n_cols = partials.shape
+    dW = torch.empty(n_cols, dtype = W.dtype, device = partials.device)
+    wrap(_rms_sum_dw_partials)[(triton.cdiv(n_cols, 1024),)](
+        partials, dW, programs, n_cols, BLOCK_SIZE = 1024
+    )
+    return dW
 
 
 _eager_kernel = lambda kernel: kernel
-
-
-def _rms_weight_grad(
-    dY,
-    X,
-    W,
-    r,
-    chunk_rows = None,
-):
-    # Only for a trainable weight (full finetuning); must run before the non-Gemma kernel overwrites dY.
-    # Eager chunks rows so the fp32 temporaries stay ~64 MB; Inductor fuses the unchunked form.
-    if chunk_rows is None:
-        return (dY.float() * (X.float() * r.view(-1, 1))).sum(0).to(W.dtype)
-    dW = torch.zeros(dY.shape[1], dtype = torch.float32, device = dY.device)
-    for s in range(0, dY.shape[0], chunk_rows):
-        e = s + chunk_rows
-        dW += (dY[s:e].float() * (X[s:e].float() * r[s:e, None])).sum(0)
-    return dW.to(W.dtype)
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
@@ -566,12 +741,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        dW = None
-        if ctx.needs_input_grad[1]:
-            dW = _rms_weight_grad(dY, X, W, r, chunk_rows = max(1, (1 << 24) // dim))
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
         with torch_gpu_device(dY.device):
-            _rms_backward(dY, dX, X, W, r, ctx.eps, ctx.GEMMA, _eager_kernel)
+            dW = _rms_backward(
+                dY,
+                dX,
+                X,
+                W,
+                r,
+                ctx.eps,
+                ctx.GEMMA,
+                _eager_kernel,
+                train_w = ctx.needs_input_grad[1],
+            )
         dX = dX.view(*shape)
         return dX, dW, None, None
 
@@ -625,13 +807,30 @@ if _TRACEABLE:
 
     @torch.library.triton_op("unsloth::rms_layernorm_backward", mutates_args = ())
     def _rms_layernorm_backward_op(
-        dY: torch.Tensor, X: torch.Tensor, W: torch.Tensor, r: torch.Tensor, eps: float, gemma: bool
-    ) -> torch.Tensor:
+        dY: torch.Tensor,
+        X: torch.Tensor,
+        W: torch.Tensor,
+        r: torch.Tensor,
+        eps: float,
+        gemma: bool,
+        train_w: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         dX = torch.empty_like(dY)
         # Non-Gemma rewrites its dY argument, so it gets a copy.
         with torch_gpu_device(dY.device):
-            _rms_backward(dY if gemma else dX.copy_(dY), dX, X, W, r, eps, gemma, _traced_kernel)
-        return dX
+            dW = _rms_backward(
+                dY if gemma else dX.copy_(dY),
+                dX,
+                X,
+                W,
+                r,
+                eps,
+                gemma,
+                _traced_kernel,
+                train_w = train_w,
+            )
+        # An op returns tensors only: an empty dW stands for "frozen".
+        return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):
         X, W, eps, gemma = inputs
@@ -640,10 +839,11 @@ if _TRACEABLE:
 
     def _rms_layernorm_op_backward(ctx, dY, dr):
         X, W, r = ctx.saved_tensors
-        dY = dY.contiguous()
-        dW = _rms_weight_grad(dY, X, W, r) if ctx.needs_input_grad[1] else None
-        dX = torch.ops.unsloth.rms_layernorm_backward(dY, X, W, r, ctx.eps, ctx.gemma)
-        return dX, dW, None, None
+        train_w = ctx.needs_input_grad[1]
+        dX, dW = torch.ops.unsloth.rms_layernorm_backward(
+            dY.contiguous(), X, W, r, ctx.eps, ctx.gemma, train_w
+        )
+        return dX, dW if train_w else None, None, None
 
     _rms_layernorm_op.register_autograd(
         _rms_layernorm_op_backward, setup_context = _rms_setup_context

@@ -88,11 +88,9 @@ def _rms_case(fn, shape, dtype, gemma, non_contiguous):
 
 
 def _assert_rms_matches(eager, compiled):
-    for e, c, name in zip(eager[:2], compiled[:2], ("Y", "dX")):
+    assert eager[2] is not None and compiled[2] is not None, "trainable weight got no grad"
+    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
         assert _bytes_equal(e, c), name
-    # dW is a plain torch reduction that Inductor may reorder, so close rather than byte-equal.
-    assert eager[2] is not None and compiled[2] is not None
-    torch.testing.assert_close(compiled[2], eager[2])
 
 
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
