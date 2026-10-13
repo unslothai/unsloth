@@ -141,6 +141,8 @@ def spoof_xpu(monkeypatch):
 
         hw = _import_studio_hardware_module()
         hw._visible_gpu_count = None
+        # Host-independent: no sysfs single-tile widening unless a test asks for it.
+        monkeypatch.setattr(hw, "_intel_xpu_single_tile_host", lambda: False)
         return hw, calls
 
     return _apply
@@ -430,6 +432,21 @@ def test_composite_numeric_mask_reports_physical_ids(spoof_xpu, monkeypatch):
         assert result["index_kind"] == "physical"
         assert result["parent_visible_gpu_ids"] == [4, 7]
         assert [device["index"] for device in result["devices"]] == [4, 7]
+
+
+def test_unset_hierarchy_on_single_tile_cards_reports_physical_ids(spoof_xpu, monkeypatch):
+    """Arc / Flex cards have one tile, so the driver's default hierarchy addresses root GPUs."""
+    hw, _ = spoof_xpu(ze_mask = None, device_count = 2)
+    monkeypatch.setattr(hw, "_intel_xpu_single_tile_host", lambda: True)
+    hw.detect_hardware()
+    monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 2)
+
+    spec = hw._get_parent_visible_gpu_spec()
+    assert spec["numeric_ids"] == [0, 1]
+    assert spec["supports_explicit_gpu_ids"] is True
+
+    monkeypatch.setenv("ZE_FLAT_DEVICE_HIERARCHY", "FLAT")
+    assert hw._get_parent_visible_gpu_spec()["supports_explicit_gpu_ids"] is False
 
 
 def test_get_device_map_multi_is_balanced(spoof_xpu):
