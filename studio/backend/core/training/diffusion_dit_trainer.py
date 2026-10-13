@@ -1772,10 +1772,19 @@ def _wan_collate(
     import torch
     import torch.nn.functional as F
 
-    # Re-pad every trimmed embed to the pipeline's fixed length with zeros, exactly as _get_t5_prompt_embeds does.
+    # Re-pad every trimmed embed to the pipeline's fixed length with zeros, exactly as _get_t5_prompt_embeds does. On the
+    # DEVICE: only the ~100 KB trimmed rows cross the bus, and the pad / cat never run as host ops in the step loop
+    # (padding on the host meant a pageable 4 MB copy per step, and on a loaded host the multi-threaded CPU fill + cat
+    # stalled each step for ~100 ms).
     length = max(_WAN_MAX_SEQUENCE_LENGTH, *(e[0].shape[1] for e in entries))
-    padded = [F.pad(e[0], (0, 0, 0, length - e[0].shape[1])) for e in entries]
-    return (torch.cat(padded).to(device = device, dtype = weight_dtype),)
+    padded = [
+        F.pad(
+            e[0].to(device = device, dtype = weight_dtype, non_blocking = True),
+            (0, 0, 0, length - e[0].shape[1]),
+        )
+        for e in entries
+    ]
+    return (padded[0] if len(padded) == 1 else torch.cat(padded),)
 
 
 def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
@@ -2276,11 +2285,21 @@ def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
         a, b = variants[variant_rng.randrange(len(variants))] if len(variants) > 1 else variants[0]
         parts_a.append(a)
         parts_b.append(b)
-    lat_a = torch.cat(parts_a).to(device, non_blocking = True)
+    lat_a = _to_device_cat(parts_a, device)
     if parts_b[0] is None:
         return lat_a.to(dtype = weight_dtype)
-    lat_b = torch.cat(parts_b).to(device, non_blocking = True)
+    lat_b = _to_device_cat(parts_b, device)
     return (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
+
+
+def _to_device_cat(parts, device):
+    """Copy the (pinned) cached tensors to ``device`` and join them THERE. ``torch.cat`` on the host returns a fresh
+    PAGEABLE tensor, so the old cat-then-copy turned every pinned async copy into a synchronous pageable one, and ran
+    a multi-threaded host op per step. Values are identical."""
+    import torch
+
+    moved = [p.to(device, non_blocking = True) for p in parts]
+    return moved[0] if len(moved) == 1 else torch.cat(moved)
 
 
 def _should_compile(

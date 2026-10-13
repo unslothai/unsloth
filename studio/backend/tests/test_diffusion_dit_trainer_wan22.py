@@ -439,3 +439,34 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
     assert torch.allclose(with_lora, trained_out, atol = 1e-5), "the loaded adapter must reproduce the trained one"
     assert torch.equal(off, base)
     assert math.isfinite(float(with_lora.abs().max()))
+
+
+# ── the step loop keeps host work off the per-step path ──────────────────────
+def test_collate_copies_only_the_trimmed_rows_and_pads_on_the_device(monkeypatch):
+    """The pad to 512 must happen AFTER the move: padding on the host is a 4 MB pageable copy plus a multi-threaded
+    host fill + cat every step."""
+    seen = []
+    real_to = torch.Tensor.to
+
+    def spy(self, *a, **k):
+        seen.append(tuple(self.shape))
+        return real_to(self, *a, **k)
+
+    monkeypatch.setattr(torch.Tensor, "to", spy)
+    e = (torch.randn(1, 7, 8, dtype = torch.bfloat16),)
+    (out,) = dit._wan_collate([e], "cpu", torch.bfloat16)
+    assert seen == [(1, 7, 8)], "only the trimmed embed may be moved"
+    assert out.shape == (1, _WAN_MAX_SEQUENCE_LENGTH, 8)
+    assert torch.equal(out[:, :7], e[0]) and not out[:, 7:].any()
+
+
+def test_cached_latent_sampling_moves_before_joining_and_keeps_the_values():
+    cache = [[(torch.randn(1, Z_DIM, 1, 4, 4), torch.rand(1, Z_DIM, 1, 4, 4))] for _ in range(3)]
+    torch.manual_seed(7)
+    got = dit._sample_cached_latents(cache, [2, 0], None, "cpu", torch.float32)
+    torch.manual_seed(7)
+    a = torch.cat([cache[2][0][0], cache[0][0][0]])
+    b = torch.cat([cache[2][0][1], cache[0][0][1]])
+    assert torch.equal(got, a + b * torch.randn_like(a))
+    one = dit._to_device_cat([cache[1][0][0]], "cpu")
+    assert one is cache[1][0][0] or torch.equal(one, cache[1][0][0])
