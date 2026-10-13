@@ -87,7 +87,9 @@ function sentNCtx(
     currentCheckpoint = MODEL,
     // The configuration the bug was reported in.
     presetSource = "builtin-default",
+    loadedPin = null,
   }: {
+    loadedPin?: number | null;
     mode?: Mode;
     gpuLayers?: number;
     residentCtx?: number;
@@ -112,6 +114,7 @@ function sentNCtx(
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: 4096,
       presetSource,
+      loadedContextPin: loadedPin,
     }),
   );
 }
@@ -272,6 +275,29 @@ test("a poll landing mid-load cannot plant the outgoing model's context", () => 
     APPLIER,
     /\(ctxPinFields\.loadedCustomContextLength !== undefined &&\s*\n\s*prevState\.loadedCustomContextLength !==\s*\n?\s*ctxPinFields\.loadedCustomContextLength\);/,
   );
+});
+
+test("choosing Auto after a pinned load asks the server to size itself again", () => {
+  // Resending the resident size for Auto made the resident check read the reload as a no-op,
+  // so a model loaded at a set context could never go back to Auto.
+  for (const presetSource of PRESET_SOURCES) {
+    assert.equal(
+      sentNCtx(null, { presetSource, residentCtx: 8192, loadedPin: 8192 }),
+      0,
+      presetSource,
+    );
+  }
+  // A context the user sets is still sent as is over a pinned resident.
+  assert.equal(sentNCtx(16384, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192 }), 16384);
+  // Another model ignores the resident pin: cross-model Auto is 0 already.
+  assert.equal(
+    sentNCtx(null, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192, currentCheckpoint: OTHER_MODEL }),
+    0,
+  );
+});
+
+test("each same-model resolver call hands over the resident pin", () => {
+  assert.equal(RUNTIME.match(/loadedContextPin: (?:live|stateBeforeUnload)\.loadedCustomContextLength,/g)?.length, 3);
 });
 
 test("Auto stays Auto across a same-model reload, under every preset source", () => {

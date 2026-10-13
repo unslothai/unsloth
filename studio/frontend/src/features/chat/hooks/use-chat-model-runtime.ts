@@ -1652,6 +1652,7 @@ export function useChatModelRuntime() {
                 ),
                 defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
                 presetSource: live.activePresetSource,
+                loadedContextPin: live.loadedCustomContextLength,
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
@@ -2353,6 +2354,7 @@ export function useChatModelRuntime() {
                   DEFAULT_MAX_SEQ_LENGTH,
                 ),
                 presetSource: loadActivePresetSource,
+                loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
               }),
             );
             const validation = await validateModel({
@@ -2704,6 +2706,7 @@ export function useChatModelRuntime() {
                   DEFAULT_MAX_SEQ_LENGTH,
                 ),
               presetSource: loadActivePresetSource,
+              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
