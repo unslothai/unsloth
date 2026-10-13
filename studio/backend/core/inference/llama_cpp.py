@@ -42550,7 +42550,6 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
-
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
                 conversation, None, self.markup_profile
