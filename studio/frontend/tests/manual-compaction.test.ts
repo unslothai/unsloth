@@ -181,7 +181,13 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
   // A request the server declined is reported, not dropped.
-  assert.match(adapter, /marker\.truncation\.manual === true/);
+  // Only a reset started by this request counts; a replayed manual epoch is not one.
+  assert.match(
+    adapter,
+    /marker\.truncation\.manual === true &&\s+marker\.truncation\.checkpoint_started === true/,
+  );
+  // Stopped runs never reach the check, and a reply cut at max tokens still reports it.
+  assert.match(adapter, /compactNow &&\n\s+!compactionMarkers\?\.some\(/);
   assert.match(adapter, /"This chat was not compacted"/);
 });
 

@@ -8858,8 +8858,11 @@ export function createOpenAIStreamAdapter(
         // The server may still decline (rolling policy, archive unavailable): say so rather than drop it quietly.
         if (
           compactNow &&
-          incompleteReason == null &&
-          !compactionMarkers?.some((marker) => marker.truncation.manual === true)
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
         ) {
           toast.info("This chat was not compacted", {
             description:
