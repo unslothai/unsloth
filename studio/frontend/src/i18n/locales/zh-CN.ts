@@ -554,7 +554,6 @@ export const zhCN = {
     queueingHintShared: "队列会保留。",
   },
   rewind: {
-    menuItem: "回退…",
     title: "回退",
     pickDescription: "选择要回退到的消息。",
     pickEmpty: "还没有可以回退到的消息。",
