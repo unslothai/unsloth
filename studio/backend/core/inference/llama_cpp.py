@@ -7213,6 +7213,92 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
+# "auto" moves every routed expert to host RAM and turns the VRAM left over into an LRU
+# cache, so it only pays where the --fit split would keep a middling share r of the
+# routed expert bytes on the GPU. Measured, decode / prompt t/s vs the split:
+#   L4, gemma-4-26B-A4B UD-Q4_K_XL (r at micro-batch 512 / 2048): r 0.23 / 0.20 cache
+#   23.5 / 384 vs split 24.5 / 448 (loses both), r 0.53 / 0.49 44.9 / 556 vs 31.2 / 593
+#   (+44% decode), r 0.82 / 0.79 48.5 / 592 vs 42.0 / 897 (prompt -34%, -50% with a busy
+#   PCIe link).
+#   RTX PRO 6000, Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
+# Bounds sit between the losing and winning points; an unknown share keeps the split.
+_MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
+_MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
+# Whether a launch with a drafter (MTP head, separate drafter) may get the cache. With
+# ngram drafting the cache still won decode by 19% at r 0.49 and lost only at r 0.79,
+# which the band already excludes; set False to keep drafted launches on the split.
+_MOE_CACHE_WITH_DRAFTER = True
+# The expert-spill micro-batch raise is skipped when its larger compute buffer would push
+# more than this fraction of the resident expert bytes off the GPU. L4 gemma-4: at r 0.23
+# the raise cost 14% of them and decode fell 3% (13% with the cache, which it shrank by
+# 16%); at r 0.53 and 0.82 it cost 4-6%.
+_MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
+# Overrides, "auto" by default: "on" restores the ungated v0.1.906 choice, "off" never
+# emits the cache / never raises the micro-batch (v0.1.905). Anything else reads as auto.
+_MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
+_MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
+_MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
+_MOE_SWITCH_OFF = frozenset({"0", "off", "false", "no", "never"})
+
+
+def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
+    """``"on"``, ``"off"`` or ``"auto"`` for one of the MoE override env vars."""
+    raw = str((os.environ if env is None else env).get(name) or "").strip().lower()
+    if raw in _MOE_SWITCH_ON:
+        return "on"
+    if raw in _MOE_SWITCH_OFF:
+        return "off"
+    return "auto"
+
+
+def _moe_resident_expert_share(
+    shortfall_bytes: Optional[float], expert_bytes: Optional[int]
+) -> Optional[float]:
+    """Share of the routed expert bytes the fitter can keep on the GPU: one minus the
+    footprint's VRAM shortfall over the expert bytes, or None when either is unknown.
+    llama.cpp's fitter moves expert tensors off first, so the shortfall is theirs."""
+    if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
+        return None
+    return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
+
+
+def _moe_cache_share_admits(
+    resident_share: Optional[float],
+    *,
+    drafter: bool,
+    switch: str = "auto",
+) -> bool:
+    """Whether ``--moe-cache-mib auto`` beats the --fit split at this resident share."""
+    if switch != "auto":
+        return switch == "on"
+    if drafter and not _MOE_CACHE_WITH_DRAFTER:
+        return False
+    return (
+        resident_share is not None
+        and _MOE_CACHE_MIN_RESIDENT_SHARE <= resident_share <= _MOE_CACHE_MAX_RESIDENT_SHARE
+    )
+
+
+def _moe_spill_raise_keeps_experts(
+    share_before: Optional[float],
+    share_after: Optional[float],
+    *,
+    switch: str = "auto",
+) -> bool:
+    """Whether to keep the expert-spill micro-batch raise, from the resident expert share
+    priced at the old and the raised micro-batch. Nothing spilling before the raise means
+    nothing to stream, and the raise would only push experts off. Unpriceable keeps it."""
+    if switch != "auto":
+        return switch == "on"
+    if share_before is None:
+        return True
+    if share_before >= 1.0:
+        return False
+    if share_after is None:
+        return True
+    return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
+
+
 # User placement: the fitter aborts on most of it, and the cache refuses >1 device (--rpc adds one).
 _MOE_CACHE_USER_OWNED_FLAGS = (
     frozenset({"--moe-cache-mib", "-ot", "--override-tensor", "--rpc"})
@@ -28293,6 +28379,141 @@ class LlamaCppBackend:
                                 max_available_ctx = _ceiling[0]
                                 _vram_fit_ctx = _ceiling[0]
 
+                    # Bytes the single-GPU footprint exceeds free VRAM less --fit-target by,
+                    # at the current micro-batch (None = unpriceable). model_size_fit holds
+                    # the compute buffer it was built with; the raise below swaps it.
+                    _model_size_fit_cb = _compute_buffer_pipeline
+
+                    def _fitter_vram_shortfall() -> Optional[float]:
+                        if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
+                            return None
+                        # Smart offload may still pin experts to CPU against Unsloth's budget.
+                        from core.inference.offload_planner import smart_offload_enabled
+
+                        if smart_offload_enabled(os.environ):
+                            return None
+                        # A drafter priced with a flat cushion has no draft-KV term here.
+                        if _flat_mtp_engages:
+                            return None
+                        _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        # Per-device placement (common/fit.cpp) can spill despite a pooled fit.
+                        if len(_on) != 1:
+                            return None
+                        _child_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _child_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_child_env)
+                        if _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(_on),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        ):
+                            return None
+                        # Priced at Unsloth's --parallel; a larger pass-through one wins.
+                        _np_override = _extra_args_n_parallel(_child_extras, {})
+                        if _np_override is not None and _np_override > n_parallel:
+                            return None
+                        # A later pass-through -c 0 lets llama.cpp pick the context.
+                        if parse_ctx_override(_child_extras) == 0:
+                            return None
+                        # A GPU projector Studio never sized; Vision off keeps only audio-only.
+                        _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
+                        # The emitted --mmproj replaces an inherited path (argv after env).
+                        if effective_is_vision:
+                            _env_mmproj = None
+                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector.
+                        _mmproj_dev = _extra_args_device(
+                            _child_extras, {"--mmproj-device", "-mmdev"}
+                        )
+                        if _mmproj_dev is None:
+                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
+                        _mmproj_dev_gpu = bool(
+                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
+                        )
+                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
+                            if _mmproj_dev_gpu:
+                                return None
+                        elif disable_vision:
+                            if _mmproj_env_is_audio_only(_env_mmproj):
+                                return None
+                        elif (
+                            _env_mmproj
+                            or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                            or (
+                                not launch_mmproj_path
+                                and extra_args_mmproj_auto(_child_extras, _child_env)
+                            )
+                        ):
+                            return None
+                        # --fit-target precedence: argv, Studio's emitted value, env, default.
+                        _supports_fit_target = bool(server_caps.get("supports_fit_target"))
+                        _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                        _managed_mib = self._fit_target_margin_mib(
+                            auto_fit = _auto_fit,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            supports_fit_target = _supports_fit_target,
+                        )
+                        # A per-device list reads as its largest entry (the larger shortfall).
+                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        if _margin_mib is None:
+                            _emits = _supports_fit_target and (
+                                _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
+                            )
+                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            # An inherited 0 is a valid margin, not "unset".
+                            _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                        # A lazily read table stays mmap'd on the host, never on the GPU.
+                        _lazy_host = self._lazy_read_host_bytes(
+                            model_path,
+                            caps = server_caps,
+                            extra_args = _child_extras,
+                            env = _child_env,
+                            auto_resolves_off = self._lazy_auto_resolves_off(
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = is_vulkan_backend,
+                            ),
+                        )
+                        _need = (
+                            model_size_fit
+                            - _lazy_host
+                            - _model_size_fit_cb
+                            + _compute_buffer_pipeline
+                            + (
+                                _kv_bytes(effective_ctx)
+                                if _kv_offload_from_args(_child_extras, _child_env)
+                                else 0
+                            )
+                            + (
+                                _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                if _mtp_will_engage
+                                else 0
+                            )
+                            + _cc_bytes(effective_ctx, len(_on))
+                        )
+                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        return _need - _free * 1024 * 1024
+
+                    def _moe_resident_share_now() -> Optional[float]:
+                        if self.n_moe_layers <= 0:
+                            return None
+                        try:
+                            _short = _fitter_vram_shortfall()
+                            if _short is None:
+                                return None
+                            _scan = self._gguf_tensor_scan(model_path) or (None, {}, 0)
+                            return _moe_resident_expert_share(_short, _scan[2])
+                        except Exception as e:
+                            logger.debug(f"MoE resident share unpriceable ({e})")
+                            return None
+
                     # MoE experts in host RAM: a larger micro-batch amortises the expert
                     # copies of prompt processing (see _MOE_SPILL_N_UBATCH). The placement
                     # verdict above was priced at the default micro-batch, so a model that
@@ -28324,14 +28545,20 @@ class LlamaCppBackend:
                         discrete_gpu = _moe_spill_discrete_gpu,
                         user_named_batch = _user_named_batch,
                     )
-                    if _spill_n_ubatch != n_ubatch:
-                        logger.info(
-                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
-                            "%s -> %s for faster prompt processing.",
-                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
-                            _spill_n_ubatch,
+                    _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
+                    if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
+                        # Re-price the residency at the raised micro-batch: its compute
+                        # buffer comes out of the experts the GPU keeps (or the cache).
+                        _share_before = (
+                            _moe_resident_share_now() if _moe_ub_switch == "auto" else None
                         )
-                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
                         n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         # Same calls and fallbacks as above, at the new micro-batch.
@@ -28345,6 +28572,41 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _share_after = (
+                            _moe_resident_share_now()
+                            if _moe_ub_switch == "auto" and _share_before is not None
+                            else None
+                        )
+                        if _moe_spill_raise_keeps_experts(
+                            _share_before, _share_after, switch = _moe_ub_switch
+                        ):
+                            logger.info(
+                                "MoE experts are offloaded to system RAM; raising "
+                                "--ubatch-size %s -> %s for faster prompt processing.",
+                                (
+                                    _pre_raise[1]
+                                    if _pre_raise[1] is not None
+                                    else _DEFAULT_LLAMA_N_UBATCH
+                                ),
+                                _spill_n_ubatch,
+                            )
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            logger.info(
+                                "MoE experts: keeping the default --ubatch-size; %s would "
+                                "move the GPU's resident share of the routed experts "
+                                "%.0f%% -> %.0f%%.",
+                                _spill_n_ubatch,
+                                100 * (_share_before or 0.0),
+                                100 * (_share_after or 0.0),
+                            )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
@@ -28738,6 +29000,33 @@ class LlamaCppBackend:
                         lazy_read_bytes = _fit_lazy_bytes,
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
+                    if _moe_cache_candidate:
+                        # The cache only pays at a middling resident share (see
+                        # _MOE_CACHE_MAX_RESIDENT_SHARE); priced at the launched micro-batch.
+                        _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
+                        _moe_share = (
+                            _moe_resident_share_now() if _moe_cache_switch == "auto" else None
+                        )
+                        if not _moe_cache_share_admits(
+                            _moe_share, drafter = _mtp_will_engage, switch = _moe_cache_switch
+                        ):
+                            _moe_cache_candidate = False
+                            if _moe_cache_switch == "off":
+                                _why = f"{_MOE_CACHE_ENV} is off"
+                            elif _moe_share is None:
+                                _why = "the share of routed experts left on the GPU is unknown"
+                            elif _mtp_will_engage and not _MOE_CACHE_WITH_DRAFTER:
+                                _why = "a drafter is engaged"
+                            else:
+                                _why = (
+                                    f"an estimated {100 * _moe_share:.0f}% of the routed "
+                                    "experts stay on the GPU"
+                                )
+                            logger.info(
+                                "MoE cache: %s; keeping the --fit split without "
+                                "--moe-cache-mib.",
+                                _why,
+                            )
                     if _moe_cache_candidate:
                         # The cache frees no host RAM: every routed expert plus the prompt
                         # cache must fit pinned (moved out of model_size, not counted twice).
