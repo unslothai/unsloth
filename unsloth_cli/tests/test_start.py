@@ -4993,6 +4993,61 @@ def test_resolve_model_reloading_a_kept_model_does_not_announce_the_primary(monk
     ]
 
 
+def test_resolve_model_kept_model_quant_and_context_warns_of_the_reload(monkeypatch, capsys):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(
+        BASE,
+        "key",
+        "unsloth/Qwen3-1.7B-GGUF",
+        start.LoadOptions(gguf_variant = "Q8_0", max_seq_length = 16384),
+    )
+
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "Applying new load settings to unsloth/Qwen3-1.7B-GGUF." in out
+    assert payloads == [
+        {"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 16384}
+    ]
+
+
+def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+    payloads = []
+
+    def status(url):
+        return {**_kept_model_status(url), "spec_probe_retry_pending": True}
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: status(url))
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(
+        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
+    )
+
+    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}]
+
+
 def test_resolve_model_kept_model_at_the_same_settings_does_not_warn(monkeypatch, capsys):
     models = [
         {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},

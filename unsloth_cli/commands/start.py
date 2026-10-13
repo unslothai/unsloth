@@ -2171,8 +2171,7 @@ def _resolve_model(
             status = _model_status(base, key, loaded_match["id"])
         except Exception:
             status = {}
-        resident = status.get("gguf_variant") if status.get("is_gguf") else None
-        if resident and str(resident).strip().lower() == str(load.gguf_variant).strip().lower():
+        if not _load_settings_differ(status, load, overrides):
             match = loaded_match
     if requested and match is None:
         load_requested = True
@@ -2275,6 +2274,10 @@ def _resolve_model(
                     f"Switching the Unsloth server from {active_id}:{resident} "
                     f"to {requested}:{load.gguf_variant}."
                 )
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+            elif loaded_match is not None and _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
         elif active_id and loaded_match is not None:
