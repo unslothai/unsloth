@@ -417,13 +417,19 @@ def test_small_audio_keeps_a_loaded_whisper_cpp_model_on_its_engine(monkeypatch)
     assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
 
 
-def test_a_shared_whisper_id_runs_on_the_engine_holding_it(monkeypatch):
-    shared = {
-        "transformers": stt_state(downloaded = [WHISPER], models = [WHISPER]),
-        "gguf": stt_state(loaded = WHISPER, downloaded = [WHISPER], models = [WHISPER]),
-    }
-    args = {"audio": {"clip_id": "clip-7"}, "model": WHISPER}
-    _result, studio = _from_source(monkeypatch, args, status = shared)
+SHARED = {
+    "transformers": stt_state(downloaded = [WHISPER], models = [WHISPER]),
+    "gguf": stt_state(loaded = WHISPER, downloaded = [WHISPER], models = [WHISPER]),
+}
+
+
+# Stored audio, and a small file naming the model: both stay on whisper.cpp.
+@pytest.mark.parametrize("audio", [{"clip_id": "clip-7"}, _memo()["audio"]])
+def test_a_shared_whisper_id_runs_on_the_engine_holding_it(monkeypatch, audio):
+    args = {"audio": audio, "model": WHISPER}
+    result, studio = _from_source(monkeypatch, args, status = SHARED)
+    assert result["structuredContent"]["model"] == WHISPER
+    assert "/v1/audio/transcriptions" not in [c[1] for c in studio.state.calls]
     assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
 
 

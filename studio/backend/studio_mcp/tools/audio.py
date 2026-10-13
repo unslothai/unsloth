@@ -288,15 +288,14 @@ async def transcribe(
         return await _transcribe_source(
             caller, ctx, source, language = language, timestamps = timestamps, model = model
         )
-    if model is None:
-        # Without a model the multipart route runs its Transformers default, not the loaded one.
-        model, engine = await _resident_stt(caller)
-        # A whisper.cpp id is shared with Transformers, so only the stored-audio route keeps that engine.
-        if engine == "gguf" and not translate:
-            source = {"input_id": await upload_audio(caller, data, name)}
-            return await _transcribe_source(
-                caller, ctx, source, language = language, timestamps = timestamps, model = model
-            )
+    # Without a model the multipart route runs its Transformers default, not the loaded one.
+    model, engine = await _resident_stt(caller, model)
+    # A whisper.cpp id is shared with Transformers, so only the stored-audio route keeps that engine.
+    if engine == "gguf" and not translate:
+        source = {"input_id": await upload_audio(caller, data, name)}
+        return await _transcribe_source(
+            caller, ctx, source, language = language, timestamps = timestamps, model = model
+        )
 
     async def send():
         return await _multipart(
@@ -328,10 +327,16 @@ async def transcribe(
     )
 
 
-async def _resident_stt(caller: Caller) -> tuple[Optional[str], Optional[str]]:
-    payload = await try_json(caller, "/api/inference/audio/stt/status")
+async def _resident_stt(
+    caller: Caller, model: Optional[str] = None
+) -> tuple[Optional[str], Optional[str]]:
+    """The model and the engine serving it: the named one where it is held, else the loaded one."""
+    payload = await try_json(caller, loading.STT_STATUS, params = {"model": model} if model else None)
+    status = payload if isinstance(payload, dict) else {}
+    if model:
+        return model, loading.stt_engine(status, model)
     for engine in loading.STT_ENGINES:
-        state = payload.get(engine) if isinstance(payload, dict) else None
+        state = status.get(engine)
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
             return state["loaded_model"], engine
     return None, None
