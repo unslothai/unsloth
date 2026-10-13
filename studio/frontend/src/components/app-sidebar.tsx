@@ -1652,6 +1652,8 @@ export function AppSidebar() {
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
     if (!sidebarLooksEmpty) return;
+    // an answer from an earlier empty spell says nothing about this one (a chat made, then archived)
+    setHasUnlistedChats(null);
     let cancelled = false;
     let latest = 0;
     // re-asked on every history change: archiving or deleting can flip it while the list stays empty
@@ -4527,6 +4529,7 @@ export function AppSidebar() {
                 <ProgressiveRows
                   items={pinnedRows}
                   pageSize={SIDEBAR_PAGE_SIZE}
+                  mountAll
                   hasMore={chatRowLists.pinned?.hasMore}
                   onReachEnd={chatRowLists.pinned?.loadMore}
                   renderItem={(row) =>
@@ -4673,6 +4676,7 @@ export function AppSidebar() {
                 <ProgressiveRows
                   items={rows}
                   pageSize={SIDEBAR_PAGE_SIZE}
+                  mountAll
                   hasMore={chatRowLists[`section:${section.id}`]?.hasMore}
                   onReachEnd={chatRowLists[`section:${section.id}`]?.loadMore}
                   renderItem={(row) =>

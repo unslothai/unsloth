@@ -409,3 +409,31 @@ def test_sidebar_handlers_stay_sync():
     """Sync handlers run in the threadpool; the async-handler inventory test pins the rest."""
     assert not inspect.iscoroutinefunction(chat_history.list_sidebar_rows)
     assert not inspect.iscoroutinefunction(chat_history.sidebar_thread_rows)
+
+
+def test_include_ids_pane_follows_the_archive_filter(client):
+    # one pane archived, one not: each side finds the pair only through its own pane
+    _insert_threads(
+        [
+            {"id": "live", "pair_id": "mixed", "title": "L", "created_at": 1, "updated_at": 2},
+            {
+                "id": "gone",
+                "pair_id": "mixed",
+                "title": "G",
+                "created_at": 1,
+                "updated_at": 3,
+                "archived": 1,
+            },
+        ]
+    )
+
+    def ids(archived, include):
+        body = {"limit": 20, "archived": archived, "includeIds": include}
+        return [
+            row["id"] for row in client.post("/api/chat/sidebar/rows", json = body).json()["rows"]
+        ]
+
+    assert ids(False, ["gone"]) == []
+    assert ids(True, ["live"]) == []
+    assert ids(False, ["live"]) == ["mixed"]
+    assert ids(True, ["gone"]) == ["mixed"]

@@ -2558,12 +2558,14 @@ def list_chat_sidebar_rows(
     filters: list[str] = []
     filter_values: list[object] = []
     if include_ids is not None:
-        # a row id, or any member thread id: a running compare pane names its pair by its own id
+        # a row id, or any member thread id: a running compare pane names its pair by its own id. Only a
+        # pane on this side of the archive filter counts, as the full list filters panes before matching
         filters.append(
             "(rows.row_id IN (SELECT value FROM json_each(?)) OR rows.row_id IN ("
-            f"SELECT {_SIDEBAR_ROW_ID_SQL} FROM chat_threads WHERE id IN (SELECT value FROM json_each(?))))"
+            f"SELECT {_SIDEBAR_ROW_ID_SQL} FROM chat_threads WHERE id IN (SELECT value FROM json_each(?))"
+            " AND (COALESCE(archived, 0) <> 0) = ?))"
         )
-        filter_values += [json.dumps(include_ids), json.dumps(include_ids)]
+        filter_values += [json.dumps(include_ids), json.dumps(include_ids), 1 if archived else 0]
     if exclude_ids:
         filters.append("rows.row_id NOT IN (SELECT value FROM json_each(?))")
         filter_values.append(json.dumps(exclude_ids))

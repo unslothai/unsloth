@@ -843,3 +843,32 @@ test("a failed empty-history probe stops an older answer from showing \"No chats
   assert.match(src, /const mine = \+\+latest;/);
   assert.match(src, /if \(!cancelled && mine === latest\) \{\n\s*setHasUnlistedChats\(pages\.some/);
 });
+
+test("Pinned and custom sections mount every row they have, so navigation sees only drawn rows", () => {
+  const items = Array.from({ length: 27 }, (_, i) => ({ id: `row-${i}` }));
+  const html = (mountAll: boolean) =>
+    renderToStaticMarkup(
+      React.createElement(
+        "ul",
+        null,
+        React.createElement(ProgressiveRows<{ id: string }>, {
+          items,
+          pageSize: 20,
+          mountAll,
+          hasMore: true,
+          onReachEnd: () => undefined,
+          renderItem: ({ id }) => React.createElement("li", { "data-row": id }),
+        }),
+      ),
+    );
+  assert.equal(html(false).match(/data-row=/g)?.length, 20);
+  assert.equal(html(true).match(/data-row=/g)?.length, 27);
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /items=\{pinnedRows\}\n\s*pageSize=\{SIDEBAR_PAGE_SIZE\}\n\s*mountAll\n/);
+  assert.match(src, /items=\{rows\}\n\s*pageSize=\{SIDEBAR_PAGE_SIZE\}\n\s*mountAll\n/);
+});
+
+test("entering the empty state forgets the last empty spell's answer before probing", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /if \(!sidebarLooksEmpty\) return;\n(?:\s*\/\/.*\n)?\s*setHasUnlistedChats\(null\);/);
+});

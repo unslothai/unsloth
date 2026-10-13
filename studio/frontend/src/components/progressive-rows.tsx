@@ -36,6 +36,7 @@ export function ProgressiveRows<T extends { id: string }>({
   end,
   hasMore = false,
   onReachEnd,
+  mountAll = false,
 }: {
   items: readonly T[];
   pageSize: number;
@@ -43,8 +44,11 @@ export function ProgressiveRows<T extends { id: string }>({
   end?: ReactNode;
   hasMore?: boolean;
   onReachEnd?: () => Promise<void> | void;
+  /** Mount every row it is given and only page the server: for lists whose rows already arrive a
+   *  page at a time, so the rows navigation and selection see are the rows on screen. */
+  mountAll?: boolean;
 }) {
-  const [limit, setLimit] = useState(pageSize);
+  const [limit, setLimit] = useState(mountAll ? Number.POSITIVE_INFINITY : pageSize);
   const sentinelRef = useRef<HTMLLIElement>(null);
   const intersectingRef = useRef(false);
   const fetchingRef = useRef(false);
