@@ -907,17 +907,18 @@ class TestAParkDuringPrefillIsExcusedToo:
 
     def test_a_park_notice_inside_a_byte_chunk_renews_the_window(self):
         # A notice sharing a raw chunk with a progress event must still renew the first-token
-        # window.
+        # window. The gap is far wider than the window: Windows clocks and timers tick at about
+        # 15 ms, so a 5 ms window against a 10 ms gap raced.
         async def chunks(first):
             yield first
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.25)
             yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
 
         async def run(first):
             seen = []
             async for item in inference._aiter_llama_stream_items(
                 chunks(first),
-                first_token_deadline = time.monotonic() + 0.005,
+                first_token_deadline = time.monotonic() + 0.05,
                 track_prefill_progress = True,
                 post_first_item_read_timeout_s = None,
             ):
