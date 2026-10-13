@@ -233,14 +233,17 @@ def test_untie_merged_checkpoint(tmp_path, layout):
         "thinker.model.norm.weight": torch.ones(8),
     }
     if layout == "sharded":
-        save_file(tensors, tmp_path / "model-00001-of-00001.safetensors")
-        weight_map = {k: "model-00001-of-00001.safetensors" for k in tensors}
+        # A local checkpoint can already use the name the head would get.
+        save_file(tensors, tmp_path / "model-lm_head.safetensors")
+        weight_map = {k: "model-lm_head.safetensors" for k in tensors}
         (tmp_path / "model.safetensors.index.json").write_text(
             json.dumps({"metadata": {}, "weight_map": weight_map}), encoding = "utf-8"
         )
     else:
         name = "model.safetensors" if layout == "single" else "consolidated.safetensors"
         save_file(tensors, tmp_path / name)
+        # A reused directory can still hold an adapter save.
+        save_file({"x": torch.zeros(1)}, tmp_path / "adapter_model.safetensors")
     config = {
         "thinker_config": {"text_config": {"tie_word_embeddings": True}},
         "talker_config": {"tie_word_embeddings": True},
@@ -257,6 +260,8 @@ def test_untie_merged_checkpoint(tmp_path, layout):
     if layout == "sharded":
         index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding = "utf-8"))
         shard = tmp_path / index["weight_map"]["thinker.lm_head.weight"]
+        with safe_open(str(tmp_path / "model-lm_head.safetensors"), "pt") as h:
+            assert set(h.keys()) == set(tensors)
     else:
         shard = tmp_path / name
     with safe_open(str(shard), "pt") as h:

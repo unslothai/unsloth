@@ -6095,7 +6095,10 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
         with open(index_path, encoding = "utf-8") as f:
             index = json.load(f)
         if lm_head_key not in index["weight_map"]:
-            shard = "model-lm_head.safetensors"
+            used, shard, i = set(index["weight_map"].values()), "model-lm_head.safetensors", 0
+            while shard in used:
+                i += 1
+                shard = f"model-lm_head-{i}.safetensors"
             save_file(
                 {lm_head_key: weight},
                 os.path.join(save_directory, shard),
@@ -6106,7 +6109,13 @@ def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
                 json.dump(index, f, indent = 2)
     else:
         # The merge keeps the base repo's file name (model.safetensors, consolidated.safetensors, ...).
-        files = [f for f in os.listdir(save_directory) if f.endswith(".safetensors")]
+        files = [
+            f
+            for f in os.listdir(save_directory)
+            if f.endswith(".safetensors") and not f.startswith("adapter_model")
+        ]
+        if "model.safetensors" in files:
+            files = ["model.safetensors"]
         if len(files) != 1:
             return
         path = os.path.join(save_directory, files[0])
