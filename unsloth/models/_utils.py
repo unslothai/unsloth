@@ -3816,6 +3816,21 @@ elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
+
+def _xformers_fa3_lacks_sm90a(build_info, capability) -> bool:
+    # FA3's Hopper kernels need sm_90a (wgmma). xformers compiles FA3 for the build's TORCH_CUDA_ARCH_LIST
+    # verbatim, so a list naming only "9.0" (conda-forge) ships kernels that trap on H100 with "wgmma.fence
+    # without CUTE_ARCH_MMA_SM90A_ENABLED" and poison the CUDA context (#3963). An unset list = xformers'
+    # own "8.0 9.0a" default.
+    if tuple(capability) != (9, 0):
+        return False
+    try:
+        arch_list = str(build_info.build_env.get("TORCH_CUDA_ARCH_LIST") or "")
+    except Exception:
+        return False
+    return bool(arch_list) and "9.0a" not in arch_list
+
+
 try:
     _xformers_logger = logging.getLogger("xformers")
     _xformers_logger.setLevel(logging.ERROR)
@@ -3877,7 +3892,7 @@ try:
     from xformers._cpp_lib import _register_extensions
 
     try:
-        _register_extensions()
+        _xformers_build = _register_extensions()
     except Exception as error:
         raise ImportError(
             "Unsloth: Xformers was not installed correctly.\n"
@@ -3887,6 +3902,15 @@ try:
             "Longer error message:\n" + str(error)
         ) from error
     import xformers.ops.fmha as xformers
+
+    if (
+        DEVICE_TYPE == "cuda"
+        and torch.cuda.is_available()
+        and hasattr(xformers, "_set_use_fa3")
+        and _xformers_fa3_lacks_sm90a(_xformers_build, torch.cuda.get_device_capability())
+    ):
+        xformers._set_use_fa3(False)
+    del _xformers_build
 
     xformers_attention = xformers.memory_efficient_attention
 except ModuleNotFoundError:
