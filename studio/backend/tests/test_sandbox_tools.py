@@ -176,29 +176,23 @@ class TestLocalDatabaseFileIsNotAHost:
             'import duckdb as ddb\nddb.connect("a.duckdb")',
             'import sqlite3\nsqlite3 . connect("sales.db")',
             (
-                'import sqlite3\ndef normalize(sqlite3):\n    return sqlite3\n'
+                "import sqlite3\ndef normalize(sqlite3):\n    return sqlite3\n"
                 'sqlite3.connect("sales.db")'
             ),
-            (
-                'import sqlite3 as db\ndef normalize(db):\n    return db\n'
-                'db.connect("sales.db")'
-            ),
+            ("import sqlite3 as db\ndef normalize(db):\n    return db\n" 'db.connect("sales.db")'),
             'def load():\n    import sqlite3\n    return sqlite3.connect("sales.db")',
             (
-                'import sqlite3\ndef inspect():\n    global sqlite3\n'
+                "import sqlite3\ndef inspect():\n    global sqlite3\n"
                 '    return sqlite3.sqlite_version\nsqlite3.connect("sales.db")'
             ),
+            ("class Store:\n    import sqlite3\n" '    connection = sqlite3.connect("sales.db")'),
             (
-                'class Store:\n    import sqlite3\n'
-                '    connection = sqlite3.connect("sales.db")'
-            ),
-            (
-                'import sqlite3 as db\ndef load():\n    db = object()\n'
-                '    def open_database():\n        global db\n'
+                "import sqlite3 as db\ndef load():\n    db = object()\n"
+                "    def open_database():\n        global db\n"
                 '        return db.connect("sales.db")\n    return open_database()\nload()'
             ),
             (
-                'def load():\n    import sqlite3 as db\n'
+                "def load():\n    import sqlite3 as db\n"
                 '    return [db.connect("sales.db") for _ in [1]]\nload()'
             ),
             'import sqlite3 as db\n[db for db in ()]\ndb.connect("sales.db")',
@@ -221,64 +215,61 @@ class TestLocalDatabaseFileIsNotAHost:
             'import psycopg2 as duckdb\nduckdb.connect("evil.example")',
             'import sqlite3\nsqlite3.connect(r"\\\\evil.example\\share\\a.db")',
             'import sqlite3\nsqlite3.connect("file://evil.example/share/a.db", uri = True)',
+            ("import sqlite3\ndef load(sqlite3):\n" '    return sqlite3.connect("evil.example")'),
             (
-                'import sqlite3\ndef load(sqlite3):\n'
+                "import sqlite3, ftplib\ndef load(flag):\n"
+                "    if flag:\n        sqlite3 = ftplib.FTP()\n"
                 '    return sqlite3.connect("evil.example")'
             ),
             (
-                'import sqlite3, ftplib\ndef load(flag):\n'
-                '    if flag:\n        sqlite3 = ftplib.FTP()\n'
-                '    return sqlite3.connect("evil.example")'
-            ),
-            (
-                'import sqlite3 as db\ndef configure():\n    global db\n'
-                '    import psycopg2 as db\nconfigure()\n'
+                "import sqlite3 as db\ndef configure():\n    global db\n"
+                "    import psycopg2 as db\nconfigure()\n"
                 'db.connect("host=evil.example dbname=x")'
             ),
             (
-                'def load():\n    import sqlite3 as db\n    def configure():\n'
-                '        nonlocal db\n        import psycopg2 as db\n'
+                "def load():\n    import sqlite3 as db\n    def configure():\n"
+                "        nonlocal db\n        import psycopg2 as db\n"
                 '    configure()\n    return db.connect("host=evil.example dbname=x")\nload()'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\ndef configure():\n    global db\n'
+                "import ftplib\ndb = ftplib.FTP()\ndef configure():\n    global db\n"
                 '    db.connect("evil.example")\n    import sqlite3 as db\nconfigure()'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
                 '    db.connect("evil.example")\n    import sqlite3 as db'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
                 '    if False:\n        import sqlite3 as db\n    db.connect("evil.example")'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\ndef load():\n'
-                '    import sqlite3 as db\n    def send():\n        global db\n'
+                "import ftplib\ndb = ftplib.FTP()\ndef load():\n"
+                "    import sqlite3 as db\n    def send():\n        global db\n"
                 '        return db.connect("evil.example")\n    return send()\nload()'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
-                '    import sqlite3 as db\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
+                "    import sqlite3 as db\n"
                 '    values = [db.connect("evil.example") for _ in [1]]'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
-                '    import sqlite3 as db\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
+                "    import sqlite3 as db\n"
                 '    values = {db.connect("evil.example") for _ in [1]}'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
-                '    import sqlite3 as db\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
+                "    import sqlite3 as db\n"
                 '    values = {_: db.connect("evil.example") for _ in [1]}'
             ),
             (
-                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
-                '    import sqlite3 as db\n'
+                "import ftplib\ndb = ftplib.FTP()\nclass Store:\n"
+                "    import sqlite3 as db\n"
                 '    values = tuple(db.connect("evil.example") for _ in [1])'
             ),
             (
-                'import sqlite3 as db\nimport ftplib\n'
+                "import sqlite3 as db\nimport ftplib\n"
                 '[db.connect("evil.example") for db in [ftplib.FTP()]]'
             ),
         ],

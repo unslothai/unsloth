@@ -19328,8 +19328,7 @@ def _check_signal_escape_patterns(code: str):
             for imported, other in [direct_bindings[scope]]
         }
         declarations = {
-            scope: _local_database_declarations(scope_root)
-            for scope, scope_root in roots.items()
+            scope: _local_database_declarations(scope_root) for scope, scope_root in roots.items()
         }
         for scope, (global_names, nonlocal_names) in declarations.items():
             imported, other = bindings[scope]
@@ -19606,9 +19605,7 @@ def _check_signal_escape_patterns(code: str):
             self.local_databases: "tuple[frozenset, frozenset] | None" = None
             self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]] | None" = None
             self.local_database_scopes: "dict[int, ast.AST] | None" = None
-            self.local_database_declarations: (
-                "dict[int, tuple[frozenset, frozenset]] | None"
-            ) = None
+            self.local_database_declarations: "dict[int, tuple[frozenset, frozenset]] | None" = None
             self.local_database_parents: "dict[int, int | None] | None" = None
             self.local_database_node_scopes: "dict[int, int] | None" = None
             self.local_database_class_imports: "dict[int, dict[str, list[tuple[int, int]]]]" = {}
@@ -20047,9 +20044,9 @@ def _check_signal_escape_patterns(code: str):
                                 for alias in statement.names:
                                     module = alias.name.partition(".")[0]
                                     if module in _LOCAL_DATABASE_MODULES:
-                                        direct_imports.setdefault(alias.asname or module, []).append(
-                                            where
-                                        )
+                                        direct_imports.setdefault(
+                                            alias.asname or module, []
+                                        ).append(where)
                             self.local_database_class_imports[scope] = direct_imports
                         call_position = (
                             getattr(at, "lineno", 0),
