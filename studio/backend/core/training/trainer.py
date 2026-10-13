@@ -675,6 +675,15 @@ class UnslothTrainer:
             model_revision,
         )
 
+    def resolve_spark_tts_repo(
+        self, on_model_resolved: Optional[Callable[[str], None]] = None
+    ) -> None:
+        """Set the Spark-TTS repo root from what pre_detect recorded, unless load_model already set it."""
+        if self._spark_tts_repo_dir is None:
+            self._spark_tts_repo_dir = _spark_tts_repo_dir(
+                *self._spark_tts_repo_source, on_model_resolved
+            )
+
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         self.progress_callbacks.append(callback)
 
@@ -2364,8 +2373,7 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self._update_progress(status_message = "Preparing Spark-TTS codec source...")
-        if self._spark_tts_repo_dir is None:
-            self._spark_tts_repo_dir = _spark_tts_repo_dir(*self._spark_tts_repo_source)
+        self.resolve_spark_tts_repo()
         spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
         self._spark_tts_code_dir = spark_code_dir
         BiCodecTokenizer = import_sparktts_module(

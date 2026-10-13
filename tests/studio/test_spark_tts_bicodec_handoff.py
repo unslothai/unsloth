@@ -10,13 +10,19 @@ import ast
 import os
 import typing
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import MethodType, ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 _TRAINER = Path(__file__).resolve().parents[2] / "studio/backend/core/training/trainer.py"
-_NAMES = ("_spark_tts_repo_dir", "pre_detect_and_load_tokenizer", "_preprocess_bicodec_dataset")
+_WORKER = _TRAINER.with_name("worker.py")
+_NAMES = (
+    "_spark_tts_repo_dir",
+    "pre_detect_and_load_tokenizer",
+    "resolve_spark_tts_repo",
+    "_preprocess_bicodec_dataset",
+)
 
 
 class _CodecReached(Exception):
@@ -80,6 +86,7 @@ def _run(
             "speaker_col": None,
         },
     )
+    owner.resolve_spark_tts_repo = MethodType(ns["resolve_spark_tts_repo"], owner)
     dataset = SimpleNamespace(column_names = ["audio", "text"])
     dataset.cast_column = lambda *args: dataset
     audio = ModuleType("torchaudio")
@@ -133,3 +140,57 @@ def test_a_root_load_model_already_set_is_kept(repo_dir):
     downloads, codec_roots = _run("unsloth/Spark-TTS-0.5B", repo_dir = repo_dir)
     assert downloads == []
     assert codec_roots == [repo_dir]
+
+
+def _fetch(resolve):
+    tree = ast.parse(_WORKER.read_text(encoding = "utf-8"))
+    node = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_fetch_spark_tts_repo"
+    )
+    events, watched = [], []
+
+    class _Stop:
+        def set(self):
+            events.append("watchdog_stopped")
+
+    def start_watchdog(**kwargs):
+        watched.append(kwargs["repo_ids"])
+        return _Stop()
+
+    ns = {
+        "os": os,
+        "time": SimpleNamespace(time = lambda: 0.0),
+        "Any": typing.Any,
+        "_send_status": lambda queue, message: None,
+    }
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(_WORKER), "exec"), ns)
+    queue = SimpleNamespace(put = lambda event: events.append(event["type"]))
+    trainer = SimpleNamespace(
+        resolve_spark_tts_repo = lambda on_model_resolved: resolve(on_model_resolved)
+    )
+    hf_xet = SimpleNamespace(start_watchdog = start_watchdog)
+    with patch.dict("sys.modules", {"utils": SimpleNamespace(), "utils.hf_xet_fallback": hf_xet}):
+        try:
+            ns["_fetch_spark_tts_repo"](trainer, queue, "unsloth/Spark-TTS-0.5B")
+        except OSError:
+            events.append("raised")
+    return events, watched
+
+
+def test_the_early_spark_download_runs_under_the_model_load_watchdog():
+    events, watched = _fetch(lambda report: report("unsloth/Spark-TTS-0.5B"))
+    assert watched == [["unsloth/Spark-TTS-0.5B"]]
+    assert events == [
+        "model_load_started",
+        "model_load_resolved",
+        "watchdog_stopped",
+        "model_load_completed",
+    ]
+
+
+def test_a_failed_spark_download_still_closes_the_model_load_lifecycle():
+    def fail(report):
+        raise OSError("connection reset")
+
+    events, _ = _fetch(fail)
+    assert events == ["model_load_started", "watchdog_stopped", "model_load_completed", "raised"]
