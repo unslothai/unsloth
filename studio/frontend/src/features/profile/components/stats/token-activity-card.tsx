@@ -294,7 +294,6 @@ function WeekChart({
       axisLine={true}
       tickMargin={6}
       minTickGap={24}
-      fontSize={10}
       interval="preserveStartEnd"
       tickFormatter={(value) =>
         tickFormatter.format(parseDayKey(String(value)))
@@ -308,7 +307,6 @@ function WeekChart({
       tickMargin={4}
       tickCount={4}
       allowDecimals={false}
-      fontSize={10}
       width={48}
       tickFormatter={(value) => formatCompactNumber(Number(value), locale)}
     />
