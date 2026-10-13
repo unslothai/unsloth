@@ -69,3 +69,16 @@ def test_text_is_capped_on_a_character_boundary(rag_home, monkeypatch):
     html = "<html><body><p>ééééé</p></body></html>".encode()
     result = rag_routes.extract_text(_upload("page.xhtml", html), subject = "owner")
     assert result == {"filename": "page.xhtml", "text": "ééé", "truncated": True}
+
+
+def test_cap_stops_at_the_page_that_crosses_it(rag_home, monkeypatch):
+    from core.rag import parsers
+
+    pages = [parsers._page(text, n) for n, text in enumerate(["first", "  ", "second", "third"], 1)]
+    monkeypatch.setattr(parsers, "parse", lambda path: pages)
+    monkeypatch.setattr(rag_routes, "_EXTRACT_TEXT_MAX_BYTES", 12)
+    result = rag_routes.extract_text(_upload("deck.ppt", b"x"), subject = "owner")
+    assert (result["text"], result["truncated"]) == ("first\n\nsecon", True)
+    monkeypatch.setattr(rag_routes, "_EXTRACT_TEXT_MAX_BYTES", 1024)
+    result = rag_routes.extract_text(_upload("deck.ppt", b"x"), subject = "owner")
+    assert (result["text"], result["truncated"]) == ("first\n\nsecond\n\nthird", False)

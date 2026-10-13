@@ -974,11 +974,23 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
-    text = "\n\n".join(page.text.strip() for page in pages if page.text.strip())
-    raw = text.encode("utf-8")
-    truncated = len(raw) > _EXTRACT_TEXT_MAX_BYTES
-    if truncated:
-        text = raw[:_EXTRACT_TEXT_MAX_BYTES].decode("utf-8", errors = "ignore")
+    # Capped page by page: joining everything first would hold a huge extraction several times over.
+    parts: list[bytes] = []
+    room = _EXTRACT_TEXT_MAX_BYTES
+    truncated = False
+    for page in pages:
+        chunk = page.text.strip().encode("utf-8")
+        if not chunk:
+            continue
+        if parts:
+            chunk = b"\n\n" + chunk
+        if len(chunk) > room:
+            parts.append(chunk[:room])
+            truncated = True
+            break
+        parts.append(chunk)
+        room -= len(chunk)
+    text = b"".join(parts).decode("utf-8", errors = "ignore")
     return {"filename": filename, "text": text, "truncated": truncated}
 
 

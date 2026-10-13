@@ -140,6 +140,9 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         // list the composer and the drop path already share.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
         other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
             "application/octet-stream"
         }
