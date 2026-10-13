@@ -27,21 +27,23 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # An unescaped copy could move the synthesis boundary and truncate the report; spelled out to avoid
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
-_CREDENTIAL_LABEL = r"""api[\s_-]?key|access[\s_-]?(?:key|token)
-    |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
-    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token"""
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
-_AUTH_PARAM = rf"""{_AUTH_TOKEN}[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|[^\s,"]+)"""
-_AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
-# Never step over a following label: it may carry its own credential.
-_NOT_A_LABEL = rf"(?!(?:{_CREDENTIAL_LABEL})[ \t]*[:=]|[^\s:,;]+[ \t]*:)"
+_AUTH_VALUE = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,"':][^\s,":]*(?=[\s,]|$))"""
+_AUTH_PARAM = rf"{_AUTH_TOKEN}[ \t]*=[ \t]*{_AUTH_VALUE}"
+# Stops before a following label, which the credential passes below redact on their own.
+_QUERY_AUTHORIZATION = re.compile(
+    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*{_AUTH_TOKEN}[ \t]+
+    (?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
+    |client[\s_-]?secret|private[\s_-]?key|refresh[\s_-]?token|session[\s_-]?token
+    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)
+    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+)
 _QUERY_CREDENTIAL = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])(?:{_CREDENTIAL_LABEL})\s*[:=]\s*
-    (?:(?:aws4-hmac-sha256|bearer|basic|digest|dpop|negotiate|ntlm|token)[ \t]+{_NOT_A_LABEL}
-    (?:{_AUTH_PARAMS}|"[^"]*"|'[^']*'|[^\s,;]+)
-    |{_AUTH_TOKEN}[ \t]+{_NOT_A_LABEL}{_AUTH_PARAMS}
-    |"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
+    r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
+    |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
+    |refresh[\s_-]?token|session[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
+    (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
 _QUERY_NAMED_ASSIGNMENT = re.compile(
     r"""(?x)(?<![A-Za-z0-9])(?P<label>[A-Za-z][A-Za-z0-9_-]{0,100})\s*[:=]\s*
@@ -163,6 +165,7 @@ def _sanitize_public_query(query: str) -> str:
             return " "
         return match.group(0)
 
+    query = _QUERY_AUTHORIZATION.sub(" ", query)
     query = _QUERY_CREDENTIAL.sub(" ", query)
     query = _QUERY_NAMED_ASSIGNMENT.sub(redact_named_assignment, query)
     query = _QUERY_BEARER.sub(" ", query)

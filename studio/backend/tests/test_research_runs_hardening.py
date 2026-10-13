@@ -238,10 +238,20 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"password: basic token: {secret} why",
         f"password: basic api key: {secret} why",
         f"password: basic oauth.token: {secret} why",
+        f"Authorization: Bearer sk-1234567890abcdef123456= token: {secret} why",
+        f"Authorization: Custom oauthAccessToken='{secret} horse' why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text
         assert "why" in cleaned, text
+        assert "horse" not in cleaned, text
+
+
+def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
+    assert _sanitize_public_query("password: hunter2 designToken=blue") == "designToken=blue"
+    assert (
+        _sanitize_public_query("password: hunter2 language=python docs") == "language=python docs"
+    )
 
 
 def test_shield_untrusted_neutralizes_delimiters():
