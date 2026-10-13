@@ -726,6 +726,44 @@ def test_opencode_command_falls_back_to_v1(monkeypatch):
     assert start._opencode_command() == ("opencode", False)
 
 
+@pytest.mark.parametrize(
+    "version_output, v2",
+    [("opencode v2.0.27\n", True), ("1.19.0\n", False), (OSError("probe failed"), False)],
+)
+def test_opencode_command_detects_v2_installed_as_opencode(monkeypatch, version_output, v2):
+    # Arch's opencode package ships V2 as plain `opencode` (#13476).
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/bin/opencode" if name == "opencode" else None,
+    )
+
+    def check_output(argv, **_):
+        assert argv == ["/usr/bin/opencode", "--version"]
+        if isinstance(version_output, Exception):
+            raise version_output
+        return version_output
+
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+    assert start._opencode_command() == ("opencode", v2)
+
+
+def test_opencode_command_probes_real_v2_binary_named_opencode(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        (bin_dir / "opencode.cmd").write_text("@echo opencode v2.0.27\r\n")
+    else:
+        script = bin_dir / "opencode"
+        script.write_text("#!/bin/sh\necho opencode v2.0.27\n")
+        script.chmod(0o755)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert start._opencode_command() == ("opencode", True)
+
+
 def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
     install_dir = tmp_path / ".opencode" / "bin"
     install_dir.mkdir(parents = True)
@@ -5709,6 +5747,17 @@ def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypa
     assert "enabled_providers" not in _opencode_inline_config(result.output)
     assert "disabled_providers" not in _opencode_inline_config(result.output)
     assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
+
+
+def test_connect_opencode_v2_named_opencode_launches_without_model_flag(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", True))
+    launched = []
+    monkeypatch.setattr(start, "_run", lambda *a, **k: launched.append(a[3]))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--yolo"])
+
+    assert result.exit_code == 0, result.output
+    assert launched == [["opencode", "--standalone", "--auto"]]
 
 
 def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(

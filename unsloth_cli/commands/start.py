@@ -451,20 +451,7 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command() -> tuple[str, bool]:
-    resolved_v2 = _which_with_install_dirs("opencode2")
-    if resolved_v2:
-        return resolved_v2, True
-    return "opencode", False
-
-
-def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if Path(command).stem.lower() == "opencode2":
-        return True
-    executable = _which_with_install_dirs(command)
-    if executable is None:
-        # No local binary: assume a current release (a --no-launch recipe may run elsewhere).
-        return True
+def _opencode_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -476,11 +463,30 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _OPENCODE_NATIVE_AUTO_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    # Distro packages (Arch extra, opencode-beta) ship V2 as plain `opencode`, which rejects V1's --model flag.
+    resolved = _which_with_install_dirs("opencode")
+    version = _opencode_version(resolved) if resolved else None
+    return "opencode", bool(version) and version[0] >= 2
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
+        return True
+    version = _opencode_version(executable)
+    return bool(version) and version >= _OPENCODE_NATIVE_AUTO_MIN_VERSION
 
 
 def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
@@ -6680,7 +6686,9 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Append-safe: `opencode --auto run ...` would parse as the TUI.
         route_native_auto = (
-            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+            yolo
+            and (opencode_v2 or _opencode_supports_native_auto(command_name))
+            and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6733,7 +6741,7 @@ def opencode(
     # The inline config pins the model; --model only for an interactive bare launch, since drivers
     # append a subcommand after a printed command.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
+    route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
         opencode_args = list(ctx.args)
         if opencode_v2:

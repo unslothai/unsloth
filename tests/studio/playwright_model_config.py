@@ -1197,6 +1197,56 @@ with sync_playwright() as p:
     except Exception as e:
         soft_fail(f"migration idempotency check errored: {e}")
 
+    # ─────────────────────────────────────────────────────
+    # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
+    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
+    # ─────────────────────────────────────────────────────
+    step("Hub Run opens run settings on a page loaded at /hub")
+    try:
+        page.goto(f"{BASE}/hub?tab=downloaded", wait_until = "domcontentloaded", timeout = 60_000)
+        # The row's own button; "More options for <repo>" also names the model.
+        row = page.get_by_role("button", name = re.compile(rf"^\S*{re.escape(MODEL_HINT)}\S*$", re.I))
+        heading = page.get_by_role("heading", name = re.compile(re.escape(MODEL_HINT), re.I))
+        row.first.wait_for(state = "visible", timeout = 60_000)
+
+        # The Hub selects its first row once the list lands, which can replace an early click.
+        def model_selected() -> bool:
+            if _count(heading):
+                return True
+            row.first.click()
+            return False
+
+        wait_until(
+            model_selected, timeout_s = 60, what = "Hub selecting the model", interval_s = 2, page = page
+        )
+        page.locator("button").filter(has_text = re.compile(r"^\s*Run\s*$")).last.click()
+        page.wait_for_url(re.compile(r"/chat(\?|$)"), timeout = 30_000)
+        settings = page.get_by_role("button", name = "Back to model list", exact = True)
+        # Sampled for a while: settings that open and are then dismissed must not pass on one sight.
+        seen = []
+        for _ in range(5):
+            page.wait_for_timeout(1000)
+            seen.append(_count(settings) > 0 and settings.first.is_visible())
+        shoot("11-hub-run-settings")
+        if all(seen):
+            info("OK Hub Run kept run settings open on a page loaded at /hub")
+            # The composer ignores focus() while the settings are open, and must stop once they close.
+            page.keyboard.press("Escape")
+            settings.first.wait_for(state = "hidden", timeout = 10_000)
+            composer = page.locator('textarea[aria-label="Message input"]').first
+            composer.evaluate("el => el.focus()")
+            if composer.evaluate("el => el === document.activeElement"):
+                info("OK composer takes focus again after the run settings close")
+            else:
+                fail("composer could not be focused after the Hub Run settings closed")
+        else:
+            fail(
+                f"Hub Run lost its run settings on a page loaded at /hub (visible per second: {seen})"
+            )
+    except Exception as e:
+        fail(f"Hub Run check errored: {e}")
+
+    # ─────────────────────────────────────────────────────
     if page_errors:
         fail(f"page errors during run: {page_errors[:3]!r}")
 

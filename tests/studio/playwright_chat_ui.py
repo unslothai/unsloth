@@ -430,7 +430,7 @@ def exercise_permission_mode_controls(page, shoot):
     choose("Run automatically")
     expect_mode("Run automatically")
     expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
-    expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
+    expect(page.locator('button[data-pill-label="Tools"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
@@ -1642,9 +1642,13 @@ with sync_playwright() as p:
     )
     info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
-    # 7. Composer toggle buttons (aria-label flips Disable/Enable X).
-    step("composer toggle buttons (Thinking / Web search / Code execution)")
-    for feature in ("thinking", "web search", "code execution"):
+    # ─────────────────────────────────────────────────────
+    # 7. Composer toggle buttons. Each aria-label flips between
+    # "Disable X" / "Enable X" with state (shared-composer.tsx).
+    # ─────────────────────────────────────────────────────
+    step("composer toggle buttons (Thinking / Web search / Tools)")
+    for feature in ("thinking", "web search", "tools"):
+        # Match whichever of "Disable X" / "Enable X" is rendered.
         toggle = page.locator(
             f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
         ).first

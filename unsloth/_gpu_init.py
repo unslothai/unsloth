@@ -666,6 +666,10 @@ from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
 
 patch_bitsandbytes_paged_optimizer_resume()
 del patch_bitsandbytes_paged_optimizer_resume
+from .import_fixes import patch_bitsandbytes_optimizer_step_sync
+
+patch_bitsandbytes_optimizer_step_sync()
+del patch_bitsandbytes_optimizer_step_sync
 
 from .models import *
 from .models import __version__
