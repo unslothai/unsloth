@@ -196,3 +196,55 @@ def test_a_non_final_gpt_neox_stage_drops_its_output_head(tmp_path) -> None:
     assert not any(
         name.startswith((head, "gpt_neox.final_layer_norm")) for name, _ in model.named_parameters()
     )
+
+
+@pytest.mark.parametrize("shard_load", [True, False])
+@pytest.mark.parametrize("arch", ["gemma3", "gpt_neox"])
+def test_shard_load_computes_every_rotary_buffer(tmp_path, arch: str, shard_load: bool) -> None:
+    """Gemma 3 keeps a second rotary for local layers and GPT-NeoX keeps its own under
+    `gpt_neox`; rebuilding only `model.rotary_emb` left theirs as uninitialised storage."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    if arch == "gemma3":
+        model = transformers.Gemma3ForCausalLM(
+            transformers.Gemma3TextConfig(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                num_key_value_heads = 4,
+                head_dim = 8,
+                sliding_window = 8,
+            )
+        )
+    else:
+        model = transformers.GPTNeoXForCausalLM(
+            transformers.GPTNeoXConfig(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                max_position_embeddings = 32,
+            )
+        )
+    out = str(tmp_path / arch)
+    model.save_pretrained(out, safe_serialization = True)
+    loaded, _, _ = pipeline.build_stage_model(
+        out,
+        rank = 0,
+        world = 1,
+        device = "cpu",
+        shard_load = shard_load,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    want = dict(model.named_buffers())
+    got = dict(loaded.named_buffers())
+    rotary = [k for k in want if "inv_freq" in k]
+    assert rotary
+    for k in rotary:
+        assert torch.equal(got[k], want[k]), k

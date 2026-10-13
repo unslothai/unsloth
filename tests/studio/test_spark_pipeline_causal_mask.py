@@ -118,6 +118,17 @@ def _tiny(transformers, builder: str):
                 final_logit_softcapping = 0.5,
             )
         )
+    if builder == "gptj":
+        return transformers.GPTJForCausalLM(
+            transformers.GPTJConfig(
+                vocab_size = 64,
+                n_embd = 32,
+                n_layer = 2,
+                n_head = 4,
+                rotary_dim = 4,
+                n_positions = 32,
+            )
+        )
     if builder == "opt":
         return transformers.OPTForCausalLM(
             transformers.OPTConfig(
@@ -155,7 +166,7 @@ def _build_stage(pipeline, model, **kwargs):
     )
 
 
-@pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3", "gemma2"])
+@pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3", "gemma2", "gptj"])
 def test_a_stage_computes_the_same_model_it_was_split_from(builder: str) -> None:
     """The contract is not that the names resolve, it is that the arithmetic agrees."""
     torch = pytest.importorskip("torch")
@@ -303,3 +314,15 @@ def test_a_gpt_neox_first_stage_keeps_its_embedding_dropout() -> None:
     a = stage(ids)
     torch.manual_seed(1)
     assert not torch.equal(a, stage(ids))
+
+
+def test_a_gptj_first_stage_keeps_its_embedding_dropout() -> None:
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    model = transformers.GPTJForCausalLM(
+        transformers.GPTJConfig(
+            vocab_size = 64, n_embd = 32, n_layer = 2, n_head = 4, rotary_dim = 4, embd_pdrop = 0.5
+        )
+    )
+    stage = _build_stage(_pipeline_module(), model)
+    assert stage.embed_dropout is model.transformer.drop and stage.embed_dropout.p == 0.5

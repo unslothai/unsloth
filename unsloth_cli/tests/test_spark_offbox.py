@@ -355,6 +355,54 @@ def test_a_failed_provision_is_not_saved_as_a_configured_cluster(monkeypatch, tm
     assert sc.load_config()["enabled"] is True
 
 
+def test_setup_without_a_reachable_peer_is_not_saved_as_configured(monkeypatch, tmp_path) -> None:
+    """No peer yet means nothing was provisioned, so `enabled` must wait for `spark provision`."""
+    sc = _load("studio/spark_cluster.py")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setattr(
+        sc,
+        "cabled_rails",
+        lambda: [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}],
+    )
+    monkeypatch.setattr(sc, "peer_ip_for", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
+    monkeypatch.setattr(sc, "config_path", lambda: tmp_path / "spark_cluster.json")
+    monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: pytest.fail("no peer to provision"))
+    sc._cmd_setup(assume_yes = True)
+    assert sc.load_config()["enabled"] is False
+    assert sc.cluster_state() != "configured"
+
+
+@_POSIX_ONLY
+def test_rpc_preflight_checks_the_bundle_the_rpc_server_came_from(monkeypatch, tmp_path) -> None:
+    """A ~/src/llamacpp-rpc build with no managed bundle was refused as 'peer has no bundle'."""
+    sc = _load("studio/spark_cluster.py")
+    home = tmp_path / "home"
+    src = _mk_bundle(home / "src" / "llamacpp-rpc")
+    monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(sc, "llama_bundle_dir", lambda: tmp_path / "managed-absent")
+    assert sc.rpc_server_binary().startswith(str(src))
+    seen = {}
+
+    def peer(
+        ip,
+        timeout = 30,
+        root = None,
+    ):
+        seen["root"] = root
+        return sc.llama_bundle_identity(root)
+
+    monkeypatch.setattr(sc, "peer_llama_bundle_identity", peer)
+    monkeypatch.setattr(
+        sc,
+        "rpc_hello_probe_detail",
+        lambda host, port, **k: {"host": host, "port": port, "state": "refused", "version": None},
+    )
+    pre = sc.rpc_protocol_preflight("192.168.200.13")
+    assert seen["root"] == src
+    assert not any("no llama.cpp bundle" in p for p in pre["problems"]), pre["problems"]
+
+
 def test_setup_on_the_second_spark_keeps_its_own_address(monkeypatch, tmp_path) -> None:
     """Setup always planned the local node as .12; run on the Spark already at .13 it assigned that
     machine the first one's address."""

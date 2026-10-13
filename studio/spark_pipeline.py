@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import inspect
 import json
@@ -295,6 +296,36 @@ def plan_for_rank(plan: dict, rank: int) -> dict:
     }
 
 
+def _dtype_kwargs(dtype) -> dict:
+    """transformers 4.56 renamed torch_dtype to dtype; the 4.52.4 floor rejects `dtype`."""
+    import transformers
+    from packaging.version import Version
+
+    new = Version(transformers.__version__) >= Version("4.56.0")
+    return {"dtype" if new else "torch_dtype": dtype}
+
+
+@contextlib.contextmanager
+def _parameters_on_meta():
+    """Parameters go to meta as they register, buffers stay real: non-persistent buffers (every
+    rotary inv_freq, causal masks) are never in safetensors, so their own __init__ must compute them."""
+    import torch
+
+    register = torch.nn.Module.register_parameter
+
+    def to_meta(module, name, param):
+        register(module, name, param)
+        if param is not None:
+            p = module._parameters[name]
+            module._parameters[name] = type(p)(p.to("meta"), requires_grad = p.requires_grad)
+
+    torch.nn.Module.register_parameter = to_meta
+    try:
+        yield
+    finally:
+        torch.nn.Module.register_parameter = register
+
+
 def build_stage_model(
     model_name: str,
     rank: int,
@@ -314,14 +345,14 @@ def build_stage_model(
     from transformers import AutoConfig, AutoModelForCausalLM
 
     if not shard_load:
-        model = AutoModelForCausalLM.from_pretrained(model_name, dtype = dtype)
+        model = AutoModelForCausalLM.from_pretrained(model_name, **_dtype_kwargs(dtype))
         model.config.use_cache = False
         cfg = model.config
     else:
         cfg = AutoConfig.from_pretrained(model_name)
         cfg.use_cache = False
-        with torch.device("meta"):
-            model = AutoModelForCausalLM.from_config(cfg, dtype = dtype)
+        with _parameters_on_meta():
+            model = AutoModelForCausalLM.from_config(cfg, **_dtype_kwargs(dtype))
 
     owner, layers = find_layers(model)
     n = len(layers)
@@ -502,18 +533,11 @@ def _materialise(model, model_name, cfg, device, dtype, log):
             loaded[alias] = loaded[src]
     model.load_state_dict(loaded, strict = False, assign = True)
 
-    # Non-persistent buffers (rotary inv_freq, causal masks) are never in safetensors, so
-    # load_state_dict leaves them on meta and only the first real use says so.
-    meta_bufs = [n for n, b in model.named_buffers() if b.is_meta]
-    if meta_bufs:
-        log(f"shard-load: rebuilding {len(meta_bufs)} meta buffers ({meta_bufs[:3]})")
-        inner = getattr(model, "model", model)
-        rot = getattr(inner, "rotary_emb", None)
-        if rot is not None:
-            inner.rotary_emb = type(rot)(config = cfg, device = device)
-        for _, mod in model.named_modules():
-            if any(b.is_meta for _, b in mod.named_buffers(recurse = False)):
-                mod.to_empty(device = device, recurse = False)
+    # Buffers were computed on the CPU by _parameters_on_meta; move them beside the weights.
+    for mod in model.modules():
+        for name, buf in mod._buffers.items():
+            if buf is not None and not buf.is_meta:
+                mod._buffers[name] = buf.to(device)
 
     still = [k for k, v in model.named_parameters() if v.is_meta] + [
         k for k, v in model.named_buffers() if v.is_meta
@@ -1117,6 +1141,11 @@ def stage_module_cls():
                 )
             self.layers = torch.nn.ModuleList([container[i] for i in layer_ids])
             self.rotary_emb = getattr(owner, "rotary_emb", None)
+            # GPT-J (and GPT-NeoX before transformers 4.48) rotate inside the block from position_ids;
+            # Gemma 2/3 below transformers 4.53 slice a sliding-window mask by cache_position.
+            block_params = _forward_params(self.layers[0]) if len(self.layers) else set()
+            self.pass_position_ids = "position_ids" in block_params
+            self.pass_cache_position = "cache_position" in block_params
             # How a block wants its rope tables is read off its own signature, because it is not one
             # shape.
             self.position_params = _forward_params(self.layers[0]) if len(self.layers) else set()
@@ -1171,8 +1200,12 @@ def stage_module_cls():
                     f"rather than supporting these models."
                 )
             self.embed_tokens = embed if is_first else None
-            # GPT-NeoX applies hidden_dropout between the embedding and the first layer.
-            self.embed_dropout = getattr(owner, "emb_dropout", None) if is_first else None
+            # GPT-NeoX (`emb_dropout`) and GPT-J (`drop`) apply dropout between the embedding and the
+            # first layer.
+            dropout = _first_attr(owner, ("emb_dropout", "drop"))
+            self.embed_dropout = (
+                dropout if is_first and isinstance(dropout, torch.nn.Dropout) else None
+            )
             self.norm = norm if is_last else None
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
             self.config = getattr(top, "config", None)
@@ -1227,7 +1260,18 @@ def stage_module_cls():
                 )
             return out
 
-        def _call_layer(self, layer, h, pos, mask):
+        def _call_layer(
+            self,
+            layer,
+            h,
+            pos,
+            mask,
+            ids = None,
+        ):
+            if self.pass_position_ids:
+                pos = {**pos, "position_ids": ids}
+            if self.pass_cache_position:
+                pos = {**pos, "cache_position": ids[0]}
             out = layer(h, attention_mask = mask, **pos)
             return out[0] if isinstance(out, tuple) else out
 
@@ -1242,7 +1286,7 @@ def stage_module_cls():
                     f"reproduce; train at a sequence length of {self.sliding_window} or fewer"
                 )
             ids = None
-            if self.rotary_emb is not None:
+            if self.rotary_emb is not None or self.pass_position_ids or self.pass_cache_position:
                 ids = torch.arange(h.shape[1], device = h.device)
                 ids = ids.unsqueeze(0).expand(h.shape[0], -1)
             # Only recomputed per layer when the tables actually differ per layer.
@@ -1260,10 +1304,10 @@ def stage_module_cls():
                     pos = self._rotary(layer, h, ids)
                 if ckpt:
                     h = torch.utils.checkpoint.checkpoint(
-                        self._call_layer, layer, h, pos, mask, use_reentrant = False
+                        self._call_layer, layer, h, pos, mask, ids, use_reentrant = False
                     )
                 else:
-                    h = self._call_layer(layer, h, pos, mask)
+                    h = self._call_layer(layer, h, pos, mask, ids)
             if self.is_last:
                 h = _softcap_logits(self.config, self.lm_head(self.norm(h)))
             return h
