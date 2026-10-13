@@ -2352,6 +2352,7 @@ def _resolve_uncached(
             default_variant = variant.key,
             unsupported = reason,
             local_path = ref.local_path,
+            from_hub = from_hub,
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None

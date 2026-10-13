@@ -287,3 +287,20 @@ def test_stt_status_payload_includes_runtime_block(monkeypatch):
         "expected_tag": None,
         "outdated": False,
     }
+
+
+def test_stt_status_reads_the_runtime_off_the_event_loop(monkeypatch):
+    import threading
+
+    # A custom build's backend probe runs its --version, which must not stall other requests.
+    seen = []
+
+    def runtime_status():
+        seen.append(threading.current_thread() is threading.main_thread())
+        return {"available": False}
+
+    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", runtime_status)
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
+    assert json.loads(response.body)["audio_cpp_runtime"] == {"available": False}
+    assert seen == [False]
