@@ -37665,23 +37665,12 @@ class LlamaCppBackend:
                     _backend_supports_tools(self),
                     tools_withheld = tools_withheld,
                 )
-                _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
+                _sticky, _sticky_is_checkpoint, _sticky_manual = _sticky_compaction_details(
                     thread_id,
                     _before_fit,
                     context_policy = context_policy,
                     can_reset = _can_reset,
                     compaction_headroom_ratio = compaction_headroom_ratio,
-                )
-                _sticky_manual = (
-                    _sticky > 0
-                    and _sticky_is_checkpoint
-                    and _sticky_compaction_manual(
-                        thread_id,
-                        _before_fit,
-                        context_policy = context_policy,
-                        can_reset = _can_reset,
-                        compaction_headroom_ratio = compaction_headroom_ratio,
-                    )
                 )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
@@ -38695,21 +38684,10 @@ class LlamaCppBackend:
                     )
                     # The saved boundary and /compact both apply once, to the loop's first fit.
                     _iteration_force_reset = compact_context and not _sticky_boundary_applied
-                    _iteration_sticky, _iteration_sticky_is_checkpoint = (
-                        (0, True)
+                    _iteration_sticky, _iteration_sticky_is_checkpoint, _iteration_sticky_manual = (
+                        (0, True, False)
                         if _sticky_boundary_applied
-                        else _sticky_compaction_state(
-                            thread_id,
-                            _request_branch,
-                            context_policy = context_policy,
-                            can_reset = _iteration_can_reset,
-                            compaction_headroom_ratio = compaction_headroom_ratio,
-                        )
-                    )
-                    _iteration_sticky_manual = (
-                        _iteration_sticky > 0
-                        and _iteration_sticky_is_checkpoint
-                        and _sticky_compaction_manual(
+                        else _sticky_compaction_details(
                             thread_id,
                             _request_branch,
                             context_policy = context_policy,
