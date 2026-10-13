@@ -2201,6 +2201,9 @@ class SparkServing:
         self.peer_keys: Dict[str, bytes] = {}
         self.replica_binary: Optional[str] = None
         self.replica_port: Optional[int] = None
+        # (backend, process) of a split this load tore down before the route accepted it, see
+        # load_failed.
+        self._retired_split: Optional[tuple] = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -2533,6 +2536,8 @@ class SparkServing:
         if busy:
             return _fall_back(f"layer split needs the peer GPU but {busy}")
         if running is not None:
+            backend = self.attached_backend
+            self._retired_split = (backend, getattr(backend, "_process", None))
             await self.detach()
 
         # Both bundles must speak the same RPC protocol and nothing stale may sit on the port.
@@ -2629,6 +2634,22 @@ class SparkServing:
 
     async def load_failed(self) -> None:
         self.load_in_progress = False
+        retired, self._retired_split = self._retired_split, None
+        if retired is not None:
+            backend, process = retired
+            if process is not None and getattr(backend, "_process", None) is process:
+                # Its remote half went with the rpc-server this load replaced, so it is loaded but
+                # can no longer compute: unload it rather than report a model that cannot answer.
+                logger.warning(
+                    "spark serving: the replacement load failed after the layer split was torn "
+                    "down; unloading the previous model, whose remote layers are gone"
+                )
+                try:
+                    await asyncio.to_thread(backend.unload_model)
+                except Exception:
+                    logger.warning(
+                        "spark serving: unloading the orphaned model failed", exc_info = True
+                    )
         # Not every failed load leaves nothing running: the route validates and can raise 400/409
         # before it unloads, so a rejected replacement leaves the previous model loaded and still
         # being served.
@@ -2647,6 +2668,7 @@ class SparkServing:
         """Reconcile with what actually launched. Runs after every load, no-op reloads too."""
         self.load_in_progress = False
         self._pre_load_state = None
+        self._retired_split = None
         if not enabled():
             return
         try:

@@ -2160,6 +2160,29 @@ def test_load_failed_keeps_a_topology_whose_model_is_still_loaded():
     assert detached, "kept a topology after the model really went away"
 
 
+def test_a_rejected_reload_unloads_the_split_it_already_tore_down():
+    """before_load stops the rpc-server before the route has accepted the replacement; if the
+    route then rejects it, the old llama-server is loaded but its remote layers are gone."""
+    import asyncio
+
+    process = object()
+    unloaded = []
+    backend = SimpleNamespace(
+        is_loaded = True, _process = process, unload_model = lambda: unloaded.append(True)
+    )
+    state = ss.SparkServing()
+    state._retired_split = (backend, process)
+    asyncio.run(state.load_failed())
+    assert unloaded == [True]
+    assert state._retired_split is None
+
+    # A replacement that did get as far as swapping the process leaves nothing to unload.
+    unloaded.clear()
+    state._retired_split = (backend, object())
+    asyncio.run(state.load_failed())
+    assert unloaded == []
+
+
 def test_ssh_run_kills_and_reaps_a_timed_out_child(monkeypatch):
     import asyncio
 

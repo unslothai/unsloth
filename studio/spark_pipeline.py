@@ -1867,8 +1867,9 @@ def _main_data_parallel(args) -> int:
         from torch.distributed.device_mesh import init_device_mesh
 
         mesh = init_device_mesh("cpu" if use_cpu else "cuda", (world,))
-        _, owner = unwrap_stack(model)
-        for layer in owner.layers:
+        # find_layers' own container: GPT-2 / GPT-J name it `h`, not `layers`.
+        top, _ = unwrap_stack(model)
+        for layer in find_layers(top)[1]:
             if isinstance(layer, torch.nn.Module) and any(True for _ in layer.parameters()):
                 fully_shard(layer, mesh = mesh)
         fully_shard(model, mesh = mesh)
