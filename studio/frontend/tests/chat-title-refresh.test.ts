@@ -167,7 +167,7 @@ test("a refresh follows the connection that answered, and asks a local model onl
   assert.match(body, /if \(panes \? panes\.every\(\(pane\) => pane\.title === title\) : title === startTitle\) return "unchanged";/);
   // Each pane is guarded with its own starting title: a comparison's panes can differ.
   assert.match(body, /item\.type === "single" \? Promise\.resolve\(null\) : listStoredChatThreads\(\{ pairId: item\.id, includeArchived: true \}\)/);
-  assert.match(body, /updateChatThread\(id, \{ title \}, before === undefined \? \{\} : \{ expectedTitle: before \}\)/);
+  assert.match(body, /updateChatThread\(id, \{ title \}, \{ expectedTitle: before, preserveTitleModifiedAt: true \}\)/);
 });
 
 test("a locally answered chat is never sent to a selected external provider", () => {

@@ -272,7 +272,7 @@ async function regenerateChatTitleNow(
       // Guarded: a rename that lands while the title is generated wins (409).
       await Promise.all(
         targets.map(([id, before]) =>
-          updateChatThread(id, { title }, before === undefined ? {} : { expectedTitle: before }),
+          updateChatThread(id, { title }, { expectedTitle: before, preserveTitleModifiedAt: true }),
         ),
       );
     } catch {
