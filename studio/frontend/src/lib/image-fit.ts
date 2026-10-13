@@ -6,7 +6,6 @@ export const MAX_UPLOAD_IMAGE_SIDE = 4096;
 // DiffusionGenerateRequest.init_image max_length (studio/backend/models/inference.py).
 const MAX_UPLOAD_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
-/** The size that fits `maxSide` at the same aspect, or null when the image already fits. */
 export function fitWithinMaxSide(
   width: number,
   height: number,
@@ -26,8 +25,7 @@ export function fitOutputType(dataUrl: string): "image/jpeg" | "image/png" {
   return /^data:image\/(jpeg|jpg|pjpeg)[;,]/i.test(dataUrl) ? "image/jpeg" : "image/png";
 }
 
-/** Downscale an image data URL so neither side exceeds `maxSide`; anything that fits, or that this
- *  browser cannot decode, is returned unchanged so the server still reports it. */
+/** Anything that fits, or that this browser cannot decode, is returned unchanged so the server still reports it. */
 export async function fitImageDataUrl(dataUrl: string, maxSide: number): Promise<string> {
   let image: HTMLImageElement;
   try {

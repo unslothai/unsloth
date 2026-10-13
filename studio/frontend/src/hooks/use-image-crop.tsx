@@ -10,8 +10,7 @@ import {
   stageReferenceImage,
 } from "@/lib/image-crop";
 
-// Uploads keyed by the crop made from them, outside any picker: switching workflow remounts the
-// picker, and a re-crop must still start from the upload. Bounded since entries hold data URLs.
+// Uploads keyed by their crop, outside any picker: a workflow switch remounts it, and a re-crop must start from the upload.
 const cropOrigins = new Map<string, StagedReferenceImage>();
 const MAX_CROP_ORIGINS = 8;
 
@@ -24,7 +23,6 @@ function rememberCrop(entry: StagedReferenceImage) {
   }
 }
 
-/** Crop dialog state for one image value; `cropDialog` must be rendered by the caller. */
 export function useImageCrop(
   value: string | null,
   onChange: (dataUrl: string) => void,

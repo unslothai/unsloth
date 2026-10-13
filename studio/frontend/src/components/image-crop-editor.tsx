@@ -80,7 +80,6 @@ export function ReferenceImageEditor({
   open: boolean;
   picture: StagedReferenceImage | null;
   pictureNumber?: number;
-  /** What the dialog names, e.g. "Image 2"; defaults to "Picture {pictureNumber}". */
   subject?: string;
   onOpenChange: (open: boolean) => void;
   onApply: (dataUrl: string, crop: CropRect | null) => void;

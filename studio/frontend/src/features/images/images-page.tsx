@@ -3100,7 +3100,6 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
-  // Inpaint swaps its picker for the mask canvas, so its crop lives next to Replace image.
   const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
     initImage,
     handleInitChange,

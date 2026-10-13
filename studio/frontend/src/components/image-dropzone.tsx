@@ -42,7 +42,6 @@ export function ImageDropzone({
   className?: string;
   /** Larger uploads are downscaled to this per side; null keeps them as chosen. */
   maxSide?: number | null;
-  /** Shows a crop button; names the image in the crop dialog. */
   cropSubject?: string;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
