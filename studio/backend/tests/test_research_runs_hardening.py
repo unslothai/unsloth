@@ -279,9 +279,11 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Digest username="dXNlcjpw,YXNzd29yZA" why does dXNlcjpw,YXNzd29yZA fail',
         "Authorization: Basic dXNlcjpwYXNzd29yZA== server echoed dXNlcjpwYXNzd29yZA==.",
         "Authorization: Digest nonce= dXNlcjpwYXNzd29yZA why",
+        'Authorization: Digest nonce="123",response="dXNlcjpwYXNzd29yZA" why did dXNlcjpwYXNzd29yZA fail',
         'Authorization: Digest nonce="dXNlcjpw\\/YXNzd29yZA" echoed dXNlcjpw/YXNzd29yZA',
     ):
         assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
+    assert _sanitize_public_query("Authorization: Basic YTpi why did YTpi fail") == "why did fail"
     question = _sanitize_public_query('Authorization: Digest realm="private\nexplain oauth refresh')
     assert "explain oauth refresh" in question
 

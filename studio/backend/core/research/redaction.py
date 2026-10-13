@@ -158,16 +158,22 @@ def _sanitize_public_query(query: str) -> str:
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
     # An echoed copy of an identified credential (an error repeating it) goes too.
-    credentials = set()
+    credentials, short_credentials = set(), set()
     for match in _QUERY_AUTHORIZATION.finditer(query):
-        for piece in match["credentials"].split():
-            piece = re.sub(r"\\(.)", r"\1", piece)
+        found = match["credentials"]
+        if re.fullmatch(r"[\w.~+/-]+=*", found):
+            short_credentials.add(found)
+        for piece in re.split(r"[\s,]+", re.sub(r"\\(.)", r"\1", found)):
             credentials.update(
                 part.strip(_TOKEN_PUNCTUATION) for part in (piece, piece.partition("=")[2])
             )
     credentials = {piece for piece in credentials if len(piece) >= 8}
-    if credentials:
-        plain = [token for token in plain if not any(piece in token for piece in credentials)]
+    plain = [
+        token
+        for token in plain
+        if token.strip(_TOKEN_PUNCTUATION + ".!?") not in short_credentials
+        and not any(piece in token for piece in credentials)
+    ]
     tokens = plain
     if with_authorization != plain:
         # 600 tokens cover the 500-character output; the matcher is quadratic past that.
