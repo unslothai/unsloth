@@ -660,3 +660,29 @@ test("a hidden or hand-ordered section still loads its newest chat, which orders
   // it is never paged past that row
   assert.match(src, /name === "recents" \|\| name\.startsWith\("latest:"\) \|\| !list\.hasMore/);
 });
+
+test("a failed first read never shows \"No chats yet\"; it waits for a read that worked, as main did", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /const chatItemsLoaded = Boolean\(recentsPages\?\.loaded && !recentsPages\.error\);/);
+});
+
+test("a section's Mark all read and Archive act on the whole section, not its loaded pages", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  const menu = src.slice(src.indexOf("const unreadInSection"), src.indexOf("const unreadInSection") + 1600);
+  // unread by membership, through the row each unread thread belongs to
+  assert.match(menu, /inSection\(unreadRowIds\[threadId\] \?\? threadId\)/);
+  assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(unreadInSection\)\}/);
+  // archive reads the rest of the section first when it has more than is loaded
+  assert.match(menu, /sectionPages\?\.hasMore && sectionQuery \? await readAllSidebarRows\(sectionQuery\) : chats/);
+});
+
+test("only folder rows on screen read their chats", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /!collapsedProjectIds\.has\(project\.id\) && mountedFolderIds\.has\(project\.id\)/);
+  assert.match(src, /<MountedFolder id=\{project\.id\} onChange=\{setFolderMounted\} \/>/);
+});
+
+test("a list that shrank while a page was read frees its paging latch", () => {
+  const src = readSrc("components/progressive-rows.tsx");
+  assert.match(src, /if \(itemCountRef\.current <= fetchFromRef\.current\) fetchingRef\.current = false;/);
+});

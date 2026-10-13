@@ -183,6 +183,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
   readAllSidebarRowIds,
+  readAllSidebarRows,
   type SidebarRowSlot,
   sidebarRowQuery,
   mergeManualOrderTail,
@@ -417,6 +418,21 @@ const MOVE_TO_LIST =
 const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+/** Reports while it is mounted, so a folder row ProgressiveRows has not drawn reads nothing. */
+function MountedFolder({
+  id,
+  onChange,
+}: {
+  id: string;
+  onChange: (id: string, mounted: boolean) => void;
+}) {
+  useEffect(() => {
+    onChange(id, true);
+    return () => onChange(id, false);
+  }, [id, onChange]);
+  return null;
+}
+
 /** Chats per project, newest first. */
 function groupChatsByProject(items: readonly SidebarItem[]): Map<string, SidebarItem[]> {
   const map = new Map<string, SidebarItem[]>();
@@ -1609,7 +1625,8 @@ export function AppSidebar() {
     !isStudioRoute,
   );
   const recentsPages = chatRowLists.recents;
-  const chatItemsLoaded = recentsPages?.loaded ?? false;
+  // a failed first read is not an empty history: "No chats yet" waits for a read that worked
+  const chatItemsLoaded = Boolean(recentsPages?.loaded && !recentsPages.error);
   const folderPages = useCallback(
     (projectId: string) => chatRowLists[`folder:${projectId}`],
     [chatRowLists],
@@ -1901,6 +1918,7 @@ export function AppSidebar() {
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
   // In the navigation store, not local state: the unread chords register outside this tree.
   const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const unreadRowIds = useChatNavigationStore((s) => s.unreadRowIds);
   const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
   const clearThreadsUnread = useChatNavigationStore(
     (s) => s.clearThreadsUnread,
@@ -2142,13 +2160,32 @@ export function AppSidebar() {
   // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
+  // folder rows on screen: a long Pinned or section list mounts its folders a page at a time
+  const [mountedFolderIds, setMountedFolderIds] = useState<ReadonlySet<string>>(() => new Set());
+  // counted: one project can be drawn in two places (Pinned and Projects) at once
+  const folderMountCountsRef = useRef(new Map<string, number>());
+  const setFolderMounted = useCallback((id: string, mounted: boolean) => {
+    const counts = folderMountCountsRef.current;
+    const count = (counts.get(id) ?? 0) + (mounted ? 1 : -1);
+    if (count > 0) counts.set(id, count);
+    else counts.delete(id);
+    setMountedFolderIds((current) => {
+      if (current.has(id) === count > 0) return current;
+      const next = new Set(current);
+      if (count > 0) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const wantedFolderIds = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project") return "";
     const ids = new Set<string>();
     const add = (open: boolean, records: ProjectRecord[]) => {
       if (!open) return;
       for (const project of records) {
-        if (!collapsedProjectIds.has(project.id)) ids.add(project.id);
+        if (!collapsedProjectIds.has(project.id) && mountedFolderIds.has(project.id)) {
+          ids.add(project.id);
+        }
       }
     };
     add(projectsSectionRendered && projectsOpen, visibleProjectRecords);
@@ -2165,6 +2202,7 @@ export function AppSidebar() {
     pinnedOpen,
     pinnedProjectRecords,
     customSectionProjectRecords,
+    mountedFolderIds,
   ]);
   useEffect(() => {
     setOpenFolderIds(wantedFolderIds ? wantedFolderIds.split("\n") : []);
@@ -4281,7 +4319,19 @@ export function AppSidebar() {
       const chats = (customSectionRows.get(section.id) ?? []).flatMap((row) =>
         row.kind === "chat" ? [row.item] : [],
       );
-      const threadIds = chats.flatMap(getSidebarItemThreadIds);
+      // the whole section, not its loaded pages: unread by membership, archive after a full read
+      const inSection = (rowId: string) =>
+        sectionByChatId[rowId] === section.id && !pinnedIdSet.has(rowId);
+      const unreadInSection = [...unreadThreadIds].filter((threadId) =>
+        inSection(unreadRowIds[threadId] ?? threadId),
+      );
+      const sectionPages = chatRowLists[`section:${section.id}`];
+      const sectionQuery = chatRowSlots[`section:${section.id}`]?.query;
+      const archiveSection = async () => {
+        const all =
+          sectionPages?.hasMore && sectionQuery ? await readAllSidebarRows(sectionQuery) : chats;
+        await archiveChatItems(all);
+      };
       body = (
         <>
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "rename", section })}>
@@ -4290,13 +4340,16 @@ export function AppSidebar() {
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            disabled={!threadIds.some((id) => unreadThreadIds.has(id))}
-            onSelect={() => clearThreadsUnread(threadIds)}
+            disabled={unreadInSection.length === 0}
+            onSelect={() => clearThreadsUnread(unreadInSection)}
           >
             <HugeiconsIcon icon={Tick02Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.sections.markAllRead")}</span>
           </DropdownMenuItem>
-          <DropdownMenuItem disabled={chats.length === 0} onSelect={() => void archiveChatItems(chats)}>
+          <DropdownMenuItem
+            disabled={chats.length === 0}
+            onSelect={() => void archiveSection().catch(() => undefined)}
+          >
             <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.selection.archiveChats")}</span>
           </DropdownMenuItem>
@@ -5598,6 +5651,7 @@ export function AppSidebar() {
       </ContextMenuTrigger>
       {renderProjectContextMenu(project)}
     </ContextMenu>
+    <MountedFolder id={project.id} onChange={setFolderMounted} />
     {expanded && (
       <ProgressiveRows
         items={visibleChats}

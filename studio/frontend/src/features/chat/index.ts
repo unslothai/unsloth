@@ -514,6 +514,7 @@ export {
 export {
   fetchSidebarRowPage,
   readAllSidebarRowIds,
+  readAllSidebarRows,
   useSidebarRowPages,
   type SidebarRowPages,
   type SidebarRowSlot,

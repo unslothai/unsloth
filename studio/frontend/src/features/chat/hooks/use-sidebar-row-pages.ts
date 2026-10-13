@@ -133,7 +133,14 @@ export async function fetchSidebarRowPage(
 export async function readAllSidebarRowIds(
   query: SidebarRowQuery,
 ): Promise<string[]> {
-  const ids: string[] = [];
+  return (await readAllSidebarRows(query)).map((row) => row.id);
+}
+
+/** Every row of a query, so a whole-list action never takes the loaded pages for the list. */
+export async function readAllSidebarRows(
+  query: SidebarRowQuery,
+): Promise<SidebarItem[]> {
+  const rows: SidebarItem[] = [];
   let cursor: string | null = null;
   for (let guard = 0; guard < 10_000; guard++) {
     const page: RowPageResult<SidebarItem> = await fetchSidebarRowPage(
@@ -141,11 +148,11 @@ export async function readAllSidebarRowIds(
       200,
       cursor,
     );
-    for (const row of page.rows) ids.push(row.id);
+    rows.push(...page.rows);
     if (!page.hasMore || !page.nextCursor || page.rows.length === 0) break;
     cursor = page.nextCursor;
   }
-  return ids;
+  return rows;
 }
 
 type SidebarPager = RowPager<SidebarRowQuery, SidebarItem>;

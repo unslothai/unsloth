@@ -70,7 +70,8 @@ export function ProgressiveRows<T extends { id: string }>({
       // busy until the page's rows are drawn (see below); this only frees a fetch that added none
       void Promise.resolve(onReachEnd?.()).finally(() => {
         setTimeout(() => {
-          if (itemCountRef.current === fetchFromRef.current) fetchingRef.current = false;
+          // no growth, including a list that shrank meanwhile (a row deleted during the read)
+          if (itemCountRef.current <= fetchFromRef.current) fetchingRef.current = false;
         }, FETCH_SETTLE_MS);
       });
     },
