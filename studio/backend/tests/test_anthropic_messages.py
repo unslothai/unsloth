@@ -3593,6 +3593,43 @@ class TestAnthropicMessagesToolRouting:
         assert response.status_code == 200
         assert [t["function"]["name"] for t in seen["tools"]] == expected
 
+    def test_replayed_thinking_keeps_the_callers_preserve_setting(self, monkeypatch):
+        # Conversion drops thinking it does not preserve, so the resolver must not read that
+        # history as reasoning-free and swap real thoughts for empty think blocks.
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(
+            monkeypatch,
+            _replay_preserve_thinking = lambda preserve, messages, enable, effort: True,
+        )
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Greet back.", "signature": "s"},
+                        {"type": "text", "text": "hello"},
+                    ],
+                },
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["preserve_thinking"] is not True
+
     def test_server_tool_count_prices_the_restored_failed_result(self, monkeypatch):
         # The server-tool loop renders a replayed failure with the nudge the model saw, so the
         # count has to price the same bytes.

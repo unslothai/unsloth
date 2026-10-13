@@ -2576,7 +2576,8 @@ def _preserve_probe_pending(llama_backend) -> bool:
     if not getattr(llama_backend, "_supports_preserve_thinking", False):
         return False
     cached = getattr(llama_backend, "_empty_think_preserve_probe", None)
-    return cached is None or cached[0] != llama_backend._empty_think_probe_key()
+    key = getattr(llama_backend, "_empty_think_probe_key", None)
+    return key is not None and (cached is None or cached[0] != key())
 
 
 def _replay_preserve_thinking(llama_backend, payload, messages):
@@ -5544,11 +5545,38 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
     return _resolved_kwargs_think(llama_backend, resolved)
 
 
+def _anthropic_history_has_thinking(payload) -> bool:
+    for message in payload.messages or ():
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if role != "assistant" or isinstance(content, str):
+            continue
+        for block in content or ():
+            kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if kind in ("thinking", "redacted_thinking"):
+                return True
+    return False
+
+
+async def _resolved_anthropic_reasoning_args_async(llama_backend, payload, messages) -> dict:
+    """Off the loop only while resolving may still probe the template over HTTP."""
+    if _preserve_probe_pending(llama_backend):
+        return await asyncio.to_thread(
+            _resolved_anthropic_reasoning_args, llama_backend, payload, messages
+        )
+    return _resolved_anthropic_reasoning_args(llama_backend, payload, messages)
+
+
 def _resolved_anthropic_reasoning_args(llama_backend, payload, messages) -> dict:
     """``_anthropic_reasoning_args`` with preserve_thinking resolved for ``messages`` as generation resolves it."""
     args = _anthropic_reasoning_args(payload)
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if resolver is not None:
+    # Conversion drops thinking it does not preserve, so ask the payload whether any was replayed.
+    if resolver is not None and not _anthropic_history_has_thinking(payload):
         args["preserve_thinking"] = resolver(
             args["preserve_thinking"], messages, args["enable_thinking"], args["reasoning_effort"]
         )
@@ -41338,13 +41366,16 @@ async def chat_count_tokens(
         from core.inference.tool_loop_controller import restore_replayed_tool_results
 
         # As generation sends them; off the loop since restoring may parse an envelope.
-        _count_dumped = await asyncio.to_thread(
-            restore_replayed_tool_results, _live_tool_call_ids(_count_dumped)
-        )
+        _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
+    _count_kept = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(_count_dumped)
+    )
+    if not _takes_passthrough:
+        _count_kept = _live_tool_call_ids(_count_kept)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
-        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(_count_dumped)),
+        _count_kept,
         # Never as pixels: /apply-template prices a media marker, not the image.
         # This drops the base64 the completion path would have promoted, which is
         # the one part a count must not price as text.
@@ -41720,8 +41751,8 @@ async def anthropic_count_tokens(
         # As the server-tool loop restores them before it renders.
         openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
     # Off the loop: first use probes the template.
-    _reasoning_args = await asyncio.to_thread(
-        _resolved_anthropic_reasoning_args, llama_backend, payload, openai_messages
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
     )
     try:
         count = await asyncio.to_thread(
@@ -42382,8 +42413,8 @@ async def anthropic_messages(
                 reservation.cancel()
 
     # Off the loop: first use probes the template. Passthrough sends it, and every count prices it.
-    _reasoning_args = await asyncio.to_thread(
-        _resolved_anthropic_reasoning_args, llama_backend, payload, openai_messages
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
     )
 
     # ── Client-side pass-through path ─────────────────────────
@@ -44700,11 +44731,14 @@ def _openai_messages_for_gguf_chat(
 
     # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
     # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
+    # Ids lose their minted suffix only after the synthetic pass, which drops results by id.
     messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                restore_replayed_tool_results(
-                    _live_tool_call_ids([m.model_dump(exclude_none = True) for m in payload.messages])
+        _live_tool_call_ids(
+            _strip_provider_synthetic_tool_history(
+                _drop_empty_assistant_sentinels(
+                    restore_replayed_tool_results(
+                        [m.model_dump(exclude_none = True) for m in payload.messages]
+                    )
                 )
             )
         )

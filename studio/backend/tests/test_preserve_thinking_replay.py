@@ -203,3 +203,77 @@ def test_gguf_history_carries_the_tool_call_ids_the_model_generated():
     messages, _ = _openai_messages_for_gguf_chat(payload, is_vision = False)
     assert messages[1]["tool_calls"][0]["id"] == "call_0"
     assert messages[2]["tool_call_id"] == "call_0"
+
+
+def test_a_synthetic_provider_call_sharing_a_base_id_does_not_take_a_real_result_with_it():
+    # A Gemini code_execution card and a later GGUF call can both be call_0 under their minted
+    # suffix; the synthetic pass drops by id, so the suffix has to survive it.
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _openai_messages_for_gguf_chat
+
+    synthetic = "call_0:11111111-2222-4333-8444-555555555555"
+    real = "call_0:66666666-7777-4888-9999-aaaaaaaaaaaa"
+    payload = ChatCompletionRequest(
+        messages = [
+            {"role": "user", "content": "compute"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": synthetic,
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": synthetic, "name": "code_execution", "content": "4"},
+            {"role": "user", "content": "now run it locally"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": real,
+                        "type": "function",
+                        "function": {"name": "python", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": real, "name": "python", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    messages, _ = _openai_messages_for_gguf_chat(payload, is_vision = False)
+    tools = [m for m in messages if m.get("role") == "tool"]
+    assert [(m["tool_call_id"], m["content"]) for m in tools] == [("call_0", "ok")]
+
+
+def test_an_omitted_thinking_switch_follows_the_load_time_default(monkeypatch):
+    # Agents rarely send enable_thinking: llama-server renders the load-time default, so a model
+    # loaded with thinking off gets the same replay as an explicit off.
+    monkeypatch.setattr(LlamaCppBackend, "_empty_think_replays_with_preserve", lambda self: True)
+    backend = _backend()
+    backend._reasoning_default = False
+    assert backend._replay_preserve_thinking(None, _history(), None) is True
+    backend._reasoning_default = True
+    assert backend._replay_preserve_thinking(None, _history(), None) is None
+
+
+def test_a_template_the_server_refuses_to_render_is_probed_once(monkeypatch):
+    # Agents send many thinking-off turns; a 400 from /apply-template is an answer, not a blip.
+    calls: list = []
+
+    class _Refusing(_FakeClient):
+        def post(self, url, json):
+            self._calls.append(json)
+            return type("R", (), {"status_code": 400, "json": lambda self: {"error": "bad"}})()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", lambda **kw: _Refusing(None, calls))
+    backend = _backend()
+    assert backend._empty_think_replays_with_preserve() is False
+    assert backend._empty_think_replays_with_preserve() is False
+    assert len(calls) == 3
