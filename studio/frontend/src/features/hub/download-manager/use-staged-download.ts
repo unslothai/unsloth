@@ -46,6 +46,7 @@ export function useStagedDownload({
   scopeId,
   onReady,
   onCancelled,
+  onReset,
   publishQueue = true,
 }: {
   scopeId: string;
@@ -54,6 +55,8 @@ export function useStagedDownload({
   onReady: () => void;
   /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
   onCancelled?: () => void;
+  /** A session change dropped the plan's jobs. Not ``onCancelled``: a consumer that starts its next plan there would carry the old session's queue into the new one. */
+  onReset?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   // Keep the original total as completed entries leave the queue.
@@ -119,6 +122,10 @@ export function useStagedDownload({
 
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
+  const onResetRef = useRef(onReset);
+  useEffect(() => {
+    onResetRef.current = onReset;
+  });
   const queueRef = useRef(queue);
   useEffect(() => {
     queueRef.current = queue;
@@ -134,7 +141,7 @@ export function useStagedDownload({
         generation.current += 1;
         inFlight.current = null;
         setQueue(null);
-        onCancelledRef.current?.();
+        onResetRef.current?.();
       }),
     [],
   );

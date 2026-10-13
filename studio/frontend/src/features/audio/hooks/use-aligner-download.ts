@@ -31,6 +31,9 @@ export function useAlignerDownload(
       refreshCaps();
       run?.();
     },
+    onReset: () => {
+      pendingRun.current = null;
+    },
     onCancelled: () => {
       if (!pendingRun.current) return;
       pendingRun.current = null;

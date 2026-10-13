@@ -102,8 +102,17 @@ test("a session reset drops a staged plan so Transcribe is not left blocked", ()
   const staged = readSrc(
     "features/hub/download-manager/use-staged-download.ts",
   );
+  // Not onCancelled: Images and the Hub queue start their next plan there.
+  assert.doesNotMatch(
+    staged.slice(staged.indexOf("useStagedDownloadQueues.subscribe")),
+    /^[^}]*onCancelledRef/,
+  );
+  const hook = readSrc("features/audio/hooks/use-aligner-download.ts");
+  assert.match(hook, /onReset: \(\) => \{\s*pendingRun\.current = null;\s*\}/);
+  const slot = readSrc("features/audio/hooks/use-audio-model-slot.ts");
+  assert.match(slot, /onReset: invalidatePendingStagedTts,/);
   assert.match(
     staged,
-    /useStagedDownloadQueues\.subscribe\(\(state, previous\) => \{\s*if \(state\.resets === previous\.resets \|\| queueRef\.current === null\) \{\s*return;\s*\}[\s\S]*?setQueue\(null\);\s*onCancelledRef\.current\?\.\(\);/,
+    /useStagedDownloadQueues\.subscribe\(\(state, previous\) => \{\s*if \(state\.resets === previous\.resets \|\| queueRef\.current === null\) \{\s*return;\s*\}[\s\S]*?setQueue\(null\);\s*onResetRef\.current\?\.\(\);/,
   );
 });

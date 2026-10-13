@@ -499,6 +499,7 @@ export function useAudioModelSlot({
       );
     },
     onCancelled: invalidatePendingStagedTts,
+    onReset: invalidatePendingStagedTts,
   });
 
   useEffect(() => {
