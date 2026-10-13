@@ -956,11 +956,11 @@ pub fn install_system_packages(
 
 fn backend_update_confirmed(
     training_active: bool,
-    downloads_active: bool,
+    downloads_active: impl FnOnce() -> bool,
     confirm_training: impl FnOnce() -> bool,
     confirm_downloads: impl FnOnce() -> bool,
 ) -> bool {
-    (!training_active || confirm_training()) && (!downloads_active || confirm_downloads())
+    (!training_active || confirm_training()) && (!downloads_active() || confirm_downloads())
 }
 
 #[tauri::command]
@@ -969,7 +969,7 @@ pub async fn confirm_backend_update(app: AppHandle) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
         backend_update_confirmed(
             crate::training_is_active(&app),
-            crate::current_renderer_activity(&app).downloads,
+            || crate::current_renderer_activity(&app).downloads,
             || crate::confirm_update_during_training(&app),
             || crate::confirm_update_during_downloads(&app),
         )
@@ -1366,7 +1366,7 @@ mod tests {
     fn keeping_training_at_the_update_prompt_declines_the_update() {
         assert!(!super::backend_update_confirmed(
             true,
-            false,
+            || false,
             || false,
             || true
         ));
@@ -1376,7 +1376,7 @@ mod tests {
     fn updating_anyway_during_training_confirms_the_update() {
         assert!(super::backend_update_confirmed(
             true,
-            false,
+            || false,
             || true,
             || false
         ));
@@ -1387,7 +1387,7 @@ mod tests {
         let mut asked = false;
         assert!(super::backend_update_confirmed(
             false,
-            false,
+            || false,
             || {
                 asked = true;
                 false
@@ -1401,7 +1401,7 @@ mod tests {
     fn keeping_downloads_at_the_update_prompt_declines_the_update() {
         assert!(!super::backend_update_confirmed(
             false,
-            true,
+            || true,
             || true,
             || false
         ));
@@ -1411,7 +1411,7 @@ mod tests {
     fn updating_anyway_during_downloads_confirms_the_update() {
         assert!(super::backend_update_confirmed(
             false,
-            true,
+            || true,
             || false,
             || true
         ));
@@ -1422,7 +1422,7 @@ mod tests {
         let mut asked = false;
         assert!(!super::backend_update_confirmed(
             true,
-            true,
+            || true,
             || false,
             || {
                 asked = true;
@@ -1430,6 +1430,25 @@ mod tests {
             }
         ));
         assert!(!asked);
+    }
+
+    #[test]
+    fn downloads_started_during_the_training_prompt_are_still_asked_about() {
+        let downloading = std::cell::Cell::new(false);
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            true,
+            || downloading.get(),
+            || {
+                downloading.set(true);
+                true
+            },
+            || {
+                asked = true;
+                false
+            }
+        ));
+        assert!(asked);
     }
 
     #[tokio::test]
