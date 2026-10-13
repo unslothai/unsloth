@@ -117,6 +117,6 @@ def test_worker_seeds_every_lora_adapter_from_random_seed():
     assert len(lora_calls) >= 2
     for call in lora_calls:
         seed = next((k.value for k in call.keywords if k.arg == "random_state"), None)
-        assert seed is not None and "random_seed" in ast.unparse(seed), (
-            f"worker.py:{call.lineno} builds a LoRA adapter without the run's random_seed"
-        )
+        assert seed is not None and "random_seed" in ast.unparse(
+            seed
+        ), f"worker.py:{call.lineno} builds a LoRA adapter without the run's random_seed"
