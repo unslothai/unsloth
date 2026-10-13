@@ -2676,8 +2676,11 @@ def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[in
         if match:
             sign, hex_digits, octal, decimal = match.groups()
             root = int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
-            # stoul negates in unsigned arithmetic: "-1" wraps past every root, "-0" is 0.
-            if not (sign == "-" and root):
+            # stoul negates in 64-bit unsigned arithmetic: "-1" wraps past every root, "-0" is 0.
+            if sign == "-":
+                root = -root % 2**64 if root < 2**64 else 2**64
+            # No host has 2**32 roots, so a wrapped or overflowing value is out of range even without a bound.
+            if root < 2**32:
                 roots.add(root)
     return sorted(root for root in roots if root_count is None or root < root_count)
 

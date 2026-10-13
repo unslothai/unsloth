@@ -137,6 +137,7 @@ def test_torch_still_wins_the_visible_count(xpu_host):
         ("abc,1", [1]),
         ("-1", []),
         ("1, 0", [0, 1]),
+        ("-18446744073709551615", [1]),
     ],
 )
 def test_parse_ze_mask_roots(mask, roots):
