@@ -1812,6 +1812,17 @@ def caller_speculation_off(
     owner = extra_args_own_speculation(extra_args)
     if owner is None:
         return False
+    if owner in _SPEC_OWNER_ENV:
+        # Set through the environment only: its LLAMA_ARG_SPEC_TYPE is the value, and any other
+        # draft knob there may still launch a drafter.
+        env_set = {name for name in _SPEC_OWNER_ENV if str(os.environ.get(name) or "").strip()}
+        env_type = str(os.environ.get("LLAMA_ARG_SPEC_TYPE") or "").strip().lower()
+        return env_set == {"LLAMA_ARG_SPEC_TYPE"} and env_type in (
+            "off",
+            "none",
+            "disable",
+            "disabled",
+        )
     spec, _depth = launched_spec_flags(list(extra_args or []))
     others = [
         str(a).partition("=")[0]
@@ -2639,16 +2650,16 @@ class SparkServing:
             for path in env_launch_files(dict(os.environ)):
                 if path in launch_files_from(extras_for_sizing):
                     continue  # already charged from argv; do not count it twice
-                size = gguf_size_bytes(path)
-                if size is None:
+                file_size = gguf_size_bytes(path)
+                if file_size is None:
                     try:
-                        size = osp.getsize(path)
+                        file_size = osp.getsize(path)
                     except OSError:
-                        size = None
-                if size is None:
+                        file_size = None
+                if file_size is None:
                     sidecars_unknown = True
                 else:
-                    sidecars += int(size)
+                    sidecars += int(file_size)
             if size is not None:
                 size += sidecars
             if sidecars_unknown:

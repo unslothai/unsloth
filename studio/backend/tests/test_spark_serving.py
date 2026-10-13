@@ -2940,6 +2940,19 @@ def test_resident_sidecars_are_charged_to_the_node(cluster, monkeypatch, tmp_pat
     assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024 + 2048
 
 
+def test_an_env_sidecar_is_added_to_the_model_not_put_in_its_place(cluster, monkeypatch, tmp_path):
+    cluster.topology = "single"
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x" * 4096)
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"x" * 1024)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(projector))
+    _patch_remote(monkeypatch)
+
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024
+
+
 def test_the_adapter_operand_forms_are_taken_apart_not_ignored(tmp_path):
     # llama.cpp takes a comma-separated list with an optional :SCALE per entry. A raw token
     # test sees one string that is neither a path nor a file, so preflight reported success
@@ -4476,3 +4489,15 @@ def test_is_spark_skips_the_cluster_import_off_aarch64_linux(monkeypatch):
     monkeypatch.setattr(ss, "_cluster", lambda: pytest.fail("spark_cluster was loaded"))
     assert ss.is_spark() is False
     assert ss.enabled() is False
+
+
+def test_speculation_switched_off_through_the_environment_is_off(monkeypatch):
+    for name in ss._SPEC_OWNER_ENV:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "none")
+    assert ss.caller_speculation_off(None, []) is True
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/m/draft.gguf")
+    assert ss.caller_speculation_off(None, []) is False
+    monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_MODEL")
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
+    assert ss.caller_speculation_off(None, []) is False
