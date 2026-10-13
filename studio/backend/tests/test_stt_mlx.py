@@ -403,3 +403,13 @@ def test_the_chosen_language_reaches_mlx_only_when_the_checkpoint_knows_it(code,
     pcm = np.zeros(160, dtype = np.float32).tobytes()
     assert worker_module.transcribe_mlx_window(engine, pcm, code) == ("ok", 160)
     assert seen == ({"language": hint} if hint else {})
+
+
+def test_the_inventory_does_not_offer_a_checkpoint_that_ships_its_own_code(mlx_host, tmp_path):
+    from hub.services.models.cache_inventory import _cached_model_local_metadata
+
+    snapshot = _write_snapshot(tmp_path / "hub", _REPO, _QWEN3_ASR_CONFIG)
+    (snapshot / "tokenization_custom.py").write_text("")
+    metadata = _cached_model_local_metadata(snapshot.parent.parent, snapshot)
+    assert "_mlx_stt" not in metadata
+    assert "_hidden_stt" not in metadata

@@ -1027,6 +1027,14 @@ def _is_mlx_stt_model_config(config: object) -> bool:
         return False
 
 
+def _ships_custom_code(snapshot: Path) -> bool:
+    try:
+        from core.inference.stt_mlx import ships_custom_code
+        return ships_custom_code(snapshot)
+    except Exception:  # noqa: BLE001 -- unreadable: dictation refuses it at load anyway
+        return True
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -1060,7 +1068,7 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     config = _read_json_object(snapshot / "config.json")
     if _is_whisper_model_config(config):
         result["_hidden_stt"] = True
-    elif _is_mlx_stt_model_config(config):
+    elif _is_mlx_stt_model_config(config) and not _ships_custom_code(snapshot):
         result["_hidden_stt"] = True
         result["_mlx_stt"] = True
     tts_audio_type = detect_local_tts_audio_type(snapshot)
