@@ -1962,6 +1962,31 @@ def test_h3_routes_its_transformer_through_the_shared_regional_compile(
     monkeypatch.setattr(dit, "_make_optimizer", _optimizer)
 
     cfg = _replace_cfg(_h3_cfg(base_precision = precision, gradient_checkpointing = False))
+    # _train_h3 imports two diffusers helpers up front; the Backend CI venv has no diffusers.
+    # Only cast_training_params runs before the optimizer stops the run. Stubbed after the
+    # config is built, so the family check still sees the real (absent) diffusers.
+    try:
+        import diffusers.optimization  # noqa: F401
+        import diffusers.training_utils  # noqa: F401
+    except ImportError:
+
+        def _cast_training_params(model, dtype):
+            for param in model.parameters():
+                if param.requires_grad:
+                    param.data = param.to(dtype)
+
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+        monkeypatch.setitem(
+            sys.modules,
+            "diffusers.optimization",
+            types.SimpleNamespace(get_scheduler = lambda *_a, **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "diffusers.training_utils",
+            types.SimpleNamespace(cast_training_params = _cast_training_params),
+        )
+
     with pytest.raises(_Stop):
         _train_h3(
             cfg,
