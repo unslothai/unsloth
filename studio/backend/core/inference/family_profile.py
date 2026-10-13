@@ -112,7 +112,6 @@ DEFAULT_PROFILE = FamilyProfile()
 def _families() -> tuple[Any, ...]:
     from .diffusion_families import _FAMILIES as image
     from .video_families import _FAMILIES as video
-
     return (*image, *video)
 
 
