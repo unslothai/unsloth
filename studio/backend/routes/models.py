@@ -4843,6 +4843,7 @@ async def get_gguf_variants(
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
+                variant_format = getattr(response, "variant_format", None),
             ),
             via_api_key = via_api_key,
         )

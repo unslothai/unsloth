@@ -18,6 +18,14 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.bin.index.json.bak",
 )
 CONSOLIDATED_PATTERN = "consolidated*"
+# Folder names publishers use for one precision of the same checkpoint: 4-bit, 4bit, 2bit-lite,
+# mlx-8bit, q4, bf16, mxfp4.
+# [0-9], not \d, to stay identical to PRECISION_FOLDER_SOURCE in the frontend's dataset-size.ts.
+PRECISION_FOLDER_SOURCE = (
+    "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|q[0-9]{1,2}(?:[-_][a-z0-9]+)*"
+    "|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)"
+)
+PRECISION_FOLDER_RE = re.compile(PRECISION_FOLDER_SOURCE, re.IGNORECASE)
 DUPLICATE_WEIGHT_FORMAT_PATTERNS: tuple[str, ...] = (
     "original/*",
     "metal/*",
@@ -140,6 +148,23 @@ def redundant_torch_bin_files(filenames: Iterable[str]) -> list[str]:
     return redundant
 
 
+def precision_variant_subfolders(filenames: Iterable[str]) -> dict[str, list[str]]:
+    """Top-level folders that each hold a whole checkpoint at one precision (``4-bit/``, ``8bit/``,
+    ``mlx-4bit/``, ``bf16/``), mapped to their files. A folder needs a precision-like name, its own
+    ``config.json`` and safetensors weights, so component folders (``vae/``, ``mtp/``) never count."""
+    by_folder: dict[str, list[str]] = {}
+    for name in filenames:
+        folder, sep, rest = name.partition("/")
+        if sep and rest and "/" not in rest and PRECISION_FOLDER_RE.fullmatch(folder):
+            by_folder.setdefault(folder, []).append(name)
+    return {
+        folder: names
+        for folder, names in by_folder.items()
+        if f"{folder}/config.json" in names
+        and any(name.lower().endswith(".safetensors") for name in names)
+    }
+
+
 def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list[str]:
     names = list(filenames)
     ignore = list(SNAPSHOT_IGNORE_PATTERNS)
@@ -149,6 +174,8 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
         # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
         ignore.extend(redundant_torch_bin_files(names))
+        # A load of the root never reads the other precisions, which can be several times its size.
+        ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
     return ignore
 
 

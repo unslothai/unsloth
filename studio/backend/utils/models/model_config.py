@@ -4940,6 +4940,15 @@ class ModelConfig:
         else:
             check_model = identifier
 
+        # A precision folder of an MLX repo (``6-bit/``) is the checkpoint, so it is the one classified.
+        precision_folder = None
+        if gguf_variant and not is_local and not is_lora:
+            from hub.utils.mlx_variants import precision_folder_config_dir
+            folder_config = precision_folder_config_dir(identifier, gguf_variant.strip(), hf_token)
+            if folder_config is not None:
+                precision_folder = gguf_variant.strip()
+                check_model = str(folder_config)
+
         with _offline_while_reading(check_model):
             vision = is_vision_model(check_model, hf_token = hf_token)
             audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
@@ -4948,6 +4957,7 @@ class ModelConfig:
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
         return cls(
+            gguf_variant = precision_folder,
             identifier = identifier,
             display_name = display_name,
             path = path,

@@ -327,6 +327,35 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
   return out;
 }
 
+// Mirrors PRECISION_FOLDER_SOURCE and precision_variant_subfolders in snapshot_filters.py: top-level
+// folders that each hold the whole checkpoint at one precision (4-bit/, 8bit/), which a download of
+// the repo root skips.
+const PRECISION_FOLDER_SOURCE =
+  "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|q[0-9]{1,2}(?:[-_][a-z0-9]+)*|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)";
+const PRECISION_FOLDER_RE = new RegExp(`^(?:${PRECISION_FOLDER_SOURCE})$`, "i");
+
+function precisionVariantFolders(names: string[]): Set<string> {
+  const files = new Map<string, string[]>();
+  for (const name of names) {
+    const slash = name.indexOf("/");
+    const folder = name.slice(0, slash);
+    const rest = name.slice(slash + 1);
+    if (slash <= 0 || !rest || rest.includes("/")) continue;
+    if (!PRECISION_FOLDER_RE.test(folder)) continue;
+    files.set(folder, [...(files.get(folder) ?? []), rest]);
+  }
+  const out = new Set<string>();
+  for (const [folder, rest] of files) {
+    if (
+      rest.includes("config.json") &&
+      rest.some((n) => n.toLowerCase().endsWith(".safetensors"))
+    ) {
+      out.add(folder);
+    }
+  }
+  return out;
+}
+
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
 }
@@ -359,8 +388,10 @@ function isSnapshotIgnored(
   skipConsolidated: boolean,
   skipDuplicateFormats: boolean,
   redundantBins: Set<string>,
+  precisionFolders: Set<string> = new Set(),
 ): boolean {
   const lower = filename.toLowerCase();
+  const folder = filename.includes("/") ? filename.slice(0, filename.indexOf("/")) : "";
   return (
     lower.endsWith(".gguf") ||
     lower.endsWith(".onnx") ||
@@ -370,7 +401,9 @@ function isSnapshotIgnored(
     lower.endsWith(".bin.index.json.bak") ||
     (skipConsolidated && lower.startsWith("consolidated")) ||
     (skipDuplicateFormats &&
-      (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) || redundantBins.has(filename)))
+      (DUPLICATE_WEIGHT_FORMAT_RE.test(filename) ||
+        redundantBins.has(filename) ||
+        precisionFolders.has(folder)))
   );
 }
 
@@ -405,9 +438,9 @@ export function fetchModelSize(
       const siblings = data.siblings ?? [];
       const skipConsolidated = shipsTransformersWeights(siblings);
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
-      const redundantBins = redundantTorchBinFiles(
-        siblings.map((s) => s.rfilename ?? ""),
-      );
+      const names = siblings.map((s) => s.rfilename ?? "");
+      const redundantBins = redundantTorchBinFiles(names);
+      const precisionFolders = precisionVariantFolders(names);
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
@@ -420,6 +453,7 @@ export function fetchModelSize(
             skipConsolidated,
             skipDuplicateFormats,
             redundantBins,
+            precisionFolders,
           )
         ) {
           continue;
