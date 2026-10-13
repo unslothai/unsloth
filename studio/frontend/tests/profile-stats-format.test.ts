@@ -320,7 +320,7 @@ test("only cumulative rebases: daily and weekly are already per-window", () => {
 });
 
 test("week chart points carry the week total and the running total", () => {
-  // Monday 2026-09-07 through Wednesday 2026-09-16, two partial-free weeks.
+  // Monday 2026-09-07 through Wednesday 2026-09-16: one full week, one partial.
   const daily = [
     { date: "2026-09-07", tokens: 100 },
     { date: "2026-09-08", tokens: 0 },
