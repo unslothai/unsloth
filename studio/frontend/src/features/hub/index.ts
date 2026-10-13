@@ -15,6 +15,7 @@ export {
   type TransportMode,
   updateExternalJob,
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
   useRepoDownload,

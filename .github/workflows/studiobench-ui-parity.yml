@@ -371,6 +371,9 @@ jobs:
     name: Parity verdict, scored against the null
     needs: arms
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # the PR's labels as they are now; see "Read the PR's labels"
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -447,15 +450,66 @@ jobs:
             --min-reps 2 \
             outputs/parity-null-control
 
-      # Exit 1 when a stable action differs in BOTH repetitions, 2 when there is no data.
-      # --min-reps 2: base-vs-base films never go red at 2; one-repetition changes are printed
-      # as UNCORROBORATED instead.
+      # Exit 1 when a STABLE action rendered differently in BOTH repetitions, 2
+      # when there was no parity data to read at all -- an empty comparison is
+      # reported as an empty comparison rather than as a pass, which is the shape
+      # a job like this fails silently in.
+      #
+      # --min-reps 2 is the discriminator, and it is the one the data chose. A
+      # build renders the same way every time it renders, so a stable action that
+      # differs on one pass and matches on the next is a fact about the run. That
+      # is what every measured false alarm has been: over 264 scored pairs of
+      # base-vs-base films -- the shape a pull request with no UI change presents
+      # -- 41 were red at --min-reps 1 and ZERO at 2. The probe that adds one
+      # <span> inside the thread root, which is as real as a UI change gets,
+      # stays red at 2 because it differs on every pass of five actions.
+      #
+      # Where those 41 came from is worth recording, because it is not what it
+      # looks like: every one of them used one of the last films of that sweep as
+      # its NULL. A null control that happened to be QUIET excuses little, and
+      # then the result's ordinary noise has nothing to hide behind. So the
+      # failure mode is not a noisy null, it is a null quieter than the result it
+      # is scoring -- which is exactly what corroboration is immune to.
+      #
+      # The cost is stated in `corroborated()`: a genuine change that can only
+      # render in one repetition is demoted to UNCORROBORATED and printed rather
+      # than counted.
+      #
+      # `affects UI#` declares a UI change: rendering differences are reported, behaviour differences still fail.
+      # Live labels, not `github.event.pull_request.labels` (stale on a re-run); a failed read is undeclared.
+      - name: Read the PR's labels
+        id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          declared=false
+          if names="$(gh api "repos/$REPO/pulls/$PR" --jq '.labels[].name')"; then
+            if printf '%s\n' "$names" | grep -qxF 'affects UI#'; then
+              declared=true
+            fi
+          else
+            echo "::warning::could not read this PR's labels; scoring it as an undeclared UI change."
+          fi
+          echo "declared UI change: $declared"
+          echo "declared=$declared" >> "$GITHUB_OUTPUT"
+
       - name: The verdict
+        id: verdict
+        env:
+          UI_CHANGE_DECLARED: ${{ steps.labels.outputs.declared }}
         run: |
           # `set +e`: run: blocks use `bash -e`, and ui_parity exits non-zero to report a difference.
           set +e
           set -uo pipefail
+          declare_flag=()
+          if [ "$UI_CHANGE_DECLARED" = true ]; then
+            declare_flag=(--declared-ui-change)
+          fi
           python -m tests.studio.studiobench.sweep.ui_parity \
+            "${declare_flag[@]}" \
             --min-reps 2 \
             --min-compared 16 \
             --null outputs/parity-null-control \
@@ -469,12 +523,19 @@ jobs:
             grep -E 'action pairs|matched:|stable actions differing|unstable actions|NOT COMPARABLE|NOT EXERCISED|No stable action' verdict.txt || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" = 0 ] && grep -q 'DECLARED UI CHANGE' verdict.txt; then
+            echo "::notice::The UI changed, as this PR's 'affects UI#' label declares. The before/after pairs are in the studiobench-parity-evidence artifact."
+            echo "UI change declared by the 'affects UI#' label: reported, not failed." >> "$GITHUB_STEP_SUMMARY"
+            echo "declared_diff=true" >> "$GITHUB_OUTPUT"
+          fi
           exit "$rc"
 
       # Only on failure. Pairs come from the same session as the differing digests; re-driving
       # the film would usually show two identical pages.
       - name: Draw the before/after pairs for what turned it red
-        if: failure()
+        if: failure() || steps.verdict.outputs.declared_diff == 'true'
+        env:
+          DECLARED_DIFF: ${{ steps.verdict.outputs.declared_diff }}
         run: |
           set -uo pipefail
           pip install --quiet 'pillow<12'
@@ -489,9 +550,14 @@ jobs:
           echo "Composites are BEFORE (merge base) | AFTER (head), padded rather than scaled,"
           echo "each half labelled with its arm, action, cell and scrollTop. A pair whose two"
           echo "scroll offsets disagree is marked as not a like-for-like comparison."
+          # A declared change is green only because these pictures stand in for the failure.
+          if [ "$DECLARED_DIFF" = true ] && ! find outputs/parity-evidence -name '*__composite.png' -print -quit | grep -q .; then
+            echo "::error::the declared UI change produced no before/after composite to review."
+            exit 1
+          fi
 
       - name: Upload the before/after evidence
-        if: failure()
+        if: failure() || steps.verdict.outputs.declared_diff == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studiobench-parity-evidence

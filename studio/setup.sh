@@ -62,6 +62,8 @@ setup_fail() {
     case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) tauri_marker=1 ;; esac
     case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) tauri_marker=1 ;; esac
     if [ "$tauri_marker" -eq 1 ]; then printf '[TAURI:ERROR] %s\n' "$message"; fi
+    # A rerun right after this must not find the old build still writing (#8818).
+    [ -z "${_FRONTEND_BG_PID:-}" ] || _frontend_bg_cancel
     exit "$exit_code"
 }
 
@@ -107,6 +109,149 @@ _remove_agent_instruction_files() {
     done
 }
 
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
+_FRONTEND_BG_PID=""
+_FRONTEND_BG_LOG=""
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+_FRONTEND_BUILD_MARK="$SCRIPT_DIR/frontend/.unsloth-build.local"
+
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB RSS, so ask for 4 CPUs and 12 GiB usable (cgroup-aware); an unreadable probe = serial.
+_frontend_can_build_in_background() {
+    case "${UNSLOTH_STUDIO_SERIAL_SETUP:-0}" in 1|true) return 1 ;; esac
+    _is_verbose && return 1
+    [ -z "${STAGE_ROOT:-}" ] || return 1
+    case "${UNSLOTH_TAURI_MODE:-0}" in 1|true) return 1 ;; esac
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in 1|true) return 1 ;; esac
+    local _cpus _mb
+    _cpus=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null) || return 1
+    [ "$_cpus" -ge 4 ] 2>/dev/null || return 1
+    # Without MemAvailable the helper falls back to installed RAM, not headroom.
+    [ ! -r /proc/meminfo ] || grep -q '^MemAvailable:' /proc/meminfo || return 1
+    _mb=$(_usable_ram_mb)
+    [ "${_mb:-0}" -ge 12288 ] 2>/dev/null || return 1
+    # A rerun waits for a build still being stopped by the identity in its marker.
+    [ -n "$(_frontend_proc_id "$$")" ]
+}
+
+# Put back an ancestor .gitignore a killed build hid.
+_frontend_build_cleanup() {
+    local _dir="$SCRIPT_DIR/frontend"
+    while [ "$_dir" != "/" ]; do
+        _dir="$(dirname "$_dir")"
+        if [ -f "$_dir/.gitignore._twbuild" ] && [ ! -e "$_dir/.gitignore" ]; then
+            mv "$_dir/.gitignore._twbuild" "$_dir/.gitignore" 2>/dev/null || :
+        fi
+    done
+}
+
+# "<pid> <start time>" of a process, the identity a build marker records.
+_frontend_proc_id() {
+    ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
+}
+
+# Mark set before a build touches the tree, cleared only on success. Wait (up to 10 min, zombies
+# excluded) for a live marked build, then 30 s for its group, and undo what it hid.
+_frontend_build_begin() {
+    local _owner="" _pid _n=0 _self
+    _self=$(exec sh -c 'echo "$PPID"')
+    [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)
+    _pid=${_owner%% *}
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
+        [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt "${_FRONTEND_OWNER_POLLS:-600}" ] &&
+        [ "$(ps -o stat= -p "$_pid" 2>/dev/null | cut -c1)" != Z ]; do
+        [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
+        sleep 1
+        _n=$((_n + 1))
+    done
+    # Still alive after that: a hung background build (its own group), so stop it, never share the tree.
+    if [ "$_n" -ge "${_FRONTEND_OWNER_POLLS:-600}" ] && [ "$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d ' ')" = "$_pid" ]; then
+        kill -KILL -- "-$_pid" 2>/dev/null || :
+    fi
+    _n=0
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] && [ "$_n" -lt 30 ] &&
+        [ "$_pid" -gt 1 ] 2>/dev/null && kill -0 -- "-$_pid" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
+}
+
+# TERM, then KILL after 5 s (npm ci ignores TERM; KILL skips its EXIT trap, hence the cleanup).
+# The group's watcher keeps its id from being reused until this KILL.
+_frontend_bg_stop() {
+    local _n=0
+    kill -TERM -- "-$1" 2>/dev/null || return 0
+    while [ "$_n" -lt 5 ] && kill -0 "$1" 2>/dev/null; do
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _frontend_build_cleanup
+    kill -KILL -- "-$1" 2>/dev/null || :
+}
+
+# Own process group; a watcher ignoring HUP/INT/TERM stops it if setup dies (errexit, Ctrl-C).
+_frontend_bg_start() {
+    local _monitor=off
+    case "$-" in *m*) _monitor=on ;; esac
+    _FRONTEND_BG_LOG=$(mktemp)
+    [ "$_monitor" = on ] || set -m
+    (
+        set +m
+        _fbs_leader=$(exec sh -c 'echo "$PPID"')
+        (
+            trap '' HUP INT TERM
+            while kill -0 "$$" 2>/dev/null; do sleep 1; done
+            rm -f "$_FRONTEND_BG_LOG"
+            _frontend_bg_stop "$_fbs_leader"
+        ) </dev/null >/dev/null 2>&1 &
+        trap 'exit 143' TERM
+        _FRONTEND_IN_JOB=1
+        _build_frontend
+        _install_oxc_runtime
+        rm -f "$_FRONTEND_BUILD_MARK"
+        _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+        _remove_agent_instruction_files "$_OXC_DIR/node_modules"
+    ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
+    _FRONTEND_BG_PID=$!
+    [ "$_monitor" = on ] || set +m
+}
+
+_frontend_bg_cancel() {
+    [ -n "${_FRONTEND_BG_PID:-}" ] || return 0
+    local _pid=$_FRONTEND_BG_PID
+    _FRONTEND_BG_PID=""
+    _frontend_bg_stop "$_pid"
+    wait "$_pid" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+}
+
+_frontend_bg_join() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    local _pid=$_FRONTEND_BG_PID _rc=0
+    if kill -0 "$_pid" 2>/dev/null; then
+        substep "waiting for the frontend build..."
+    fi
+    wait "$_pid" || _rc=$?
+    _FRONTEND_BG_PID=""
+    # The watcher still holds the group: this takes it and anything the build left running.
+    kill -KILL -- "-$_pid" 2>/dev/null || :
+    [ "$_rc" -eq 0 ] || _frontend_build_cleanup
+    cat "$_FRONTEND_BG_LOG" 2>/dev/null || :
+    rm -f "$_FRONTEND_BG_LOG"
+    [ "$_rc" -eq 0 ] || setup_fail "$_rc" "Frontend build failed (exit code $_rc)"
+}
+
+# Surface a finished build (above all a failed one) at a step boundary, not at the end.
+_frontend_bg_reap() {
+    [ -n "$_FRONTEND_BG_PID" ] || return 0
+    kill -0 "$_FRONTEND_BG_PID" 2>/dev/null && return 0
+    _frontend_bg_join
+}
+
+# ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
 _SETUP_PROBE_TARGET=""
 _SETUP_PROBE_PID=""
 _SETUP_PROBE_PREV_TRAP=""
@@ -1808,6 +1953,38 @@ _packaged_frontend_available() {
         [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
 }
 
+# ── oxc-validator runtime ──
+_install_oxc_runtime() {
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
+    _CAPTURE_LOG=""
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+    fi
+    rm -f "$_OXC_INSTALL_LOG"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+fi
+}
+
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
 # Tauri owns its bundle; PyPI installs use the wheel's dist; only source installs rebuild by mtime.
@@ -1829,6 +2006,8 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
     fi
     [ -z "$_changed" ] && _NEED_FRONTEND_BUILD=false
 fi
+# An earlier build that never finished (killed, failed) left its mark: redo it.
+[ ! -e "$_FRONTEND_BUILD_MARK" ] || _NEED_FRONTEND_BUILD=true
 fi  # end packaged/Tauri guard
 
 # OXC validator runtime needs node/npm whenever its dir exists, regardless of dist staleness.
@@ -1998,6 +2177,8 @@ else
 fi
 
 substep "building frontend..."
+_build_frontend() {
+_frontend_build_begin
 cd "$SCRIPT_DIR/frontend"
 _HIDDEN_GITIGNORES=()
 _dir="$(pwd)"
@@ -2014,7 +2195,7 @@ _restore_gitignores() {
         mv "${_gi}._twbuild" "$_gi" 2>/dev/null || true
     done
 }
-trap _restore_gitignores EXIT
+trap _frontend_build_cleanup EXIT
 
 # package-lock.json wins (`npm ci`); bun only without one. Not run_quiet: it exits on failure.
 # bun's cache can corrupt and exit 0 with missing binaries, so verify, clear, and retry once.
@@ -2079,6 +2260,8 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
+# The background job keeps the mark until the OXC install it runs next is done too.
+[ -n "${_FRONTEND_IN_JOB:-}" ] || rm -f "$_FRONTEND_BUILD_MARK"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then
@@ -2090,39 +2273,27 @@ else
 fi
 
 cd "$SCRIPT_DIR"
+}
+
+if _frontend_can_build_in_background; then
+    _frontend_bg_start
+    cd "$SCRIPT_DIR"
+else
+    _build_frontend
+fi
 
 fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
 
-# Skip when NODE_SOURCE=skip: there is no suitable Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-    cd "$_OXC_DIR"
-    _OXC_INSTALL_LOG=$(mktemp)
-    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    _oxc_install_rc=0
-    _NPM_INSTALL=install
-    [ -f package-lock.json ] && _NPM_INSTALL=ci
-    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
-        _oxc_install_rc=0
-    fi
-    _CAPTURE_LOG=""
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_OXC_INSTALL_LOG"
-        rm -f "$_OXC_INSTALL_LOG"
-        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-    fi
-    rm -f "$_OXC_INSTALL_LOG"
-    cd "$SCRIPT_DIR"
-elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-    # No npm: skip rather than abort; the validator degrades. Mirrors setup.ps1.
-    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+# A background build runs this itself: it shares the npm mirror the build may have switched to.
+if [ -z "$_FRONTEND_BG_PID" ]; then
+    _install_oxc_runtime
+    _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+    _remove_agent_instruction_files "$_OXC_DIR/node_modules"
 fi
 
-_remove_agent_instruction_files \
-    "$SCRIPT_DIR/frontend/node_modules" \
-    "$_OXC_DIR/node_modules"
+# ── Python venv + deps ──
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -2183,6 +2354,8 @@ _setup_rerun_if_replaced() {
     if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
         return 0
     fi
+    # exec keeps this PID, so the watcher would not stop a build the new script then repeats.
+    _frontend_bg_join
     step "setup" "the update replaced this setup script; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
     unset UNSLOTH_STUDIO_FULL_DEPS
@@ -3112,6 +3285,7 @@ else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
+_frontend_bg_reap
 
 # ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Separate dirs avoid runtime pip overhead; training prepends the right one to sys.path.
@@ -3822,7 +3996,11 @@ else
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
 fi
 
-# Legacy default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
+_frontend_bg_reap
+
+# ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
+# Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
+# default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
 if [ -n "$STAGE_ROOT" ]; then
     UNSLOTH_HOME="$RUNTIME_ROOT"
 elif [ -n "$_MASTER_ROOT" ]; then
@@ -4459,7 +4637,17 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
     fi
 fi
 
-# Source build fallback at ~/.unsloth/llama.cpp, shared by inference and GGUF export.
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    _frontend_bg_join
+fi
+
+# ── 9. Build llama.cpp binaries for GGUF inference + export when prebuilt install fails ──
+# Builds at ~/.unsloth/llama.cpp — a single shared location under the user's
+# home directory. This is used by both the inference server and the GGUF
+# export pipeline (unsloth-zoo).
+#   - llama-server: for GGUF model inference
+#   - llama-quantize: for GGUF export quantization (symlinked to root for check_llama_cpp())
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = false ]; then
     :
 elif [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
@@ -5022,6 +5210,7 @@ else
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
         if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            _frontend_bg_join
             substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
             # A stale marker would report "already matches" over the source binary.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
@@ -5111,6 +5300,9 @@ _print_llama_gpu_notes() {
     fi
 }
 
+_frontend_bg_join
+
+# ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"

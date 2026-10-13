@@ -2510,7 +2510,7 @@ export function DiffusionTrainPanel({
 
       {/* Confirm-stop dialog: Continue / Stop / Stop and save. */}
       <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent overlayClassName="bg-background/40">
           <AlertDialogHeader>
             <AlertDialogTitle>Stop training?</AlertDialogTitle>
             <AlertDialogDescription>

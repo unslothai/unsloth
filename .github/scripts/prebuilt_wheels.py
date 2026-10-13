@@ -72,6 +72,9 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": " / win_amd64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
+        # On top of TORCH_VERSIONS: Linux reuses upstream's torch2.10 wheels for 2.11, which have
+        # no Windows build.
+        "extra_torches": ("2.11.0",),
     },
     # Upstream's aarch64 wheels stop at torch 2.10. ubuntu-22.04-arm keeps the glibc 2.35 floor
     # the x86_64 build has, and the build asserts it.
@@ -119,9 +122,9 @@ def _platform(platform: str, key: str):
     return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
 
 
-# torch 2.13 pins triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only markers); exact pins keep
-# the Windows smoke test reproducible.
-TRITON_WINDOWS = {"2.13": "3.7.1.post27", "2.14": "3.8.0.post29"}
+# torch 2.11 pins triton==3.6.0, 2.13 triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only
+# markers); exact pins keep the Windows smoke test reproducible.
+TRITON_WINDOWS = {"2.11": "3.6.0.post26", "2.13": "3.7.1.post27", "2.14": "3.8.0.post29"}
 WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
 # Source revisions, pinned to a commit rather than a branch or a tag.
@@ -190,7 +193,27 @@ SPECS = {
 
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
 
-# 3.14 is absent: nothing in the Unsloth stack is tested on it yet.
+
+def _platform_torches(platform: str) -> tuple[str, ...]:
+    """What a platform builds: its own `torches`, else TORCH_VERSIONS plus its `extra_torches`."""
+    return _platform(platform, "torches") or (
+        *(_platform(platform, "extra_torches") or ()),
+        *TORCH_VERSIONS,
+    )
+
+
+# Accepted from a dispatch; each platform builds only its own subset (2.11.0 is win_amd64 only).
+ALLOWED_TORCH = tuple(
+    sorted(
+        {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
+        key = lambda v: tuple(map(int, v.split("."))),
+    )
+)
+
+# cp313 is the default and the only one the dispatch defaults to, because each extra
+# interpreter is a whole extra flash-attn build. 3.11 and 3.12 are here so a run can add them
+# as separate cells when the queue can afford it. 3.14 is deliberately absent: torch publishes
+# a cu130 wheel for it, but nothing in the Unsloth stack is tested on 3.14 yet.
 PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 
 DEFAULT_PACKAGES = tuple(SPECS)
@@ -292,14 +315,14 @@ def build_matrix(
     platforms: str = "",
 ) -> list[dict]:
     chosen_packages = _resolve(packages, DEFAULT_PACKAGES, DEFAULT_PACKAGES, "package")
-    chosen_torch = _resolve(torches, TORCH_VERSIONS, DEFAULT_TORCH, "torch version")
+    chosen_torch = _resolve(torches, ALLOWED_TORCH, DEFAULT_TORCH, "torch version")
     chosen_python = _resolve(pythons, PYTHON_VERSIONS, DEFAULT_PYTHON, "python version")
     chosen_platforms = _resolve(platforms, tuple(PLATFORMS), DEFAULT_PLATFORMS, "platform")
 
     include = []
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
-        torches = _platform(platform, "torches") or TORCH_VERSIONS
+        torches = _platform_torches(platform)
         packages_here = _platform(platform, "packages") or tuple(SPECS)
         local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
@@ -353,7 +376,8 @@ def build_matrix(
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
-            "(win_arm64 builds causal-conv1d and mamba-ssm for torch 2.14.0 only)."
+            "(torch 2.11.0 is win_amd64 only; win_arm64 builds causal-conv1d and mamba-ssm for "
+            "torch 2.14.0 only)."
         )
     return include
 
@@ -430,14 +454,25 @@ PLATFORM_NAMES = {
 
 
 def _coverage(rows: list[dict]) -> str:
-    """`PyTorch 2.13 and 2.14 on Python 3.13` for a set of parsed rows."""
-    torches = sorted({row["torch"] for row in rows}, key = lambda v: tuple(map(int, v.split("."))))
-    # cp313 -> 3.13
-    pythons = [
-        f"{cp[2]}.{cp[3:]}"
-        for cp in sorted({row["python"] for row in rows}, key = lambda cp: int(cp[3:]))
+    """`PyTorch 2.13 and 2.14 on Python 3.13` for a set of parsed rows.
+
+    Torch minors with different interpreter sets are listed separately, so 2.11 on 3.11-3.13
+    beside 2.13 on 3.13 alone never reads as 2.13 on 3.11.
+    """
+    by_torch: dict[str, set[str]] = {}
+    for row in rows:
+        by_torch.setdefault(row["torch"], set()).add(row["python"])
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for torch in sorted(by_torch, key = lambda v: tuple(map(int, v.split(".")))):
+        # cp313 -> 3.13
+        pythons = tuple(
+            f"{cp[2]}.{cp[3:]}" for cp in sorted(by_torch[torch], key = lambda cp: int(cp[3:]))
+        )
+        groups.setdefault(pythons, []).append(torch)
+    parts = [
+        f"{_join(torches)} on Python {_join(list(pythons))}" for pythons, torches in groups.items()
     ]
-    return f"PyTorch {_join(torches)} on Python {_join(pythons)}"
+    return f"PyTorch {'; '.join(parts)}"
 
 
 def _packages(rows: list[dict]) -> str:
@@ -531,12 +566,15 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
 def _cmd_wheel_name(args: argparse.Namespace) -> int:
     if args.package not in SPECS:
         raise SystemExit(f"unknown package: {args.package}")
-    if args.torch not in TORCH_VERSIONS:
+    if args.torch not in ALLOWED_TORCH:
         raise SystemExit(f"unknown torch version: {args.torch}")
     if args.python not in PYTHON_VERSIONS:
         raise SystemExit(f"unknown python version: {args.python}")
     if args.platform not in PLATFORMS:
         raise SystemExit(f"unknown platform: {args.platform}")
+    # The same cells build_matrix accepts: no name for a wheel nothing builds.
+    if args.torch not in _platform_torches(args.platform):
+        raise SystemExit(f"torch {args.torch} is not built for {args.platform}")
     print(wheel_name(args.package, args.torch, args.python, args.platform))
     return 0
 
