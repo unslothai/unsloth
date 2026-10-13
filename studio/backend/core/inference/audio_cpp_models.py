@@ -2620,6 +2620,8 @@ def _cached_variants_named(
     if exact:
         return exact[:1]
     parts = [p for p in low.split("/") if p]
+    if not parts:
+        return []
     quants = {quant_label(v.main_file).lower() for v in variants}
     quant = parts[-1] if parts and parts[-1] in quants else None
     words = parts[:-1] if quant else parts

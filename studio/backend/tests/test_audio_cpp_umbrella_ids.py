@@ -523,3 +523,15 @@ def test_a_folder_delete_reserves_every_variant_before_removing_any(hub, monkeyp
     assert err.value.status_code == 400
     assert len(_left(hub)) == 5
     assert not registry._deleting
+
+
+@pytest.mark.parametrize("variant", ["/", "//", " / "])
+def test_an_empty_variant_path_names_no_folder_variant(hub, monkeypatch, variant):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    assert acm.cached_folder_target(QWEN, variant) == (AUDIO_CPP_REPO, [])
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deletion.delete_cached_model_response(QWEN, variant))
+    assert err.value.status_code == 404
+    assert len(_left(hub)) == 3
