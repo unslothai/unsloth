@@ -5212,7 +5212,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also clear any stored external selection.
     saveLastExternalCheckpoint(null);
-    saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     const restoredEffort = pinHoldsLiveEffort()
       ? takeEffortDisplacedByPin()
       : null;
@@ -5252,14 +5251,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       supportsBuiltinCodeExecution: false,
       supportsBuiltinImageGeneration: false,
       supportsBuiltinWebFetch: false,
-      toolsEnabled: false,
-      codeToolsEnabled: false,
-      imageToolsEnabled: false,
-      deepResearchEnabled: false,
-      mcpEnabledForChat: false,
-      webFetchToolsEnabled: false,
-      // Only the per-session enable pill resets; source/mode/top_k persist.
-      ragEnabled: false,
       toolStatusByThreadId: {},
       toolLiveOutput: {},
       toolFullOutput: {},
