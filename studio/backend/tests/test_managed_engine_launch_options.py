@@ -124,10 +124,19 @@ def _config(tmp_path):
     return SimpleNamespace(is_local = True, path = str(tmp_path))
 
 
+def _compute_cap(monkeypatch, cap):
+    from core.inference import managed_engine
+    monkeypatch.setattr(managed_engine, "profile", lambda engine: {"platform": "cuda"})
+    monkeypatch.setattr(
+        managed_engine.subprocess, "run", lambda argv, **kwargs: SimpleNamespace(stdout = f"{cap}\n")
+    )
+
+
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
-def test_unset_options_stay_out_of_the_launch_options(tmp_path, engine):
+def test_unset_options_stay_out_of_the_launch_options(tmp_path, engine, monkeypatch):
     from core.inference.managed_engine import validate_model
 
+    _compute_cap(monkeypatch, "9.0")
     options = validate_model(_config(tmp_path), engine = engine)
     assert not {"kv_cache_dtype", "seed", "gpu_memory_utilization"} & set(options)
     options = validate_model(
@@ -214,3 +223,26 @@ def test_overrides_store_only_set_options_and_load_them_back():
     assert kwargs["engine_seed"] == 0
     assert kwargs["engine_gpu_memory_utilization"] == 0.75
     assert "engine_seed" not in model_override_load_kwargs(entry, is_gguf = True)
+
+
+@pytest.mark.parametrize("cap,ok", [("7.5", False), ("8.0", True), ("8.9", True)])
+def test_an_fp8_kv_cache_is_refused_before_ampere(tmp_path, monkeypatch, cap, ok):
+    # Colab T4, vLLM 0.30: "FP8 KV cache is not supported ... on Tesla T4 (compute capability 7.5)".
+    from core.inference.managed_engine import validate_model
+    _compute_cap(monkeypatch, cap)
+    if ok:
+        assert validate_model(_config(tmp_path), kv_cache_dtype = "fp8")["kv_cache_dtype"] == "fp8"
+    else:
+        with pytest.raises(ValueError, match = "Ampere"):
+            validate_model(_config(tmp_path), kv_cache_dtype = "fp8")
+
+
+def test_a_default_kv_cache_never_probes_the_gpu(tmp_path, monkeypatch):
+    from core.inference import managed_engine
+
+    def refuse(argv, **kwargs):
+        raise AssertionError("nvidia-smi probed for a default KV cache")
+
+    monkeypatch.setattr(managed_engine, "profile", lambda engine: {"platform": "cuda"})
+    monkeypatch.setattr(managed_engine.subprocess, "run", refuse)
+    managed_engine.validate_model(_config(tmp_path), kv_cache_dtype = "auto")

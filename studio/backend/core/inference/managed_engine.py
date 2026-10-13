@@ -246,9 +246,9 @@ def validate_model(
         options["seed"] = seed
     if gpu_memory_utilization is not None:
         options["gpu_memory_utilization"] = gpu_memory_utilization
-    if precision == "fp8" and profile(engine)["platform"] == "cuda":
-        # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+    if (precision == "fp8" or kv_cache_dtype == "fp8") and profile(engine)["platform"] == "cuda":
         from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),
@@ -265,7 +265,16 @@ def validate_model(
             timeout = 60,
             check = True,
         )
-        options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
+        caps = [float(cap) for cap in result.stdout.splitlines() if cap.strip()]
+        if precision == "fp8":
+            # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+            options["disable_cuda_graph"] = any(cap < 8.9 for cap in caps)
+        if kv_cache_dtype == "fp8" and any(cap < 8.0 for cap in caps):
+            # vLLM 0.30 refuses it at startup on Turing ("native FP8 requires SM89+"); Ampere runs it.
+            raise ValueError(
+                "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
+                "Choose Model default for KV cache on this GPU."
+            )
     metadata = metadata.get("text_config") or metadata
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
