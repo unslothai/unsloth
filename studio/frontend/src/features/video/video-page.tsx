@@ -136,7 +136,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
-import { ParamSlider } from "@/features/chat";
+import { modelLoadToastControls, ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   MediaGenerationPresetControl,
@@ -439,14 +439,6 @@ function genStepLabel(p: VideoGenerateProgress, hasAudio: boolean): string {
   return generatePhaseLabel(p, { hasAudio, formatEta });
 }
 
-// The chat tab's model-load toast styling, reused verbatim so the video load toast is identical.
-const LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
-  content: "gap-0.5 flex-1 min-w-0",
-  title: "leading-5",
-  description: "mt-0 w-full",
-} as const;
-
 // The download total for a video load can only be estimated from a companion base repo, so
 // the toast shows a byte count until the total is known.
 function loadFraction(p: VideoLoadProgress): number | null {
@@ -482,18 +474,18 @@ function loadToastDescription(p: VideoLoadProgress) {
 
 // Toast args mirroring chat; `id` updates in place. `onCancel` adds chat's Cancel, the one
 // control that reaches a load in flight: the selector's eject is hidden for that span.
+// `onHide` must drop the toast id, or the next progress tick re-creates the toast.
 function loadToastArgs(
   p: VideoLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
+  id: string | number | undefined,
+  onCancel: (() => void) | undefined,
+  onHide: () => void,
 ) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
     duration: Infinity,
-    closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
-    classNames: LOAD_TOAST_CLASSNAMES,
+    ...modelLoadToastControls(onCancel, onHide),
   };
 }
 
@@ -2460,7 +2452,7 @@ function VideoGenerator({
       const sig = `${p.phase}:${p.downloaded_bytes}:${p.expected_bytes ?? 0}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, dismissLoadToast));
       }
     } catch {
       // Transient poll failure: keep trying.
@@ -2476,9 +2468,9 @@ function VideoGenerator({
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast, dismissLoadToast));
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, cancelLoadFromToast, dismissLoadToast]);
 
   const stopGenPoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
@@ -2555,7 +2547,7 @@ function VideoGenerator({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast, dismissLoadToast));
           void pollLoadProgress();
         }
       } catch {
@@ -2703,7 +2695,7 @@ function VideoGenerator({
       dismissLoadToast();
       lastLoadSig.current = null;
       const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast, dismissLoadToast));
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;

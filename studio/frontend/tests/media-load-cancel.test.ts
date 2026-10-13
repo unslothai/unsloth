@@ -34,8 +34,8 @@ for (const [page, path] of PAGES) {
   test(`the ${page} load toast offers a Cancel action`, () => {
     assert.match(
       SOURCE,
-      /cancel: \{ label: "Cancel", onClick: onCancel \}/,
-      "the load toast must carry a cancel action, not just a close button",
+      /\.\.\.modelLoadToastControls\(onCancel, onHide\)/,
+      "the load toast must carry the shared Cancel loading / Hide controls",
     );
     // Every toast site has to pass it: the toast is created by handleLoad, by
     // the mount-time resume of a load started elsewhere, re-created in place by
@@ -50,6 +50,12 @@ for (const [page, path] of PAGES) {
         site,
         /cancelLoadFromToast/,
         `a load toast built without the cancel action: ${site}`,
+      );
+      // Hide has to drop loadToastId, else the next progress tick re-creates the toast.
+      assert.match(
+        site,
+        /cancelLoadFromToast, dismissLoadToast\)/,
+        `a load toast whose Hide does not drop the toast id: ${site}`,
       );
     }
   });

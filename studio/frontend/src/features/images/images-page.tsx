@@ -143,7 +143,7 @@ import {
   recipeWorkflowLabel,
   type WorkflowId,
 } from "./workflows";
-import { ParamSlider } from "@/features/chat";
+import { modelLoadToastControls, ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   type ImageGenerationPresetParams,
@@ -648,14 +648,6 @@ async function settleLostGeneration(
   throw new Error("Timed out waiting for the image generation to finish.");
 }
 
-// The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
-const LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
-  content: "gap-0.5 flex-1 min-w-0",
-  title: "leading-5",
-  description: "mt-0 w-full",
-} as const;
-
 // Render the chat ModelLoadDescription for a progress poll. The base repo downloads alongside
 // the GGUF, so the total exceeds the quant size.
 function loadToastDescription(p: DiffusionLoadProgress) {
@@ -689,19 +681,19 @@ function loadToastDescription(p: DiffusionLoadProgress) {
 
 // Toast args mirroring chat; `id` updates in place. `onCancel` adds chat's Cancel, the one
 // control that reaches a load in flight: the selector's eject is hidden for exactly the
-// span a first load runs, which left a multi-gigabyte pull with no way out.
+// span a first load runs, which left a multi-gigabyte pull with no way out. `onHide` must
+// drop the toast id, or the next progress tick re-creates the toast.
 function loadToastArgs(
   p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
+  id: string | number | undefined,
+  onCancel: (() => void) | undefined,
+  onHide: () => void,
 ) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
     duration: Infinity,
-    closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
-    classNames: LOAD_TOAST_CLASSNAMES,
+    ...modelLoadToastControls(onCancel, onHide),
   };
 }
 
@@ -2724,7 +2716,7 @@ export function ImagesPage({
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast, dismissLoadToast));
       }
     } catch {
       // Transient poll failure: keep trying.
@@ -2740,9 +2732,9 @@ export function ImagesPage({
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast, dismissLoadToast));
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, cancelLoadFromToast, dismissLoadToast]);
 
   // Re-enter the per-step poll for a generation in flight that this page did not start.
   // generate-progress carries no terminal record, so refresh the gallery on completion.
@@ -2798,7 +2790,7 @@ export function ImagesPage({
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast, dismissLoadToast));
           void pollLoadProgress();
         }
       } catch {
@@ -3011,7 +3003,7 @@ export function ImagesPage({
       dismissLoadToast();
       lastLoadSig.current = null;
       const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast, dismissLoadToast));
       // Remember what was loaded so "Reapply" can reload it. Snapshot the prior target first: a load
       // that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;

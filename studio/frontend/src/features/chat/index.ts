@@ -297,6 +297,7 @@ export {
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
 export { ModelLoadDescription } from "./components/model-load-status";
+export { modelLoadToastControls } from "./lib/model-load-toast";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {

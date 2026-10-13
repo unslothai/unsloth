@@ -72,6 +72,7 @@ import {
 import { dismissStartToastsForModelSelection } from "@/features/hub/download-manager";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
+import { modelLoadToastControls } from "../lib/model-load-toast";
 import {
   getDownloadProgress,
   getGgufDownloadProgress,
@@ -356,16 +357,6 @@ function rememberApprovedRemoteCode(
 ): void {
   if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
 }
-
-// Class carries the progress-bar spacing; layout is shared CSS now.
-const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast",
-  content: "gap-0.5 flex-1 min-w-0",
-  title: "leading-5",
-  description: "mt-0 w-full",
-  cancelButton:
-    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
-} as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
@@ -3285,18 +3276,10 @@ export function useChatModelRuntime() {
         const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
           description,
           duration: Infinity,
-          closeButton: true,
-          cancel: {
-            label: "Cancel",
-            onClick: cancelLoading,
-          },
-          classNames: MODEL_LOAD_TOAST_CLASSNAMES,
-          onDismiss: (dismissedToast: { id: string | number }) => {
-            if (loadToastIdRef.current !== dismissedToast.id) {
-              return;
-            }
-            setLoadToastDismissedState(true);
-          },
+          ...modelLoadToastControls(cancelLoading, () => {
+            // Hide keeps the load running; progress moves to the inline status.
+            if (loadToastIdRef.current === toastId) setLoadToastDismissedState(true);
+          }),
         });
         const toastId = toast(
           null,
@@ -3400,7 +3383,8 @@ export function useChatModelRuntime() {
                       getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
                     ),
                   );
-            if (!loadingModelRef.current) return;
+            // A replacement load sets loadingModelRef again, so only the abort marks this attempt stale.
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (
               progressModelIdsAtRequest.length !== progressModelIds.length ||
               progressModelIdsAtRequest.some(
@@ -3537,7 +3521,7 @@ export function useChatModelRuntime() {
           }
           try {
             const prog = await getLoadProgress();
-            if (!loadingModelRef.current) return;
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
               // Loaded. The chat flow will flip loadingModelRef shortly; just stop polling.
@@ -3665,6 +3649,8 @@ export function useChatModelRuntime() {
               id: toastId,
               description: loadedDescription,
               cancel: undefined,
+              action: undefined,
+              classNames: undefined,
               closeButton: true,
               duration: 8000,
               onDismiss: undefined,
