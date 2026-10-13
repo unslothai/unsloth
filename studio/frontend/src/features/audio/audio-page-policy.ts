@@ -395,6 +395,8 @@ export function audioLoadedSelection(
       }
     | null
     | undefined,
+  // The quant a GGUF file name carries (`ggufQuantLabel`); without one a file name stays as is.
+  quantLabel?: (filename: string) => string,
 ): { id: string | null; variant: string | null } {
   const active = status?.active_model ?? null;
   const id = active
@@ -402,7 +404,19 @@ export function audioLoadedSelection(
       ? active
       : (status?.model_identifier ?? active)
     : null;
-  return { id, variant: id ? (status?.gguf_variant ?? null) : null };
+  return { id, variant: id ? loadedQuantKey(status?.gguf_variant ?? null, quantLabel) : null };
+}
+
+/** llama status echoes the load selector, which is a file name for a pick from the quant list
+ *  (`model-q4_k_m.gguf`); picker rows key that quant `Q4_K_M`, under any directory it sits in. */
+function loadedQuantKey(
+  variant: string | null,
+  quantLabel?: (filename: string) => string,
+): string | null {
+  if (!variant || !quantLabel || !/\.gguf$/i.test(variant.trim())) return variant;
+  const path = variant.trim().replace(/\\/g, "/");
+  const cut = path.lastIndexOf("/") + 1;
+  return `${path.slice(0, cut)}${quantLabel(path.slice(cut)).toUpperCase()}`;
 }
 
 /** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves

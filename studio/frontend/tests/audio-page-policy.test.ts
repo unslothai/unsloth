@@ -925,7 +925,7 @@ test("the audio picker marks the main slot's loaded model and quant, not the cha
     variant: null,
   });
   assert.deepEqual(audioLoadedSelection(null), { id: null, variant: null });
-  assert.match(audioPageSource, /const speakLoaded = audioLoadedSelection\(status\)/);
+  assert.match(audioPageSource, /const speakLoaded = audioLoadedSelection\(status, ggufQuantLabel\)/);
   assert.match(audioPageSource, /mode === "speak"\s*\? \(speakLoaded\.id \?\? ""\)/);
   assert.match(
     audioPageSource,

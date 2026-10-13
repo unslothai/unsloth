@@ -18,6 +18,7 @@ import { usePlatformStore } from "@/config/env";
 import { type InferenceStatusResponse, getInferenceStatus } from "@/features/chat";
 import { useHubInventory } from "@/features/hub";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import { ggufQuantLabel } from "@/features/model-picker/model-config/model-identity";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
@@ -1549,7 +1550,7 @@ export function AudioPage({
     } satisfies ModelOption;
   });
   // Arriving on a page never loads: the picker shows the page's last model, unloaded, to re-pick.
-  const speakLoaded = audioLoadedSelection(status);
+  const speakLoaded = audioLoadedSelection(status, ggufQuantLabel);
   const showLastPageModel =
     mode === "speak" && !pageModelLoaded && lastPageModel !== null;
   const selectorValue =
