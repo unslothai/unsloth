@@ -63,10 +63,9 @@ def _bounded(text: str) -> str:
     return text[:_MAX_RESULT_CHARACTERS] + "\n\n[Local agent output truncated]"
 
 
-def _result_text(stdout: str) -> str:
+def _result_payload(stdout: str) -> dict:
     lines = [line for line in stdout.splitlines() if line.strip()]
-    candidates = [stdout.strip(), *reversed(lines)]
-    for candidate in candidates:
+    for candidate in [stdout.strip(), *reversed(lines)]:
         try:
             payload = json.loads(candidate)
         except ValueError:
@@ -74,10 +73,18 @@ def _result_text(stdout: str) -> str:
         if not isinstance(payload, dict):
             continue
         result = payload.get("result")
-        if payload.get("is_error"):
-            raise RuntimeError(str(result or "The local Claude agent failed."))
-        if isinstance(result, str) and result.strip():
-            return _bounded(result.strip())
+        if payload.get("is_error") or (isinstance(result, str) and result.strip()):
+            return payload
+    return {}
+
+
+def _result_text(stdout: str) -> str:
+    payload = _result_payload(stdout)
+    result = payload.get("result")
+    if payload.get("is_error"):
+        raise RuntimeError(str(result or "The local Claude agent failed."))
+    if isinstance(result, str) and result.strip():
+        return _bounded(result.strip())
     raise RuntimeError("The local Claude agent returned no readable result.")
 
 
@@ -172,14 +179,11 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
-        # Strip human-blocking tools so the child runs unattended; plan/prompt tools are listed
-        # pre-emptively, and Bash is denied read-only side because plan mode is not a write barrier.
-        "--disallowedTools",
-        (
-            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
-            if read_only
-            else "AskUserQuestion,EnterPlanMode,ExitPlanMode"
-        ),
+        # The full tool set (~16k tokens) fills a small window; plan mode is no write barrier, so read-only gets no writer.
+        "--tools",
+        "Read,Grep,Glob,ExitPlanMode"
+        if read_only
+        else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
         "--append-system-prompt",
         _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
         f"Task: {task}",
@@ -238,7 +242,9 @@ def run_local_agent(
             _stop_child(process)
         raise
     if process.returncode != 0:
-        detail = stderr.strip() or stdout.strip()
+        # stderr can hold only claude's own warnings; the result says why the run stopped.
+        reason = _result_payload(stdout).get("result")
+        detail = str(reason or "").strip() or stderr.strip() or stdout.strip()
         raise RuntimeError(
             _bounded(detail) or f"Local Claude exited with code {process.returncode}."
         )

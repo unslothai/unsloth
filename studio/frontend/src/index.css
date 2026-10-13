@@ -248,6 +248,8 @@
 	--secondary-foreground-base: oklch(0.2868 0.0649 159.9823);
 	--muted-base: oklch(0.9702 0 0);
 	--muted-foreground: oklch(0.5486 0 0);
+	/* Trace ink: muted, pulled toward the page so the answer stands apart. */
+	--trace-fade: 20%;
 	/* Hover/active washes are neutral grey (matches the sidebar), not the
 	   brand green; green stays on primary controls only. */
 	--accent-base: #ececec;
@@ -465,6 +467,7 @@
 	/* Secondary text: settings descriptions, empty states, captions.
 	   Under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
+	--trace-fade: 30%;
 	/* Shared hover tone: one step over --popover. */
 	--accent-base: #3a3a3a;
 	--accent-foreground-base: #dfdfdf;
@@ -2050,6 +2053,7 @@ html[data-chat-font] .aui-root {
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
+	--color-trace-foreground: color-mix(in oklab, var(--muted-foreground), var(--background) var(--trace-fade, 0%));
 	--color-muted: var(--muted);
 	--color-secondary-foreground: var(--secondary-foreground);
 	--color-secondary: var(--secondary);
