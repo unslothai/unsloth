@@ -45,7 +45,7 @@ class TestToolCallsOverlapAcrossChats:
 
         from core.inference import studio_tool_loop
 
-        source = Path(studio_tool_loop.__file__).read_text()
+        source = Path(studio_tool_loop.__file__).read_text(encoding = "utf-8")
         for gate in (
             "asyncio.Lock()",
             "asyncio.Semaphore(",
@@ -60,7 +60,7 @@ class TestToolCallsOverlapAcrossChats:
 
         from core.inference import studio_tool_loop
 
-        source = Path(studio_tool_loop.__file__).read_text()
+        source = Path(studio_tool_loop.__file__).read_text(encoding = "utf-8")
         assert "asyncio.to_thread(" in source
 
 

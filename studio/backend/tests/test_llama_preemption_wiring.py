@@ -237,7 +237,7 @@ class TestTheRouteActuallyArmsIt:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert (
             "preempt_event = _gguf_preempt_signal," in source
         ), "the tool loop is not handed the preempt signal"
@@ -757,7 +757,7 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
         import core.inference.llama_preemption as module
 
-        source = Path(module.__file__).read_text()
+        source = Path(module.__file__).read_text(encoding = "utf-8")
         assert "from loggers import get_logger" in source
         assert (
             "logging.getLogger" not in source
@@ -937,7 +937,7 @@ class TestTheStreamActuallyReportsGrowth:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-        return Path(llama_cpp.__file__).read_text()
+        return Path(llama_cpp.__file__).read_text(encoding = "utf-8")
 
     def test_the_chunk_loop_counts_tokens(self):
         source = self._source()
@@ -976,7 +976,7 @@ class TestTheStreamActuallyReportsGrowth:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert "on_tokens = _gguf_observe_tokens," in source
         assert ".observe(completion_id, generated, plan = not contended)" in source
 
@@ -1262,7 +1262,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert "_gguf_refresh_residency(\n" in source
         assert "controller, force = _gguf_idle_residue_wanted(controller)" in source
         assert "controller.note_resident(" in source
@@ -1279,7 +1279,7 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert (
             "reclaimed-idle-early" in source
         ), "residue is only reclaimed once a live chat is already being paused"
@@ -1294,7 +1294,7 @@ class TestIdleResidueIsFreedWhenSeenNotWhenDesperate:
 
         refresh = (
             Path(inference.__file__)
-            .read_text()
+            .read_text(encoding = "utf-8")
             .split("def _gguf_refresh_residency", 1)[1]
             .split("def ", 1)[0]
         )
@@ -1315,7 +1315,7 @@ class TestEveryNameThePreemptPathCallsIsActuallyBound:
         from core.inference import llama_cpp
 
         watched = {"trailing_assistant_reasoning", "trailing_assistant_resumable"}
-        tree = ast.parse(Path(llama_cpp.__file__).read_text())
+        tree = ast.parse(Path(llama_cpp.__file__).read_text(encoding = "utf-8"))
         module_level = set()
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1356,7 +1356,7 @@ class TestEveryNameThePreemptPathCallsIsActuallyBound:
 
         from core.inference import llama_cpp
 
-        source = Path(llama_cpp.__file__).read_text()
+        source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
         assert (
             "                                        trailing_assistant_reasoning,\n" not in source
         )
@@ -1368,7 +1368,7 @@ class TestAFailureInTheResumeCannotKillTheChat:
 
         from core.inference import llama_cpp
 
-        source = Path(llama_cpp.__file__).read_text()
+        source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
         block = source.split("_carried_truncations = list(_respawn_truncations)", 1)[1]
         block = block.split("preempt_policy.on_preempted", 1)[0]
         assert "_assemble_preempt_resume(" in block
@@ -1459,7 +1459,7 @@ class TestAPauseActuallyFreesCells:
         import routes.inference as inference
         return (
             Path(inference.__file__)
-            .read_text()
+            .read_text(encoding = "utf-8")
             .split("def _gguf_refresh_residency", 1)[1]
             .split("\n            def ", 1)[0]
         )
@@ -1491,7 +1491,7 @@ class TestAFinishedGenerationGivesItsChargeBack:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         calls = source.count("_openai_llama_preemption_disarm(")
         assert calls >= 2, "disarm is defined but never called, so charges accumulate forever"
 
@@ -1500,7 +1500,7 @@ class TestAFinishedGenerationGivesItsChargeBack:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         call_at = source.index("                    _openai_llama_preemption_disarm(")
         # The nearest preceding block opener must be a `finally:`, or the paths that matter most
         # here (gave-up, stream error, disconnect) would skip it.
@@ -1563,7 +1563,7 @@ class TestDroppingTheChargeWithoutTheCellsIsWorseThanNeither:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         return source.split("def _openai_llama_preemption_disarm", 1)[1].split("\ndef ", 1)[0]
 
     def test_the_disarm_releases_cells_as_well_as_the_charge(self):
@@ -1641,7 +1641,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
 
         from core.inference import llama_preemption
 
-        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text(encoding = "utf-8"))
         spin = body.index("if self._controller.try_grant_resume")
         assert (
             body.index("cannot_ever_fit(") < spin
@@ -1654,7 +1654,7 @@ class TestTheResumeWaitNeverWaitsForImpossibleRoom:
 
         from core.inference import llama_preemption
 
-        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text(encoding = "utf-8"))
         assert "too-large" in body
         assert "finishing the turn" in body
 
@@ -1693,7 +1693,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
         from core.inference import llama_preemption
 
-        body = _await_resume_body(Path(llama_preemption.__file__).read_text())
+        body = _await_resume_body(Path(llama_preemption.__file__).read_text(encoding = "utf-8"))
         first_ask = body.index("if self._controller.try_grant_resume")
         assert (
             body.index("refresh_residency()") < first_ask
@@ -1704,7 +1704,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert "set_residency_probe(" in source
         assert "force = True" in source, "the probe must bypass the one second cache"
 
@@ -1713,7 +1713,7 @@ class TestTheResumeGrantReadsTheCacheAfresh:
 
         from core.inference import llama_preemption
 
-        source = Path(llama_preemption.__file__).read_text()
+        source = Path(llama_preemption.__file__).read_text(encoding = "utf-8")
         assert (
             "ledger-drift" in source
         ), "a cache overrun could not be attributed to the ledger or to the sweep"
@@ -1727,7 +1727,7 @@ class TestTheSweepIsNotBlindDuringPrefill:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         return source.split("def _gguf_recost", 1)[1].split("\n            def ", 1)[0]
 
     def _publish_body(self):
@@ -1736,7 +1736,7 @@ class TestTheSweepIsNotBlindDuringPrefill:
 
         import routes.inference as inference
 
-        source = Path(inference.__file__).read_text()
+        source = Path(inference.__file__).read_text(encoding = "utf-8")
         body = source.split("def _openai_llama_publish_round_charge", 1)[1]
         return body.split("\ndef ", 1)[0]
 

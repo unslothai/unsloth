@@ -160,10 +160,10 @@ class TestTheSignaturesStayBackwardsCompatible:
         import re
 
         source = pathlib.Path(LlamaCppBackend.__module__.replace(".", "/") + ".py")
-        text = source.read_text() if source.exists() else ""
+        text = source.read_text(encoding = "utf-8") if source.exists() else ""
         if not text:
             import core.inference.llama_cpp as module
-            text = pathlib.Path(module.__file__).read_text()
+            text = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
         unconditional = re.findall(r"^\s*preempt_event = preempt_event,\s*$", text, re.M)
         assert (
             not unconditional

@@ -456,7 +456,7 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
         from pathlib import Path
 
         import core.inference.llama_cpp as llama_cpp
-        return Path(llama_cpp.__file__).read_text()
+        return Path(llama_cpp.__file__).read_text(encoding = "utf-8")
 
     def test_both_payload_sites_apply_the_allowance(self):
         source = self._source()

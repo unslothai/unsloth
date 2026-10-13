@@ -624,7 +624,7 @@ class TestTheWireCarriesAThoughtPartial:
 
         from core.inference.chat_template_helpers import trailing_assistant_resume_kind
 
-        source = Path(llama_cpp.__file__).read_text()
+        source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
         assert (
             "trailing_assistant_resume_kind(conversation) if continue_final_message else None"
             in source
@@ -642,7 +642,7 @@ class TestTheWireCarriesAThoughtPartial:
 
         from core.inference import chat_template_helpers
 
-        source = Path(chat_template_helpers.__file__).read_text()
+        source = Path(chat_template_helpers.__file__).read_text(encoding = "utf-8")
         splice = source.split("def render_prompt_with_boundary", 1)[1].split("\ndef ", 1)[0]
         assert "trailing_assistant_text(messages)" in splice
         assert "trailing_assistant_reasoning" not in splice
