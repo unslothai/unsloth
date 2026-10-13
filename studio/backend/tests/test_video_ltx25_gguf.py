@@ -160,11 +160,97 @@ def test_picker_rows_keep_dev_and_distilled_apart_and_rank_ud_first():
 
     keys = {gguf_variant_key(f) for f in DEV_FILES + DISTILLED_FILES}
     assert len(keys) == len(DEV_FILES) + len(DISTILLED_FILES)
-    # The automatic default reads root rows only (gguf_variants._default_variant_candidates), as for LTX-2.3:
-    # the dev UD-Q4_K_XL, then Q4_K_M.
+    # Within each checkpoint UD-Q4_K_XL ranks first, then Q4_K_M; which checkpoint a bare id means is
+    # default_gguf_scope's call (the next test).
     assert pick_best_gguf(DEV_FILES) == "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf"
     assert pick_best_gguf([f for f in DEV_FILES if "UD-" not in f]) == "ltx-2.5-22b-dev-Q4_K_M.gguf"
     assert pick_best_gguf(DISTILLED_FILES) == "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
+
+
+DISTILLED_DEFAULT = "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
+DISTILLED_DEFAULT_KEY = "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL"
+
+
+def _rows(files):
+    import types
+
+    from hub.utils.gguf import gguf_variant_key
+
+    return [types.SimpleNamespace(filename = f, quant = gguf_variant_key(f)) for f in files]
+
+
+@pytest.mark.parametrize("order", ["dev_first", "distilled_first"])
+def test_bare_repo_id_defaults_to_the_distilled_ud_q4_k_xl(order):
+    """ComfyUI's LTX-2.5 templates and the family defaults (8 + 3 two-stage, CFG 1) are the distilled DiT's, so the
+    /gguf-variants default for the bare repo is distilled/...-UD-Q4_K_XL, whatever order the listing comes in."""
+    from hub.services.models.gguf_variants import _default_variant_candidates
+    from hub.utils.gguf import pick_best_gguf
+
+    files = DEV_FILES + DISTILLED_FILES if order == "dev_first" else DISTILLED_FILES + DEV_FILES
+    rows = _rows(files)
+    assert pick_best_gguf(_default_variant_candidates(rows, REPO)) == DISTILLED_DEFAULT
+    assert pick_best_gguf(_default_variant_candidates(rows, REPO.lower())) == DISTILLED_DEFAULT
+    # Only dev downloaded: the scope falls back to the root rows rather than answering nothing.
+    assert pick_best_gguf(_default_variant_candidates(_rows(DEV_FILES), REPO)) == (
+        "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf"
+    )
+
+
+def test_every_bare_id_resolver_agrees_on_distilled():
+    """_match_variant(None, ...) (OpenAI-style auto-download) and the shared scope used by local_model_resolver and the
+    media index name the same distilled checkpoint; an explicit dev variant still loads dev."""
+    from core.inference.openai_auto_download import _match_variant, preferred_quant
+    from hub.utils.gguf import default_gguf_scope, gguf_variant_key
+
+    sizes = {gguf_variant_key(f): 1 for f in DEV_FILES + DISTILLED_FILES}
+    assert _match_variant(None, sizes, REPO) == DISTILLED_DEFAULT_KEY
+    assert _match_variant("UD-Q4_K_XL", sizes, REPO) == "UD-Q4_K_XL"
+    assert _match_variant("Q8_0", sizes, REPO) == "Q8_0"
+    # An HF cache folder names the repo as well as its id does.
+    cache_dir = "/cache/hub/models--unsloth--LTX-2.5-GGUF"
+    assert preferred_quant(default_gguf_scope(tuple(sizes), cache_dir)) == DISTILLED_DEFAULT_KEY
+
+
+def test_local_resolver_and_media_index_put_distilled_first(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference import local_model_resolver as resolver
+    from core.inference import media_model_index as index_mod
+
+    folder = tmp_path / "models--unsloth--LTX-2.5-GGUF"
+    (folder / "distilled").mkdir(parents = True)
+    for name in ("Q4_K_M", "UD-Q4_K_XL"):
+        (folder / f"ltx-2.5-22b-dev-{name}.gguf").write_bytes(b"GGUF" + b"\0" * 64)
+        (folder / "distilled" / f"ltx-2.5-22b-distilled-{name}.gguf").write_bytes(
+            b"GGUF" + b"\0" * 64
+        )
+    info = SimpleNamespace(path = str(folder), id = REPO, model_id = REPO, display_name = None)
+    entry = resolver._local_gguf_entry(REPO, info)
+    assert entry is not None and entry.variants[0] == DISTILLED_DEFAULT_KEY
+
+    monkeypatch.setattr(index_mod, "_loader_can_open", lambda *_: True)
+    picks: dict = {}
+    assert index_mod._add_gguf_picks(picks, info, (REPO,), folder, folder)
+    # The index keys are lowercased.
+    assert picks[REPO.lower()].gguf_filename.replace("\\", "/") == DISTILLED_DEFAULT
+    assert picks[f"{REPO}:UD-Q4_K_XL".lower()].gguf_filename == "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf"
+
+
+def test_ltx23_and_other_repos_keep_the_root_default():
+    from core.inference.openai_auto_download import _match_variant
+    from core.inference.video_families import gguf_default_subdir_for_repo
+    from hub.services.models.gguf_variants import _default_variant_candidates
+    from hub.utils.gguf import pick_best_gguf
+
+    assert gguf_default_subdir_for_repo(REPO) == "distilled"
+    assert gguf_default_subdir_for_repo("unsloth/LTX-2.3-GGUF") is None
+    files23 = [f.replace("2.5", "2.3") for f in DISTILLED_FILES + DEV_FILES]
+    assert pick_best_gguf(_default_variant_candidates(_rows(files23), "unsloth/LTX-2.3-GGUF")) == (
+        "ltx-2.3-22b-dev-UD-Q4_K_XL.gguf"
+    )
+    other = {"distilled/model-Q4_K_M": 1, "Q4_K_M": 1}
+    assert _match_variant(None, other, "unsloth/Qwen3-8B-GGUF") == "Q4_K_M"
+    assert _match_variant(None, other, None) == "Q4_K_M"
 
 
 def test_unsupported_message_names_both_25_artifacts():

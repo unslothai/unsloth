@@ -752,7 +752,7 @@ async def _admit_and_start(
             ),
         )
 
-    variant = _match_variant(wanted_variant, variants)
+    variant = _match_variant(wanted_variant, variants, repo_id)
     if variant is None:
         _release(active)
         listed = sorted(variants)
@@ -906,7 +906,9 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     return matches[0] if len(matches) == 1 else None
 
 
-def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
+def _match_variant(
+    wanted: Optional[str], variants: dict[str, int], repo_id: Optional[str] = None
+) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 
     An explicit quant matches case-insensitively and must exist: never quietly
@@ -928,13 +930,14 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant
-    # is order-sensitive, and once the map carried a key per checkpoint a repo with distilled/model-Q6_K beside
-    # model-Q6_K could serve the sibling for a bare id -- the same id that resolves to the root locally. Same filter
-    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way. A repo with nothing at
-    # the root falls back to the whole set rather than refusing.
-    unqualified = {name: size for name, size in variants.items() if "/" not in name}
-    return preferred_quant(unqualified or variants)
+    # A BARE org/repo means the checkpoint default_gguf_scope names (the ROOT, or a curated repo's default subdirectory:
+    # unsloth/LTX-2.5-GGUF -> distilled/), so a sibling outside it must not be ranked against it: preferred_quant is
+    # order-sensitive, and a repo with distilled/model-Q6_K beside model-Q6_K could otherwise serve either for one id.
+    # Same scope local_model_resolver._local_gguf_entry and the /gguf-variants default apply, so every resolver answers
+    # one id one way. Nothing in scope falls back to the whole set rather than refusing.
+    from hub.utils.gguf import default_gguf_scope
+
+    return preferred_quant(default_gguf_scope(variants, repo_id))
 
 
 async def _dispatch(

@@ -317,6 +317,54 @@ def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     return next(iter(loadable or names), None)
 
 
+def _repo_id_of(name: object) -> Optional[str]:
+    """*name* as an ``org/repo`` id when it reads as one: a repo id, or an HF cache ``models--org--repo`` folder."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    text = name.strip().rstrip("/\\")
+    leaf = re.split(r"[/\\]", text)[-1]
+    if leaf.startswith("models--"):
+        parts = leaf[len("models--") :].split("--", 1)
+        return "/".join(parts) if len(parts) == 2 and all(parts) else None
+    return text
+
+
+def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
+    """The subdirectory a bare id of any of *repo_ids* defaults to, or None for the repo root.
+
+    Set per curated repo (``VideoFamily.gguf_default_subdir``): unsloth/LTX-2.5-GGUF defaults to
+    distilled/ because the family's defaults are the distilled DiT's. Every other repo is None.
+    """
+    from core.inference.video_families import gguf_default_subdir_for_repo
+
+    for name in repo_ids:
+        subdir = gguf_default_subdir_for_repo(_repo_id_of(name))
+        if subdir:
+            return subdir
+    return None
+
+
+def default_gguf_scope(items: Iterable, *repo_ids: object, key=None) -> list:
+    """The *items* a bare repo id may default to, ranked afterwards by ``pick_best_gguf``/``preferred_quant``.
+
+    *key* maps an item to its variant key (``Q4_K_M``, ``distilled/<stem>``); the item itself by
+    default. The repo's configured default subdirectory when it has rows there, else the ROOT rows,
+    else everything. Each surface that answers "what does a bare id mean" (the /gguf-variants
+    default, the plain load, ``_match_variant(None, ...)``, ``local_model_resolver`` and the media
+    index) filters through this one rule, so one id names one checkpoint everywhere.
+    """
+    rows = list(items)
+    key_of = key or (lambda item: item)
+    subdir = default_gguf_subdir(*repo_ids)
+    if subdir:
+        prefix = subdir.strip("/").casefold() + "/"
+        scoped = [item for item in rows if str(key_of(item) or "").casefold().startswith(prefix)]
+        if scoped:
+            return scoped
+    root = [item for item in rows if "/" not in str(key_of(item) or "")]
+    return root or rows
+
+
 def _gguf_stem(filename: str) -> str:
     basename = filename.rsplit("/", 1)[-1]
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()

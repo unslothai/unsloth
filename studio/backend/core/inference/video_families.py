@@ -289,6 +289,9 @@ class VideoFamily:
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # Subdirectory of gguf_repo whose files a bare repo id means (picker default, plain load, media index, OpenAI-style
+    # id), when the family's defaults are tuned for that checkpoint rather than the root one. None keeps the root rule.
+    gguf_default_subdir: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -600,6 +603,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # The DiT (plus its text connectors) as single-file GGUF quants: dev at the root, distilled under distilled/.
         # The file name picks the variant (ltx25_is_dev) and the pack above stays the base for VAEs and connectors.
         gguf_repo = "unsloth/LTX-2.5-GGUF",
+        # The family defaults (8 + 3 two-stage at CFG 1) and ComfyUI's LTX-2.5 templates are the distilled DiT's, so a
+        # bare repo id means distilled/; the root dev files stay selectable by their own keys.
+        gguf_default_subdir = "distilled",
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.
@@ -997,6 +1003,17 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if candidate.name == "hunyuanvideo-1.5-720p":
                 return candidate
     return fam
+
+
+def gguf_default_subdir_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_default_subdir`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_default_subdir and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_default_subdir
+    return None
 
 
 def supported_video_family_names() -> tuple[str, ...]:
