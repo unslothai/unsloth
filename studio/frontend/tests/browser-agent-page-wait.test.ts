@@ -22,7 +22,7 @@ function page(requests: Array<{ start: number; end: number }>, mutations: number
       now += 5;
       const pending = requests.filter((r) => r.start >= since && r.start <= now && now < r.end).length;
       const last = Math.max(-Infinity, ...mutations.filter((t) => t <= now));
-      return { pending, quietMs: now - last };
+      return { requests: pending, quietMs: now - last };
     },
     moved: () => false,
   });

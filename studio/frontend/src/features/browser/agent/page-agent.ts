@@ -46,7 +46,7 @@ export type AgentAnswer = {
   info?: ElementInfo;
   quietMs?: number;
   /** Requests the page started recently and is still waiting on. */
-  pending?: number;
+  requests?: number;
   title?: string;
 };
 
@@ -841,7 +841,7 @@ export function installPageAgent(): PageAgent {
           return {
             ok: true,
             quietMs: Math.round(performance.now() - lastMutation),
-            pending: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
+            requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
             title: document.title,
           };
         }

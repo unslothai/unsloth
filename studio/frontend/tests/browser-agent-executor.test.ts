@@ -22,7 +22,7 @@ async function navigate(id: string, url: string, onStatus: (tabId: string, call:
   };
   let calls = 0;
   globals.__frameAgent = async (tabId: string, op: Record<string, unknown>) => {
-    if (op.op === "status") return { installed: true, result: { ok: true, pending: onStatus(tabId, ++calls), quietMs: 1000 } };
+    if (op.op === "status") return { installed: true, result: { ok: true, requests: onStatus(tabId, ++calls), quietMs: 1000 } };
     return { installed: true, result: { ok: true, text: "Qwen models", links: [] } };
   };
   await runBrowserAction(

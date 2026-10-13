@@ -259,7 +259,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     note: str(raw.note, 1000),
     navigate: str(raw.navigate, 8192),
     quietMs: typeof raw.quietMs === "number" ? raw.quietMs : undefined,
-    pending: typeof raw.pending === "number" ? raw.pending : undefined,
+    requests: typeof raw.requests === "number" ? raw.requests : undefined,
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {

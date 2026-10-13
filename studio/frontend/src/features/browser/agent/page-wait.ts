@@ -4,7 +4,7 @@
 /** Waiting for a page to finish what an action or a load set off, before the agent reads it. */
 
 /** What the page reports (agent/page-agent.ts `status`); null when it didn't answer. */
-export type PageStatus = { pending?: number; quietMs?: number } | null;
+export type PageStatus = { requests?: number; quietMs?: number } | null;
 
 export type PageWait = {
   /** Give up after about this long (one more status call can run past it). */
@@ -31,7 +31,7 @@ export async function waitForPage(wait: PageWait): Promise<"settled" | "loading"
     if (wait.moved()) return "moved";
     const status = await wait.status();
     if (!status) return "settled";
-    const loading = (status.pending ?? 0) > 0;
+    const loading = (status.requests ?? 0) > 0;
     const waited = wait.now() - started;
     if (!loading && ((status.quietMs ?? 0) >= wait.quietMs || waited >= wait.changingMaxMs)) return "settled";
     if (waited >= wait.maxMs) return loading ? "loading" : "settled";
