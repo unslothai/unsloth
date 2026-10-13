@@ -39,20 +39,19 @@ or launching Unsloth Studio does not download anything.
 
 A server can expose dozens of tools with long descriptions and deeply nested
 parameter schemas: Notion's catalog alone is about 65,000 tokens. Every tool is
-listed in full whenever the catalog fits the loaded local model's context window,
-so a model that can hold the full listing always gets it.
+listed in full while the catalog takes at most a tenth of the loaded local model's
+context window.
 
-When the full listing would take more than three quarters of the window, which
-would otherwise get even a short prompt refused, the largest tools (only those
-whose description and schema together exceed about 1,500 characters) are listed
-in a compact form, largest first, until the listing fits: a compact tool shows its
-first sentence plus its top-level parameters with their types, required flags and
-short enums. Every other tool keeps its full schema. The model then also gets `mcp_tool_schema`, which returns a tool's
-full description and JSON Schema on demand, in pages when it is longer than the
-room left for a tool result. A compact tool called without one of its required
-arguments, or whose call the server rejects, answers with that schema so the model
-can correct the call. Arguments to a compact tool are still typed against its full
-schema. External providers always get the full listing.
+Past that, Studio searches tools the way Claude Code and Codex do: the largest
+tools are deferred, largest first, until the listing fits, and the model gets
+`mcp_tool_search`, whose description names every deferred tool. A search ranks
+the deferred catalog with the same SQLite FTS5 BM25 index and rank fusion the
+knowledge base uses (tool names and descriptions searched separately), loads the
+best matches (5 by default, exact names always), and those tools are callable
+with their full schemas from the next step on. A deferred tool the model calls by
+name loads the same way. Tools a chat has loaded stay listed on its later turns,
+so the prompt prefix the model server caches does not change. External providers
+always get the full listing.
 
 ## Unsloth Decisions MCP
 
