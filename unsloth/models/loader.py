@@ -101,7 +101,21 @@ SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
-VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss", "nemotron_h")
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+# Model types an older unsloth_zoo cannot rebuild from vLLM: model_type -> unsloth_zoo.empty_model symbol added with support.
+_VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+
+
+def _vllm_unsupported_model_types(model_types):
+    unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+    for model_type, symbol in _VLLM_NEEDS_ZOO_SYMBOL.items():
+        if model_type in model_types:
+            import unsloth_zoo.empty_model as zoo_empty_model
+            if not hasattr(zoo_empty_model, symbol):
+                unsupported.append(model_type)
+    return unsupported
+
+
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
 if SUPPORTS_GEMMA:
@@ -2283,7 +2297,7 @@ class FastModel(FastBaseModel):
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
         _raise_if_modeling_ignores_config(model_config, model_types)
-        _vllm_unsupported = [t for t in model_types if t in VLLM_UNSUPPORTED_MODEL_TYPES]
+        _vllm_unsupported = _vllm_unsupported_model_types(model_types) if fast_inference else []
         if fast_inference and _vllm_unsupported:
             # Without this, vLLM loads the whole model first and weight sharing then crashes (unslothai/unsloth#4541).
             print(

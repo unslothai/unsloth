@@ -4671,6 +4671,17 @@ class FastBaseModel:
             target_parameters = packed_expert_target_parameters(
                 model, target_parameters, _packed_leaves
             )
+            # vLLM serves Nemotron-H's relu2 experts only through the 2D FusedMoEWithLoRA, which drops a stacked adapter, so load_lora would refuse it mid-run.
+            if (
+                target_parameters
+                and getattr(model, "vllm_engine", None) is not None
+                and getattr(getattr(model, "config", None), "model_type", None) == "nemotron_h"
+            ):
+                print(
+                    "Unsloth: fast_inference (vLLM) cannot serve LoRA on Nemotron-H's MoE experts, so they stay frozen "
+                    f"({target_parameters} not trained). Use fast_inference = False to train them."
+                )
+                target_parameters = None
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):

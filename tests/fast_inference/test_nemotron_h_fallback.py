@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Nemotron-H with fast_inference = True loads on Unsloth inference instead of crashing in vLLM weight sharing (unslothai/unsloth-zoo#565)."""
+"""Nemotron-H with fast_inference = True falls back to Unsloth inference when the installed unsloth_zoo cannot rebuild it from vLLM (unslothai/unsloth-zoo#565)."""
 
 import importlib.util
 
@@ -16,10 +16,25 @@ MODEL_NAME = "trl-internal-testing/tiny-NemotronHForCausalLM-nano"
 
 
 @pytest.mark.skipif(not has_real_accelerator(), reason = "needs a GPU")
+def test_nemotron_h_needs_a_zoo_that_rebuilds_it(monkeypatch):
+    import unsloth_zoo.empty_model as zoo_empty_model
+    from unsloth.models.loader import _vllm_unsupported_model_types
+
+    monkeypatch.setattr(zoo_empty_model, "extract_nemotron_h_mixer", object(), raising = False)
+    assert _vllm_unsupported_model_types(["nemotron_h"]) == []
+    assert _vllm_unsupported_model_types(["gpt_oss"]) == ["gpt_oss"]
+    monkeypatch.delattr(zoo_empty_model, "extract_nemotron_h_mixer")
+    assert _vllm_unsupported_model_types(["nemotron_h"]) == ["nemotron_h"]
+    assert _vllm_unsupported_model_types(["llama"]) == []
+
+
+@pytest.mark.skipif(not has_real_accelerator(), reason = "needs a GPU")
 @pytest.mark.skipif(importlib.util.find_spec("vllm") is None, reason = "needs vLLM installed")
-def test_nemotron_h_fast_inference_falls_back(capfd):
+def test_nemotron_h_fast_inference_falls_back_on_an_older_zoo(capfd, monkeypatch):
+    import unsloth_zoo.empty_model as zoo_empty_model
     from unsloth import FastLanguageModel
 
+    monkeypatch.delattr(zoo_empty_model, "extract_nemotron_h_mixer", raising = False)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = MODEL_NAME,
         max_seq_length = 256,
