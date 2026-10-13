@@ -5206,7 +5206,7 @@ class TestATerminatingErrorStillRemovesTheMergedOverrides:
     script scope removes it and rethrows."""
 
     def test_the_trap_precedes_the_restore(self):
-        trap = SETUP_SRC.index("trap { Remove-WoaMergedOverrides; break }")
+        trap = SETUP_SRC.index("trap { Remove-WoaMergedOverrides;")
         assert trap < SETUP_SRC.index("\nRestore-WoaResolverEnvironment\n")
 
     @requires_pwsh

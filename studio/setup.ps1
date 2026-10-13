@@ -6036,6 +6036,10 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $WalkDir = (Get-Item $FrontendDir).Parent.FullName
     while ($WalkDir -and $WalkDir -ne [System.IO.Path]::GetPathRoot($WalkDir)) {
         $gi = Join-Path $WalkDir ".gitignore"
+        # A build stopped by Ctrl-C or a closed window never put its hidden file back.
+        if (-not (Test-Path -LiteralPath $gi) -and (Test-Path -LiteralPath "$gi._twbuild" -PathType Leaf)) {
+            Rename-Item -LiteralPath "$gi._twbuild" -NewName ".gitignore" -ErrorAction SilentlyContinue
+        }
         if (Test-Path $gi) {
             $content = Get-Content $gi -Raw -ErrorAction SilentlyContinue
             if ($content -and ($content.Trim() -match '^\*$')) {
@@ -8558,7 +8562,7 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
 # A terminating error after this point reaches neither Exit-SetupFailure nor the last statement, so the merged override file, which can carry the caller's credentials, would stay on disk. The trap removes it.
-trap { Remove-WoaMergedOverrides; break }
+trap { Remove-WoaMergedOverrides; if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }; break }
 Restore-WoaResolverEnvironment
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
