@@ -160,8 +160,11 @@ def _engine_available() -> bool:
 
 def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
-    if _is_mlx(checkpoint) or not _engine_available():
+    if not _engine_available():
         return None
+    if _is_mlx(checkpoint):
+        # Only a catalog entry is its own MLX form; a target has none further.
+        return checkpoint if CHECKPOINTS.get(checkpoint.name) == checkpoint else None
     if checkpoint.layout == "clef":
         if checkpoint.is_local:
             from utils.models.model_config import clef_folder_kind
@@ -191,7 +194,7 @@ def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
     if not getattr(ClefModel, f"takes_{media}", False):
         return False
     if not checkpoint.is_local:
-        return media == "images"
+        return media == "images" or checkpoint.audio
     import json
 
     folder = Path(checkpoint.source).expanduser()
@@ -459,6 +462,14 @@ def select(
                 "Audio is served only by MLX; set the Decision API runtime to Auto or MLX.",
             )
         return _select_mlx(checkpoint, unread), None
+    if _is_mlx(checkpoint):
+        if (preference or get_backend()) not in ("auto", MLX):
+            raise Unavailable(
+                400,
+                "api_usage_error",
+                f"{checkpoint.name} is served only by MLX; set the Decision API runtime to Auto or MLX.",
+            )
+        return _select_mlx(checkpoint, unread), None
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
         return _select_mlx(checkpoint, unread), None
     mlx = _mlx_choice(
@@ -524,6 +535,10 @@ def _select_mlx(checkpoint: Checkpoint, unread) -> Checkpoint:
         return target
     else:
         reason = f"{checkpoint.name} has no MLX form."
+    if _is_mlx(checkpoint):
+        raise Unavailable(
+            400, "api_usage_error", f"{checkpoint.name} is served only by MLX. {reason}"
+        )
     raise Unavailable(400, "api_usage_error", f"{reason} Set the Decision API runtime to Auto.")
 
 

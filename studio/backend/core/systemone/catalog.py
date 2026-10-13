@@ -26,11 +26,14 @@ class Checkpoint:
     layout: str = "laya"
     # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
     # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
+    # A catalog entry that is itself "mlx" has no other form.
     backend: str = "pytorch"
     # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
     revision: str | None = None
     # Display name where the frontend has none of its own.
     label: str | None = None
+    # A Hub entry whose model hears audio; a local folder says so in its config.
+    audio: bool = False
 
     @property
     def is_local(self) -> bool:
@@ -82,6 +85,18 @@ CHECKPOINTS = {
             "Cloudflare Clef on Qwen3.8 27B: the most accurate decisions, needs a large GPU.",
             54_976_000_000,
             "clef",
+        ),
+        Checkpoint(
+            "clef-omni",
+            "mlx-community/clef-omni-8bit",
+            None,
+            "Cloudflare Clef Omni on Qwen3-Omni 30B (8-bit, MLX only): text, images and audio, "
+            "needs Apple Silicon with 48 GB of memory or more.",
+            35_044_686_208,
+            "clef",
+            "mlx",
+            label = "Clef Omni",
+            audio = True,
         ),
         _gguf(
             "kev-0.8b",

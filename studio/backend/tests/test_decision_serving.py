@@ -914,7 +914,7 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
     assert all(
         m["available"] and m["unavailable_reason"] is None
         for m in models
-        if not m["llama_cpp_only"]
+        if not m["llama_cpp_only"] and m["name"] != "clef-omni"
     )
 
 
@@ -1083,7 +1083,7 @@ def test_the_mlx_runtime_serves_only_through_the_engine(home, client, engine, mo
     assert _put(client, device = "cpu").status_code == 200
     settings = client.get("/api/settings/systemone").json()
     assert not settings["mlx_available"] and settings["effective_backend"] is None
-    assert not any("MLX" in m["description"] for m in settings["models"])
+    assert not any("or MLX" in m["description"] for m in settings["models"])
     assert "needs Apple Silicon" in settings["fallback_reason"] and _post(client).status_code == 400
     plan = client.get("/api/settings/systemone/resolve", params = {"backend": "mlx"}).json()
     assert (plan["repo"], plan["cached"]) == (None, False) and "needs Apple Silicon" in plan[
@@ -1371,12 +1371,13 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
             laya_runtime.select(tuned, audio = [clip], preference = runtime)
     # The clips reach the engine after the images.
     assert _put(client, enabled = True, model = served).status_code == 200
-    body = {"model": "default", "state": "s", "questions": questions, "audio": [clip]}
+    clips = [clip, "data:audio/wav;base64,AQ=="]
+    body = {"model": "default", "state": "s", "questions": questions, "audio": clips}
     assert client.post("/v1/systemone", json = body).headers["x-unsloth-decision-backend"] == "mlx"
-    assert engine.read == ("s", (None, [clip]))
+    assert engine.read == ("s", (None, clips))
     assert client.post("/v1/systemone", json = {**body, "model": "kev-4b"}).status_code == 400
-    assert laya_runtime._route(tuned, "s", questions, [image], [clip])["_backend"] == "mlx"
-    assert engine.read == ("s", ([image], [clip]))
+    assert laya_runtime._route(tuned, "s", questions, [image], clips)["_backend"] == "mlx"
+    assert engine.read == ("s", ([image], clips))
     monkeypatch.setattr(systemone, "MAX_AUDIO_BYTES", 6)
     for audio, message in (
         ([clip] * 9, "At most 8 audio clips"),
@@ -1389,6 +1390,30 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     asked, connection = {"q": systemone.QuestionIn(type = "noul")}, catalog.Connection("p", "m")
     with pytest.raises(systemone.HTTPException, match = "Audio is not forwarded"):
         asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
+
+
+def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engine, monkeypatch):
+    omni, clip = catalog.CHECKPOINTS["clef-omni"], "data:audio/wav;base64,AA=="
+    zoo = sys.modules["unsloth_zoo.mlx.decision"]
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    assert _put(client, enabled = True, model = "clef-omni").status_code == 200
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["effective_backend"] == "mlx"
+    assert settings["input_modalities"] == ["text", "image", "audio"]
+    questions = {"q": {"type": "noul", "instructions": "i"}}
+    body = {"model": "default", "state": "s", "questions": questions, "audio": [clip]}
+    assert client.post("/v1/systemone", json = body).headers["x-unsloth-decision-backend"] == "mlx"
+    assert engine.loaded == [("clef-omni-8bit", "clef", None)] and engine.read[1] == (None, [clip])
+    assert not laya_runtime.input_modalities(catalog.CHECKPOINTS["clef"])[2:]
+    for runtime in ("pytorch", "llama.cpp"):
+        with pytest.raises(laya_runtime.Unavailable, match = "clef-omni is served only by MLX"):
+            laya_runtime.select(omni, preference = runtime)
+    # Where the engine is not, the entry is listed as one this machine cannot serve.
+    _spoof_device(monkeypatch, "cuda")
+    listed = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert listed["clef-omni"]["available"] is False and not listed["clef-omni"]["llama_cpp_only"]
+    assert "served only by MLX" in listed["clef-omni"]["unavailable_reason"]
+    assert _post(client, "clef-omni").status_code == 400
 
 
 def test_auto_keeps_images_in_the_state_off_mlx(home, engine, monkeypatch):
