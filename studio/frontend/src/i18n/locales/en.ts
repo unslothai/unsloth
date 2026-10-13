@@ -85,6 +85,7 @@ export const en = {
         submit: "Let Unsloth submit this form on {host}?",
         click: "Let Unsloth click “{name}” on {host}?",
         history: "Let Unsloth read your browsing history?",
+        script: "Let Unsloth run this script on {host}?",
       },
     },
     title: "Browser",

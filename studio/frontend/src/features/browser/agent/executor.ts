@@ -28,6 +28,13 @@ export type BrowserAction = {
   value?: string;
   direction?: "up" | "down";
   key?: string;
+  /** Pixels of the agent's last screenshot of the tab (`pointScale`). */
+  x?: number;
+  y?: number;
+  toRef?: string;
+  toX?: number;
+  toY?: number;
+  script?: string;
   fullPage?: boolean;
   query?: string;
   limit?: number;
@@ -51,6 +58,8 @@ export const STOPPED = "The user stopped the browser agent. Do not use browser t
 
 const str = (value: unknown, max: number): string | undefined =>
   typeof value === "string" && value.length <= max ? value : undefined;
+const num = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 100) : [];
 
@@ -72,6 +81,12 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     value: str(raw.value, 512),
     direction: raw.direction === "up" ? "up" : "down",
     key: str(raw.key, 32),
+    x: num(raw.x),
+    y: num(raw.y),
+    toRef: str(raw.to_ref, 16),
+    toX: num(raw.to_x),
+    toY: num(raw.to_y),
+    script: str(raw.script, 20_000),
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
     limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
@@ -232,6 +247,9 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is no longer on the page; call browser_snapshot for fresh refs\.$/,
   /^this page has too many elements to number; use browser_find\.$/,
   /^the page's own script failed during that action; take a fresh snapshot\.$/,
+  /^that point is outside the visible page; take a screenshot to see what is there\.$/,
+  /^that point is inside an embedded frame, which the browser tools can't reach\.$/,
+  /^the script's page went away before it finished; take a snapshot\.$/,
   /^unknown command$/,
 ];
 
@@ -256,6 +274,11 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     note: str(raw.note, 1000),
     navigate: str(raw.navigate, 8192),
     quietMs: typeof raw.quietMs === "number" ? raw.quietMs : undefined,
+    x: num(raw.x),
+    y: num(raw.y),
+    width: num(raw.width),
+    height: num(raw.height),
+    pending: raw.pending === true,
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {
@@ -347,6 +370,7 @@ const DECLINED: Record<Question["ask"], string> = {
   submit: "sending a form",
   click: "that click",
   history: "sharing their browsing history",
+  script: "running that script",
 };
 
 /** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
@@ -509,12 +533,26 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     }
     case "screenshot":
       return screenshot(ready);
+    case "move":
+      return moveTo(ready, action, context, before);
+    case "drag":
+      return dragBetween(ready, action, context, before);
+    case "evaluate":
+      return runScript(ready, action, context, before);
   }
 
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
-  const described = await pageCall(ready, { op: "describe", ref, ...(action.op === "select" ? { value: action.value ?? "" } : {}) });
-  if (!described.ok || !described.info) return { ok: false, error: described.error ?? `${ref} could not be found.` };
+  const point = action.op === "click" ? pagePoint(ready, action.x, action.y) : null;
+  const described = await pageCall(ready, {
+    op: "describe",
+    ref,
+    ...point,
+    ...(action.op === "select" ? { value: action.value ?? "" } : {}),
+  });
+  if (!described.ok || !described.info) {
+    return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
+  }
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, before, action.policy, permissions()));
@@ -568,7 +606,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   let note: string | undefined;
   if (action.op === "click") {
-    const clicked = await pageCall(ready, { op: "click", ref, directLinks: !useNativeBrowser.getState().enabled });
+    const clicked = await pageCall(ready, { op: "click", ref, ...point, directLinks: !useNativeBrowser.getState().enabled });
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
       // A link: opened in this tab, under the same rules as any other address. Its href is read
@@ -602,6 +640,144 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   const now = tabUrl(after);
   if (now && now !== before) return arrive(after, before, action, context, note);
   return observe(after, note);
+}
+
+async function afterward(tab: BrowserTab, before: string, action: BrowserAction, context: ActionContext, note?: string): Promise<Result> {
+  const after = await settle(tab.id, before, context.signal);
+  if (!after) return { ok: false, error: "the browser tab closed." };
+  const now = tabUrl(after);
+  if (now && now !== before) return arrive(after, before, action, context, note);
+  return observe(after, note);
+}
+
+// CSS pixels per pixel of the agent's last screenshot of each tab: the model reads x and y off that
+// picture (browser_agent.py _POINT_NOTE). 1 until it takes one.
+const pointScale = new Map<string, number>();
+const MAX_SHOT_EDGE = 1024;
+
+function pagePoint(tab: BrowserTab, x?: number, y?: number): { x: number; y: number } | null {
+  if (x === undefined || y === undefined) return null;
+  const scale = pointScale.get(tab.id) ?? 1;
+  return { x: x * scale, y: y * scale };
+}
+
+/** A ref's centre or the model's point, in CSS pixels of the visible page; else why not. */
+async function onScreen(
+  tab: BrowserTab,
+  ref: string | undefined,
+  x?: number,
+  y?: number,
+  scroll = true,
+): Promise<{ x: number; y: number } | string> {
+  const point = pagePoint(tab, x, y);
+  if (point) return point;
+  const found = await pageCall(tab, { op: "locate", ref: ref ?? "", scroll });
+  if (!found.ok) return found.error ?? `${ref} could not be found.`;
+  if (found.x === undefined || found.y === undefined) return `${ref} is not on screen; scroll to it first.`;
+  return { x: found.x, y: found.y };
+}
+
+/** browser_move_mouse: hover only, so nothing to ask; a page acting on hover is its own doing. */
+async function moveTo(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
+  const at = await onScreen(tab, action.ref, action.x, action.y);
+  if (typeof at === "string") return { ok: false, error: at };
+  const moved = await pageCall(tab, { op: "pointer", phase: "move", ...at });
+  if (!moved.ok) return { ok: false, error: moved.error };
+  return afterward(tab, before, action, context, moved.note);
+}
+
+const DRAG_STEP_PX = 20;
+const DRAG_FRAME_MS = 16;
+
+/** browser_drag: both ends are asked about as clicks, since a drop can delete, send or buy too. */
+async function dragBetween(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
+  const { signal } = context;
+  const start = await onScreen(tab, action.ref, action.x, action.y);
+  if (typeof start === "string") return { ok: false, error: start };
+  const end = await onScreen(tab, action.toRef, action.toX, action.toY);
+  if (typeof end === "string") return { ok: false, error: end };
+  // Bringing the end into view can scroll the start away.
+  const from = action.ref ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
+  if (typeof from === "string") {
+    return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
+  }
+  for (const point of [from, end]) {
+    const described = await pageCall(tab, { op: "describe", ref: "", ...point });
+    if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
+    const refused = await pass(gateElement("click", described.info, before, action.policy, permissions()), signal);
+    if (refused) return { ok: false, error: refused };
+  }
+  if (signal?.aborted) return { ok: false, error: STOPPED };
+  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from });
+  if (!down.ok) return { ok: false, error: down.error };
+  // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
+  const steps = Math.min(25, Math.max(5, Math.round(Math.hypot(end.x - from.x, end.y - from.y) / DRAG_STEP_PX)));
+  let at = from;
+  for (let step = 1; step <= steps && !signal?.aborted; step++) {
+    await sleep(DRAG_FRAME_MS);
+    const next = { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
+    const moved = await pageCall(tab, { op: "pointer", phase: "move", ...next }).catch(() => null);
+    if (!moved?.ok) break;
+    at = next;
+  }
+  // Released where it got to, so the page is never left mid-drag.
+  const up = await pageCall(tab, { op: "pointer", phase: "up", ...at });
+  if (signal?.aborted) return { ok: false, error: STOPPED };
+  if (!up.ok) return { ok: false, error: up.error };
+  if (at.x !== end.x || at.y !== end.y) return { ok: false, error: "the drag stopped short; take a snapshot to see where things are." };
+  return afterward(tab, before, action, context, up.note);
+}
+
+const SCRIPT_WAIT_MS = 15_000;
+
+/** browser_evaluate. A script can do anything the page can, past every rule above: read a password
+ *  field, press Buy, send what it read anywhere. So the user sees it word for word and is asked
+ *  each time, whatever their site permissions say. */
+async function runScript(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
+  const { signal } = context;
+  const script = action.script ?? "";
+  if (!script.trim()) return { ok: false, error: "the script is empty." };
+  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
+  if (refused) return { ok: false, error: refused };
+  if (signal?.aborted) return { ok: false, error: STOPPED };
+  const id = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  let started: AgentAnswer | null = null;
+  if (useNativeBrowser.getState().enabled) {
+    // Installs the agent the script hands its outcome to.
+    await pageCall(tab, { op: "status" });
+    const reply = hasNativeView(tab.id)
+      ? await callNative<{ installed: boolean; result: unknown }>("browser_view_eval", { tabId: tab.id, id, code: script }).catch(
+          () => null,
+        )
+      : null;
+    started = reply?.installed ? checkedAnswer(reply.result) : null;
+  } else {
+    started = await pageCall(tab, { op: "evaluate", id, script });
+  }
+  if (!started) return { ok: false, error: "the script did not start; check it for a syntax error." };
+  if (!started.ok) return { ok: false, error: started.error };
+  let outcome = `Still running after ${SCRIPT_WAIT_MS / 1000} s; its result is lost.`;
+  const until = Date.now() + SCRIPT_WAIT_MS;
+  while (Date.now() < until) {
+    if (signal?.aborted) return { ok: false, error: STOPPED };
+    const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+    if (!now || now.loading || tabUrl(now) !== before) {
+      outcome = "The page moved on before the script finished.";
+      break;
+    }
+    const answer = await pageCall(tab, { op: "evaluated", id });
+    if (!answer.ok) return { ok: false, error: answer.error };
+    if (!answer.pending) {
+      outcome = answer.text ?? "";
+      break;
+    }
+    await sleep(100);
+  }
+  const after = await settle(tab.id, before, signal);
+  if (!after) return { ok: false, error: "the browser tab closed." };
+  const now = tabUrl(after);
+  if (now && now !== before) return arrive(after, before, action, context, outcome.slice(0, 900));
+  return { ok: true, url: now, title: after.customTitle ?? after.title, text: outcome };
 }
 
 /** Where a navigation ended up, checked before the model reads it: a redirect or a script can land
@@ -680,6 +856,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
   }
+  blob = await toPointScale(tab, blob);
   const image = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -687,6 +864,36 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
     reader.readAsDataURL(blob);
   });
   return { ok: true, url: tabUrl(tab), title: tab.title, image };
+}
+
+/** The picture at the page's own CSS size (device pixels otherwise), within the server's
+ *  1024px edge (mcp_images.MAX_IMAGE_EDGE), so x and y read off it map back exactly. */
+async function toPointScale(tab: BrowserTab, blob: Blob): Promise<Blob> {
+  const status = await pageCall(tab, { op: "status" }).catch(() => null);
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch {
+    return blob;
+  }
+  try {
+    const cssWidth = status?.width || bitmap.width;
+    const cssHeight = status?.height || bitmap.height;
+    const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(cssWidth, cssHeight));
+    const width = Math.max(1, Math.round(cssWidth * fit));
+    const height = Math.max(1, Math.round(cssHeight * fit));
+    pointScale.set(tab.id, cssWidth / bitmap.width);
+    if (width === bitmap.width && height === bitmap.height) return blob;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+    const scaled = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (scaled) pointScale.set(tab.id, cssWidth / width);
+    return scaled ?? blob;
+  } finally {
+    bitmap.close();
+  }
 }
 
 const HISTORY_LIMIT = 50;

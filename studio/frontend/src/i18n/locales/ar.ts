@@ -88,6 +88,7 @@ export const ar = {
         submit: "هل تسمح لـ Unsloth بإرسال هذا النموذج على {host}؟",
         click: "هل تسمح لـ Unsloth بالنقر على «{name}» في {host}؟",
         history: "هل تسمح لـ Unsloth بقراءة سجل التصفح؟",
+        script: "هل تسمح لـ Unsloth بتشغيل هذا البرنامج النصي على {host}؟",
       },
     },
     title: "المتصفح",

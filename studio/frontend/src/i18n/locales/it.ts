@@ -87,6 +87,7 @@ export const it = {
         submit: "Consentire a Unsloth di inviare questo modulo su {host}?",
         click: "Consentire a Unsloth di fare clic su «{name}» su {host}?",
         history: "Consentire a Unsloth di leggere la tua cronologia di navigazione?",
+        script: "Consentire a Unsloth di eseguire questo script su {host}?",
       },
     },
     title: "Browser",

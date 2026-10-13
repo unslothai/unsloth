@@ -88,6 +88,7 @@ export const hi = {
         submit: "क्या Unsloth को {host} पर यह फ़ॉर्म भेजने दें?",
         click: "क्या Unsloth को {host} पर “{name}” पर क्लिक करने दें?",
         history: "क्या Unsloth को आपका ब्राउज़िंग इतिहास पढ़ने दें?",
+        script: "क्या Unsloth को {host} पर यह स्क्रिप्ट चलाने दें?",
       },
     },
     title: "ब्राउज़र",

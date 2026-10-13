@@ -89,6 +89,7 @@ export const he = {
         submit: "לאפשר ל-Unsloth לשלוח את הטופס הזה ב-{host}?",
         click: "לאפשר ל-Unsloth ללחוץ על „{name}” ב-{host}?",
         history: "לאפשר ל-Unsloth לקרוא את היסטוריית הגלישה?",
+        script: "לאפשר ל-Unsloth להריץ את הסקריפט הזה ב-{host}?",
       },
     },
     title: "דפדפן",

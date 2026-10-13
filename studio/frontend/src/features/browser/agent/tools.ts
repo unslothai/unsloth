@@ -12,10 +12,13 @@ export const BROWSER_AGENT_TOOLS = [
   "browser_snapshot",
   "browser_find",
   "browser_click",
+  "browser_move_mouse",
+  "browser_drag",
   "browser_type",
   "browser_select",
   "browser_scroll",
   "browser_press_key",
+  "browser_evaluate",
 ] as const;
 
 /** Captured from the panel without a prompt only in the desktop app; the server keeps it for vision models. */

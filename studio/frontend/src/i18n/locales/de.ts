@@ -88,6 +88,7 @@ export const de = {
         submit: "Darf Unsloth dieses Formular auf {host} absenden?",
         click: "Darf Unsloth auf „{name}“ auf {host} klicken?",
         history: "Darf Unsloth deinen Browserverlauf lesen?",
+        script: "Darf Unsloth dieses Skript auf {host} ausführen?",
       },
     },
     title: "Browser",

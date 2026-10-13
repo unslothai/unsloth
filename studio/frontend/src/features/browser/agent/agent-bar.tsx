@@ -25,7 +25,16 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
         <p className="truncate font-medium text-foreground">
           {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : t("browser.agent.working")}
         </p>
-        {question?.detail ? <p className="truncate text-muted-foreground" title={question.detail}>{question.detail}</p> : null}
+        {question?.ask === "script" ? (
+          // All of it: the user is approving this exact code.
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1 font-mono text-ui-11 text-foreground">
+            {question.detail}
+          </pre>
+        ) : question?.detail ? (
+          <p className="truncate text-muted-foreground" title={question.detail}>
+            {question.detail}
+          </p>
+        ) : null}
       </div>
       {question ? (
         <>

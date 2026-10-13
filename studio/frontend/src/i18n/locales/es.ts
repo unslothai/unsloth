@@ -88,6 +88,7 @@ export const es = {
         submit: "¿Permitir que Unsloth envíe este formulario en {host}?",
         click: "¿Permitir que Unsloth haga clic en «{name}» en {host}?",
         history: "¿Permitir que Unsloth lea tu historial de navegación?",
+        script: "¿Permitir que Unsloth ejecute este script en {host}?",
       },
     },
     title: "Navegador",

@@ -88,6 +88,7 @@ export const zhCN = {
         submit: "允许 Unsloth 在 {host} 上提交此表单？",
         click: "允许 Unsloth 点击 {host} 上的“{name}”？",
         history: "允许 Unsloth 读取你的浏览记录？",
+        script: "允许 Unsloth 在 {host} 上运行这段脚本？",
       },
     },
     title: "浏览器",

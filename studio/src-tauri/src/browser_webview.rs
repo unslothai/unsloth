@@ -1701,6 +1701,59 @@ pub async fn browser_view_agent<R: Runtime>(
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
     let script = agent_script(&command)?;
+    eval_json(&page, script).await
+}
+
+// browser_evaluate: the model's script, which the user approved word for word in the panel, as the
+// body of an async function the installed agent runs and keeps the outcome of for the panel to
+// poll. Spliced in like the agent code so a CSP without 'unsafe-eval' can't block it; a syntax
+// error fails the whole script, so the page never sees half of it.
+const EVAL_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.evaluate !== "function") return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.evaluate(__ID__, async () => {
+__CODE__
+}) });
+})()"#;
+// browser_agent.py allows 20 000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 80_000;
+
+fn eval_script(id: &str, code: &str) -> Result<String, String> {
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("bad script id".into());
+    }
+    if code.len() > MAX_EVAL_CODE {
+        return Err("script too large".into());
+    }
+    let (head, rest) = EVAL_SCRIPT.split_once("__ID__").ok_or("bad eval script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad eval script")?;
+    Ok(format!("{head}\"{id}\"{middle}{code}{tail}"))
+}
+
+/// Starts a browser_evaluate script in a tab's page; the agent's `evaluated` command reads how it ended.
+#[tauri::command]
+pub async fn browser_view_eval<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    id: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = eval_script(&id, &code)?;
+    eval_json(&page, script).await
+}
+
+/// Runs a script that returns a JSON string, and parses it.
+async fn eval_json<R: Runtime>(
+    page: &Webview<R>,
+    script: String,
+) -> Result<serde_json::Value, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let tx = Mutex::new(Some(tx));
     page.eval_with_callback(script, move |result| {
@@ -2327,6 +2380,16 @@ mod tests {
             code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
         })
         .is_err());
+    }
+
+    #[test]
+    fn eval_code_is_spliced_once_and_ids_are_plain() {
+        let script = eval_script("s1-a_B", "return '__ID__';").unwrap();
+        assert!(script.contains(r#"agent.evaluate("s1-a_B", async () => {"#));
+        assert!(script.contains("return '__ID__';"));
+        assert!(eval_script("a\"); evil(\"", "").is_err());
+        assert!(eval_script("", "").is_err());
+        assert!(eval_script("s1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

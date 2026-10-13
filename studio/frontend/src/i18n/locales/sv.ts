@@ -86,6 +86,7 @@ export const sv = {
         submit: "Låta Unsloth skicka det här formuläret på {host}?",
         click: "Låta Unsloth klicka på ”{name}” på {host}?",
         history: "Låta Unsloth läsa din webbhistorik?",
+        script: "Låta Unsloth köra det här skriptet på {host}?",
       },
     },
     title: "Webbläsare",
