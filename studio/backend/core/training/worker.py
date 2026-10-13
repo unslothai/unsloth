@@ -5410,6 +5410,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
+            from core.training.trainer import _loftq_peft_kwargs
+
             model = FastSentenceTransformer.get_peft_model(
                 model,
                 r = config.get("lora_r", 32),
@@ -5422,9 +5424,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
-                if config.get("use_loftq")
-                else None,
+                **_loftq_peft_kwargs(config.get("use_loftq")),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

@@ -2219,6 +2219,21 @@ async def start_training(
                     model_load_target,
                 )
 
+        # Unsloth refuses LoftQ on quantized weights, but only after the model has loaded; a resumed adapter
+        # keeps its own initialization, so LoftQ does not apply to it.
+        if (
+            training_kwargs["use_loftq"]
+            and training_kwargs["load_in_4bit"]
+            and training_kwargs["training_type"] == "LoRA/QLoRA"
+            and not request.resume_from_checkpoint
+        ):
+            raise _training_start_error(
+                400,
+                "training_loftq_needs_16bit",
+                "LoftQ initializes the adapter from 16-bit weights, so it cannot run on a 4-bit "
+                "(QLoRA) load. Switch the training method to LoRA, or pick another LoRA variant.",
+            )
+
         # Training page has no trust_remote_code toggle.
         if not training_kwargs["trust_remote_code"]:
             from utils.security.trusted_org import is_trusted_org_repo
