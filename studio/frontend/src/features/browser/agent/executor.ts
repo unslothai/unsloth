@@ -283,6 +283,8 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     pending: raw.pending === true,
     hit: str(raw.hit, 16),
     doc: str(raw.doc, 16),
+    scrollX: num(raw.scrollX),
+    scrollY: num(raw.scrollY),
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {
@@ -610,9 +612,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
-    const again = await pageCall(ready, { op: "describe", ref: "", ...point });
-    if (!again.ok || again.hit !== described.hit || JSON.stringify(again.info) !== JSON.stringify(info)) {
-      return { ok: false, error: "the page changed under that point; take a screenshot to see it again." };
+    if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
+      return { ok: false, error: CHANGED_UNDER_POINT };
     }
   }
   if (formGate) admit(formAction, formGate);
@@ -672,7 +673,8 @@ async function afterward(tab: BrowserTab, before: string, action: BrowserAction,
 // CSS pixels per pixel of the agent's last screenshot of each tab: the model reads x and y off that
 // picture (browser_agent.py _POINT_NOTE). 1 until it takes one. Kept with the page and viewport it
 // was taken of: on another, the picture's x and y point at nothing it showed.
-const pointScale = new Map<string, { scale: number; url: string; width: number; height: number }>();
+type ShotView = { url: string; width?: number; height?: number; scrollX?: number; scrollY?: number; doc?: string };
+const pointScale = new Map<string, ShotView & { scale: number }>();
 const MAX_SHOT_EDGE = 1024;
 
 async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
@@ -681,7 +683,9 @@ async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: 
   if (!shot) return { x, y };
   if (tabUrl(tab) !== shot.url) return STALE_SHOT;
   const status = await pageCall(tab, { op: "status" });
-  if (status.width !== shot.width || status.height !== shot.height) return STALE_SHOT;
+  // A scroll, resize or reload moves what sits at each of the picture's points.
+  const keys = ["width", "height", "scrollX", "scrollY", "doc"] as const;
+  if (keys.some((key) => status[key] !== shot[key])) return STALE_SHOT;
   return { x: x * shot.scale, y: y * shot.scale };
 }
 
@@ -731,15 +735,20 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   }
   const hits: string[] = [];
   const infos: string[] = [];
+  let asked = false;
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
-    const refused = await pass(gateElement("click", described.info, before, action.policy, permissions()), signal);
+    const gate = gateElement("click", described.info, before, action.policy, permissions());
+    asked ||= gate.kind === "ask";
+    const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
     hits.push(described.hit ?? "");
     infos.push(JSON.stringify(described.info));
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
+  // While the user decided, either end could have been relabelled or rewired around the same spot.
+  if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
   const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0] });
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
@@ -769,10 +778,19 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
     const refused = await pass(gateElement("click", target.info, before, action.policy, permissions()), signal);
     if (refused) return cancel(refused);
+    if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
   }
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end });
   if (!up.ok) return { ok: false, error: up.error };
   return afterward(tab, before, action, context, up.note);
+}
+
+const CHANGED_UNDER_POINT = "the page changed under that point; take a screenshot to see it again.";
+
+/** Whether the point still holds the element and description the user was asked about. */
+async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: string, info: string): Promise<boolean> {
+  const again = await pageCall(tab, { op: "describe", ref: "", ...point }).catch(() => null);
+  return Boolean(again?.ok && again.hit === hit && JSON.stringify(again.info) === info);
 }
 
 const SCRIPT_WAIT_MS = 15_000;
@@ -938,7 +956,7 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
     const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(cssWidth, cssHeight));
     const width = Math.max(1, Math.round(cssWidth * fit));
     const height = Math.max(1, Math.round(cssHeight * fit));
-    const at = { url: tabUrl(tab), width: cssWidth, height: cssHeight };
+    const at: ShotView = { url: tabUrl(tab), width: size.width, height: size.height, scrollX: size.scrollX, scrollY: size.scrollY, doc: size.doc };
     pointScale.set(tab.id, { ...at, scale: cssWidth / bitmap.width });
     if (width === bitmap.width && height === bitmap.height) return blob;
     const canvas = document.createElement("canvas");

@@ -52,9 +52,11 @@ export type AgentAnswer = {
   /** `locate`: the ref's centre, absent when it is off screen. */
   x?: number;
   y?: number;
-  /** `status`, `mask`: the visible page's size in CSS pixels. */
+  /** `status`, `mask`: the visible page's size in CSS pixels, and how far it is scrolled. */
   width?: number;
   height?: number;
+  scrollX?: number;
+  scrollY?: number;
   /** `evaluate`, `evaluated`: the script hasn't finished yet. */
   pending?: boolean;
   /** `describe` at a point: the element there, for a click or drag's `expect`. */
@@ -302,7 +304,7 @@ export function installPageAgent(): PageAgent {
       el.style.setProperty("text-shadow", "none", "important");
     }
     // The page's size, so the panel can scale the screenshot to it.
-    return { ok: true, width: window.innerWidth, height: window.innerHeight };
+    return { ok: true, ...view() };
   };
 
   const stateOf = (el: Element, role: string): string[] => {
@@ -636,7 +638,8 @@ export function installPageAgent(): PageAgent {
 
   /** A link the panel opens itself rather than let the page follow it (`directLinks`, new tabs). */
   const linkOut = (el: Element, directLinks: boolean): string | null => {
-    const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
+    // Through shadow roots too: a click inside one nested in a link still follows the link.
+    const anchor = lineage(el).find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && node.hasAttribute("href"));
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
     const target = new URL(href);
@@ -1111,9 +1114,7 @@ export function installPageAgent(): PageAgent {
             ok: true,
             quietMs: Math.round(performance.now() - lastMutation),
             title: document.title,
-            width: window.innerWidth,
-            height: window.innerHeight,
-            doc: refOf(document.documentElement),
+            ...view(),
           };
         case "snapshot":
           return snapshot(command.fullPage === true, ref || undefined);
@@ -1159,6 +1160,16 @@ export function installPageAgent(): PageAgent {
 
   // For native views, which look it up on every call. A page that defines KEY first still wins
   // there: the agent shares the page's world, so its answers are untrusted.
+  /** What a screenshot's x and y are relative to: this document, its size and scroll. */
+  function view() {
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      doc: refOf(document.documentElement),
+    };
+  }
   const owns = (doc: unknown): boolean => typeof doc === "string" && refOf(document.documentElement) === doc;
   const agent: PageAgent = { run, evaluate, owns };
   if (!Object.prototype.hasOwnProperty.call(host, KEY)) Object.defineProperty(host, KEY, { value: agent, enumerable: false });

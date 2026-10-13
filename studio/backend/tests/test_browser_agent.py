@@ -130,7 +130,7 @@ def test_pointer_tools_take_a_ref_or_a_point():
         _request("browser_click", {"x": 10})
     with pytest.raises(ValueError, match = "to_ref"):
         _request("browser_drag", {"ref": "r1"})
-    for bad in (-1, 10**6, "left", float("nan")):
+    for bad in (-1, 10**6, "left", float("nan"), 10**400):
         with pytest.raises(ValueError, match = "pixels"):
             _request("browser_move_mouse", {"x": bad, "y": 5})
 
