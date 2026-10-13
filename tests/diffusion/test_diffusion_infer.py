@@ -167,9 +167,11 @@ def test_inference_compile_restores_the_previous_call_path(monkeypatch):
 @pytest.mark.parametrize(
     "value, device, expected",
     [
-        ("auto", "cuda", "graphs"),
+        ("auto", "cuda", None),
         ("auto", "cpu", None),
         (True, "cuda", "graphs"),
+        ("graphs", "cuda", "graphs"),
+        ("graphs", "cpu", None),
         ("default", "cuda", "default"),
         (False, "cuda", None),
         ("reduce-overhead", "cuda", "reduce-overhead"),
