@@ -1381,6 +1381,130 @@ def _physical_card_name(ordinal: Optional[int]) -> "tuple[Optional[str], Optiona
     return physical_card_name(ordinal)
 
 
+def _release_h3_server_slot(slot: Any, reason: str) -> str:
+    """Release an H3 sd-server slot without waiting on a render: "stopped" (memory freed now), "pending" (mid-render
+    or starting; stops at the render's end, nothing freed yet) or "none" (no server)."""
+    if slot is None:
+        return "none"
+    try:
+        if not slot.release(reason):
+            return "none"
+        return "pending" if slot.is_alive() else "stopped"
+    except Exception as exc:  # noqa: BLE001 - a release failure leaves the reading as it was
+        logger.warning("video.h3_native_server_release_failed: %s", exc)
+        return "none"
+
+
+def _h3_offloaded_render_flags(
+    runtime: Any,
+    render_flags: "list[str]",
+    *,
+    render_resident: bool,
+    memory_mode: Optional[str],
+    reuse_live_server: bool = True,
+) -> list[str]:
+    """The flags an H3 native render runs with once Auto chose resident or offloaded. Every offloaded render is
+    re-fitted on live RAM, swap and GTT readings (file reads only) before a process starts, so pressure since the load
+    is caught and memory freed since lifts a refusal; Auto may move the encoder, an explicit mode is only refused. ``reuse_live_server``: a live offloaded sd-server the render will reuse already
+    holds its weights and keeps its own flags; pass False before launching any new process (the one-shot sd-cli),
+    which releases that server and fits afresh."""
+    from .video_minimax_h3 import (
+        H3_NATIVE_RENDER_RUNNING_HINT,
+        h3_native_offloaded_render_flags,
+    )
+
+    from .video_minimax_h3 import h3_native_fit_check_enabled
+
+    inputs = getattr(runtime, "fit_inputs", None)
+    if not h3_native_fit_check_enabled():
+        inputs = None  # UNSLOTH_H3_NATIVE_FIT_CHECK=0: no reading, no release, the committed flags as they are
+    if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
+        if inputs is not None:
+            # A server with other flags is replaced by get() anyway: free it so its pinned RAM is not counted.
+            slot = getattr(runtime, "server_slot", None)
+            live = slot.alive_signature() if slot is not None else None
+            hint = ""
+            if live is not None and tuple(live[2]) != tuple(render_flags):
+                if _release_h3_server_slot(slot, "a resident render needs its memory") == "pending":
+                    hint = H3_NATIVE_RENDER_RUNNING_HINT
+            _h3_check_render_overhead(hint)
+        return h3_native_offloaded_render_flags(
+            render_flags,
+            render_resident = render_resident,
+            offloaded_flags = getattr(runtime, "offloaded_flags", None),
+            offload_refusal = getattr(runtime, "offload_refusal", None),
+        )
+    slot = getattr(runtime, "server_slot", None)
+    live = slot.alive_signature() if slot is not None else None
+    if reuse_live_server and live is not None and "--offload-to-cpu" in live[2]:
+        # A reading now would count the server's own weights; check only the per-render host RAM.
+        _h3_check_render_overhead()
+        return list(live[2])
+    released = "none"
+    if live is not None:
+        # Free any server before the reading (a resident one is replaced by slot.get() anyway).
+        released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
+    return _h3_launch_flags(
+        runtime,
+        render_flags,
+        memory_mode,
+        hint = H3_NATIVE_RENDER_RUNNING_HINT if released == "pending" else "",
+    )
+
+
+def _h3_check_render_overhead(hint: str = "") -> None:
+    from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_render_overhead_refusal
+    refusal = h3_native_render_overhead_refusal()
+    if refusal:
+        raise H3NativeMemoryRefusal(refusal + hint)
+
+
+def _h3_launch_flags(
+    runtime: Any,
+    render_flags: "list[str]",
+    memory_mode: Optional[str],
+    *,
+    hint: str = "",
+) -> list[str]:
+    """The live fit for one process launch, with no server-slot calls (it also runs under the slot's lock, from
+    ``H3NativeServerSlot.get``'s ``pre_spawn``). Auto may move the encoder; an explicit mode runs exactly its flags
+    or is refused. A resident render or a runtime without fit inputs passes through."""
+    from .sd_cpp_args import device_backend_flags
+    from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_live_fit
+
+    from .video_minimax_h3 import h3_native_fit_check_enabled
+
+    inputs = getattr(runtime, "fit_inputs", None)
+    if inputs is None or not h3_native_fit_check_enabled():
+        return list(render_flags)
+    if "--offload-to-cpu" not in render_flags:
+        # A resident start: its weights go to VRAM (judged by the resident choice), its per-render RAM is checked.
+        _h3_check_render_overhead(hint)
+        return list(render_flags)
+    mode = memory_mode or "auto"
+    fit = h3_native_live_fit(inputs, mode)
+    if fit.refusal:
+        raise H3NativeMemoryRefusal(fit.refusal + hint)
+    if fit.note:
+        logger.info("video.h3_native_memory_fit (launch): %s", fit.note)
+    if mode != "auto":
+        return list(render_flags)
+    flags = tuple(fit.flags)
+    return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
+
+
+def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
+    """``DDDD:BB:DD`` of the torch-visible card at *ordinal* (no function digit: torch does not report it)."""
+    if ordinal is None:
+        return None
+    try:
+        import torch
+        props = torch.cuda.get_device_properties(int(ordinal))
+        return f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}"
+    except Exception:  # noqa: BLE001 - unknown means every amdgpu card is a candidate
+        return None
+
+
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
     """``(size, mtime_ns)`` of an sd.cpp binary, or None when it cannot be read.
 
@@ -2730,6 +2854,13 @@ _NATIVE_CRASH_NEEDLES = (
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
     """A user-facing reason for a failed generation, built only from fixed text."""
     try:
+        from .video_minimax_h3 import H3NativeMemoryRefusal
+
+        if isinstance(exc, H3NativeMemoryRefusal):
+            return f"{VIDEO_GENERATION_FAILED_MSG} {exc}"
+        native_memory = _native_memory_failure(exc)
+        if native_memory:
+            return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
         if _is_out_of_memory(exc):
             if (
                 request_shape is not None
@@ -2750,6 +2881,33 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass
     return VIDEO_GENERATION_FAILED_MSG
+
+
+# How a Vulkan (radv) device reports running out of memory.
+_NATIVE_DEVICE_LOST_NEEDLES = ("device lost", "errordevicelost", "error_device_lost")
+
+NATIVE_MEMORY_ADVICE = (
+    "Set Memory mode to Low VRAM, pick a smaller resolution (864x480 is the smallest preset), or load a "
+    "smaller quant."
+)
+
+
+def _native_memory_failure(exc: BaseException) -> Optional[str]:
+    """The advice for a native (sd.cpp) renderer that ran out of GPU or GPU-mapped memory, else None."""
+    text = str(exc)
+    lowered = text.lower()
+    if not any(n in lowered for n in ("sd-cli exited", "sd-server", "stable-diffusion.cpp")):
+        return None
+    from .sd_cpp_backend import output_shows_capacity_failure
+
+    if output_shows_capacity_failure(text):
+        return f"The native renderer ran out of GPU or system memory. {NATIVE_MEMORY_ADVICE}"
+    if any(n in lowered for n in _NATIVE_DEVICE_LOST_NEEDLES):
+        return (
+            "The GPU driver reset the device during the render, which usually means it ran out of GPU or "
+            f"GPU-mapped system memory. {NATIVE_MEMORY_ADVICE}"
+        )
+    return None
 
 
 def _is_out_of_memory(exc: BaseException) -> bool:
@@ -3734,6 +3892,8 @@ class VideoBackend:
             _accelerator_fingerprint,
             _install_allowed,
             _installed_accelerator_of,
+            ACCELERATOR_FALLBACK_CLEAR_HINT,
+            accelerator_fallback_reason,
             accelerator_probe_failure_is_decisive,
             accelerator_verdict_keeps_gpu,
             usable_or_recorded_failure,
@@ -3745,6 +3905,7 @@ class VideoBackend:
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_graph_cut_options,
+            sd_cpp_listed_device,
             sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -3788,7 +3949,17 @@ class VideoBackend:
         allow_install = _install_allowed() and not local_files_only
         # Read back per card, as it is recorded, so one card's failure does not divert another.
         selected_card = selected_card_identity(gpu_ordinal)
-        accelerator = preferred_accelerator(_install_accelerator_for(target.backend), selected_card)
+        requested_accelerator = _install_accelerator_for(target.backend)
+        accelerator = preferred_accelerator(requested_accelerator, selected_card)
+        if accelerator != requested_accelerator:
+            logger.warning(
+                "video.sd_cpp_accelerator_recorded_fallback: using the %s stable-diffusion.cpp build, "
+                "not %s, because this host recorded the %s build as unable to run; %s",
+                accelerator,
+                requested_accelerator,
+                requested_accelerator,
+                ACCELERATOR_FALLBACK_CLEAR_HINT,
+            )
         binary = usable_or_recorded_failure(
             ensure_h3_sd_cpp_binary(
                 allow_install = allow_install,
@@ -3841,9 +4012,11 @@ class VideoBackend:
                     if fallback_verdict and fallback_class == fallback:
                         logger.warning(
                             "video.sd_cpp_accelerator_fallback: the %s stable-diffusion.cpp build "
-                            "does not run on this host, using the %s build instead",
+                            "does not run on this host (%s), using the %s build instead; %s",
                             accelerator,
+                            accelerator_fallback_reason(accelerator),
                             fallback,
+                            ACCELERATOR_FALLBACK_CLEAR_HINT,
                         )
                         # Proven only when the own build answered: a timeout is not proof, and a bare
                         # "CPU only" is proof only when the runtime is provably unloadable here.
@@ -4064,6 +4237,12 @@ class VideoBackend:
                 if native_device != "cpu" and listed_accelerator is not None
                 else None
             )
+            # What the executable itself renders on: an unowned build (SD_CLI_PATH) has no install record.
+            native_listed_class, native_listed_description = (
+                sd_cpp_listed_device(binary, native_device_name, probe = False)
+                if native_device != "cpu"
+                else (None, None)
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -4129,9 +4308,111 @@ class VideoBackend:
             .strip()
             not in ("", "0")
         )
+        # Before the pin, so a CPU-moved text encoder is pinned there; Auto commits nothing (a render may go resident).
+        native_fit_note: Optional[str] = None
+        native_fit_flags: Optional[tuple[str, ...]] = None
+        native_fit_refusal: Optional[str] = None
+        native_fit_inputs: Any = None
+        if native_device != "cpu":
+            from .video_minimax_h3 import (
+                H3_NATIVE_RENDER_RUNNING_HINT,
+                H3NativeFitInputs,
+                h3_native_live_fit,
+                h3_native_render_flags,
+                h3_native_resident_bytes,
+                vulkan_device_is_amd,
+            )
+
+            def _size(path: Any) -> int:
+                try:
+                    return os.path.getsize(path) if path else 0
+                except OSError:
+                    return 0
+
+            # The build's own listing first: the install record names only builds Studio installed.
+            fit_accelerator = (
+                native_listed_class
+                or (decided_accelerator if isinstance(decided_accelerator, str) else None)
+                or accelerator
+            )
+            check_gtt = fit_accelerator == "vulkan" and vulkan_device_is_amd(
+                native_listed_description
+            )
+            # Everything a re-fit needs, resolved now (the PCI reading included) so later readings are file reads.
+            native_fit_inputs = H3NativeFitInputs(
+                base_flags = tuple(native_offload),
+                accelerator = fit_accelerator,
+                check_gtt = check_gtt,
+                # The torch card is the Vulkan device only when the pin resolved; otherwise sd.cpp picks its own,
+                # so no slot is named and the tightest amdgpu card is read.
+                gtt_pci_slot = _torch_pci_slot(native_ordinal)
+                if check_gtt and native_device_name
+                else None,
+                dit_bytes = _size(resolved[0]),
+                te_bytes = _size(resolved[1]),
+                vae_bytes = _size(resolved[2]) + _size(resolved[3]),
+                device_name = native_device_name,
+            )
+            fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+            release_pending = False
+            if fit.refusal or fit.note:
+                # Free the replaced model's idle sd-server (it respawns on demand) and re-measure.
+                released = self._release_native_server(
+                    "a new MiniMax-H3 load is measuring host memory"
+                )
+                if released == "stopped":
+                    fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+                release_pending = released == "pending"
+            if fit.refusal and release_pending:
+                fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
+            # An outgoing diffusers model's memory is freed only at commit, so the pre-launch live fit decides, not this.
+            with self._lock:
+                outgoing = self._state
+            outgoing_in_process = (
+                outgoing is not None and getattr(outgoing, "engine", None) != "sd_cpp"
+            )
+            if fit.refusal and outgoing_in_process:
+                logger.warning(
+                    "video.h3_native_memory_fit: deferred to the first render, after the outgoing in-process "
+                    "model is unloaded: %s",
+                    fit.refusal,
+                )
+            if requested_mode == "auto" and (fit.refusal or fit.note):
+                # Auto decides resident vs offloaded at render time; refuse only if even the smallest clip cannot fit.
+                fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
+                small_w, small_h = (
+                    min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)
+                )
+                small_frames = fam.min_num_frames or fam.default_num_frames or 1
+                resident_need = h3_native_resident_bytes(
+                    sum(_size(p) for p in resolved[:4]), small_w, small_h, small_frames
+                )
+                _flags, could_be_resident = h3_native_render_flags(
+                    native_offload,
+                    memory_mode = requested_mode,
+                    free_bytes = _h3_card_free_bytes(native_device, native_ordinal),
+                    need_bytes = resident_need,
+                )
+                if fit.refusal and not could_be_resident and not outgoing_in_process:
+                    raise RuntimeError(fit.refusal)
+                native_fit_refusal = fit.refusal
+                if fit.note:
+                    native_fit_flags = tuple(fit.flags)
+                    native_fit_note = f"{fit.note} (applied when a render is offloaded)"
+            else:
+                if fit.refusal and not outgoing_in_process:
+                    raise RuntimeError(fit.refusal)
+                # An explicit mode's flags are never altered: the fit only refuses them.
+                native_fit_note = fit.note
+            if native_fit_note:
+                logger.warning("video.h3_native_memory_fit: %s", native_fit_note)
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
+        if native_fit_flags is not None:
+            native_fit_flags += tuple(
+                device_backend_flags(native_device_name, list(native_fit_flags))
+            )
         from .video_minimax_h3 import (
             H3NativeServerSlot,
             MiniMaxH3NativeRuntime,
@@ -4154,6 +4435,9 @@ class VideoBackend:
             selected_card = selected_card,
             files = native_files,
             offload_flags = native_offload,
+            offloaded_flags = native_fit_flags,
+            offload_refusal = native_fit_refusal,
+            fit_inputs = native_fit_inputs,
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (
@@ -4206,7 +4490,13 @@ class VideoBackend:
                         resolved = build_resolved_record(
                             {
                                 "family_override": _family_override_resolved(family_override, fam),
-                                "memory_mode": (memory_mode, policy, "native model offload"),
+                                "memory_mode": (
+                                    memory_mode,
+                                    policy,
+                                    f"native model offload; {native_fit_note}"
+                                    if native_fit_note
+                                    else "native model offload",
+                                ),
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
@@ -10733,9 +11023,10 @@ class VideoBackend:
         cancel: threading.Event,
         flags: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        memory_mode: Optional[str] = None,
     ) -> Optional[Path]:
         """Render one MiniMax-H3 clip on the runtime's resident sd-server, spawned with this render's sd-cli ``flags`` /
-        ``env``.
+        ``env``; a server that has to be started is fitted on live readings first (``memory_mode``).
 
         Returns the written container, or None for the one-shot sd-cli: no slot, kill switch, reference video / audio,
         or a server that cannot start, lacks vid_gen, or died (the runtime then stays one-shot). Every fallback first
@@ -10746,6 +11037,7 @@ class VideoBackend:
         from .sd_cpp_args import build_vid_gen_request, h3_server_eligible
         from .sd_cpp_engine import SdCppCancelled
         from .sd_cpp_server import SdCppServerUnsupported
+        from .video_minimax_h3 import H3NativeMemoryRefusal
         from .video_minimax_h3 import h3_native_server_enabled
 
         slot = getattr(runtime, "server_slot", None)
@@ -10777,8 +11069,15 @@ class VideoBackend:
         slot.begin_render()
         try:
             try:
-                server = slot.get(render_flags, render_env, cancel_event = cancel)
-            except SdCppCancelled:
+                server = slot.get(
+                    render_flags,
+                    render_env,
+                    cancel_event = cancel,
+                    pre_spawn = functools.partial(
+                        _h3_launch_flags, runtime, render_flags, memory_mode
+                    ),
+                )
+            except (SdCppCancelled, H3NativeMemoryRefusal):
                 raise
             except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
                 if cancel.is_set():
@@ -10887,6 +11186,10 @@ class VideoBackend:
                 free_bytes = free,
                 need_bytes = need,
             )
+        # The GTT fit the load prepared for an offloaded Auto render; a resident one never needed it.
+        render_flags = _h3_offloaded_render_flags(
+            runtime, render_flags, render_resident = render_resident, memory_mode = state.memory_mode
+        )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()
@@ -11007,8 +11310,18 @@ class VideoBackend:
                             cancel = cancel,
                             flags = render_flags,
                             env = dict(runtime.env),
+                            memory_mode = state.memory_mode,
                         )
                         if generated is None:
+                            # A new process (reference video / audio, no server, or a server that could not serve):
+                            # fit it on live readings, never on flags a live server was shortcut to.
+                            render_flags = _h3_offloaded_render_flags(
+                                runtime,
+                                render_flags,
+                                render_resident = render_resident,
+                                memory_mode = state.memory_mode,
+                                reuse_live_server = False,
+                            )
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,
@@ -11181,6 +11494,16 @@ class VideoBackend:
             return True
 
     # ── teardown + status ────────────────────────────────────────────────────
+
+    def _release_native_server(self, reason: str) -> str:
+        """Stop the committed model's idle H3 sd-server, keeping the model itself loaded (the slot respawns on its
+        next render). "stopped" when its memory is freed now, "pending" when it is mid-render (or starting) and will
+        stop at the render's end, "none" when there was no server. Never waits on a render."""
+        with self._lock:
+            state = self._state
+        return _release_h3_server_slot(
+            getattr(getattr(state, "pipe", None), "server_slot", None), reason
+        )
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation
