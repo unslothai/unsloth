@@ -535,6 +535,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     from peft.utils import get_peft_model_state_dict
 
     from core.training.diffusion_dit_trainer import (
+        _compile_engagement_warning,
+        _dynamo_compile_counters,
         _int8_quantize_base,
         _make_optimizer,
         _maybe_compile_transformer,
@@ -700,6 +702,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_steady = None
     done = 0
     reset_training_peak_memory(device)
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -777,6 +780,11 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         now = time.time()
         if done == 1:
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             peak_gb = training_peak_memory_gb(device)
             per_step = cfg.gradient_accumulation_steps

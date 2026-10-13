@@ -60,6 +60,9 @@ export const ja = {
       alwaysAsk: "毎回確認",
       alwaysAllow: "常に許可",
       never: "許可しない",
+      scripts: "スクリプトの実行",
+      scriptsDescription: "モデルがページ上でスクリプトを実行できるかどうかを選択します。各スクリプトは実行前に表示されます",
+      askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
       permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",
       site: "サイトまたはパターン",
@@ -68,6 +71,7 @@ export const ja = {
       browsing: "閲覧",
       actions: "操作",
       downloads: "ダウンロード",
+      unlabelled: "ラベルのないクリック",
       askNewSites: "新しいサイトは確認",
       requiresApproval: "承認が必要",
       blocked: "ブロック",
@@ -584,6 +588,25 @@ export const ja = {
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
+  },
+  welcome: {
+    goodToSeeYou: "お会いできてうれしいです",
+    goodToSeeYouName: "{name}さん、お会いできてうれしいです",
+    readyWhenYouAre: "いつでもどうぞ",
+    onYourMind: "今日は何について考えていますか？",
+    howCanIHelp: "どのようにお手伝いできますか？",
+    goodMorning: "おはようございます",
+    goodMorningName: "{name}さん、おはようございます",
+    goodEvening: "こんばんは",
+    goodEveningName: "{name}さん、こんばんは",
+    tonight: "今夜は何をしますか？",
+    nightOwl: "夜更かしモード？",
+    lateNightIdeas: "深夜のアイデア？",
+    upLate: "夜遅くにひらめきましたか？",
+    nightShift: "夜のシフトが始まります",
+    nightShiftName: "{name}さん、夜のシフトが始まります",
+    temporaryChat: "一時チャット",
+    temporaryChatDescription: "このチャットは履歴に表示されず、保存されません。離れると消えます。",
   },
   picker: {
     onDevice: "デバイス上",
@@ -2378,8 +2401,11 @@ export const ja = {
       title: "エージェント",
       description:
         "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code は例外です。このコマンドは、提供中のモデルを VS Code の Copilot Chat のモデル一覧（chatLanguageModels.json）に追加します。",
       intro:
-        "は Claude Code、Codex、DeepSeek Harness、Hermes、Mistral Vibe、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+        "は Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
       readDocs: "ドキュメントを読む",
       copy: "コピー",
       copied: "コピーしました",
@@ -2463,7 +2489,7 @@ export const ja = {
         persist:
           "Unsloth が管理するエージェントのストレージを実行間で保持します。",
         asSubagent:
-          "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
+          "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode、Pi)。",
         apiKey:
           "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
         reasoning:
@@ -2553,6 +2579,13 @@ export const ja = {
         "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
       scrollToBottomButtonKeywords:
         "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
+      replyNotification: "応答完了時に通知",
+      replyNotificationDescription:
+        "Unsloth が最小化またはバックグラウンドにあるときに応答が完了すると、システム通知を表示します。",
+      replyNotificationBlocked:
+        "通知がブロックされています。ブラウザーまたはシステムの設定で Unsloth の通知を許可してから、もう一度お試しください。",
+      replyNotificationKeywords:
+        "通知 アラート 完了 終了 準備完了 応答 バックグラウンド 最小化 notify notification alert done finished reply background",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
@@ -2572,14 +2605,14 @@ export const ja = {
       autoCompactKeywords:
         "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 アーカイブ 検索 取得 compaction rolling headroom archive retrieval rag",
       toolResultLimit: "ツール出力の長さ",
-      toolResultLimitDescription: "Python またはターミナルの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
-      toolResultLimitHint: "これより長い出力はファイルに保存され、モデルは分割して読めます。上限を上げると Unsloth で動作するモデルに適用され、コンテキストウィンドウが小さい場合は引き続き少なくなります。API モデルは、下げない限り既定値のままです。",
+      toolResultLimitDescription: "Python、ターミナル、または MCP ツールの結果 1 件のうち、モデルが読む文字数です。既定値は {count} です。",
+      toolResultLimitHint: "これより長い Python とターミナルの出力はファイルに保存され、モデルは分割して読めます。上限を上げると Unsloth で動作するモデルに適用され、コンテキストウィンドウが小さい場合は引き続き少なくなります。API モデルは、下げない限り既定値のままです。",
       toolResultLimitDefault: "{count}（既定）",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS で設定されています",
       toolResultLimitLoadError: "ツール出力の長さを読み込めませんでした。",
       toolResultLimitSaveError: "ツール出力の長さを保存できませんでした。",
       toolResultLimitKeywords:
-        "出力 結果 切り詰め 上限 文字数 長さ tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "出力 結果 切り詰め 上限 文字数 長さ tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "折りたたむ",
         auto: "実行中は展開",

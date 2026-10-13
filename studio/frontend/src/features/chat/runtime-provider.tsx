@@ -191,6 +191,10 @@ import {
 } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
+import {
   extractDeltaText,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
@@ -2391,6 +2395,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );
@@ -2452,9 +2457,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }

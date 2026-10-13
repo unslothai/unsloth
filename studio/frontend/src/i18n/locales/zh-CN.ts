@@ -59,6 +59,9 @@ export const zhCN = {
       alwaysAsk: "每次询问",
       alwaysAllow: "始终允许",
       never: "从不",
+      scripts: "运行脚本",
+      scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
       site: "网站或模式",
@@ -67,6 +70,7 @@ export const zhCN = {
       browsing: "浏览",
       actions: "操作",
       downloads: "下载",
+      unlabelled: "无标签点击",
       askNewSites: "新网站时询问",
       requiresApproval: "需要批准",
       blocked: "已阻止",
@@ -583,6 +587,25 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
+  },
+  welcome: {
+    goodToSeeYou: "很高兴见到你",
+    goodToSeeYouName: "很高兴见到你，{name}",
+    readyWhenYouAre: "随时准备就绪",
+    onYourMind: "今天在想什么？",
+    howCanIHelp: "有什么可以帮你？",
+    goodMorning: "早上好",
+    goodMorningName: "早上好，{name}",
+    goodEvening: "晚上好",
+    goodEveningName: "晚上好，{name}",
+    tonight: "今晚有什么安排？",
+    nightOwl: "夜猫子模式？",
+    lateNightIdeas: "深夜灵感？",
+    upLate: "熬夜想到了什么点子？",
+    nightShift: "夜班开始了",
+    nightShiftName: "夜班开始了，{name}",
+    temporaryChat: "临时聊天",
+    temporaryChatDescription: "此聊天不会出现在你的历史记录中，也不会被保存。离开后即消失。",
   },
   picker: {
     onDevice: "本机",
@@ -2365,8 +2388,11 @@ export const zhCN = {
       title: "智能体",
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code 是例外：此命令会将正在提供的模型添加到 VS Code 的 Copilot Chat 模型列表（chatLanguageModels.json）中。",
       intro:
-        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、Mistral Vibe、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
+        "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
       copy: "复制",
       copied: "已复制",
@@ -2443,7 +2469,7 @@ export const zhCN = {
         launch: "启动智能体，或仅打印命令和环境变量。",
         persist: "在多次运行之间保留由 Unsloth 管理的智能体存储。",
         asSubagent:
-          "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
+          "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex、OpenCode 和 Pi）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
         reasoning:
           "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",
@@ -2530,6 +2556,13 @@ export const zhCN = {
         "向上滚动后显示一个按钮，用于跳回最新消息。",
       scrollToBottomButtonKeywords:
         "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
+      replyNotification: "回复完成时通知",
+      replyNotificationDescription:
+        "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
+      replyNotificationBlocked:
+        "通知已被阻止。请在浏览器或系统设置中允许 Unsloth 发送通知，然后重试。",
+      replyNotificationKeywords:
+        "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineEditResponse: "在回复上显示编辑回复",
@@ -2549,14 +2582,14 @@ export const zhCN = {
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "工具输出长度",
-      toolResultLimitDescription: "模型读取的单个 Python 或终端结果的字符数。默认值为 {count}。",
-      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
+      toolResultLimitDescription: "模型读取的单个 Python、终端或 MCP 工具结果的字符数。默认值为 {count}。",
+      toolResultLimitHint: "更长的 Python 和终端输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
       toolResultLimitDefault: "{count}（默认）",
       toolResultLimitLocked: "由 UNSLOTH_TOOL_RESULT_MAX_CHARS 设置",
       toolResultLimitLoadError: "无法加载工具输出长度。",
       toolResultLimitSaveError: "无法保存工具输出长度。",
       toolResultLimitKeywords:
-        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "折叠",
         auto: "运行时展开",

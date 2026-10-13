@@ -60,8 +60,15 @@ export const BUDGET = {
   // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
   // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
   // so main's margin stays where it was.
-  transferBytes: 2_013_000,
-  rawBytes: 6_703_000,
+  // Twelve more Studio merges added 7.1 KB raw / 2.3 KB transfer (6,534.6 -> 6,541.7 KB raw,
+  // 1,963.9 -> 1,966.2 KB transfer from f68585e2e9 to a7dc8a0640, one machine and build), again with
+  // no single import doing it. The largest step is per-chat file history and /rewind (#13522, +4.3 KB
+  // raw / +1.3 KB transfer in the eager chat chunk); the rest are 0.1 to 0.6 KB each. Raised by that
+  // growth so main's margin stays where it was.
+  // Sidebar server paging adds 17.4 KB raw / 5.6 KB transfer to the first screen (6,544.5 -> 6,561.9
+  // KB raw, 1,967.1 -> 1,972.7 KB transfer against b73110c6f, one machine and build), raised by that.
+  transferBytes: 2_021_100,
+  rawBytes: 6_728_100,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

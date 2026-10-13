@@ -59,6 +59,9 @@ export const ar = {
       alwaysAsk: "السؤال دائمًا",
       alwaysAllow: "السماح دائمًا",
       never: "أبدًا",
+      scripts: "تشغيل البرامج النصية",
+      scriptsDescription: "اختر ما إذا كان يمكن للنماذج تشغيل برامج نصية على الصفحات. يُعرض عليك كل برنامج نصي قبل تشغيله",
+      askEveryTime: "السؤال في كل مرة",
       permissionsTitle: "أذونات الوكيل",
       permissionsDescription: "اختر الإعدادات الافتراضية وأضف استثناءات لمواقع محددة. لا تُملأ حقول كلمات المرور والدفع أبدًا مهما كانت هذه الإعدادات.",
       site: "الموقع أو النمط",
@@ -67,6 +70,7 @@ export const ar = {
       browsing: "التصفح",
       actions: "الإجراءات",
       downloads: "التنزيلات",
+      unlabelled: "النقرات بدون تسمية",
       askNewSites: "السؤال عن المواقع الجديدة",
       requiresApproval: "تتطلب الموافقة",
       blocked: "محظور",
@@ -583,6 +587,25 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
+  },
+  welcome: {
+    goodToSeeYou: "سعيد برؤيتك",
+    goodToSeeYouName: "سعيد برؤيتك يا {name}",
+    readyWhenYouAre: "جاهز متى كنت جاهزًا",
+    onYourMind: "ما الذي يدور في ذهنك اليوم؟",
+    howCanIHelp: "كيف يمكنني المساعدة؟",
+    goodMorning: "صباح الخير",
+    goodMorningName: "صباح الخير يا {name}",
+    goodEvening: "مساء الخير",
+    goodEveningName: "مساء الخير يا {name}",
+    tonight: "ما خططك لهذه الليلة؟",
+    nightOwl: "وضع السهر؟",
+    lateNightIdeas: "أفكار في وقت متأخر؟",
+    upLate: "ساهر مع فكرة؟",
+    nightShift: "تبدأ نوبة الليل",
+    nightShiftName: "تبدأ نوبة الليل يا {name}",
+    temporaryChat: "دردشة مؤقتة",
+    temporaryChatDescription: "لن تظهر هذه الدردشة في سجلك ولن تُحفظ. ستختفي عند مغادرتك.",
   },
   picker: {
     onDevice: "على الجهاز",
@@ -2398,8 +2421,11 @@ export const ar = {
       title: "الوكلاء",
       description:
         "اربط وكلاء البرمجة مثل Claude Code وCodex بنموذج محلي باستخدام unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "يُستثنى VS Code: يضيف هذا الأمر النموذج المقدَّم إلى قائمة نماذج Copilot Chat في VS Code (chatLanguageModels.json).",
       intro:
-        "يربط Claude Code وCodex وDeepSeek Harness وHermes وMistral Vibe وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
+        "يربط Claude Code وCodex وDeepSeek Harness وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
       readDocs: "قراءة التوثيق",
       copy: "نسخ",
       copied: "تم النسخ",
@@ -2479,7 +2505,7 @@ export const ar = {
         launch: "يشغّل الوكيل، أو يكتفي بطباعة الأمر والبيئة.",
         persist: "يحتفظ بمساحة تخزين الوكيل التي يديرها Unsloth بين عمليات التشغيل.",
         asSubagent:
-          "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
+          "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode وPi).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
         reasoning:
           "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
@@ -2569,6 +2595,13 @@ export const ar = {
         "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
       scrollToBottomButtonKeywords:
         "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
+      replyNotification: "الإشعار عند انتهاء الرد",
+      replyNotificationDescription:
+        "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
+      replyNotificationBlocked:
+        "الإشعارات محظورة. اسمح بها لـ Unsloth في إعدادات المتصفح أو النظام، ثم حاول مرة أخرى.",
+      replyNotificationKeywords:
+        "إشعار تنبيه انتهى اكتمل جاهز رد خلفية مصغر notify notification alert done finished reply background",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -2589,14 +2622,14 @@ export const ar = {
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "طول مخرجات الأدوات",
-      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
-      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal أو أداة MCP الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ مخرجات Python وTerminal الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
       toolResultLimitDefault: "{count} (افتراضي)",
       toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
       toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
       toolResultLimitKeywords:
-        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",

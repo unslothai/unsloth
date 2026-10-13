@@ -59,6 +59,9 @@ export const ko = {
       alwaysAsk: "항상 묻기",
       alwaysAllow: "항상 허용",
       never: "허용 안 함",
+      scripts: "스크립트 실행",
+      scriptsDescription: "모델이 페이지에서 스크립트를 실행할 수 있는지 선택합니다. 각 스크립트는 실행 전에 표시됩니다",
+      askEveryTime: "매번 묻기",
       permissionsTitle: "에이전트 권한",
       permissionsDescription: "기본값을 선택하고 특정 사이트에 대한 예외를 추가합니다. 비밀번호와 결제 정보 입력란은 이 설정과 관계없이 채우지 않습니다.",
       site: "사이트 또는 패턴",
@@ -67,6 +70,7 @@ export const ko = {
       browsing: "탐색",
       actions: "작업",
       downloads: "다운로드",
+      unlabelled: "레이블 없는 클릭",
       askNewSites: "새 사이트는 묻기",
       requiresApproval: "승인 필요",
       blocked: "차단됨",
@@ -583,6 +587,25 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
+  },
+  welcome: {
+    goodToSeeYou: "반가워요",
+    goodToSeeYouName: "{name}님, 반가워요",
+    readyWhenYouAre: "준비되면 말씀하세요",
+    onYourMind: "오늘은 무슨 생각을 하고 계세요?",
+    howCanIHelp: "무엇을 도와드릴까요?",
+    goodMorning: "좋은 아침이에요",
+    goodMorningName: "{name}님, 좋은 아침이에요",
+    goodEvening: "좋은 저녁이에요",
+    goodEveningName: "{name}님, 좋은 저녁이에요",
+    tonight: "오늘 밤 계획이 있나요?",
+    nightOwl: "올빼미 모드인가요?",
+    lateNightIdeas: "늦은 밤의 아이디어?",
+    upLate: "늦게까지 아이디어가 떠올랐나요?",
+    nightShift: "야간 근무가 시작됩니다",
+    nightShiftName: "{name}님, 야간 근무가 시작됩니다",
+    temporaryChat: "임시 채팅",
+    temporaryChatDescription: "이 채팅은 기록에 표시되지 않으며 저장되지 않습니다. 나가면 사라집니다.",
   },
   picker: {
     onDevice: "기기",
@@ -2394,8 +2417,11 @@ export const ko = {
       title: "에이전트",
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code는 예외입니다. 이 명령은 제공 중인 모델을 VS Code Copilot Chat 모델 목록(chatLanguageModels.json)에 추가합니다.",
       intro:
-        "명령어를 사용하면 Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 완전히 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
+        "명령어를 사용하면 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 완전히 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
@@ -2473,7 +2499,7 @@ export const ko = {
         persist:
           "Unsloth가 관리하는 에이전트 저장소를 실행 사이에 유지합니다.",
         asSubagent:
-          "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
+          "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode, Pi).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
         reasoning:
@@ -2562,6 +2588,13 @@ export const ko = {
         "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
       scrollToBottomButtonKeywords:
         "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
+      replyNotification: "응답이 끝나면 알림",
+      replyNotificationDescription:
+        "Unsloth가 최소화되었거나 백그라운드에 있을 때 응답이 끝나면 시스템 알림을 표시합니다.",
+      replyNotificationBlocked:
+        "알림이 차단되어 있습니다. 브라우저 또는 시스템 설정에서 Unsloth의 알림을 허용한 후 다시 시도하세요.",
+      replyNotificationKeywords:
+        "알림 통지 완료 끝 준비 응답 백그라운드 최소화 notify notification alert done finished reply background",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -2582,14 +2615,14 @@ export const ko = {
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "도구 출력 길이",
-      toolResultLimitDescription: "모델이 읽는 Python 또는 터미널 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
-      toolResultLimitHint: "더 긴 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
+      toolResultLimitDescription: "모델이 읽는 Python, 터미널 또는 MCP 도구 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
+      toolResultLimitHint: "더 긴 Python 및 터미널 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
       toolResultLimitDefault: "{count} (기본값)",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS로 설정됨",
       toolResultLimitLoadError: "도구 출력 길이를 불러오지 못했습니다.",
       toolResultLimitSaveError: "도구 출력 길이를 저장하지 못했습니다.",
       toolResultLimitKeywords:
-        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "접힘",
         auto: "실행 중 펼치기",
