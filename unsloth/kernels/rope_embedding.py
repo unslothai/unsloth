@@ -396,14 +396,29 @@ if _TRACEABLE:
     _tag_compile_cache(__file__)
 
 
+# Accelerator indices RoPE has run on in this process. The stream drain after RoPE was added for models
+# split over several GPUs (device_map / pipeline, #3049, #3061). One model on one device of a multi-GPU
+# host, or one DDP rank, launches every kernel on that device's current stream, so it skips the drain.
+_ROPE_DEVICES = set()
+
+
+def _sync_if_split(Q):
+    if DEVICE_COUNT <= 1:
+        return
+    index = Q.get_device()
+    if index not in _ROPE_DEVICES:
+        _ROPE_DEVICES.add(index)
+    if len(_ROPE_DEVICES) > 1:
+        torch_device_stream(Q.device).synchronize()
+
+
 def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
     if rope_embedding_indices is not None:
         Q_out, K_out = Fast_RoPE_Embedding_QK.apply(Q, K, cos, sin, rope_embedding_indices)
     else:
         Q_out = Fast_RoPE_Embedding.apply(Q.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
         K_out = Fast_RoPE_Embedding.apply(K.transpose(1, 2).contiguous(), cos, sin).transpose(1, 2)
-    if DEVICE_COUNT > 1:
-        torch_device_stream(Q.device).synchronize()
+    _sync_if_split(Q)
     return Q_out, K_out
 
 
@@ -467,5 +482,5 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
-    torch_device_stream(Q.device).synchronize()
+    _sync_if_split(Q)
     return Q, K
