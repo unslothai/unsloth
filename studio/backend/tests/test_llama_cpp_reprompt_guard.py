@@ -470,6 +470,8 @@ def test_step_labelled_results_are_not_a_plan():
         "**Step 1:** Printed the table; the last line is 400 160000.",
         "In step 3 of the recipe, fold in the eggs.",
         "### Step 1\nResult: 391",
+        "Step 1: I found 391.",
+        "Step 2: we got 5050.",
     ]
     for content in answers:
         assert not is_short_intent_without_action(content), content
@@ -478,6 +480,7 @@ def test_step_labelled_results_are_not_a_plan():
         "Step 1: search for the song list.",
         "**Step 1**: Run the tests, then summarise.",
         "Step 2 - let's check the logs.",
+        "Step 1: I'll search for the song list.",
         "Step 1:\r\n1. Analyze the request.\r\n2. Draft the answer.",
     ]
     for content in plans:
