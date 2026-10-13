@@ -379,6 +379,7 @@ export function AudioPage({
     refreshSttStatus,
     sttEngineFor,
     readSttResidency,
+    sttLoadGeneration,
   });
 
   const {

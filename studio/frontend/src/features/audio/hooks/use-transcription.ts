@@ -68,6 +68,7 @@ export function useTranscription({
   refreshSttStatus,
   sttEngineFor,
   readSttResidency,
+  sttLoadGeneration,
 }: Pick<AudioHostState, "activeRef" | "busyRef" | "setBusy"> &
   Pick<
     SttSidecar,
@@ -81,6 +82,7 @@ export function useTranscription({
     | "refreshSttStatus"
     | "sttEngineFor"
     | "readSttResidency"
+    | "sttLoadGeneration"
   >) {
   const [draftKey] = useState(transcriptDraftKey);
   const [recoveredTranscript] = useState(() => readTranscriptDraft(draftKey));
@@ -190,14 +192,17 @@ export function useTranscription({
     setSelectedSttRepo(repo);
     const model = sttSidecarKeyFor(repo);
     const engine = sttEngineFor(repo);
+    // An Eject or another pick during the read below bumps this.
+    const generation = sttLoadGeneration.current;
     // Page state lags an idle unload; transcribing against it skipped the load and hit a 409.
     const resident = await readSttResidency(engine).catch(() =>
       sttLoadedModel && sttLoadedEngine
         ? { model: sttLoadedModel, engine: sttLoadedEngine }
         : null,
     );
-    // Nothing is busy during that read, so a pick made meanwhile owns the selection; a
-    // status refresh that cleared it (nothing resident yet) does not.
+    // Nothing is busy during that read, so an Eject or a pick made meanwhile wins; a
+    // status refresh that cleared the selection (nothing resident yet) does not.
+    if (sttLoadGeneration.current !== generation) return null;
     const current = selectedSttRepoRef.current;
     if (current !== null && current !== repo) return null;
     if (current === null) {

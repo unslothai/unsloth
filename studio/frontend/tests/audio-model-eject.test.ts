@@ -262,7 +262,7 @@ test("the engine picked for a Transcribe model is remembered and reused", () => 
   );
   assert.match(source, /engineForRepo: sttEngineFor,/);
   assert.match(source, /selectedSttRepo \? sttEngineFor\(selectedSttRepo\) : null,/);
-  assert.match(source, /const engine = sttEngineFor\(repo\);\s*\/\/ Page state lags an idle unload/);
+  assert.match(source, /const engine = sttEngineFor\(repo\);[\s\S]{0,400}?await readSttResidency\(engine\)/);
 });
 
 test("Transcribe reuses a resident model that a legacy key or other casing names", () => {
@@ -293,6 +293,6 @@ test("the resident engine is adopted even when the repo id is unchanged", () => 
 test("a pick made while Transcribe reads residency is not overridden by the old run", () => {
   assert.match(
     source,
-    /const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
+    /const generation = sttLoadGeneration\.current;[\s\S]*?await readSttResidency\(engine\)[\s\S]*?if \(sttLoadGeneration\.current !== generation\) return null;\s*const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
   );
 });
