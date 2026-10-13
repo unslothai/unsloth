@@ -632,7 +632,8 @@ def _diffusion_frame_relay(
     request's stop sequences, as the final reply will be."""
     import time
 
-    last = [0.0]
+    # The first frame always goes out, however recently the monotonic clock started.
+    last = [float("-inf")]
     if interval_s is None:
         interval_s = _CANVAS_FRAME_INTERVAL_S
 
