@@ -7522,7 +7522,9 @@ def hf_token_for_load(from_pretrained):
         token = kwargs.get("token")
         if token is None and args:
             try:
-                token = inspect.signature(from_pretrained).bind_partial(*args).arguments.get("token")
+                token = (
+                    inspect.signature(from_pretrained).bind_partial(*args).arguments.get("token")
+                )
             except TypeError:
                 token = None
         if not isinstance(token, str) or not token:

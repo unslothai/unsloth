@@ -100,7 +100,12 @@ def test_passed_token_is_active_only_inside_hf_token_env(hub):
         assert huggingface_hub.get_token() == "hf_saved_write"
 
 
-def _tokenless_load(model_name, max_seq_length = 2048, token = None, **kwargs):
+def _tokenless_load(
+    model_name,
+    max_seq_length = 2048,
+    token = None,
+    **kwargs,
+):
     return huggingface_hub.get_token()
 
 
