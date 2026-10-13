@@ -978,6 +978,15 @@ class DiffusionTrainingStartRequest(BaseModel):
     random_flip: bool = Field(
         False, description = "Randomly mirror training images left-right (augmentation)"
     )
+    bucketing: Optional[bool] = Field(
+        None,
+        description = (
+            "Aspect-ratio buckets: train each image on the same-area canvas nearest its aspect "
+            "ratio instead of a square crop. null means on for a new run and, on a resume, what "
+            "the checkpoint recorded (square for a run from before buckets existed). MiniMax-H3 "
+            "always trains unbucketed."
+        ),
+    )
     caption_column: str = Field("text")
     hf_token: Optional[str] = Field(None)
     cache_latents: bool = Field(
@@ -1228,6 +1237,7 @@ class DiffusionTrainableFamily(BaseModel):
     # control: save_steps is refused, not ignored, for a checkpointless family, so offering the control means
     # offering a value that rejects Start; defaults True so an older backend's payload keeps it.
     supports_checkpoints: bool = True
+    supports_bucketing: bool = True
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None
