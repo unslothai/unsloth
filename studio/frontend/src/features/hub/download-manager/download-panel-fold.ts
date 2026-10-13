@@ -13,7 +13,8 @@ export function needsAttention(job: ManagedDownload | undefined): boolean {
 }
 
 export type FoldSnapshot = {
-  jobKeys: readonly string[];
+  /** One id per job run: a retry reuses its key but starts a new run. */
+  runs: readonly string[];
   queued: number;
   /** One token per row needing attention, carrying its state, so a warning that turns into a failure counts again. */
   attention: readonly string[];
@@ -25,7 +26,7 @@ export function foldSnapshot(
   queued: number,
 ): FoldSnapshot {
   return {
-    jobKeys,
+    runs: jobKeys.map((key) => `${key}\u0001${jobs[key]?.startedAt}`),
     queued,
     attention: jobKeys
       .filter((key) => needsAttention(jobs[key]))
@@ -41,8 +42,8 @@ export function foldSnapshot(
  *  the same download moving on, not a new one. */
 export function shouldPopOpen(prev: FoldSnapshot, next: FoldSnapshot): boolean {
   if (next.queued > prev.queued) return true;
-  const seen = new Set(prev.jobKeys);
-  const added = next.jobKeys.filter((key) => !seen.has(key)).length;
+  const seen = new Set(prev.runs);
+  const added = next.runs.filter((run) => !seen.has(run)).length;
   if (added > prev.queued - next.queued) return true;
   const flagged = new Set(prev.attention);
   return next.attention.some((key) => !flagged.has(key));

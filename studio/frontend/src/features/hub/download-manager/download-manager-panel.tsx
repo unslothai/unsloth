@@ -271,7 +271,7 @@ export function DownloadManagerPanel({
   const snapshot = foldSnapshot(jobKeys, jobs, queued.length);
   const empty = jobKeys.length === 0 && queued.length === 0;
   const steady = !empty && snapshot.attention.length === 0;
-  const changeKey = `${snapshot.jobKeys.join("\u0001")}|${snapshot.queued}|${snapshot.attention.join("\u0001")}`;
+  const changeKey = `${snapshot.runs.join("\u0002")}|${snapshot.queued}|${snapshot.attention.join("\u0001")}`;
   // Adjusted during render, not in an effect: https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
   const [seen, setSeen] = useState(() => ({ key: changeKey, snapshot }));
   if (seen.key !== changeKey) {

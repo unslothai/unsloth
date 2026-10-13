@@ -102,6 +102,16 @@ test("a warning that turns into a failure pops it open again", () => {
   assert.equal(shouldPopOpen(cancelling, cancelled), true);
 });
 
+test("retrying a failed download under the same key pops it open", () => {
+  const failed = foldSnapshot(
+    ["a"],
+    jobsOf(job("a", { state: "error", startedAt: 1 })),
+    0,
+  );
+  const retried = foldSnapshot(["a"], jobsOf(job("a", { startedAt: 2 })), 0);
+  assert.equal(shouldPopOpen(failed, retried), true);
+});
+
 test("a finished row leaving does not pop it open", () => {
   const before = foldSnapshot(
     ["a", "b"],
