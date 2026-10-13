@@ -50,8 +50,18 @@ export const BUDGET = {
   // The long-chat render work (#13255: deferred fences and reasoning rows) adds 33.3 KB raw / 13.1 KB
   // transfer to the eager chat chunk (6,477.1 -> 6,510.4 KB raw, 1,942.6 -> 1,955.7 KB transfer at
   // 160cb41fe, one machine and build); raised by that so main's margin stays where it was.
-  transferBytes: 2_005_000,
-  rawBytes: 6_681_000,
+  // Project sources follow-ups (#13224: queued drops, retry on failed sources, folder drops) add
+  // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
+  // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
+  // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
+  // Then 19 small Studio merges took main over again with no single import doing it: 6,518.8 ->
+  // 6,533.6 KB raw, 1,958.0 -> 1,963.7 KB transfer from 5f38afbc2d to 33176a75e9 (one machine and
+  // build). The largest step is Regenerate title in the Library menu (#13491, +5.2 KB raw / +2.2 KB
+  // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
+  // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
+  // so main's margin stays where it was.
+  transferBytes: 2_013_000,
+  rawBytes: 6_703_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

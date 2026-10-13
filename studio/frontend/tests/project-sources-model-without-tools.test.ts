@@ -8,6 +8,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type * as BarModule from "../src/features/rag/components/thread-documents-bar.tsx";
+import type * as FolderGroupsModule from "../src/features/rag/components/linked-folder-groups.ts";
 import type * as GateModule from "../src/features/chat/hooks/use-rag-tool-disabled.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -39,6 +40,25 @@ const gate = loadWithStubs<typeof GateModule>(
 const Nothing = () => null;
 const Passthrough = ({ children }: { children?: React.ReactNode }) =>
   React.createElement(React.Fragment, null, children);
+
+const chatStub = {
+  isThreadIncognito: () => false,
+  chatHistoryClearBoundary: { capture: () => 0 },
+  attachmentFileKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : "word",
+  isTextAttachment: (name: string) => name.endsWith(".txt"),
+};
+const fileViewerStub = {
+  MAX_DOCUMENT_PREVIEW_BYTES: 50,
+  documentKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
+  isMarkdown: () => false,
+};
+
+const folderGroups = loadWithStubs<typeof FolderGroupsModule>(
+  new URL("../src/features/rag/components/linked-folder-groups.ts", import.meta.url),
+  { react: React, "../api/rag-api": { listLinkedFolders: async () => [] } },
+);
 
 const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
   new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url),
@@ -72,7 +92,11 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
     },
     "@/lib/chevron-icons": {},
-    "@assistant-ui/react": { useAui: () => ({}) },
+    "@assistant-ui/react": {
+      useAui: () => ({}),
+      useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+        select({ threadListItem: { id: "local-1" } }),
+    },
     "@/lib/utils": {
       cn: (...classes: unknown[]) => classes.filter(Boolean).join(" "),
     },
@@ -82,19 +106,8 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       useChatRuntimeStore,
     },
     "@/features/chat/hooks/use-rag-tool-disabled": gate,
-    "@/features/chat": {
-      isThreadIncognito: () => false,
-      chatHistoryClearBoundary: { capture: () => 0 },
-      attachmentFileKind: (name: string) =>
-        name.endsWith(".pdf") ? "pdf" : "word",
-      isTextAttachment: (name: string) => name.endsWith(".txt"),
-    },
-    "@/components/file-viewer": {
-      MAX_DOCUMENT_PREVIEW_BYTES: 50,
-      documentKind: (name: string) =>
-        name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
-      isMarkdown: () => false,
-    },
+    "@/features/chat": chatStub,
+    "@/components/file-viewer": fileViewerStub,
     "@/features/native-intents": {
       useNativeAttachmentTargetKey: () => null,
       useNativeIntentStore: selectorStore({ pendingAttachments: {} }),
@@ -124,9 +137,24 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
         nativeDropTarget: () => undefined,
       }),
     },
+    "./use-upload-queue": {
+      useUploadQueue: (run: (items: unknown[]) => void) => ({
+        enqueue: run,
+        queued: 0,
+      }),
+    },
+    "./linked-folder-groups": folderGroups,
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },
+    "./source-file": loadWithStubs(
+      new URL("../src/features/rag/components/source-file.ts", import.meta.url),
+      {
+        "@/components/file-viewer": fileViewerStub,
+        "@/features/chat": chatStub,
+        "../api/rag-api": { getDocumentFileUrl: async () => "" },
+      },
+    ),
     "./staged-source": { EXPIRY_GRACE_MS: 0 },
     "./use-rag-documents": {
       uploadItemFromIntent: () => null,
@@ -138,6 +166,8 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
         loading: false,
         upload: async () => undefined,
         remove: async () => undefined,
+        retry: async () => undefined,
+        canRetry: () => false,
       }),
     },
   },

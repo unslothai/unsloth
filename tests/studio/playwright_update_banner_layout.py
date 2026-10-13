@@ -212,7 +212,7 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# The same card, renamed: whisper.cpp is not a second banner.
+# whisper.cpp renames the shared runtime card instead of adding a banner.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,
@@ -226,15 +226,27 @@ WHISPER_STATUS = dict(
         "skip_reason": None,
     },
 )
+# pending runtimes share one card with one row each.
+BUNDLE_STATUS = dict(
+    LLAMA_STATUS,
+    whisper = WHISPER_STATUS["whisper"],
+    audio = {
+        "update_available": True,
+        "installed_tag": "v0.9.0-unsloth.1",
+        "latest_tag": "v0.9.1-unsloth.1",
+        "update_size_bytes": None,
+        "skip_reason": None,
+    },
+)
 
-# 921x534 and 768x500 are where the report reproduces; the taller ones prove the fix costs nothing when there is room.
+# 921x534 and 768x500 reproduce the issue; taller viewports guard roomy layouts.
 VIEWPORTS = [
     (1440, 900),
     (1280, 830),
     (921, 534),
     (768, 500),
     (390, 844),
-    # Narrow enough to wrap the action row, short enough to hit the card's floor.
+    # narrow enough to wrap the action row and short enough to hit the card's floor.
     (390, 500),
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
@@ -1241,20 +1253,34 @@ def main() -> int:
                 if path == "/":
                     exercise_llama_changelog(page, f"{size} {name}")
 
-            # whisper.cpp renames the same card rather than adding a second one.
+            # whisper.cpp must reuse the shared runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat whisper")
+            rows = page.locator('[data-testid="llama-update-version-line"]').count()
             check(
                 f"{width}x{height}: whisper.cpp reuses the one runtime card",
                 page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"],
-                f"text={facts['llamaText']!r}",
+                and "whisper.cpp" in facts["llamaText"]
+                and rows == 1,
+                f"rows={rows} text={facts['llamaText']!r}",
             )
+
+            # pending runtimes add rows without adding cards.
+            llama_payload[0] = BUNDLE_STATUS
+            boot(page, "/")
+            facts = measure(page, f"{width}x{height} new chat bundle")
+            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            check(
+                f"{width}x{height}: three pending runtimes share the one card, a row each",
+                page.locator('[data-testid="llama-update-banner"]').count() == 1 and rows == 3,
+                f"rows={rows} text={facts['llamaText']!r}",
+            )
+            exercise_llama_changelog(page, f"{width}x{height} bundle")
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
-        # Exercise the compact app card omitted by the notes-bearing fixtures.
+        # notes-bearing fixtures omit the compact app card.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
             phase(f"app card with no notes preview at {width}x{height}")
             context = browser.new_context(

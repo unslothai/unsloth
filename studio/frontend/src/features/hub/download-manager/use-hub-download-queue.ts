@@ -50,6 +50,7 @@ export function useHubDownloadQueue() {
     }));
   const { stage, remaining } = useStagedDownload({
     scopeId: "hub-assets",
+    publishQueue: false,
     onReady: () => {
       finish();
       toast.success("Download complete", {

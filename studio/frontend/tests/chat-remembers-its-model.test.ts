@@ -270,122 +270,44 @@ test("a snapshot-path chat is labelled by its repo name, not the revision sha", 
   assert.match(body, /modelDisplayName\(createdModel\.modelId\)/);
 });
 
-test("the notice clears the chat header instead of rendering underneath it", () => {
-  // The bug this pins: the notice was an in-flow sibling of the chat header, and the
-  // header is `absolute ... top-[--studio-content-top-inset] z-40` with an OPAQUE
-  // bg-background. Per CSS painting order a positioned element is painted above every
-  // non-positioned one whatever the source order, so the whole bar sat underneath the
-  // header and only the 10px the header's `right-[10px]` leaves uncovered was visible.
-  // Measured on a built Unsloth: the notice's rect was {x:280,y:0,w:1220,h:37}, exactly
-  // the header's own band, and the before/after screenshots differed by a 10x37 sliver.
-  const header = slice(page, "chat-header-fade", "</div>");
-  assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
-
-  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // Anchored on the marker attribute, not on `<div className="`: the bar carries
-  // other attributes now, and the shape of the opening tag is not the contract.
-  const tag = slice(body, "data-chat-model-notice", "\n    >");
-  const div = slice(tag, 'className="', '"');
-  // Positioned, so it is not painted under the header.
-  assert.match(div, /\babsolute\b/);
-  // Offset by the SAME header height the header, its fade and the drop overlay use,
-  // so a change to either variable moves all four together.
+test("the original-model control sits beside the picker in the chat header", () => {
+  const header = slice(page, "chat-header-fade", "{/* One provider shared");
+  assert.match(header, /<ModelSelector[\s\S]*<ChatModelNotice/);
   assert.match(
-    div,
-    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+    header,
+    /\{view\.mode === "single" && \(\s*<ChatModelNotice\s+active=\{active\}/,
   );
-  // Between the header fade (z-20) and the header itself (z-40): over the gradient,
-  // under the model picker, whose menu must stay clickable.
-  const z = /\bz-(\d+)\b/.exec(div);
-  assert.ok(z, "the notice needs an explicit z-index");
-  assert.ok(
-    Number(z[1]) > 20 && Number(z[1]) < 40,
-    `notice z-${z[1]} must sit above the z-20 fade and below the z-40 header`,
+  // Hide the portaled UI after the hook runs, keeping the saved model and subscription off-route.
+  assert.match(
+    notice,
+    /const createdModel = useChatCreatedModel\(threadId\);[\s\S]*?if \(!active\) return null;/,
   );
-  // An overlay over the scrolling conversation must be opaque, or messages read
-  // through it. bg-muted/40 was fine only while the bar took its own row.
-  assert.doesNotMatch(
-    div,
-    /bg-muted\//,
-    "a translucent overlay lets messages show through",
-  );
+  // A chat change must dismiss a portaled popover along with its old model details.
+  assert.match(notice, /<Popover key=\{threadId\}>/);
 });
 
-test("the conversation reserves the space the notice overlay takes", () => {
-  // Measured on a built Unsloth before this: the viewport reserved exactly the
-  // header's 48px, the notice sat opaque at y 48..85, and the first message's own
-  // rect started at y=48 -- elementFromPoint returned the notice for every sample
-  // across its band, in a 2-turn chat AND in a 40-turn chat scrolled to the top.
-  // An overlay that reserves nothing hides content; the header gets away with it
-  // only because chat-header-fade dissolves what slides under it.
-
-  // One declaration of the height, on the nearest ancestor of both, so the bar and
-  // the padding cannot drift apart.
-  //
-  // `has-[>...]`, not `has-[...]`: the descendant form made every DOM change anywhere in the
-  // thread re-check this `:has()` on an ancestor of every message, and answering it walks the
-  // whole thread. Measured at the 500K rung on a 357,843-element thread, appending one empty span
-  // inside a message cost 17.5 / 18.6 ms with the descendant form and 0.10 ms once this rule and
-  // the sidebar wrapper's were both put in their child form. The notice is a direct child of the
-  // declaring element, so the two selectors match the same elements; that is asserted separately
-  // in `tests/thread-ancestor-has-scope.test.ts`, which is what keeps the child form honest.
-  assert.match(
-    page,
-    /has-\[>\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
-  );
-  // The notice claims the same variable rather than a padding of its own.
-  assert.match(notice, /data-chat-model-notice=""/);
-  assert.match(notice, /h-\[var\(--studio-chat-notice-height,2\.25rem\)\]/);
-  assert.doesNotMatch(
-    notice.slice(notice.indexOf("data-chat-model-notice")),
-    /py-1\.5/,
-    "a fixed height and a vertical padding would disagree about the bar's size",
-  );
-  // The viewport adds it to what it already reserved for the header, defaulting to
-  // 0px so every surface without a notice keeps exactly the padding it had.
+test("the conversation and research panel reserve only the chat header", () => {
+  // The original-model control lives inside the header, so it needs no extra row.
+  for (const source of [page, notice, thread, researchPanel]) {
+    assert.doesNotMatch(source, /--studio-chat-notice-height/);
+  }
   assert.match(
     thread,
-    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
+    /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)-var\(--studio-chat-scroller-top,0px\)\+var\(--studio-chat-header-height,48px\)\)\] mt-\[var\(--studio-chat-scroller-top,0px\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
-  // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
-  assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);
-});
-
-test("the research panel reserves the notice's height too", () => {
-  // The thread viewport is not the only surface the bar covers. The notice is an
-  // absolute child of the chat content container (chat-page.tsx), so its
-  // containing block is that whole container -- the deep-research column
-  // included, not just the thread pane. ResearchActivityPanel offsets itself by
-  // the header height for exactly the same reason, which lands its header at the
-  // notice's top edge.
-  //
-  // Measured on an Unsloth built from this tree, saved chat on claude-opus-4-5 with
-  // the composer on gpt-5-mini and the research panel open: notice rect
-  // {top:48,bottom:84,left:280,right:1590}, aside {top:48,left:1099.41,right:1600}
-  // -> 36px x 490.59px of the aside covered, which is its entire header band.
-  // elementFromPoint at the centre of the "Deep research" h2 (1212,73) and at the
-  // centre of the close button (1568,78) BOTH returned the notice, so it was
-  // swallowing the clicks, not merely painting over them. With the checkpoint set
-  // to the chat's own model the notice self-suppresses and both return the h2 and
-  // the button. The aside's margin-top was 48px in every case: nothing
-  // compensated for it.
+  assert.match(
+    fade,
+    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+  );
   const style = slice(researchPanel, 'variant === "panel"', ": undefined");
-  // Both edges move, or the panel keeps its old height and overflows the bottom.
   assert.match(
     style,
-    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\)\)"/,
   );
   assert.match(
     style,
-    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\) - var\(--studio-chat-notice-height, 0px\)\)"/,
-  );
-  // 0px is the only safe fallback: the sheet variant and every chat without a
-  // notice must keep the exact geometry they had before this notice existed.
-  assert.doesNotMatch(
-    style,
-    /--studio-chat-notice-height,\s*2\.25rem/,
-    "the panel must not assume a notice is present",
+    /height:\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\)\)"/,
   );
 });
 
