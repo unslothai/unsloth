@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -14,6 +15,8 @@ BACKEND = Path(__file__).resolve().parent.parent
 
 # Each line names one way a Hub card reaches a host file, and whether datasets resolved it there.
 PROBE = """
+import os
+import pathlib
 import sys
 from utils.security import hub_data_files
 {before}
@@ -24,16 +27,18 @@ from datasets.utils.metadata import MetadataConfigs
 {after}
 owner, local_base = sys.argv[1], sys.argv[2]
 hub = "hf://datasets/someone/repo@main"
-secret = owner + "/private.csv"
+secret = os.path.join(owner, "private.csv")
 
 def show(label, resolve):
     try:
-        print(label, "read" if secret in str(resolve()) else "other")
+        # private.csv is the only file of that name, so it marks the host file on any OS.
+        print(label, "read" if "private.csv" in str(resolve()) else "other")
     except FileNotFoundError:
         print(label, "refused")
 
-for label, pattern in (("ABSOLUTE", secret), ("FILE_URL", "file://" + secret),
-                       ("LOCAL_URL", "local://" + secret), ("CHAINED", "simplecache::file://" + secret)):
+posix = pathlib.Path(secret).as_posix()
+for label, pattern in (("ABSOLUTE", secret), ("FILE_URL", pathlib.Path(secret).as_uri()),
+                       ("LOCAL_URL", "local://" + posix), ("CHAINED", "simplecache::file://" + posix)):
     show(label, lambda: datasets.data_files.resolve_pattern(pattern, base_path = hub))
 
 def card(data_dir):
@@ -49,7 +54,7 @@ show("DATA_DIR", lambda: card(owner))
 # A cached Hub snapshot is loaded as a local folder; its card is still the Hub's.
 snapshot = sys.argv[3]
 show("SNAPSHOT", lambda: datasets.data_files.resolve_pattern(secret, base_path = snapshot))
-climb = "../" * (snapshot.count("/") + 2) + secret.lstrip("/")
+climb = os.path.relpath(secret, snapshot)
 show("TRAVERSAL", lambda: datasets.data_files.resolve_pattern(climb, base_path = snapshot))
 # An owner's own folder merely named like a snapshot, outside the Hub cache, stays local.
 lookalike = sys.argv[4]
@@ -92,11 +97,12 @@ def _probe(tmp_path, before, after):
         capture_output = True,
         text = True,
         timeout = 300,
+        # The full environment: Windows cannot load sockets without SYSTEMROOT and friends.
         env = {
+            **os.environ,
             "PYTHONPATH": str(BACKEND),
             "HF_HUB_OFFLINE": "1",
             "HF_HUB_CACHE": str(tmp_path / "hub"),
-            "PATH": "/usr/bin:/bin",
         },
     )
     assert out.returncode == 0, out.stderr
@@ -123,6 +129,7 @@ def test_a_hub_card_cannot_reach_a_host_file(tmp_path, before, after):
     assert seen["FINDERS"] == "1"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "records datasets' POSIX URL parsing")
 def test_without_the_guard_datasets_reads_the_host_file(tmp_path):
     # The behaviour the guard exists for, so a datasets release that changes it shows up here.
     seen = _probe(tmp_path, "", "")

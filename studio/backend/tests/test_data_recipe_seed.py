@@ -1492,7 +1492,9 @@ def _seed_folders(tmp_path):
 )
 def test_a_managed_account_inspects_hub_ids_only(monkeypatch, tmp_path, name):
     owner_rows, own, linked = _seed_folders(tmp_path)
-    name = {"owner": str(owner_rows), "own": str(own), "linked": str(linked)}.get(name, name)
+    # Forward slashes, which Windows accepts too: a backslash path is refused earlier, as not org/repo.
+    folders = {"owner": owner_rows, "own": own, "linked": linked}
+    name = folders[name].as_posix() if name in folders else name
     inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
 
     with pytest.raises(HTTPException) as refused:
@@ -1521,7 +1523,7 @@ def test_the_owner_still_inspects_a_local_folder(monkeypatch, tmp_path):
     _owner_rows, own, _linked = _seed_folders(tmp_path)
     inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = False)
 
-    inspect(str(own))
+    inspect(own.as_posix())
 
     assert read
 
