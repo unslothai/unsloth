@@ -18,6 +18,7 @@ block's first step, so the forward count matches the recompute sampler. Token se
 host syncs once per step (has the block finished early) and once per block (EOS)."""
 
 import math
+import os
 import time
 
 import torch
@@ -132,6 +133,116 @@ def _llada2_runner(base, ids, mask, position_ids, cache):
     return base.lm_head(inner.norm(hidden)).float()
 
 
+class _StaticPrefixCache:
+    """Fixed-capacity keys / values per layer, written at `rows` (absolute positions). Positions after the
+    active block hold stale values, which the block-causal mask never lets a query read."""
+
+    def __init__(self, capacity):
+        self.capacity, self.keys, self.values, self.rows = capacity, {}, {}, None
+
+    def update(
+        self,
+        key,
+        value,
+        layer_idx,
+        cache_kwargs = None,
+    ):
+        if layer_idx not in self.keys:
+            shape = (key.shape[0], key.shape[1], self.capacity, key.shape[3])
+            self.keys[layer_idx] = torch.zeros(shape, dtype = key.dtype, device = key.device)
+            self.values[layer_idx] = torch.zeros(shape, dtype = value.dtype, device = value.device)
+        self.keys[layer_idx].index_copy_(2, self.rows, key)
+        self.values[layer_idx].index_copy_(2, self.rows, value)
+        return self.keys[layer_idx], self.values[layer_idx]
+
+    def get_seq_length(self, layer_idx = 0):
+        return 0
+
+
+class _Llada2Graph:
+    """One LLaDA2 block forward (embed, layers, head) over a static cache, captured as a CUDA graph. Shapes
+    depend only on (batch, block, capacity), so a graph serves every request that fits."""
+
+    def __init__(self, base, batch, block_length, capacity, dtype, device):
+        inner = base.model
+        num_blocks = capacity // block_length
+        allowed = torch.tril(torch.ones(num_blocks, num_blocks, device = device, dtype = torch.bool))
+        allowed = allowed.repeat_interleave(block_length, 0).repeat_interleave(block_length, 1)
+        self.mask = torch.zeros(allowed.shape, dtype = dtype, device = device).masked_fill(
+            ~allowed, torch.finfo(dtype).min
+        )[None, None]
+        self.cache = _StaticPrefixCache(capacity)
+        self.ids = torch.zeros((batch, block_length), dtype = torch.long, device = device)
+        self.rows = torch.arange(block_length, device = device)
+        self.offsets = torch.arange(block_length, device = device)
+
+        def forward():
+            self.cache.rows = self.rows
+            hidden = inner.word_embeddings(self.ids)
+            position_ids = self.rows[None]
+            position_embeddings = inner.rotary_emb(hidden, position_ids)
+            mask = self.mask.index_select(2, self.rows)
+            for layer in inner.layers:
+                hidden = layer(
+                    hidden,
+                    attention_mask = mask,
+                    position_ids = position_ids,
+                    past_key_value = self.cache,
+                    use_cache = True,
+                    position_embeddings = position_embeddings,
+                )[0]
+            return base.lm_head(inner.norm(hidden)).float()
+
+        stream = torch.cuda.Stream(device)
+        stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                forward()
+        torch.cuda.current_stream(device).wait_stream(stream)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph):
+            self.logits = forward()
+
+    def __call__(self, ids, start):
+        self.ids.copy_(ids)
+        torch.add(self.offsets, start, out = self.rows)
+        self.graph.replay()
+        return self.logits
+
+
+def _llada2_graph(base, batch, block_length, total_length, dtype, device):
+    """A cached graph for this shape, or None when graphs are off, unavailable, or the model carries adapters
+    (capture would freeze their enabled / disabled state)."""
+    if (
+        os.environ.get("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "1") == "0"
+        or device.type != "cuda"
+        or any(hasattr(module, "lora_A") for module in base.modules())
+    ):
+        return None
+    # Power-of-two capacity (at least 1024) keeps the number of captured graphs small.
+    capacity = max(1024, 1 << (total_length - 1).bit_length())
+    capacity = -(-capacity // block_length) * block_length
+    key = (batch, block_length, capacity, dtype, device)
+    graphs = base.__dict__.setdefault("_unsloth_llada2_graphs", {})
+    graph = graphs.get(key)
+    if graph is None:
+        if graphs.get("failed"):
+            return None
+        try:
+            graph = _Llada2Graph(base, batch, block_length, capacity, dtype, device)
+        except Exception as error:
+            graphs["failed"] = True
+            print(
+                f"Unsloth: LLaDA2 CUDA graph capture failed ({type(error).__name__}: {error}); running eager."
+            )
+            return None
+        # Keep the latest two shapes: each holds its own memory pool.
+        for old in [k for k in graphs if k != "failed"][:-1]:
+            graphs.pop(old)
+        graphs[key] = graph
+    return graph
+
+
 def _sdar_runner(base, ids, mask, position_ids, cache, store_kv):
     return base(
         ids,
@@ -203,8 +314,10 @@ def cached_block_sample(
     allowed = block_causal.repeat_interleave(block_length, 0).repeat_interleave(block_length, 1)[
         None, None
     ]
+    graph = None
     if family == "llada2":
         dtype = next(base.parameters()).dtype
+        graph = _llada2_graph(base, input_ids.shape[0], block_length, total_length, dtype, device)
         attention = torch.zeros(allowed.shape, dtype = dtype, device = device).masked_fill(
             ~allowed, torch.finfo(dtype).min
         )
@@ -231,6 +344,23 @@ def cached_block_sample(
     frames = _Frames(on_frame, check_stop)
     eos = torch.tensor(eos_ids, device = device) if eos_ids else None
 
+    if graph is not None:
+        return _graph_block_sample(
+            graph,
+            x,
+            prompt_length = prompt_length,
+            num_blocks = num_blocks,
+            block_length = block_length,
+            steps = steps,
+            counts = counts,
+            temperature = temperature,
+            top_k = top_k,
+            top_p = top_p,
+            mask_id = mask_id,
+            eos = eos,
+            confidence_threshold = confidence_threshold,
+            frames = frames,
+        )
     cache = _PrefixCache() if family == "llada2" else DynamicCache()
 
     def commit_then_step(commit_start, start, end):
@@ -272,4 +402,53 @@ def cached_block_sample(
         if block + 1 < num_blocks:
             # The next block is all masks: its first step rides along with this block's commit.
             pending = commit_then_step(start, end, end + block_length)
+    return x[:, prompt_length:]
+
+
+def _graph_block_sample(
+    graph,
+    x,
+    *,
+    prompt_length,
+    num_blocks,
+    block_length,
+    steps,
+    counts,
+    temperature,
+    top_k,
+    top_p,
+    mask_id,
+    eos,
+    confidence_threshold,
+    frames,
+):
+    """cached_block_sample's loop on a captured block forward. A finished block is committed by one more
+    forward of its final tokens (same graph); prompt blocks are committed the same way."""
+    first = prompt_length // block_length
+    for block in range(first):
+        graph(x[:, block * block_length : (block + 1) * block_length], block * block_length)
+    for block in range(first, num_blocks):
+        start, end = block * block_length, (block + 1) * block_length
+        window = x[:, start:end]
+        for step in range(steps + 1):
+            mask_index = window == mask_id
+            if not bool(mask_index.any()):
+                break
+            frames.step(x, prompt_length, end, block, step, steps, mask_id)
+            logits = graph(window, start)
+            x0, transfer = _select(
+                logits,
+                mask_index,
+                temperature,
+                top_k,
+                top_p,
+                counts[min(step, steps - 1)],
+                confidence_threshold,
+            )
+            window.copy_(torch.where(transfer, x0, window))
+        frames.step(x, prompt_length, end, block, steps, steps, mask_id, force = True)
+        if eos is not None and bool(torch.isin(x[:, prompt_length:end], eos).any()):
+            return x[:, prompt_length:end]
+        if block + 1 < num_blocks:
+            graph(window, start)
     return x[:, prompt_length:]

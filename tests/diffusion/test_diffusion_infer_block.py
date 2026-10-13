@@ -12,7 +12,14 @@ import torch
 import torch.nn.functional as F
 
 from unsloth.models import diffusion_samplers as S
-from unsloth.models.diffusion_infer_block import _Frames, _PrefixCache, _select, cached_block_sample
+from unsloth.models.diffusion_infer_block import (
+    _Frames,
+    _llada2_graph,
+    _PrefixCache,
+    _select,
+    _StaticPrefixCache,
+    cached_block_sample,
+)
 from unsloth.models.diffusion_infer_dream import dream_fast_sample, dream_fast_supported
 
 VOCAB, MASK_ID, EOS_ID, HIDDEN = 53, 52, 2, 16
@@ -224,6 +231,22 @@ def test_prefix_cache_reads_without_writing():
     cache.commit = False
     key, _ = cache.update(2 * k, 2 * k, 0)
     assert key.shape[-2] == 4 and cache.get_seq_length() == 2
+
+
+def test_static_prefix_cache_writes_rows():
+    cache = _StaticPrefixCache(8)
+    cache.rows = torch.tensor([2, 3])
+    key, value = cache.update(torch.ones(1, 1, 2, 4), 2 * torch.ones(1, 1, 2, 4), 0)
+    assert key.shape == (1, 1, 8, 4)
+    assert key[0, 0, :, 0].tolist() == [0, 0, 1, 1, 0, 0, 0, 0]
+    assert value[0, 0, 3, 0] == 2
+
+
+def test_llada2_graph_only_on_cuda_without_adapters(monkeypatch):
+    base = _ToyBlockModel(seed = 0)
+    assert _llada2_graph(base, 1, 4, 16, torch.float32, torch.device("cpu")) is None
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "0")
+    assert _llada2_graph(base, 1, 4, 16, torch.float32, torch.device("cuda")) is None
 
 
 def test_frames_throttle_and_stop():
