@@ -209,6 +209,7 @@ import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
 import {
   type ModelLoadTimes,
+  loadStampId,
   loadedAt,
   useModelLoadTimes,
 } from "./model-usage";
@@ -223,9 +224,11 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
+  coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
   estimateQuantBytes,
+  formatFilterValues,
   hfModelFitsDevice,
   isMlxId,
   isCapableCheckpointQuant,
@@ -235,6 +238,7 @@ import {
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
+  pickerSearchMatches,
   recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
@@ -1924,6 +1928,10 @@ function GgufVariantExpander({
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
+  const capabilityScope = useContext(CapabilityScope);
+  const visionInScope =
+    capabilityScope === null || capabilityScope.includes("vision");
+  const showVision = hasVision === true && visionInScope;
   // Native max context (GGUF metadata); only set once a variant is downloaded.
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1962,7 +1970,7 @@ function GgufVariantExpander({
       setVariants(normalized.variants);
       setDefaultVariant(normalized.defaultVariant);
       setHasVision(normalized.hasVision);
-      if (normalized.hasVision !== undefined) {
+      if (normalized.hasVision !== undefined && visionInScope) {
         onHasVision?.(normalized.hasVision);
       }
       setNativeContext(normalized.contextLength);
@@ -2003,7 +2011,15 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
+  }, [
+    repoId,
+    localSource,
+    refreshKey,
+    hfToken,
+    pipelineTag,
+    onDevice,
+    visionInScope,
+  ]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2345,7 +2361,7 @@ function GgufVariantExpander({
           <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
             Quantizations
           </span>
-          {hasVision && (
+          {showVision && (
             <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
               <HugeiconsIcon
                 icon={ViewIcon}
@@ -2358,7 +2374,7 @@ function GgufVariantExpander({
         </div>
       )}
       {!onDevice &&
-        hasVision &&
+        showVision &&
         displayVariantGroups.some((group) => group.title) && (
           <div className="px-2 pt-1">
             <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
@@ -2686,6 +2702,17 @@ function mediaPageForTask(
   return "images";
 }
 
+function taskFilterHasAudio(filter: HfTaskFilter): boolean {
+  const tasks: readonly string[] = filter
+    ? typeof filter === "string"
+      ? [filter]
+      : filter
+    : [];
+  return tasks.some((entry) =>
+    (AUDIO_GEN_TASKS as readonly string[]).includes(entry),
+  );
+}
+
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image the
 // text-to-image backend rejects, so they are hidden by id (mirrors _EDIT_KEYWORDS). The
 // task itself must stay, since FLUX.2-klein carries it too.
@@ -2735,7 +2762,8 @@ function passesTaskGate(
           catalogTask: exactArtifact?.group.task,
           pickerTask: filter,
         })) &&
-      !isImageEditModel(repoId)
+      // The edit-keyword hiding is an Images rule; audio edit models (DotTTS-Edit) load fine.
+      !(!taskFilterHasAudio(filter) && isImageEditModel(repoId))
     ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
@@ -2838,10 +2866,6 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
     ),
   };
 });
-const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
-  (option) => option.value !== "npu",
-);
-
 // Connected has no size, download date or load history, so it sorts by what a hosted catalogue
 // does offer: the connection, or the name.
 type ConnectedSortKey = "provider" | "name";
@@ -2995,9 +3019,11 @@ export function HubModelPicker({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   value,
+  valueLoaded,
   onSelect: onSelectProp,
   resolveDownloadFootprint,
   onFoldersChange,
@@ -3022,11 +3048,15 @@ export function HubModelPicker({
    *  example the two-file STT sidecars). */
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
+  /** Task-owned loaded quant; when given it replaces the chat store's, null meaning none. */
+  loadedGgufVariantOverride?: string | null;
   /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
   /** Connected provider models, shown in the Connected section. */
   externalModels?: ExternalModelOption[];
   value?: string;
+  /** Whether `value` is resident; false keeps it from being stamped as a load. */
+  valueLoaded?: boolean;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
@@ -3078,6 +3108,7 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
   // resident. Same predicate as the header tick.
@@ -3094,9 +3125,13 @@ export function HubModelPicker({
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeGgufVariant =
+    loadedGgufVariantOverride !== undefined
+      ? loadedGgufVariantOverride
+      : storeGgufVariant;
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
-  const loadTimes = useModelLoadTimes(value);
+  const loadTimes = useModelLoadTimes(loadStampId(value, valueLoaded));
   // Fade the list's top edge once scrolled, and its bottom edge while more rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
@@ -3158,6 +3193,8 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
   const recommendedSearch = useHubModelSearch("", {
+    // Audio keeps only task rows, so an untasked listing pages forever without finding one.
+    task: audioTaskPicker ? task : undefined,
     ownerScope: "unsloth",
     sortBy: recommendedSort,
     sortDirection: "desc",
@@ -3650,7 +3687,8 @@ export function HubModelPicker({
       // Image/Video tab (task set): only task-matching, non-editing results.
       if (task)
         return (
-          taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id)
+          taskMatchesFilter(r.pipelineTag, task) &&
+          !(!audioTaskPicker && isImageEditModel(r.id))
         );
       return (
         classifyUnslothSupport({
@@ -3663,7 +3701,7 @@ export function HubModelPicker({
         }).status !== "unsupported"
       );
     },
-    [deviceType, task],
+    [audioTaskPicker, deviceType, task],
   );
   // A capable FP8 / NVFP4 checkpoint passes the runtime gate's quant-method check (vLLM loads
   // compressed-tensors), never its pipeline check: an FP8 image model stays off the chat list.
@@ -3768,8 +3806,22 @@ export function HubModelPicker({
   // Format filter toggle for the Unsloth listing.
   const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
   const npuCatalog = useNpuCatalog(npu);
-  const formatFilter: FormatFilter =
-    chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
+  // MLX only runs on a Mac; chat keeps it everywhere.
+  const offeredFormatFilters = useMemo(
+    () => formatFilterValues({ npu: !!npuCatalog, mlx: isMac || !task }),
+    [npuCatalog, isMac, task],
+  );
+  const formatFilterOptions = useMemo(
+    () =>
+      FORMAT_FILTER_OPTIONS.filter((option) =>
+        offeredFormatFilters.includes(option.value),
+      ),
+    [offeredFormatFilters],
+  );
+  const formatFilter = coerceFormatFilter(
+    chosenFormatFilter,
+    offeredFormatFilters,
+  );
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
   const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // What this picker's task filter has already established about every row it can show; chat
@@ -3820,7 +3872,7 @@ export function HubModelPicker({
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
       .filter((id) => !isMobileVariant(id))
-      .filter((id) => !isImageEditModel(id))
+      .filter((id) => audioTaskPicker || !isImageEditModel(id))
       .filter(curatedOfferable)
       .filter((id) => {
         const isG = isKnownGgufRepo(id);
@@ -3840,7 +3892,15 @@ export function HubModelPicker({
         // Same reason the size is curated: a seed the listing does not return has no other source for its param chip.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
-  }, [catalog, models, formatFilter, isKnownGgufRepo, task, curatedOfferable]);
+  }, [
+    audioTaskPicker,
+    catalog,
+    models,
+    formatFilter,
+    isKnownGgufRepo,
+    task,
+    curatedOfferable,
+  ]);
 
   /** The catalog's own fit verdict for a curated artifact, or undefined where it has none. Every
    *  list that judges a row against the device goes through this, so a badge and its filters
@@ -4757,9 +4817,12 @@ export function HubModelPicker({
       return (
         matchesFormatFilter(model.id, model.isGguf === true, formatFilter) &&
         (!needle ||
-          normalizeForSearch(
-            `${model.id} ${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
-          ).includes(needle))
+          pickerSearchMatches(
+            model.id,
+            [model.id],
+            `${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
+            needle,
+          ))
       );
     });
     return sortCachedRepos(
@@ -5235,9 +5298,14 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        // A mirror row also answers to its vendor id.
+        // What the row shows, plus the vendor id a mirror row answers to.
         .filter((id) =>
-          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+          pickerSearchMatches(
+            id,
+            aliasesOf(id),
+            catalog ? curatedRow(id).name : null,
+            q,
+          ),
         )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
@@ -5258,6 +5326,8 @@ export function HubModelPicker({
     catalogSeedIds,
     recommendedIds,
     aliasesOf,
+    catalog,
+    curatedRow,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
@@ -5889,9 +5959,17 @@ export function HubModelPicker({
     error: recommendedSearch.error,
     hubPhase,
   });
+  // A typed query on a community-enabled picker waits on both searches before calling it empty.
+  const communitySearchActive =
+    communityDiscoveryEnabled && debouncedQuery.trim().length > 0;
+  const communitySearching =
+    communitySearchActive && communityQuerySearch.isLoading;
+  const communitySearchError = communitySearchActive
+    ? communityQuerySearch.error
+    : null;
   const searchEmpty = recommendedEmptyState({
-    isLoading,
-    error: searchError,
+    isLoading: isLoading || communitySearching,
+    error: searchError ?? communitySearchError,
     hubPhase,
   });
   const downloadedEmpty =
@@ -5952,8 +6030,9 @@ export function HubModelPicker({
     </span>
   );
   // On Device rows are already on disk, so the device-fit filter only applies to the Unsloth listing.
+  // Audio's listing is nearly all umbrella and vendor rows, which a sort cannot reorder.
   const sectionSortDropdown =
-    section === "recommended" ? (
+    section === "recommended" && audioTaskPicker ? null : section === "recommended" ? (
       <HubOptionMenu
         value={recommendedSort}
         options={RECOMMENDED_SORT_OPTIONS}
@@ -7004,12 +7083,14 @@ export function HubModelPicker({
               placeholder={
                 section === "downloaded"
                   ? "Search local models"
-                  : "Search Unsloth models"
+                  : communityDiscoveryEnabled
+                    ? "Search models"
+                    : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
               className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
             />
-            {isLoading && (
+            {(isLoading || communitySearching) && (
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
@@ -7073,16 +7154,18 @@ export function HubModelPicker({
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
-                options={
-                  npuCatalog
-                    ? FORMAT_FILTER_OPTIONS
-                    : FORMAT_FILTER_OPTIONS_WITHOUT_NPU
-                }
+                options={formatFilterOptions}
                 onValueChange={setFormatFilter}
                 ariaLabel="Filter by format"
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                // Audio has no sort for its listing, so the fit toggle lives here.
+                footer={
+                  audioTaskPicker && section === "recommended"
+                    ? fitOnDeviceFooter
+                    : undefined
+                }
               />
               {sectionSortDropdown}
             </div>
@@ -8383,9 +8466,18 @@ export function HubModelPicker({
                 section === "recommended" &&
                 formatFilter !== "npu" ? (
                   <>
-                    {searchRowIds.length === 0 && !isLoading ? (
+                    {searchRowIds.length === 0 &&
+                    !isLoading &&
+                    !communitySearching ? (
                       filteredRecommendedIds.length > 0 ? null : searchEmpty === "failed" ? (
-                        <HubFailureHint message={searchError} onRetry={retrySearch} />
+                        <HubFailureHint
+                          message={searchError ?? communitySearchError}
+                          onRetry={
+                            searchError
+                              ? retrySearch
+                              : communityQuerySearch.retry
+                          }
+                        />
                       ) : (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
                           {communityDiscoveryEnabled

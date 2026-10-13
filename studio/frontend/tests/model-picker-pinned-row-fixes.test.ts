@@ -50,3 +50,19 @@ test("that repo's pinned row is its own sole-quant row", () => {
     /pinnedSoleQuantRows\.has\(row\.key\)\s*\?\s*makeModelOptionKey\("downloaded-gguf", row\.entry\.repoId\)/,
   );
 });
+
+test("the quant list's Vision badge and relay follow the picker's capability scope", () => {
+  assert.match(
+    pickers,
+    /const visionInScope =\s*capabilityScope === null \|\| capabilityScope\.includes\("vision"\);\s*const showVision = hasVision === true && visionInScope;/,
+  );
+  assert.match(
+    pickers,
+    /if \(normalized\.hasVision !== undefined && visionInScope\) \{\s*onHasVision\?\.\(normalized\.hasVision\);/,
+  );
+  assert.doesNotMatch(
+    pickers,
+    /\{hasVision && \(\s*<span className="flex items-center gap-0\.5/,
+  );
+  assert.doesNotMatch(pickers, /!onDevice &&\s*hasVision &&/);
+});

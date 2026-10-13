@@ -96,6 +96,8 @@ interface ModelSelectorProps {
   additionalOnDeviceModels?: ModelOption[];
   /** Task-owned runtime residency when it is separate from Chat's main slot. */
   loadedModelIdOverride?: string;
+  /** Task-owned loaded quant, paired with `loadedModelIdOverride`; null means none. */
+  loadedGgufVariantOverride?: string | null;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
   /** The connections behind `externalModels`, carrying each one's cached catalogue.
@@ -283,7 +285,8 @@ function ModelSelectorTrigger({
                 !subtitle && !showCloudIndicator && GAP_BEFORE,
               )}
             >
-              {subtitle ? " - " : ""}
+              {/* Its own span: a flex item drops the leading space of its text. */}
+              {subtitle ? <span className="whitespace-pre"> - </span> : null}
               {currentModel.descriptionSuffix}
             </span>
           )}
@@ -349,6 +352,7 @@ function ModelSelectorContent({
   models,
   additionalOnDeviceModels,
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels,
   externalModels,
   value,
@@ -381,6 +385,7 @@ function ModelSelectorContent({
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
+  loadedGgufVariantOverride?: string | null;
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
@@ -668,9 +673,11 @@ function ModelSelectorContent({
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
               loadedModelIdOverride={loadedModelIdOverride}
+              loadedGgufVariantOverride={loadedGgufVariantOverride}
               loraModels={fineTunedModels}
               externalModels={externalModels}
               value={value}
+              valueLoaded={loaded}
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
@@ -716,6 +723,7 @@ export function ModelSelector({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   externalConnections = [],
@@ -888,7 +896,11 @@ export function ModelSelector({
     setOpen(false);
     void navigate({
       to: "/hub",
-      search: { tab: "discover", capability: hubCapability },
+      search: {
+        tab: "discover",
+        capability: hubCapability,
+        audioTask: hubCapability === "audio" && task ? [task].flat() : undefined,
+      },
     });
   }
 
@@ -919,6 +931,7 @@ export function ModelSelector({
         models={models}
         additionalOnDeviceModels={additionalOnDeviceModels}
         loadedModelIdOverride={loadedModelIdOverride}
+        loadedGgufVariantOverride={loadedGgufVariantOverride}
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}

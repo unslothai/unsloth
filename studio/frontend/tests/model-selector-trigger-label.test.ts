@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -95,4 +95,17 @@ test("an Ollama pick keeps the slashes in its repo name", () => {
   ])[0];
   assert.ok(namespaced);
   assert.equal(loraOptionLabel(namespaced), "someuser/mymodel:latest");
+});
+
+test("the trigger's suffix keeps the space in its ' - ' separator", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  // A blockified flex item drops the leading space of its text, so the separator is its own
+  // span that preserves white space.
+  assert.match(
+    selector,
+    /\{subtitle \? <span className="whitespace-pre"> - <\/span> : null\}\s*\{currentModel\.descriptionSuffix\}/,
+  );
+  assert.doesNotMatch(selector, /\{subtitle \? " - " : ""\}/);
 });

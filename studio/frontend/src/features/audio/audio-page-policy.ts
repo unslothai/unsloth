@@ -12,6 +12,7 @@ import {
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
   audioCppModelFor,
+  isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
 
 /** Why the installed audio runtime cannot run this recommended speech or music model, or null
@@ -379,6 +380,54 @@ export function canTransitionAudioMode(
   return (
     busy === null || (busy === "generating" && generationPhase === "generating")
   );
+}
+
+/** The main slot's loaded model as the picker rows name it. llama-server reports a custom-folder
+ *  GGUF's file stem as active_model and its path as model_identifier, and that row uses the path;
+ *  a Hub model keeps its repo id, since model_identifier can be a cache snapshot path. */
+export function audioLoadedSelection(
+  status:
+    | {
+        active_model?: string | null;
+        model_identifier?: string | null;
+        gguf_variant?: string | null;
+      }
+    | null
+    | undefined,
+): { id: string | null; variant: string | null } {
+  const active = status?.active_model ?? null;
+  const id = active
+    ? active.includes("/")
+      ? active
+      : (status?.model_identifier ?? active)
+    : null;
+  return { id, variant: id ? (status?.gguf_variant ?? null) : null };
+}
+
+/** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
+ *  the model listed. audio.cpp folders are judged only once the inventory lists folder rows. */
+export function rememberedModelIsGone(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  if (!inventory.settled || inventory.error) return false;
+  if (inventory.available.has(id.toLowerCase())) return false;
+  return (
+    !isAudioCppFolderId(id) ||
+    [...inventory.available].some((listed) => isAudioCppFolderId(listed))
+  );
+}
+
+const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was
+ *  deleted while nothing on this page was listening. Local folders and trained checkpoints are not
+ *  listed by repo id, so they are always offered. Nothing is forgotten here. */
+export function rememberedModelUnavailable(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  return HUB_REPO_ID_RE.test(id) && rememberedModelIsGone(id, inventory);
 }
 
 /** A managed TTS completion owns auto-load only while the same staging generation is selected

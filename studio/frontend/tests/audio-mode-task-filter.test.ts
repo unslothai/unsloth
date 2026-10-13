@@ -53,3 +53,22 @@ test("ASR names carry the audio capability badge", () => {
     true,
   );
 });
+
+test("Search Hub from an audio picker carries the page's pipeline tasks", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /search: \{\s*tab: "discover",\s*capability: hubCapability,\s*audioTask: hubCapability === "audio" && task \? \[task\]\.flat\(\) : undefined,\s*\}/,
+  );
+  // The picker task is a tag or a tag list; the hub param is always a list.
+  const asParam = (task: string | readonly string[]) => [task].flat();
+  assert.deepEqual(asParam(["text-to-speech", "text-to-audio"]), [
+    "text-to-speech",
+    "text-to-audio",
+  ]);
+  assert.deepEqual(asParam("automatic-speech-recognition"), [
+    "automatic-speech-recognition",
+  ]);
+});

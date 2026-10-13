@@ -61,11 +61,11 @@ export type MetaToken =
 
 const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
 const META_APPROX_RE = /^~/;
-const META_PARAM_RE = /^\d+(?:\.\d+)?B$/i;
+const META_PARAM_RE = /^\d+(?:\.\d+)?[MB]$/i;
 const META_WHITESPACE_RE = /\s+/;
 
-/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare "<n>B"), format
- *  keyword, or plain text. */
+/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare "<n>B" or "<n>M";
+ *  never "<n>K", which is a context length), format keyword, or plain text. */
 export function classifyMetaToken(raw: string): MetaToken | null {
   const t = raw.trim();
   if (!t) return null;
