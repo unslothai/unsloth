@@ -153,7 +153,6 @@ def te_prequant_budget_scale(
     if getattr(fam, "name", None) == "ltx-2.5":
         # Its Gemma 4 encoder never comes pre-cast: the worker quantizes it (int8 ConvRot, when asked for) at load.
         from .video_ltx25 import ltx25_te_budget_scale
-
         components = getattr(fam, "bf16_components_gb", None) or (0.0, 0.0)
         return ltx25_te_budget_scale(te_quant_mode, components[1])
     try:

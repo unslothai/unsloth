@@ -2103,7 +2103,9 @@ def _pipeline_device_mib(pipe: Any, ordinal: Optional[int] = None) -> int:
 
 
 def _auto_seed_yields_to_resident_bf16(
-    scheme: Optional[str], requested: Optional[str], fam: Any = None
+    scheme: Optional[str],
+    requested: Optional[str],
+    fam: Any = None,
 ) -> bool:
     """Whether an AUTO seed of ``scheme`` is bound by "auto keeps a resident bf16 DiT".
 

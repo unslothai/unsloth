@@ -319,7 +319,9 @@ def test_until_published_the_plan_keeps_the_dense_shards(fam, _planning):
         ("int8", "int8", "int8"),
     ],
 )
-def test_auto_seeds_int8_where_bf16_fits_like_comfyui(fam, monkeypatch, requested, scheme, expected):
+def test_auto_seeds_int8_where_bf16_fits_like_comfyui(
+    fam, monkeypatch, requested, scheme, expected
+):
     import types
 
     import core.inference.video as vid

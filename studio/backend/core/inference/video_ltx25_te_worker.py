@@ -180,7 +180,11 @@ def _decoder_layers(model: Any) -> Any:
     return layers
 
 
-def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = False) -> int:
+def quantize_int8_convrot_(
+    model: Any,
+    device: Any = "cpu",
+    resident: bool = False,
+) -> int:
     """Swap every decoder-layer projection for the weight-only ConvRot INT8 linear, in place; the number swapped.
 
     Each weight is rotated and quantized on ``device`` when it is an accelerator (seconds, not minutes of CPU matmuls).
@@ -212,8 +216,12 @@ def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = Fal
                 if not isinstance(linear, nn.Linear):
                     continue
                 home = linear.weight.device
-                codes, scale = quantize_convrot_int8_weight(linear.weight.detach().to(work), CONVROT_GROUP)
-                new = cls(linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP)
+                codes, scale = quantize_convrot_int8_weight(
+                    linear.weight.detach().to(work), CONVROT_GROUP
+                )
+                new = cls(
+                    linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP
+                )
                 new.weight = codes.to(home)
                 new.weight_scale = scale.to(home)
                 if linear.bias is not None:

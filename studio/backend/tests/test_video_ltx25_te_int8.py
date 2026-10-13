@@ -19,7 +19,9 @@ from core.inference.diffusion_convrot import build_convrot_hadamard, quantize_co
 def _comfy_kitchen_reference(weight: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
     """comfy-kitchen's eager ``quantize_int8_convrot_weight``, in float32: kron powers of its H4, W @ H.T per group,
     per-row absmax / 127, round, clamp."""
-    h4 = torch.tensor([[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype = torch.float32)
+    h4 = torch.tensor(
+        [[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype = torch.float32
+    )
     h = h4
     while h.shape[0] < group:
         h = torch.kron(h, h4)
@@ -32,7 +34,9 @@ def _comfy_kitchen_reference(weight: torch.Tensor, group: int) -> tuple[torch.Te
 
 def test_hadamard_is_comfy_kitchens_and_quantization_matches_it():
     torch.manual_seed(0)
-    h4 = torch.tensor([[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype = torch.float32)
+    h4 = torch.tensor(
+        [[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype = torch.float32
+    )
     ref = torch.kron(torch.kron(torch.kron(h4, h4), h4), h4) / 16.0
     assert torch.equal(build_convrot_hadamard(256), ref)
     weight = (torch.randn(64, 512) * 0.02).to(torch.bfloat16)
@@ -68,7 +72,11 @@ class _Layer(nn.Module):
 
 
 class _TinyGemma(nn.Module):
-    def __init__(self, d = 256, layers = 2):
+    def __init__(
+        self,
+        d = 256,
+        layers = 2,
+    ):
         super().__init__()
         self.model = nn.Module()
         self.model.language_model = nn.Module()
@@ -116,7 +124,9 @@ def test_worker_load_quantizes_only_when_asked(monkeypatch):
     )
     base = {"repo": "Lightricks/LTX-2.5-Diffusers", "device": "cpu", "dtype": "bfloat16"}
     _tok, model = worker._load(dict(base, te_quant = "int8"))
-    assert type(model.model.language_model.layers[1].self_attn.q_proj).__name__ == "Int8ConvRotLinear"
+    assert (
+        type(model.model.language_model.layers[1].self_attn.q_proj).__name__ == "Int8ConvRotLinear"
+    )
     _tok, model = worker._load(dict(base, te_quant = None))
     assert isinstance(model.model.language_model.layers[1].self_attn.q_proj, nn.Linear)
     with pytest.raises(RuntimeError, match = "unsupported text encoder precision"):
