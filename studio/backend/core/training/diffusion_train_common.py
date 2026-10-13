@@ -842,6 +842,39 @@ def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
+def resume_steps_left(cfg: Any, identity: Any) -> int:
+    """Optimizer steps this process will run: the target minus the resumed bundle's step; the target when unknown."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return cfg.train_steps
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume
+        _path, step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+    except Exception:  # noqa: BLE001 -- restore_resume_state reports the real problem
+        return cfg.train_steps
+    return max(0, cfg.train_steps - int(step))
+
+
+class TrainingPeakMemory:
+    """Training-only peak across preview rounds: ``pause`` banks the peak so far before a round, ``resume`` resets the
+    allocator high-water mark after it, so a preview's VAE decode never reads as training memory."""
+
+    def __init__(self, device: str):
+        self.device = device
+        self.banked = 0.0
+        reset_training_peak_memory(device)
+
+    def pause(self) -> None:
+        self.banked = max(self.banked, training_peak_memory_gb(self.device))
+
+    def resume(self) -> None:
+        reset_training_peak_memory(self.device)
+
+    def gb(self) -> float:
+        return max(self.banked, training_peak_memory_gb(self.device))
+
+
 def _accelerator_memory_module(device: str) -> Any:
     import torch
 

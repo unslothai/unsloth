@@ -47,8 +47,8 @@ from core.training.diffusion_train_common import (
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
     enable_diffusion_gradient_checkpointing,
-    reset_training_peak_memory,
-    training_peak_memory_gb,
+    TrainingPeakMemory,
+    resume_steps_left,
     make_lora_optimizer,
     recorded_optimizer_class,
     _apply_perf_flags,
@@ -1887,6 +1887,7 @@ def _should_compile(
     base_is_bnb,
     device,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
@@ -1898,7 +1899,8 @@ def _should_compile(
     if mode == "on":
         return True
     if base_precision == "nf4":
-        return cfg.train_steps >= NF4_COMPILE_MIN_STEPS and _nf4_compile_supported()
+        steps = cfg.train_steps if steps_left is None else steps_left
+        return steps >= NF4_COMPILE_MIN_STEPS and _nf4_compile_supported()
     return base_precision in ("bf16", "fp8", "mxfp8")
 
 
@@ -1933,12 +1935,13 @@ def _maybe_compile_transformer(
     device,
     on_event,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
     dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
     instead of raising mid-run."""
-    if not _should_compile(cfg, base_is_bnb, device, base_precision):
+    if not _should_compile(cfg, base_is_bnb, device, base_precision, steps_left):
         if base_precision in ("fp8", "mxfp8"):
             _emit(
                 on_event,
@@ -2287,8 +2290,15 @@ def _train_dit(
     # conversions so they track the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
+    # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
     compiled = _maybe_compile_transformer(
-        transformer, cfg, base_is_bnb, device, on_event, base_precision
+        transformer,
+        cfg,
+        base_is_bnb,
+        device,
+        on_event,
+        base_precision,
+        resume_steps_left(cfg, identity),
     )
     # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to the dataset's longest
     # caption.
@@ -2499,7 +2509,7 @@ def _train_dit(
         _sample(resumed)
 
     # Reported peak VRAM = training peak, not the higher load / encode peak.
-    reset_training_peak_memory(device)
+    train_peak = TrainingPeakMemory(device)
     for opt_step in range(resumed, cfg.train_steps):
         if stop_latched:
             stopped = True
@@ -2588,7 +2598,7 @@ def _train_dit(
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            peak_gb = training_peak_memory_gb(device)
+            peak_gb = train_peak.gb()
             per_step = batch_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
@@ -2608,7 +2618,9 @@ def _train_dit(
             )
         stop_now = _check_stop()
         if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+            train_peak.pause()
             _sample(done)
+            train_peak.resume()
             stop_now = stop_latched
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
         if (

@@ -472,3 +472,42 @@ def test_a_failing_peak_probe_reports_unmeasured(monkeypatch):
     monkeypatch.setattr(torch, "xpu", _Broken(0), raising = False)
     dtc.reset_training_peak_memory("xpu")
     assert dtc.training_peak_memory_gb("xpu") == 0.0
+
+
+def test_a_preview_round_never_reads_as_training_peak(monkeypatch):
+    class _Accel(_FakeAccel):
+        def reset_peak_memory_stats(self):
+            self.resets += 1
+            self.peak_bytes = 0
+
+    accel = _Accel(0)
+    monkeypatch.setattr(torch, "xpu", accel, raising = False)
+    peak = dtc.TrainingPeakMemory("xpu")
+    accel.peak_bytes = 5_000_000_000  # training steps
+    peak.pause()
+    accel.peak_bytes = 9_000_000_000  # the preview's VAE decode
+    peak.resume()
+    accel.peak_bytes = 4_000_000_000  # training again
+    assert peak.gb() == 5.0
+    accel.peak_bytes = 6_000_000_000
+    assert peak.gb() == 6.0
+
+
+def test_a_short_resume_keeps_nf4_eager(monkeypatch):
+    from dataclasses import replace
+
+    import core.training.diffusion_checkpoint as ckpt
+
+    monkeypatch.setattr(dit, "_nf4_compile_supported", lambda: True)
+    cfg = replace(_ccfg(), train_steps = 500, resume_from_checkpoint = "/runs/a/checkpoint-450")
+    monkeypatch.setattr(ckpt, "preflight_resume", lambda *a, **k: ("/runs/a/checkpoint-450", 450))
+    left = dtc.resume_steps_left(cfg, identity = None)
+    assert left == 50
+    assert dit._should_compile(cfg, True, "cuda", "nf4", left) is False
+    assert dit._should_compile(cfg, True, "cuda", "nf4") is True  # a fresh 500-step run compiles
+    # An unreadable bundle keeps the target (restore_resume_state reports it).
+    monkeypatch.setattr(
+        ckpt, "preflight_resume", lambda *a, **k: (_ for _ in ()).throw(OSError("gone"))
+    )
+    assert dtc.resume_steps_left(cfg, identity = None) == 500
+    assert dtc.resume_steps_left(replace(cfg, resume_from_checkpoint = None), None) == 500

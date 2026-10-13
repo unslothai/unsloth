@@ -47,8 +47,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
     enable_diffusion_gradient_checkpointing,
-    reset_training_peak_memory,
-    training_peak_memory_gb,
+    TrainingPeakMemory,
     make_lora_optimizer,
     recorded_optimizer_class,
     native_bf16_supported,
@@ -742,7 +741,7 @@ def run_diffusion_lora_training(
                 _sample(resumed)
 
         # Reported peak VRAM = training peak, not the higher load / encode peak.
-        reset_training_peak_memory(device)
+        train_peak = TrainingPeakMemory(device)
         for opt_step in range(resumed, cfg.train_steps):
             if stop_latched:
                 stopped = True
@@ -849,7 +848,7 @@ def run_diffusion_lora_training(
                 t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
-                peak_gb = training_peak_memory_gb(device)
+                peak_gb = train_peak.gb()
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
                 if t_steady is not None and ran_here > 1:
                     samples_per_second = round(
@@ -872,7 +871,9 @@ def run_diffusion_lora_training(
 
             stop_now = _check_stop()
             if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+                train_peak.pause()
                 _sample(done)
+                train_peak.resume()
                 stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
