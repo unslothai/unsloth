@@ -124,10 +124,12 @@ def test_vllm_reads_a_past_thought_from_reasoning():
         {"role": "user", "content": "next"},
     ]
     [body], _ = _send("0.31.0", messages = history, preserve_thinking = True)
+    # 0.17+ reads `reasoning`, 0.12-0.14 `reasoning_content`; both go out.
     assert body["messages"][1] == {
         "role": "assistant",
         "content": "a",
         "reasoning": "prior thought",
+        "reasoning_content": "prior thought",
     }
     [body], _ = _send("0.31.0", provider_type = "llama_cpp", messages = history)
     assert body["messages"][1]["reasoning_content"] == "prior thought"

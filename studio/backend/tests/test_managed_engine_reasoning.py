@@ -100,7 +100,10 @@ def test_preserved_thinking_is_replayed_as_vllm_reads_it():
     assert engine.replay_reasoning(history, True) == history
     engine.reasoning_parser = "qwen3"
     assert engine.replay_reasoning(history, False) == history
-    assert engine.replay_reasoning(history, True)[0]["reasoning"] == "2+2"
+    # Moved, so the context fit does not price the thought twice.
+    assert engine.replay_reasoning(history, True) == [
+        {"role": "assistant", "content": "4", "reasoning": "2+2"}
+    ]
 
 
 @pytest.fixture

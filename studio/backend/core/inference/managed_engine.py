@@ -925,8 +925,10 @@ class ManagedEngine:
         """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
         if not (self.reasoning_parser and preserve_thinking):
             return messages
+        # Moved, not copied: the context fit prices the whole message, so a copy charges the thought twice.
         return [
-            {**message, "reasoning": message["reasoning_content"]}
+            {k: v for k, v in message.items() if k != "reasoning_content"}
+            | {"reasoning": message["reasoning_content"]}
             if isinstance(message, dict)
             and message.get("role") == "assistant"
             and isinstance(message.get("reasoning_content"), str)

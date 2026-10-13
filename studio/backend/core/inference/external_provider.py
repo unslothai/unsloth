@@ -862,13 +862,13 @@ def _vllm_takes_full_effort(version: Any) -> bool:
 
 
 def _vllm_reasoning_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """vLLM 0.17+ hands a past turn's thinking to the template from `reasoning` alone (chat_utils.py)."""
+    """vLLM 0.17+ reads a past turn's thinking from `reasoning` alone, 0.12-0.14 from `reasoning_content`
+    (chat_utils.py), so both go out and either server version keeps it."""
     out = []
     for message in messages:
         thought = message.get("reasoning_content") if isinstance(message, dict) else None
         if message.get("role") == "assistant" and isinstance(thought, str) and thought:
-            message = {k: v for k, v in message.items() if k != "reasoning_content"}
-            message["reasoning"] = thought
+            message = {**message, "reasoning": thought}
         out.append(message)
     return out
 
