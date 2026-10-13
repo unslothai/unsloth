@@ -12,6 +12,13 @@ BROWSER_NETWORK_JS = r"""
         // The wall clock, which the panel shares, captured before a page script can replace it.
         const clock = Date.now.bind(Date);
         const inflight = new Set();
+        // How long the DOM has been still, watched from the document's start: the agent arrives after the
+        // load and would otherwise count every page as just changed.
+        let changedAt = clock();
+        try {
+          new MutationObserver(() => { changedAt = clock(); }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        } catch {}
+        Object.defineProperty(window, Symbol.for("unsloth.browser.quietMs"), { value: () => clock() - changedAt });
         const track = () => { const entry = { at: clock() }; inflight.add(entry); return () => inflight.delete(entry); };
         // Only those started since the agent's action: a long poll the page already had open isn't its.
         Object.defineProperty(window, Symbol.for("unsloth.browser.pending"), {

@@ -122,11 +122,13 @@ export function installPageAgent(): PageAgent {
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
   let lastMutation = performance.now();
+  let mutated = false;
   let scrolls = 0;
   addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
     new MutationObserver(() => {
       lastMutation = performance.now();
+      mutated = true;
     }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   } catch {
     // A page without a document element yet: settling then reads as quiet.
@@ -592,7 +594,7 @@ export function installPageAgent(): PageAgent {
         : {}),
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
-    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info) } : { ok: true, info };
+    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info), doc: refOf(document.documentElement) } : { ok: true, info };
   };
 
   const stillAt = (at: Point, expect: unknown, sig?: unknown): Element => {
@@ -1117,9 +1119,15 @@ export function installPageAgent(): PageAgent {
           // Fetch/XHR the proxied shell counts as open since `since` (routes/browser_network.py).
           const pending = host[Symbol.for("unsloth.browser.pending")];
           const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
+          // The proxied shell has watched the DOM since the document began; this agent only since it
+          // arrived, which right after a load would make every page look busy for the full quiet time.
+          const shell = host[Symbol.for("unsloth.browser.quietMs")];
+          const shellQuiet = typeof shell === "function" ? Number(shell()) : Number.NaN;
+          const ownQuiet = performance.now() - lastMutation;
+          const quiet = !Number.isFinite(shellQuiet) ? ownQuiet : mutated ? Math.min(shellQuiet, ownQuiet) : shellQuiet;
           return {
             ok: true,
-            quietMs: Math.round(performance.now() - lastMutation),
+            quietMs: Math.round(quiet),
             requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
             title: document.title,
             ...view(),
