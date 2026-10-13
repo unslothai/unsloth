@@ -9254,8 +9254,10 @@ def existing_install_current_without_plan(
         )
     except Exception:  # noqa: BLE001
         return False
-    # The one backfill that is not a release change, so it has to be asked separately.
-    if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
+    # The backfills that are not a release change, so they have to be asked separately.
+    if _diffusion_visual_server_missing_for_marker(install_dir, host, marker) or _rpc_server_owed(
+        install_dir, host, marker.get("source"), marker.get("release_tag")
+    ):
         return False
     # "already matches" is what setup.sh and setup.ps1 grep for to report the install up to date.
     log(
@@ -10808,29 +10810,18 @@ def diffusion_visual_server_backfill_needed(
     return True
 
 
-def _release_build_number(tag: str | None) -> int | None:
-    """The upstream build number in a release tag: ``b10798`` and the fork's
-    ``b10798-mix-659e406`` both give 10798; anything else gives None."""
-    match = re.match(r"^b(\d+)(?:$|[-.])", (tag or "").strip())
-    return int(match.group(1)) if match else None
+def _rpc_server_owed(
+    install_dir: Path, host: HostInfo, source_label: "str | None", release_tag: "str | None"
+) -> bool:
+    """True when an install has the libggml-rpc client but not the ggml-rpc-server beside it.
 
-
-def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
-    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen
-    bundle ships: before the executable entered the copy allowlist only its libggml-rpc client
-    library got through via lib*.so*, so the tag-match skip never backfills it.
-
-    Not gated to fork bundles, since upstream ships the server too. The thrash guard is
-    EVIDENCE, not the source label: a bundle built without GGML_RPC ships neither library nor
-    server, and the library is always copied, so no libggml-rpc means nothing is owed. Fork
-    bundles before RPC_SERVER_FIRST_PUBLISHED_BUILD had the library without the server and are
-    excluded by build number. Once a re-extract lands the binary this returns False."""
-    names = rpc_server_names_for_host(host)
-    patterns = runtime_patterns_for_choice(choice)
-    if not any(name in patterns for name in names):
-        return False
-    if choice.source_label == "published":
-        build = _release_build_number(choice.tag)
+    Before the executable entered the copy allowlist only the library got through (lib*.so*),
+    so a tag-match skip never backfills it. The thrash guard is EVIDENCE, not the source label:
+    a bundle built without GGML_RPC ships neither, and fork bundles before
+    RPC_SERVER_FIRST_PUBLISHED_BUILD had the library without the server. Once a re-extract
+    lands the binary this returns False."""
+    if source_label == "published":
+        build = _release_build_number(release_tag)
         if build is None or build < RPC_SERVER_FIRST_PUBLISHED_BUILD:
             return False
     runtime_dir = install_runtime_dir(install_dir, host)
@@ -10839,7 +10830,7 @@ def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetC
     )
     if not any(any(runtime_dir.glob(pattern)) for pattern in rpc_library):
         return False
-    for name in names:
+    for name in rpc_server_names_for_host(host):
         for cand in (
             install_dir / name,
             install_dir / "build" / "bin" / name,
@@ -10848,6 +10839,15 @@ def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetC
             if cand.is_file():
                 return False
     return True
+
+
+def rpc_server_backfill_needed(install_dir: Path, host: HostInfo, choice: AssetChoice) -> bool:
+    """True when an existing install matches the tag but lacks the ggml-rpc-server the chosen
+    bundle ships."""
+    patterns = runtime_patterns_for_choice(choice)
+    if not any(name in patterns for name in rpc_server_names_for_host(host)):
+        return False
+    return _rpc_server_owed(install_dir, host, choice.source_label, choice.tag)
 
 
 def bundle_backfill_reason(install_dir: Path, host: HostInfo, choice: AssetChoice) -> str | None:
