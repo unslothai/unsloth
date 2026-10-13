@@ -674,9 +674,15 @@ _VISIBILITY_MASK_VENDORS: Dict[str, frozenset] = {
 }
 
 
+def _ze_affinity_mask() -> Optional[str]:
+    """ZE_AFFINITY_MASK as Level Zero reads it: None when unset, empty or "default", which isAffinityMaskSet treats alike (every device visible)."""
+    value = os.environ.get("ZE_AFFINITY_MASK")
+    return None if value in (None, "", "default") else value
+
+
 def _mask_is_emptied(var: str) -> bool:
-    """True when ``var`` is set to a value that hides every device it addresses: set-but-empty and "-1". A mask NAMING devices is not this, since that host expects those devices to work."""
-    value = os.environ.get(var)
+    """True when ``var`` is set to a value that hides every device it addresses: set-but-empty and "-1". A mask NAMING devices is not this, since that host expects those devices to work. An empty ZE_AFFINITY_MASK hides nothing."""
+    value = _ze_affinity_mask() if var == "ZE_AFFINITY_MASK" else os.environ.get(var)
     return value is not None and value.strip() in ("", "-1")
 
 
@@ -1463,7 +1469,7 @@ def _detect_hardware_locked() -> DeviceType:
         import torch
 
         # Prefer XPU on UNSLOTH_FORCE_XPU=1, or ZE_AFFINITY_MASK set with CUDA hidden/unavailable. A bare mask is NOT enough (it can leak from unrelated Intel tooling); torch.xpu must report a device.
-        ze_mask = os.environ.get("ZE_AFFINITY_MASK")
+        ze_mask = _ze_affinity_mask()
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         cuda_hidden = cvd is not None and cvd.strip() in ("", "-1")
         force_xpu = os.environ.get("UNSLOTH_FORCE_XPU") == "1"
@@ -2663,20 +2669,47 @@ def _xpu_hierarchy_is_composite() -> bool:
     return hierarchy == "COMPOSITE"
 
 
-def _parse_ze_mask_roots(mask: str) -> list[int]:
-    """Parse ZE_AFFINITY_MASK into ordered root device IDs, one per token, preserving order and duplicates so logical ordinals map 1-to-1 onto physical root IDs ("2.0,0.1,0.2" -> [2, 0, 0]). Only meaningful in COMPOSITE hierarchy, which callers must gate on."""
-    roots: list[int] = []
-    if not mask:
-        return roots
-    for token in mask.split(","):
-        token = token.strip()
-        if not token:
+# The prefix C stoul(entry, nullptr, 0) consumes: sign, then hex, binary (C23 strtoul, which current
+# compute-runtime builds link), octal or decimal ("08" -> 0, "+1abc" -> 1, "0b10" -> 2).
+_ZE_MASK_ROOT_RE = re.compile(
+    r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|0[bB]([01]+)|(0[0-7]*)|([1-9][0-9]*))"
+)
+
+
+def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[int]:
+    """Root device IDs a ZE_AFFINITY_MASK selects, filtered the way Level Zero does: in root order with duplicates collapsed ("2,0,0" -> [0, 2]), entries parsed like stoul base 0 ("0x1", "01" and "+1" -> 1), ids at or past ``root_count`` dropped. Only meaningful in COMPOSITE hierarchy, which callers must gate on."""
+    roots: set = set()
+    # stoul's unsigned long: 32-bit on Windows (LLP64), 64-bit elsewhere.
+    ulong_limit = 2**32 if sys.platform == "win32" else 2**64
+    for token in (mask or "").split(","):
+        # C isspace only: stoul does not skip Unicode whitespace.
+        match = _ZE_MASK_ROOT_RE.match(token.strip(" \t\n\v\f\r").split(".", 1)[0])
+        if not match:
             continue
-        root = token.split(".", 1)[0]
-        # isdecimal(), not isdigit(), which accepts Unicode superscripts that then crash int().
-        if root.isdecimal():
-            roots.append(int(root))
-    return roots
+        sign, hex_digits, binary, octal, decimal = match.groups()
+        digits = hex_digits or binary or octal or decimal
+        # More digits than any unsigned long in any base: stoul throws out_of_range.
+        if len(digits.lstrip("0")) > 64:
+            continue
+        root = int(digits, 16 if hex_digits else 2 if binary else 8 if octal else 10)
+        if root >= ulong_limit:
+            continue
+        # Negation is unsigned: "-1" wraps past every root, "-0" is 0.
+        if sign == "-":
+            root = -root % ulong_limit
+        # No host has 2**16 roots, so a wrapped value is out of range even without a bound.
+        if root < 2**16:
+            roots.add(root)
+    return sorted(root for root in roots if root_count is None or root < root_count)
+
+
+def _intel_root_device_bound() -> Optional[int]:
+    """Upper bound on Level Zero root devices: every Intel card the Linux DRM drivers bound, allowlisted or not. None when unknown; torch.xpu.device_count() cannot stand in, since it is already filtered by the mask."""
+    if not sys.platform.startswith("linux"):
+        return None
+    records = _linux_drm_sysfs_records(distinguish_failure = True)
+    count = sum(1 for record in records or () if record.get("vendor") == "intel")
+    return count or None
 
 
 def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
@@ -4779,7 +4812,7 @@ _visible_gpu_count: Optional[int] = None
 def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # On Intel XPU, visibility is controlled by ZE_AFFINITY_MASK (Level Zero), not CUDA_VISIBLE_DEVICES.
     if get_device() == DeviceType.XPU:
-        xpu_mask_raw = os.environ.get("ZE_AFFINITY_MASK")
+        xpu_mask_raw = _ze_affinity_mask()
         composite = _xpu_hierarchy_is_composite()
 
         if xpu_mask_raw is None:
@@ -4829,10 +4862,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": False,
             }
 
-        # COMPOSITE + pure numeric (subdevice handled above). _parse_ze_mask_roots maps to root GPU IDs, dropping non-decimal tokens so "*"/"GPU-uuid" -> [].
-        roots_with_dupes = _parse_ze_mask_roots(xpu_mask)
-        if not roots_with_dupes:
-            # Unparseable mask ("*", "GPU-uuid"): cannot map to physical root IDs.
+        # COMPOSITE + pure numeric (subdevice handled above). _parse_ze_mask_roots maps to root GPU IDs, dropping non-numeric tokens so "*"/"GPU-uuid" -> [].
+        roots = _parse_ze_mask_roots(xpu_mask, _intel_root_device_bound())
+        if not roots:
+            # Unparseable ("*", "GPU-uuid") or out of range ("5" on 3 roots): no root to map.
             return {
                 "raw": xpu_mask,
                 "numeric_ids": None,
@@ -4841,7 +4874,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
 
         return {
             "raw": xpu_mask,
-            "numeric_ids": roots_with_dupes,
+            "numeric_ids": roots,
             "supports_explicit_gpu_ids": True,
         }
 
@@ -6218,7 +6251,7 @@ def get_physical_gpu_count() -> int:
 def _backend_visible_devices_env() -> Optional[str]:
     """The raw visibility env string that applies to this backend: ZE_AFFINITY_MASK on XPU, and HIP_/ROCR_VISIBLE_DEVICES ahead of CUDA_VISIBLE_DEVICES on ROCm. Mirrors _get_parent_visible_gpu_spec, so backend_cuda_visible_devices reports the value actually narrowing the visible set."""
     if get_device() == DeviceType.XPU:
-        return os.environ.get("ZE_AFFINITY_MASK")
+        return _ze_affinity_mask()
     if IS_ROCM:
         return _get_parent_visible_gpu_spec().get("raw")
     return os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -6689,7 +6722,7 @@ def get_visible_gpu_count() -> int:
 
     # Prefer torch.xpu.device_count() on Intel XPU: the Level Zero runtime interprets ZE_AFFINITY_MASK semantics correctly (subdevice syntax "0.0,0.1" collapses onto one root GPU).
     if get_device() == DeviceType.XPU:
-        xpu_mask_raw = os.environ.get("ZE_AFFINITY_MASK")
+        xpu_mask_raw = _ze_affinity_mask()
         xpu_mask_set = xpu_mask_raw is not None
         xpu_visible = (xpu_mask_raw or "").strip()
         if xpu_mask_set and xpu_visible == "":
@@ -6710,9 +6743,11 @@ def get_visible_gpu_count() -> int:
                     # Documented wildcard: all physical XPUs visible.
                     _visible_gpu_count = get_physical_gpu_count()
                 else:
-                    roots = _parse_ze_mask_roots(xpu_visible)
+                    # FLAT entries are tile handles (one PVC card exposes two), so only COMPOSITE ids are bounded by cards.
+                    bound = _intel_root_device_bound() if _xpu_hierarchy_is_composite() else None
+                    roots = _parse_ze_mask_roots(xpu_visible, bound)
                     # Non-parseable masks (",,,", "GPU-abc") yield an empty roots list, treated as 0 visible devices rather than "all visible": no evidence the whole fleet was intended.
-                    _visible_gpu_count = len(set(roots))
+                    _visible_gpu_count = len(roots)
             else:
                 _visible_gpu_count = get_physical_gpu_count()
         return _visible_gpu_count
