@@ -253,6 +253,45 @@ def test_ltx23_and_other_repos_keep_the_root_default():
     assert _match_variant(None, other, None) == "Q4_K_M"
 
 
+def test_picker_labels_the_root_rows_dev_and_the_subfolder_rows_distilled(tmp_path):
+    """The root of unsloth/LTX-2.5-GGUF is the dev DiT: its rows read "<quant> · dev", never a bare quant that looks
+    like the distilled default ("<quant> · distilled"). Hub listing, cache snapshot and partial-download paths all
+    label through _apply_gguf_display_labels with the repo they list; 2.3 and plain repos keep bare root rows."""
+    from hub.utils.gguf import (
+        GgufVariantInfo,
+        _apply_gguf_display_labels,
+        gguf_variant_key,
+        list_local_gguf_variants,
+    )
+
+    def labels(files, *repo):
+        rows = [GgufVariantInfo(filename = f, quant = gguf_variant_key(f), size_bytes = 1) for f in files]
+        _apply_gguf_display_labels(rows, *repo)
+        return {r.filename: r.display_label for r in rows}
+
+    got = labels(DEV_FILES + DISTILLED_FILES, REPO)
+    for q in QUANTS:
+        assert got[f"ltx-2.5-22b-dev-{q}.gguf"] == f"{q} · dev"
+        # Several rows share the distilled/ scope, so the existing rule adds the file stem to tell them apart.
+        assert got[f"distilled/ltx-2.5-22b-distilled-{q}.gguf"].startswith(f"{q} · distilled")
+    files23 = [f.replace("2.5", "2.3") for f in DEV_FILES + DISTILLED_FILES]
+    got23 = labels(files23, "unsloth/LTX-2.3-GGUF")
+    assert got23["ltx-2.3-22b-dev-UD-Q4_K_XL.gguf"] is None
+    assert got23["distilled/ltx-2.3-22b-distilled-UD-Q4_K_XL.gguf"].startswith("UD-Q4_K_XL · distilled")
+    assert labels(DEV_FILES)["ltx-2.5-22b-dev-Q8_0.gguf"] is None
+
+    # A cached snapshot is listed by directory: the repo is read off the models--org--repo segment.
+    snap = tmp_path / "models--unsloth--LTX-2.5-GGUF" / "snapshots" / "abc"
+    (snap / "distilled").mkdir(parents = True)
+    for name in ("ltx-2.5-22b-dev-UD-Q4_K_XL.gguf", "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"):
+        (snap / name).write_bytes(b"GGUF" + b"\0" * 64)
+    variants, _ = list_local_gguf_variants(str(snap))
+    assert {v.quant: v.display_label for v in variants} == {
+        "UD-Q4_K_XL": "UD-Q4_K_XL · dev",
+        DISTILLED_DEFAULT_KEY: "UD-Q4_K_XL · distilled",
+    }
+
+
 def test_unsupported_message_names_both_25_artifacts():
     from core.inference.video_families import unsupported_ltx_message
     text = unsupported_ltx_message("2.6", "x")

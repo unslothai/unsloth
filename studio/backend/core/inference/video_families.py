@@ -292,6 +292,9 @@ class VideoFamily:
     # Subdirectory of gguf_repo whose files a bare repo id means (picker default, plain load, media index, OpenAI-style
     # id), when the family's defaults are tuned for that checkpoint rather than the root one. None keeps the root rule.
     gguf_default_subdir: Optional[str] = None
+    # What the repo-ROOT files of gguf_repo are, shown beside their quant in the picker ("UD-Q4_K_XL · dev") when the
+    # root holds a different checkpoint than gguf_default_subdir, so a bare quant name never reads as the default one.
+    gguf_root_label: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -606,6 +609,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # The family defaults (8 + 3 two-stage at CFG 1) and ComfyUI's LTX-2.5 templates are the distilled DiT's, so a
         # bare repo id means distilled/; the root dev files stay selectable by their own keys.
         gguf_default_subdir = "distilled",
+        # The root files are the dev DiT (30 steps at CFG 3), labelled so in the picker.
+        gguf_root_label = "dev",
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.
@@ -1013,6 +1018,17 @@ def gguf_default_subdir_for_repo(repo_id: Optional[str]) -> Optional[str]:
     for fam in _FAMILIES:
         if fam.gguf_repo and fam.gguf_default_subdir and fam.gguf_repo.casefold() == needle:
             return fam.gguf_default_subdir
+    return None
+
+
+def gguf_root_label_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_root_label`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_root_label and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_root_label
     return None
 
 
