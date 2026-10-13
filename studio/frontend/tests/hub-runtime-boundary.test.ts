@@ -335,6 +335,13 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
     chatPage,
     /open=\{active && modelConfigRequest === null && settingsOpen\}/,
   );
+  // On a first Chat mount the new composer's autofocus would dismiss the handed-off settings.
+  const thread = readFileSync(
+    path.join(FRONTEND_ROOT, "src/components/assistant-ui/thread.tsx"),
+    "utf8",
+  );
+  assert.match(chatPage, /<ChatComposerAutoFocusContext\.Provider/);
+  assert.match(thread, /autoFocus=\{!disabled && composerAutoFocus\}/);
 });
 
 test("the shared model row menu no longer offers Hub model settings", () => {
