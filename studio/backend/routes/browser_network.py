@@ -39,10 +39,13 @@ BROWSER_NETWORK_JS = r"""
             super.open(...args);
           }
           send(body) {
-            this._done?.();
-            const done = this._done = track();
+            const done = track();
+            // Listening first: a synchronous request fires loadend inside send().
             this.addEventListener("loadend", done, { once: true });
-            try { super.send(body); } catch (error) { done(); throw error; }
+            // A send the browser refuses (one already in flight) leaves that one counted.
+            try { super.send(body); } catch (error) { this.removeEventListener("loadend", done); done(); throw error; }
+            if (this._done !== done) this._done?.();
+            this._done = done;
           }
         };
 """

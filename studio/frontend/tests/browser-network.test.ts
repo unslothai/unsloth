@@ -17,14 +17,30 @@ class NativeXHR extends EventTarget {
   send() {}
 }
 
-function setup() {
+/** As a browser's: send() on a request already in flight throws InvalidStateError. */
+class StrictXHR extends NativeXHR {
+  inFlight = false;
+  constructor() {
+    super();
+    this.addEventListener("loadend", () => (this.inFlight = false));
+  }
+  open() {
+    this.inFlight = false;
+  }
+  send() {
+    if (this.inFlight) throw new Error("InvalidStateError");
+    this.inFlight = true;
+  }
+}
+
+function setup(XHR: typeof NativeXHR = NativeXHR) {
   let now = 0;
   // The script patches its Response's body readers: a class of its own keeps that out of other tests.
   class PageResponse extends Response {}
   const answers: Array<(response: Response) => void> = [];
   const window = Object.assign(new EventTarget(), {
     fetch: () => new Promise<Response>((resolve) => answers.push(resolve)),
-    XMLHttpRequest: NativeXHR,
+    XMLHttpRequest: XHR,
   });
   runInNewContext(source, { window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set });
   const pending = (since: number) => (window as unknown as Record<symbol, (since: number) => number>)[Symbol.for("unsloth.browser.pending")](since);
@@ -92,5 +108,16 @@ test("a body read that fails leaves no count behind", async () => {
   const t = setup();
   const text = t.Response.prototype.text;
   await assert.rejects(text.call({}));
+  assert.equal(t.pending(0), 0);
+});
+
+test("a second send the browser refuses keeps counting the request in flight", () => {
+  const t = setup(StrictXHR);
+  const xhr = new t.window.XMLHttpRequest();
+  xhr.open();
+  xhr.send();
+  assert.throws(() => xhr.send());
+  assert.equal(t.pending(0), 1);
+  xhr.dispatchEvent(new Event("loadend"));
   assert.equal(t.pending(0), 0);
 });
