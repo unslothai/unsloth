@@ -27,7 +27,10 @@ export type FrameMessage =
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent }
   /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */
-  | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null };
+  | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null }
+  /** A GET of the page's own site, which CORS refuses the sandbox (routes/browser_network.py). */
+  | { type: "resource"; id: string; url: string; accept: string }
+  | { type: "resourceCancel"; id: string };
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -122,6 +125,16 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
   const message = data as Record<string, unknown>;
   if (message.source !== "unsloth-browser") return null;
   switch (message.type) {
+    case "resource": {
+      const id = text(message.id, 64);
+      const url = text(message.url, MAX_URL_CHARS);
+      const accept = text(message.accept, 1024);
+      return id && url && accept !== null ? { type: "resource", id, url, accept } : null;
+    }
+    case "resourceCancel": {
+      const id = text(message.id, 64);
+      return id ? { type: "resourceCancel", id } : null;
+    }
     case "navigate": {
       const url = text(message.url, MAX_URL_CHARS);
       if (!url) return null;

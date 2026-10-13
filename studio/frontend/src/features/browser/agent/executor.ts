@@ -44,6 +44,7 @@ type Result = { ok: boolean; error?: string; url?: string; title?: string; text?
 const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
 const SETTLE_MAX_MS = 3_000;
+const FILL_QUIET_MAX_MS = 1_000;
 const PAGE_READY_MS = 4_000;
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
@@ -256,6 +257,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     note: str(raw.note, 1000),
     navigate: str(raw.navigate, 8192),
     quietMs: typeof raw.quietMs === "number" ? raw.quietMs : undefined,
+    pending: typeof raw.pending === "number" ? raw.pending : undefined,
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {
@@ -268,6 +270,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
           formMethod: String(info.formMethod ?? "").slice(0, 10),
           formAction: String(info.formAction ?? "").slice(0, 8192),
           formHasPassword: info.formHasPassword === true,
+          formPasswordFilled: info.formPasswordFilled === true,
           submits: info.submits === true,
           ...(typeof info.option === "string" ? { option: info.option.slice(0, 200) } : {}),
           ...(typeof info.submitter === "string" ? { submitter: info.submitter.slice(0, 200) } : {}),
@@ -317,19 +320,49 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
   }
 }
 
+/** What the page is doing: "loading" while a request it made in the last `recentMs` is open (a list it
+ *  fetches and then draws), "changing" while its DOM moved in the last SETTLE_QUIET_MS. Only recent
+ *  requests count: a long poll or an analytics beacon is not content the action is waiting on. */
+async function activity(tab: BrowserTab, recentMs: number): Promise<"idle" | "changing" | "loading"> {
+  const status = await pageCall(tab, { op: "status", recentMs }).catch(() => null);
+  if (!status) return "idle";
+  if ((status.pending ?? 0) > 0) return "loading";
+  return (status.quietMs ?? 0) < SETTLE_QUIET_MS ? "changing" : "idle";
+}
+
 /** Until the page stops changing after an action, following any navigation it started. */
 async function settle(tabId: string, urlBefore: string, signal?: AbortSignal): Promise<BrowserTab | null> {
+  const acted = Date.now();
   await sleep(120);
   const started = Date.now();
   while (Date.now() - started < SETTLE_MAX_MS) {
     const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
     if (!tab) return null;
     if (tab.loading || tabUrl(tab) !== urlBefore) return waitForLoad(tabId, signal);
-    const status = await pageCall(tab, { op: "status" }).catch(() => null);
-    if (!status || (status.quietMs ?? 0) >= SETTLE_QUIET_MS) return tab;
+    // Requests the action set off, not the ones the page already had open.
+    if ((await activity(tab, Date.now() - acted)) === "idle") return tab;
     await sleep(120);
   }
   return useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId) ?? null;
+}
+
+/** After a load, until the page has filled itself in (a list a script fetches after load reads as
+ *  empty until then): up to SETTLE_MAX_MS for its requests, but only FILL_QUIET_MAX_MS for a DOM that
+ *  never rests (an animation), which a read handles fine. True when it was still loading at the end. */
+async function untilFilled(tab: BrowserTab, signal?: AbortSignal): Promise<boolean> {
+  const started = Date.now();
+  while (!signal?.aborted) {
+    const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+    // Moved on: observe() reports that, and the next action checks where it went.
+    if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) return false;
+    // The page is new, so its open requests are its own loading.
+    const state = await activity(now, SETTLE_MAX_MS);
+    const waited = Date.now() - started;
+    if (state === "idle" || (state === "changing" && waited >= FILL_QUIET_MAX_MS)) return false;
+    if (waited >= SETTLE_MAX_MS) return true;
+    await sleep(120);
+  }
+  return false;
 }
 
 async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
@@ -627,7 +660,7 @@ async function arrive(
     if (host) reachedHosts.add(host);
     record(action.op, url);
   }
-  return observeLoaded(tab, note);
+  return observeLoaded(tab, note, context.signal);
 }
 
 /** The page the tab shows now, before the model reads or acts on it: the page may have moved on
@@ -646,7 +679,7 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   return null;
 }
 
-async function observeLoaded(tab: BrowserTab, note?: string): Promise<Result> {
+async function observeLoaded(tab: BrowserTab, note?: string, signal?: AbortSignal): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
     return {
@@ -655,6 +688,9 @@ async function observeLoaded(tab: BrowserTab, note?: string): Promise<Result> {
       title: tab.title,
       note: `${note ? `${note} ` : ""}This address is a file (${tab.documentType}), shown to the user; the browser tools can't read it. web_search with this url can.`,
     };
+  }
+  if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, signal))) {
+    note = [note, "The page was still loading when read; snapshot again if something is missing."].filter(Boolean).join(" ");
   }
   return observe(tab, note);
 }

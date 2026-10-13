@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
+import { isWebUrl } from "./address";
 import { browserFrameUrl } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 
@@ -21,7 +23,8 @@ export type FrameCommand =
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
   | { command: "annotateNumbers"; numbers: Array<[number, number]> }
-  | { command: "agent"; id: string; op: Record<string, unknown>; code?: string };
+  | { command: "agent"; id: string; op: Record<string, unknown>; code?: string }
+  | { command: "resourceResult"; id: string; result: unknown };
 
 type AgentReply = { installed: boolean; result: Record<string, unknown> | null };
 const agentRequests = new Map<string, (reply: AgentReply | null) => void>();
@@ -85,6 +88,85 @@ export function sendFrameCommand(tabId: string, command: FrameCommand): boolean 
   return true;
 }
 
+// A page's own API reads at once: more wait their turn rather than fail.
+const RESOURCE_SLOTS = 4;
+const RESOURCE_QUEUE = 64;
+const RESOURCE_TIMEOUT_MS = 45_000;
+
+function sameWebOrigin(url: string, pageUrl: string): boolean {
+  try {
+    return isWebUrl(url) && new URL(url).origin === new URL(pageUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+/** The page's same-origin GETs (routes/browser_network.py), read by the backend with Studio's auth, which
+ *  never enters the sandbox. `pageUrl` is the panel's address for the page, not one the page claims. */
+function resourceRelay(reply: (id: string, result: unknown) => void) {
+  const active = new Map<string, AbortController>();
+  const waiting: Array<{ id: string; run: () => void }> = [];
+  let closed = false;
+  const next = () => {
+    while (!closed && active.size < RESOURCE_SLOTS && waiting.length) waiting.shift()?.run();
+  };
+  return {
+    read(message: { id: string; url: string; accept: string }, pageUrl: string | null) {
+      const { id, url, accept } = message;
+      if (!pageUrl || !sameWebOrigin(url, pageUrl)) {
+        reply(id, { error: "not this page's site" });
+        return;
+      }
+      if (active.has(id) || waiting.some((item) => item.id === id)) return;
+      if (waiting.length >= RESOURCE_QUEUE) {
+        reply(id, { error: "too many requests" });
+        return;
+      }
+      waiting.push({
+        id,
+        run: () => {
+          const controller = new AbortController();
+          let timedOut = false;
+          // Its own timer, since a timeout still answers the page while the page's own cancel doesn't.
+          const timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, RESOURCE_TIMEOUT_MS);
+          active.set(id, controller);
+          authFetch("/api/browser/resource", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ page_url: pageUrl, url, accept }),
+            signal: controller.signal,
+          })
+            .then(async (response) => (response.ok ? response.json() : { error: `HTTP ${response.status}` }))
+            .catch(() => ({ error: "failed" }))
+            .then((result) => {
+              // Cancelled by the page: it no longer waits. Timed out: it still does.
+              if (!closed && (timedOut || !controller.signal.aborted)) reply(id, result);
+            })
+            .finally(() => {
+              clearTimeout(timer);
+              active.delete(id);
+              next();
+            });
+        },
+      });
+      next();
+    },
+    cancel(id: string) {
+      const queued = waiting.findIndex((item) => item.id === id);
+      if (queued >= 0) waiting.splice(queued, 1);
+      active.get(id)?.abort();
+    },
+    close() {
+      closed = true;
+      waiting.length = 0;
+      for (const controller of active.values()) controller.abort();
+    },
+  };
+}
+
 // Messages that open tabs or apps, or run shortcuts. Pages can post anything, so check them here.
 const isUserAction = (message: FrameMessage) =>
   (message.type === "navigate" && message.newTab === true) ||
@@ -126,9 +208,11 @@ export function PageFrame({
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const onMessageRef = useRef(onMessage);
   const tabIdRef = useRef(tabId);
+  const urlRef = useRef(url);
   useEffect(() => {
     onMessageRef.current = onMessage;
     tabIdRef.current = tabId;
+    urlRef.current = url;
   });
   const [loadId] = useState(() => String(++loadCounter));
   const postedRef = useRef(false);
@@ -138,11 +222,20 @@ export function PageFrame({
     let loaded = false;
     let left = false;
     let lastUserAction = Number.NEGATIVE_INFINITY;
+    const relay = resourceRelay((id, result) => sendFrameCommand(tabIdRef.current, { command: "resourceResult", id, result }));
     const listener = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
       let message = parseFrameMessage(event.data);
       if (!message) return;
+      if (message.type === "resource") {
+        relay.read(message, urlRef.current);
+        return;
+      }
+      if (message.type === "resourceCancel") {
+        relay.cancel(message.id);
+        return;
+      }
       if (message.type === "annotate") {
         annotateListeners.get(tabIdRef.current)?.(message.event);
         return;
@@ -174,7 +267,10 @@ export function PageFrame({
       onMessageRef.current(message);
     };
     window.addEventListener("message", listener);
-    return () => window.removeEventListener("message", listener);
+    return () => {
+      window.removeEventListener("message", listener);
+      relay.close();
+    };
   }, []);
 
   useEffect(() => {

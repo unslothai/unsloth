@@ -5,6 +5,7 @@
 isolated, opaque-origin shell that a page cannot navigate out from under the proxy."""
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -85,6 +86,79 @@ def test_the_shell_guards():
     # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
+
+
+def test_the_shell_relays_the_pages_own_reads_and_maps_srcdoc_paths():
+    shell = browser_mod._FRAME_HTML
+    # Inside boot, where cfg and post exist, before any page script can capture fetch.
+    assert "/* BROWSER_NETWORK_JS */" not in shell
+    assert shell.index("const nativeFetch = window.fetch.bind(window);") < shell.index(
+        "const shellPathname"
+    )
+    for guard in (
+        'method === "GET" && /^https?:$/.test(target.protocol) && target.origin === new URL(cfg.url).origin',
+        'request.headers.has("authorization") || request.credentials === "include"',
+        'if (data?.type === "unsloth:browser-command" && data.command === "resourceResult")',
+        "const type = this._relay ? this._type : super.responseType;",
+        "/^(?:about:)?srcdoc(?=[?#]|$)/",
+    ):
+        assert guard in shell, guard
+
+
+def _resource(page_url, url):
+    return browser_mod.BrowserResourceRequest(page_url = page_url, url = url)
+
+
+@pytest.mark.parametrize(
+    "page_url, url",
+    [
+        ("https://huggingface.co/models", "https://cdn-lfs.huggingface.co/x"),
+        ("https://huggingface.co/models", "http://huggingface.co/models-json"),
+        ("https://huggingface.co/models", "https://huggingface.co:8443/models-json"),
+        ("https://huggingface.co/models", "https://user:pw@huggingface.co/models-json"),
+        ("https://huggingface.co/models", "file:///etc/passwd"),
+    ],
+)
+def test_a_page_reads_only_its_own_site(monkeypatch, page_url, url):
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", lambda *a, **k: pytest.fail("fetched"))
+    with pytest.raises(HTTPException) as caught:
+        browser_mod._fetch_resource(_resource(page_url, url), threading.Event())
+    assert caught.value.status_code == 400
+
+
+def test_a_page_read_has_no_credentials_and_keeps_http_errors(monkeypatch):
+    seen = {}
+
+    def fake_fetch(url, **kwargs):
+        seen.update(kwargs, url = url)
+        kwargs["meta_out"].update(status = 404, content_type = "application/json", url = url)
+        return "Failed to fetch URL: HTTP 404", b'{"error":"missing"}', "application/json"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    result = browser_mod._fetch_resource(
+        _resource(
+            "https://huggingface.co/models", "https://huggingface.co/models-json?search=qwen"
+        ),
+        threading.Event(),
+    )
+    assert result["status"] == 404
+    assert result["headers"] == {"content-type": "application/json"}
+    assert base64.b64decode(result["body"]) == b'{"error":"missing"}'
+    assert seen["same_origin_only"] and seen["raw_http_errors"]
+    assert seen["raw_bytes_max"] == browser_mod._MAX_RESOURCE_BYTES
+    assert "host_headers" not in seen
+    assert set(seen["extra_headers"]) == {"User-Agent", "Accept"}
+
+
+def test_a_failed_page_read_is_a_network_error(monkeypatch):
+    monkeypatch.setattr(
+        browser_mod, "_fetch_url_raw", lambda url, **kwargs: ("Blocked: private address", "", "")
+    )
+    with pytest.raises(HTTPException) as caught:
+        browser_mod._fetch_resource(
+            _resource("https://example.com/", "https://example.com/api"), threading.Event()
+        )
+    assert caught.value.status_code == 502
 
 
 def test_annotate_code_is_sent_only_when_annotating():
