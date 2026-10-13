@@ -241,7 +241,14 @@ class _FakeWanPipe:
         self.text_encoder = None
         self.calls = []
 
-    def encode_prompt(self, prompt, do_classifier_free_guidance, num_videos_per_prompt, max_sequence_length, device):
+    def encode_prompt(
+        self,
+        prompt,
+        do_classifier_free_guidance,
+        num_videos_per_prompt,
+        max_sequence_length,
+        device,
+    ):
         self.calls.append((prompt, max_sequence_length, do_classifier_free_guidance))
         n = len(prompt.split()) + 1
         g = torch.Generator().manual_seed(n)
@@ -261,7 +268,9 @@ def test_encode_prompts_caches_trimmed_embeds_and_collate_restores_the_pipeline_
     assert batch.shape == (2, _WAN_MAX_SEQUENCE_LENGTH, 8)
     for i, cap in enumerate(caps):
         full, _ = _FakeWanPipe().encode_prompt(cap, False, 1, _WAN_MAX_SEQUENCE_LENGTH, "cpu")
-        assert torch.equal(batch[i : i + 1], full), "collate must rebuild the exact zero-padded tensor"
+        assert torch.equal(
+            batch[i : i + 1], full
+        ), "collate must rebuild the exact zero-padded tensor"
 
 
 def test_trim_keeps_one_row_for_an_all_zero_embed():
@@ -278,7 +287,6 @@ class _FakeDist:
 
 
 class _FakeWanVae(torch.nn.Module):
-
     def __init__(self):
         super().__init__()
         self.w = torch.nn.Parameter(torch.zeros(1))
@@ -345,7 +353,9 @@ def _adapted_tiny():
 
     transformer = _tiny_transformer()
     transformer.add_adapter(
-        LoraConfig(r = 4, lora_alpha = 4, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS))
+        LoraConfig(
+            r = 4, lora_alpha = 4, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS)
+        )
     )
     return transformer
 
@@ -370,7 +380,9 @@ def test_targets_adapt_every_block_linear_and_nothing_else():
         )
     }
     assert adapted == block_linears
-    assert not any(n.startswith(("condition_embedder", "proj_out", "patch_embedding")) for n in adapted)
+    assert not any(
+        n.startswith(("condition_embedder", "proj_out", "patch_embedding")) for n in adapted
+    )
 
 
 def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
@@ -392,22 +404,33 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
 
     fresh = _tiny_transformer()
     pipe = WanPipeline(
-        tokenizer = None, text_encoder = None, vae = None, scheduler = None, transformer = fresh, expand_timesteps = True
+        tokenizer = None,
+        text_encoder = None,
+        vae = None,
+        scheduler = None,
+        transformer = fresh,
+        expand_timesteps = True,
     )
     noisy = torch.randn(1, Z_DIM, 1, 8, 8)
     emb = torch.randn(1, 16, 32)
     t = torch.tensor([500.0])
     with torch.no_grad():
         base = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
-        pipe.load_lora_weights(str(tmp_path), weight_name = DEFAULT_LORA_FILENAME, adapter_name = "style")
-        loaded = {n for n, m in fresh.named_modules() if hasattr(m, "lora_A") and "style" in m.lora_A}
+        pipe.load_lora_weights(
+            str(tmp_path), weight_name = DEFAULT_LORA_FILENAME, adapter_name = "style"
+        )
+        loaded = {
+            n for n, m in fresh.named_modules() if hasattr(m, "lora_A") and "style" in m.lora_A
+        }
         assert len(loaded) == 20
         with_lora = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
         trained_out = dit._wan_forward(trained, noisy, t, None, (emb,), None, "cpu", torch.float32)
         pipe.disable_lora()
         off = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
     assert not torch.allclose(with_lora, base)
-    assert torch.allclose(with_lora, trained_out, atol = 1e-5), "the loaded adapter must reproduce the trained one"
+    assert torch.allclose(
+        with_lora, trained_out, atol = 1e-5
+    ), "the loaded adapter must reproduce the trained one"
     assert torch.equal(off, base)
     assert math.isfinite(float(with_lora.abs().max()))
 
@@ -452,7 +475,9 @@ def test_a_non_default_alpha_reloads_at_the_trained_strength(tmp_path):
     WanPipeline, _ = _wan_classes()
     trained = _tiny_transformer()
     trained.add_adapter(
-        LoraConfig(r = 4, lora_alpha = 16, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS))
+        LoraConfig(
+            r = 4, lora_alpha = 16, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS)
+        )
     )
     with torch.no_grad():
         for n, p in trained.named_parameters():
@@ -467,7 +492,12 @@ def test_a_non_default_alpha_reloads_at_the_trained_strength(tmp_path):
 
     fresh = _tiny_transformer()
     pipe = WanPipeline(
-        tokenizer = None, text_encoder = None, vae = None, scheduler = None, transformer = fresh, expand_timesteps = True
+        tokenizer = None,
+        text_encoder = None,
+        vae = None,
+        scheduler = None,
+        transformer = fresh,
+        expand_timesteps = True,
     )
     pipe.load_lora_weights(str(tmp_path), weight_name = DEFAULT_LORA_FILENAME)
     noisy, emb, t = torch.randn(1, Z_DIM, 1, 8, 8), torch.randn(1, 16, 32), torch.tensor([400.0])
@@ -498,9 +528,15 @@ def test_load_conditioners_leaves_the_vae_on_the_host(monkeypatch):
     _wan_classes()  # skip where this diffusers cannot import the Wan stack
     import diffusers
 
-    monkeypatch.setattr(diffusers.AutoencoderKLWan, "from_pretrained", classmethod(lambda cls, *a, **k: _Vae()))
-    monkeypatch.setattr(dit, "_wan_pipeline_cls", lambda: types.SimpleNamespace(
-        from_pretrained = lambda *a, **k: _Pipe(k["vae"])
-    ))
-    pipe, vae = dit._wan_load_conditioners(types.SimpleNamespace(base_model = BASE, hf_token = None), "cuda", None)
+    monkeypatch.setattr(
+        diffusers.AutoencoderKLWan, "from_pretrained", classmethod(lambda cls, *a, **k: _Vae())
+    )
+    monkeypatch.setattr(
+        dit,
+        "_wan_pipeline_cls",
+        lambda: types.SimpleNamespace(from_pretrained = lambda *a, **k: _Pipe(k["vae"])),
+    )
+    pipe, vae = dit._wan_load_conditioners(
+        types.SimpleNamespace(base_model = BASE, hf_token = None), "cuda", None
+    )
     assert vae is pipe.vae and moved == [], "the VAE must wait for the encoders to be freed"

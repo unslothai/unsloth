@@ -1663,7 +1663,6 @@ _WAN_MAX_SEQUENCE_LENGTH = 512
 
 def _wan_pipeline_cls():
     from diffusers import WanPipeline
-
     return WanPipeline
 
 
@@ -1785,13 +1784,21 @@ def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devic
     )[0]
 
 
-def _wan_save(pipe_cls, out_dir, transformer_lora_layers, adapter_metadata = None):
+def _wan_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     # Older diffusers savers lack the metadata argument; they still get the weights.
     import inspect
 
     save = _wan_pipeline_cls().save_lora_weights
     kwargs = {}
-    if adapter_metadata and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters:
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
         kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
     save(
         save_directory = out_dir,
@@ -1812,7 +1819,6 @@ def _adapter_saver(spec, transformer):
     if not spec.save_takes_metadata:
         return spec.save
     import functools
-
     return functools.partial(spec.save, adapter_metadata = _lora_adapter_metadata(transformer))
 
 
