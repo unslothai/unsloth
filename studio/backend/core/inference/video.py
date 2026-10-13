@@ -1078,6 +1078,13 @@ def _i2v_state_call_kwargs(fam: VideoFamily, state: Any) -> dict[str, Any]:
     )
 
 
+def _bg_i2v_render(first_pil: Any, i2v_active: bool) -> bool:
+    """An image-conditioned render for the background compile, however the family conditions (a swapped i2v pipeline,
+    or a pipeline its own render derives): its denoiser inputs (per-token timesteps) are never a text-to-video sample,
+    so it neither seeds the compile nor counts as an eager text render."""
+    return bool(i2v_active) or first_pil is not None
+
+
 def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
     if not i2v:
         bg.note_eager_generation()
@@ -9945,6 +9952,9 @@ class VideoBackend:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
                 if fam.modular_workflow:
                     kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                if bg_eager and not i2v_active and _bg_i2v_render(first_pil, i2v_active):
+                    # Same as the i2v swap above, for a family that conditions without one (its own render).
+                    i2v_swap.enter_context(bg_compile.no_record())
                 # Auto-blocks distinguish omitted conditioning from empty conditioning.
                 # LTX-2.5 conditions through its own render (LTX2ConditionPipeline), not an image kwarg.
                 if first_pil is not None and fam.name != "ltx-2.5":
@@ -9986,6 +9996,10 @@ class VideoBackend:
                             upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None),
                             on_step = kwargs.get("callback_on_step_end"),
                             cancel = cancel,
+                            # Stage 1 denoises at half size: the live preview unpacks its tokens with that grid.
+                            on_stage = lambda w, h: (
+                                previewer.set_render_size(h, w) if previewer is not None else None
+                            ),
                         )
 
                 started = time.monotonic()
@@ -10286,7 +10300,7 @@ class VideoBackend:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                 if bg_eager:
-                    _settle_bg_compile(bg, i2v = i2v_active)
+                    _settle_bg_compile(bg, i2v = _bg_i2v_render(first_pil, i2v_active))
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
