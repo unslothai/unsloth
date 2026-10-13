@@ -352,7 +352,6 @@ def _coordinate(arguments: dict, key: str) -> Optional[float]:
         return None
     try:
         value = float(raw)
-    # A JSON integer hundreds of digits long overflows a float.
     except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{key} must be a number of pixels.")
     if not (0 <= value <= _MAX_POINT):
