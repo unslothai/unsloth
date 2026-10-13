@@ -4588,6 +4588,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         if getattr(trainer, "_audio_type", None) == "bicodec":
             _fetch_spark_tts_repo(trainer, event_queue, model_name)
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+                return
 
         _send_status(event_queue, "Loading and formatting dataset...")
         dataset, eval_dataset = _load_training_dataset()
