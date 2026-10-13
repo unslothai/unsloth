@@ -95,22 +95,38 @@ def _launch_rank() -> Optional[int]:
     return rank if is_launch and (_size or 0) > 1 else None
 
 
-def _torchelastic_store():
-    # torchrun's agent store spans every node of one launch and nothing outside it.
-    if os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True":
+_RUN_DIR_STORE = None
+
+
+def _torch_launch_store(rank: int):
+    # torchrun's agent hosts a store at MASTER_ADDR:MASTER_PORT; a plain env:// launch has rank 0 host it, and
+    # multi_tenant lets init_process_group reuse this same server instead of failing to bind the port.
+    global _RUN_DIR_STORE
+    if (
+        "RANK" not in os.environ
+        or "MASTER_ADDR" not in os.environ
+        or "MASTER_PORT" not in os.environ
+    ):
         return None
     try:
         from datetime import timedelta
 
         from torch.distributed import TCPStore
-        return TCPStore(
+
+        host = rank == 0 and os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True"
+        store = TCPStore(
             os.environ["MASTER_ADDR"],
             int(os.environ["MASTER_PORT"]),
-            is_master = False,
+            is_master = host,
             timeout = timedelta(minutes = 30),
+            multi_tenant = True,
         )
     except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
         return None
+    if host:
+        # Hold the server until init_process_group takes it over; the other ranks read from it.
+        _RUN_DIR_STORE = store
+    return store
 
 
 def _launcher_start_time() -> int:
@@ -145,10 +161,9 @@ def _default_output_dir(model_name: str) -> str:
     if rank is None:
         return _reserve_run_dir(name)
     # Ranks of one launch must agree on the folder: rank 0 reserves it and hands it to the rest.
-    store = _torchelastic_store()
+    store = _torch_launch_store(rank)
     if store is None:
-        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one; every torch DDP rank
-        # writes checkpoints, so they all take the launcher's start time instead.
+        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one alone.
         if rank == 0 and "RANK" not in os.environ:
             return _reserve_run_dir(name)
         return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))

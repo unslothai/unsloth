@@ -135,7 +135,7 @@ def test_torchrun_ranks_take_rank_zeros_reserved_folder(tmp_path, monkeypatch):
     clock = iter([1000, 1048])
     monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: next(clock)))
     store = _AgentStore()
-    monkeypatch.setattr(train_module, "_torchelastic_store", lambda: store)
+    monkeypatch.setattr(train_module, "_torch_launch_store", lambda rank: store)
     trainer = _SavingTrainer()
 
     for rank in ("0", "1"):
@@ -186,7 +186,7 @@ def test_torch_ranks_without_a_store_share_the_launcher_folder(tmp_path, monkeyp
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setenv("WORLD_SIZE", "2")
-    monkeypatch.delenv("TORCHELASTIC_USE_AGENT_STORE", raising = False)
+    monkeypatch.delenv("MASTER_ADDR", raising = False)
     # Each rank finishes its model load at a different second; the launcher started once.
     clock = iter([1000, 1048])
     monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: next(clock)))
@@ -200,3 +200,37 @@ def test_torch_ranks_without_a_store_share_the_launcher_folder(tmp_path, monkeyp
     first, second = trainer.output_dirs
     assert first == second
     assert first.name.endswith("_900")
+
+
+def test_env_launch_ranks_share_rank_zeros_folder_and_port(tmp_path, monkeypatch):
+    import socket
+
+    import torch.distributed as dist
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
+    monkeypatch.setenv("MASTER_PORT", str(port))
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.delenv("TORCHELASTIC_USE_AGENT_STORE", raising = False)
+    clock = iter([1000, 1048])
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: next(clock)))
+    trainer = _SavingTrainer()
+
+    for rank in ("0", "1"):
+        monkeypatch.setenv("RANK", rank)
+        assert _train(monkeypatch, trainer).exit_code == 0
+
+    first, second = trainer.output_dirs
+    assert first == second
+    assert first.name.endswith("_1000")
+    # init_process_group's env:// store must still bind rank 0's port next to the one above.
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    dist.init_process_group("gloo", rank = 0, world_size = 1)
+    try:
+        assert dist.get_world_size() == 1
+    finally:
+        dist.destroy_process_group()
