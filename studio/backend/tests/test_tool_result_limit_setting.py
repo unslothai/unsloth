@@ -263,3 +263,11 @@ def test_an_api_model_mcp_result_honours_only_a_lowered_setting(saved, cut):
     else:
         assert f"truncated to {cut} chars for the model; 23098 chars total" in out
     assert tools._fit_result_to_room(FILE_50K, "edit_file") == FILE_50K
+
+
+def test_an_api_model_mcp_result_honours_a_lowered_environment_cap(monkeypatch):
+    monkeypatch.setenv(limit.MAX_CHARS_ENV, "4000")
+    monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 4000)
+    tools._REQUEST_CONTEXT_TOKENS.set(0)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    assert "truncated to 4000 chars for the model; 23098 chars total" in out

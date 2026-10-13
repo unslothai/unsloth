@@ -21319,7 +21319,8 @@ def _fit_result_to_room(text, name = None):
         return text
     if _request_result_room() is None:
         # A lowered setting still holds an MCP result here, as it does Python and Terminal on API models.
-        lowered = _tool_result_max_chars() < _MAX_OUTPUT_CHARS
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
         if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
             return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
