@@ -914,10 +914,12 @@ class _FakeClient:
         texts,
         max_len,
         cancel = None,
+        copy = True,
     ):
         import torch
 
         self.calls.append((list(texts), max_len))
+        self.copies = getattr(self, "copies", []) + [copy]
         n = len(texts)
         embeds = torch.arange(n, dtype = torch.float32).view(n, 1, 1).expand(n, max_len, 6).clone()
         return embeds, torch.ones(n, max_len, dtype = torch.long)
@@ -939,6 +941,8 @@ def test_remote_encode_prompt_keeps_diffusers_semantics():
         max_sequence_length = 4,
     )
     assert client.calls == [(["a fox"], 4)]
+    # The stage calls read the client's cached tensors without a host clone; every op makes a new tensor.
+    assert client.copies == [False]
     assert pe.shape == (2, 4, 6) and pe.dtype == torch.bfloat16 and pm.shape == (2, 4)
     assert ne is None and nm is None
     client.calls.clear()
@@ -983,6 +987,11 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
     a = client.encode(["p"], 2)
     b = client.encode(["p"], 2)
     assert client._seq == 1 and torch.equal(a[0], b[0])
+    # A read-only hit hands back the cached tensors (pinned under CUDA); the default still returns private copies.
+    shared = client.encode(["p"], 2, copy = False)
+    assert shared is client._cache[-1][1] and client.encode(["p"], 2, copy = False)[0] is shared[0]
+    assert a[0] is not shared[0] and b[0] is not shared[0]
+    assert shared[0].is_pinned() == torch.cuda.is_available()
     client._proc = SimpleNamespace(is_alive = lambda: False, exitcode = -9)
     client._cmd.put = lambda msg: None
     monkeypatch.setattr(client, "start", lambda: None)
@@ -1217,6 +1226,26 @@ def test_two_stage_t2v_follows_the_reference_recipe():
     assert s1["conditions"] is None and s1["keep"] is None
     assert seen == list(range(11))
     assert v25.stage_steps(8, dev = False) == (8, 3)
+
+
+def test_each_stage_names_its_size_before_it_runs(monkeypatch):
+    # Live previews unpack the packed latents with the stage size: half for stage 1, full for stage 2.
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    stages = []
+    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler(), on_stage = lambda w, h: stages.append((w, h)))
+    assert stages == [(640, 352), (1280, 704)]
+    # dev: one full-size stage
+    stages.clear()
+    v25.render(pipe, dict(_kwargs(), num_inference_steps = 30), dev = True, on_stage = lambda w, h: stages.append((w, h)))
+    assert stages == [(1280, 704)]
+
+    # a failing hint never fails the render
+    def _boom(w, h):
+        raise RuntimeError("preview")
+
+    pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
+    out = v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler(), on_stage = _boom)
+    assert out.frames == ["final"] and len(pipe.calls) == 2
 
 
 def test_two_stage_i2v_conditions_both_stages(monkeypatch):
@@ -2211,3 +2240,18 @@ def test_encoder_worker_starts_while_the_latch_is_clear(monkeypatch):
     client.start()
     (proc,) = spawned
     assert adopted == [proc.pid] and client.alive() and not proc.terminated
+
+
+def test_an_ltx25_image_render_counts_as_image_to_video_for_the_background_compile():
+    # LTX-2.5 conditions through its own render, never the i2v swap, so the swap flag alone would let its per-token
+    # timesteps seed the background compile and leave an image-only session pending.
+    from core.inference import diffusion_bg_compile as bgc
+    from core.inference.video import _bg_i2v_render, _settle_bg_compile
+
+    ltx25, ltx2 = SimpleNamespace(name = "ltx-2.5"), SimpleNamespace(name = "ltx-2")
+    assert _bg_i2v_render(ltx25, object(), False) is True
+    assert _bg_i2v_render(ltx25, None, False) is False
+    assert _bg_i2v_render(ltx2, object(), False) is False and _bg_i2v_render(ltx2, object(), True) is True
+    bg = bgc.BackgroundCompile(object())
+    _settle_bg_compile(bg, i2v = _bg_i2v_render(ltx25, object(), False))
+    assert not bg.pending() and bg.state == "failed"

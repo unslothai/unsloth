@@ -896,12 +896,17 @@ class Ltx25TextEncoderClient:
         prompts: list[str],
         max_sequence_length: int,
         cancel: Optional[threading.Event] = None,
+        *,
+        copy: bool = True,
     ) -> tuple[Any, Any]:
+        """``copy=False`` returns the cached host tensors themselves (pinned when CUDA is up), for a caller that only
+        reads them: each request runs encode_prompt once per stage, and the 385 MB host clone plus a pageable upload
+        cost ~80 ms a call on a B200."""
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
             for cached_key, value in self._cache:
                 if cached_key == key:
-                    return value[0].clone(), value[1].clone()
+                    return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():
                 logger.warning("video.ltx25_te: encoder worker not running; restarting it")
                 self.start()
@@ -930,9 +935,22 @@ class Ltx25TextEncoderClient:
             logger.info(
                 "video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode
             )
+            embeds, mask = _pinned(embeds), _pinned(mask)
             self._cache.append((key, (embeds, mask)))
             del self._cache[: -self._CACHE_ENTRIES]
-            return embeds.clone(), mask.clone()
+            return (embeds.clone(), mask.clone()) if copy else (embeds, mask)
+
+
+def _pinned(tensor: Any) -> Any:
+    """A page-locked copy of a host tensor (uploads ~4x faster and asynchronously), else the tensor unchanged."""
+    try:
+        import torch
+
+        if tensor.device.type == "cpu" and torch.cuda.is_available() and not tensor.is_pinned():
+            return tensor.pin_memory()
+    except Exception:  # noqa: BLE001 -- pinning is an optimisation; a host without it uploads pageable
+        pass
+    return tensor
 
 
 def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> None:
@@ -958,10 +976,11 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
-            embeds, mask = client.encode(texts, max_sequence_length)
+            # The client's own cached tensors (read only): every op below returns a new tensor.
+            embeds, mask = client.encode(texts, max_sequence_length, copy = False)
             batch = embeds.shape[0]
-            embeds = embeds.to(device = device, dtype = dtype)
-            mask = mask.to(device = device)
+            embeds = embeds.to(device = device, dtype = dtype, non_blocking = True)
+            mask = mask.to(device = device, non_blocking = True)
             seq_len = embeds.shape[1]
             embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
                 batch * num_videos_per_prompt, seq_len, -1
@@ -1218,12 +1237,22 @@ def render(
     upsampler: Any = None,
     on_step: Optional[Callable[..., Any]] = None,
     cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
 ) -> Any:
     """Run one LTX-2.5 request. ``kwargs`` is the generic video call (prompt, size, frames, steps, guidance,
-    frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``)."""
+    frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``).
+    ``on_stage(width, height)`` runs before each denoise stage with the size that stage denoises at (live previews
+    unpack the packed latents with it)."""
     try:
         return _render(
-            pipe, kwargs, dev = dev, image = image, upsampler = upsampler, on_step = on_step, cancel = cancel
+            pipe,
+            kwargs,
+            dev = dev,
+            image = image,
+            upsampler = upsampler,
+            on_step = on_step,
+            cancel = cancel,
+            on_stage = on_stage,
         )
     finally:
         if image is not None:
@@ -1247,6 +1276,7 @@ def _render(
     upsampler: Any = None,
     on_step: Optional[Callable[..., Any]] = None,
     cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
 ) -> Any:
     import inspect
 
@@ -1313,6 +1343,11 @@ def _render(
         }
 
     def _keep(stage_width: int, stage_height: int, frames: int) -> None:
+        if on_stage is not None:
+            try:
+                on_stage(stage_width, stage_height)
+            except Exception:  # noqa: BLE001 -- a preview hint must never fail a render
+                pass
         if not hasattr(scheduler, "keep_tokens"):
             return
         if image is None:
