@@ -12,6 +12,10 @@ eager ops and small compiled regions, so a LoRA step is CPU launch bound. Here a
     mid  = compiled( output projection -> residual add -> post_attention_layernorm )
     mlp  = compiled( MLP -> residual add )
 
+With fla available, a GatedDeltaNet layer is a single compiled graph instead: the fla kernel
+runs as an opaque custom op with its own backward (`unsloth::qwen3_5_gdn_chunk`), checked
+bit-equal to fla's autograd.Function on the first real layer before it is used.
+
 Weights are inputs, so one graph per region serves every layer. Training / no-cache path
 only, with plain nn.Linear or vanilla single-adapter LoRA projections; anything else
 (cache, packed batches, quantized or merged layers, DoRA, dropout) runs the stock forward.
@@ -82,8 +86,7 @@ def _rotate_half(x):
     return torch.cat((-x2, x1), dim = -1)
 
 
-@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
-def _gdn_pre(
+def _gdn_pre_impl(
     hidden_states,
     norm_w,
     eps: float,
@@ -128,6 +131,257 @@ def _gdn_pre(
         query = query.repeat_interleave(n_rep, dim = 2)
         key = key.repeat_interleave(n_rep, dim = 2)
     return query, key, value, g, beta, z
+
+
+_gdn_pre = torch.compile(
+    _gdn_pre_impl, fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS
+)
+
+
+# fla's chunk_gated_delta_rule is an autograd.Function dynamo cannot trace. As an opaque op with
+# a registered backward (training case: no initial / final state, no cu_seqlens, q/k l2norm in
+# kernel) the whole GatedDeltaNet layer compiles as one graph. fwd/bwd call the same fla
+# functions ChunkGatedDeltaRuleFunction does, so the kernel numbers are unchanged.
+_FLA = None
+
+
+def _fla_ops(make_inputs):
+    """fla's (fwd, bwd, l2norm_fwd, l2norm_bwd) once the opaque op matched fla's own Function on
+    the first real layer's inputs, else False. Checked on real shapes and run through fla's
+    Function first, so its pinned autotune configs are the ones the stock path would pick."""
+    global _FLA
+    if _FLA is None:
+        _FLA = False
+        try:
+            import fla.ops.gated_delta_rule.chunk as C
+            fns = (
+                C.chunk_gated_delta_rule_fwd,
+                C.chunk_gated_delta_rule_bwd,
+                C.l2norm_fwd,
+                C.l2norm_bwd,
+            )
+            # The first call can come from a no_grad checkpoint forward.
+            with torch.inference_mode(False):
+                with torch.no_grad():
+                    inputs = [t.detach().clone() for t in make_inputs()]
+                with torch.enable_grad():
+                    _FLA = fns
+                    _FLA = fns if _self_check(*inputs) else False
+        except Exception:
+            _FLA = False
+    return _FLA
+
+
+def _chunk_meta(q, k, v, g):
+    # (qn, q_rstd, kn, k_rstd, g_cumsum, A), as fla 0.5 allocates them
+    return (
+        (q.shape, q.dtype),
+        (q.shape[:-1], torch.float32),
+        (k.shape, k.dtype),
+        (k.shape[:-1], torch.float32),
+        (g.shape, torch.float32),
+        ((*k.shape[:-1], 64), k.dtype),
+    )
+
+
+try:
+
+    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk", mutates_args = ())
+    def _gdn_chunk(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        scale: float,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        fwd, _, l2_fwd, _ = _FLA
+        q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
+        with torch.cuda.device(q.device):
+            qn, q_rstd = l2_fwd(q)
+            kn, k_rstd = l2_fwd(k)
+            g_cum, o, A, _, _, _ = fwd(
+                q = qn,
+                k = kn,
+                v = v,
+                g = g,
+                beta = beta,
+                scale = scale,
+                initial_state = None,
+                output_final_state = False,
+            )
+        # Fake metas are contiguous; keep the real outputs the same.
+        return tuple(t.contiguous() for t in (o.to(q.dtype), qn, q_rstd, kn, k_rstd, g_cum, A))
+
+    @_gdn_chunk.register_fake
+    def _(q, k, v, g, beta, scale):
+        o = v.new_empty(v.shape, dtype = q.dtype)
+        return (o,) + tuple(
+            q.new_empty(shape, dtype = dtype) for shape, dtype in _chunk_meta(q, k, v, g)
+        )
+
+    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk_bwd", mutates_args = ())
+    def _gdn_chunk_bwd(
+        qn: torch.Tensor,
+        q_rstd: torch.Tensor,
+        kn: torch.Tensor,
+        k_rstd: torch.Tensor,
+        v: torch.Tensor,
+        g_cum: torch.Tensor,
+        beta: torch.Tensor,
+        A: torch.Tensor,
+        do: torch.Tensor,
+        scale: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        _, bwd, _, l2_bwd = _FLA
+        v, beta, do = v.contiguous(), beta.contiguous(), do.contiguous()
+        with torch.cuda.device(qn.device):
+            dq, dk, dv, db, dg, _, _, _ = bwd(
+                q = qn,
+                k = kn,
+                v = v,
+                g = g_cum,
+                beta = beta,
+                A = A,
+                scale = scale,
+                initial_state = None,
+                do = do,
+                dht = None,
+            )
+            dq = l2_bwd(qn, q_rstd, dq)
+            dk = l2_bwd(kn, k_rstd, dk)
+        out = (
+            dq.to(qn.dtype),
+            dk.to(kn.dtype),
+            dv.to(v.dtype),
+            dg.to(g_cum.dtype),
+            db.to(beta.dtype),
+        )
+        return tuple(t.contiguous() for t in out)
+
+    @_gdn_chunk_bwd.register_fake
+    def _(qn, q_rstd, kn, k_rstd, v, g_cum, beta, A, do, scale):
+        return tuple(qn.new_empty(t.shape, dtype = t.dtype) for t in (qn, kn, v, g_cum, beta))
+
+    def _gdn_chunk_setup(ctx, inputs, output):
+        q, k, v, g, beta, scale = inputs
+        _, qn, q_rstd, kn, k_rstd, g_cum, A = output
+        ctx.save_for_backward(qn, q_rstd, kn, k_rstd, v, g_cum, beta, A)
+        ctx.scale = scale
+        ctx.dtypes = (q.dtype, k.dtype, g.dtype)
+
+    def _gdn_chunk_backward(ctx, do, *_):
+        # Traced into the backward graph: contiguous here so inductor hands the op the layout
+        # its fake was traced with.
+        saved = [t.contiguous() for t in ctx.saved_tensors]
+        dq, dk, dv, dg, db = _gdn_chunk_bwd(*saved, do.contiguous(), ctx.scale)
+        q_dtype, k_dtype, g_dtype = ctx.dtypes
+        return dq.to(q_dtype), dk.to(k_dtype), dv, dg.to(g_dtype), db, None
+
+    _gdn_chunk.register_autograd(_gdn_chunk_backward, setup_context = _gdn_chunk_setup)
+except Exception:
+    _gdn_chunk = None
+
+
+def _self_check(q, k, v, g, beta):
+    """Opaque op vs fla's own autograd.Function: outputs, fake metas and grads bit-equal."""
+    if _gdn_chunk is None or not q.is_cuda:
+        return False
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+
+    do = torch.randn_like(v)
+    ins = [t.contiguous().requires_grad_() for t in (q, k, v, g, beta)]
+    ref, _ = chunk_gated_delta_rule(*ins, use_qk_l2norm_in_kernel = True)
+    ref_g = torch.autograd.grad(ref, ins, do)
+    ins2 = [t.detach().clone().requires_grad_() for t in ins]
+    out = _gdn_chunk(*ins2, q.shape[-1] ** -0.5)
+    got_g = torch.autograd.grad(out[0], ins2, do)
+    metas = [(o.shape, o.dtype) for o in out[1:]]
+    want = [(torch.Size(s), d) for s, d in _chunk_meta(q, k, v, g)]
+    return (
+        metas == want
+        and torch.equal(out[0], ref)
+        and all(torch.equal(a, b) for a, b in zip(got_g, ref_g))
+    )
+
+
+def _gated_rmsnorm(x, gate, weight, eps: float, round_after_weight: bool):
+    # Qwen3_5RMSNormGated rounds to the input dtype before the weight; fla's FusedRMSNormGated
+    # stays in fp32 until the output.
+    dtype = x.dtype
+    y = x.float()
+    y = y * torch.rsqrt(y.pow(2).mean(-1, keepdim = True) + eps)
+    y = weight * y.to(dtype) if round_after_weight else y * weight.float()
+    return (y * F.silu(gate.float())).to(dtype)
+
+
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
+def _gdn_layer(
+    hidden_states,
+    norm_w,
+    eps: float,
+    mask,
+    p_qkv,
+    p_z,
+    p_b,
+    p_a,
+    conv_weight,
+    A_log,
+    dt_bias,
+    key_dim: int,
+    value_dim: int,
+    head_k_dim: int,
+    head_v_dim: int,
+    conv_dim: int,
+    conv_padding: int,
+    n_rep: int,
+    gn_w,
+    gn_eps: float,
+    gn_round: bool,
+    p_out,
+    norm2_w,
+    eps2: float,
+    p_g,
+    p_u,
+    p_d,
+):
+    query, key, value, g, beta, z = _gdn_pre_impl(
+        hidden_states,
+        norm_w,
+        eps,
+        mask,
+        p_qkv,
+        p_z,
+        p_b,
+        p_a,
+        conv_weight,
+        A_log,
+        dt_bias,
+        key_dim,
+        value_dim,
+        head_k_dim,
+        head_v_dim,
+        conv_dim,
+        conv_padding,
+        n_rep,
+    )
+    query, key, value, g, beta = (t.contiguous() for t in (query, key, value, g, beta))
+    core = torch.ops.unsloth.qwen3_5_gdn_chunk(query, key, value, g, beta, head_k_dim**-0.5)[0]
+    core = _gated_rmsnorm(
+        core.reshape(-1, head_v_dim), z.reshape(-1, head_v_dim), gn_w, gn_eps, gn_round
+    )
+    batch_size, seq_len, _ = hidden_states.shape
+    hidden = hidden_states + _linear(core.reshape(batch_size, seq_len, -1), p_out)
+    x = _rmsnorm(hidden, norm2_w, eps2)
+    return hidden + _linear(F.silu(_linear(x, p_g)) * _linear(x, p_u), p_d)
 
 
 @torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
@@ -240,6 +494,21 @@ def _masks_any_batch(gdn):
     return bool((out == 0).all())
 
 
+def _gated_norm_spec(m):
+    """(round_after_weight, eps) for the GDN output norm, or None if it is not one we replicate."""
+    name = type(m).__name__
+    if not isinstance(getattr(m, "weight", None), torch.Tensor):
+        return None
+    if name == "Qwen3_5RMSNormGated" and getattr(m, "activation", "silu") in ("silu", "swish"):
+        eps = getattr(m, "variance_epsilon", None)
+        return (True, eps) if isinstance(eps, float) else None
+    if name == "FusedRMSNormGated" and getattr(m, "activation", None) in ("silu", "swish"):
+        eps = getattr(m, "eps", None)
+        if getattr(m, "bias", None) is None and isinstance(eps, float):
+            return (False, eps)
+    return None
+
+
 def _is_rmsnorm(m):
     return (
         type(m).__name__ == "Qwen3_5RMSNorm"
@@ -279,6 +548,7 @@ def _layer_static_ok(layer):
         if masks_any is None:
             return False
         layer._unsloth_masks_any_batch = masks_any
+        layer._unsloth_gated_norm = _gated_norm_spec(getattr(gdn, "norm", None))
         return isinstance(getattr(gdn, "A_log", None), torch.Tensor) and isinstance(
             getattr(gdn, "dt_bias", None), torch.Tensor
         )
@@ -348,7 +618,8 @@ def _fused_decoder_layer_forward(
         if mask is not None and not self._unsloth_masks_any_batch:
             if not (mask.shape[1] > 1 and mask.shape[0] > 1):
                 mask = None
-        query, key, value, g, beta, z = _gdn_pre(
+        gn = self._unsloth_gated_norm
+        pre_args = (
             hidden_states,
             norm1.weight,
             norm1.eps,
@@ -368,6 +639,20 @@ def _fused_decoder_layer_forward(
             gdn.conv_kernel_size - 1,
             gdn.num_v_heads // gdn.num_k_heads,
         )
+        if gn is not None and _fla_ops(lambda: _gdn_pre(*pre_args)[:5]):
+            return _gdn_layer(
+                *pre_args,
+                gdn.norm.weight,
+                gn[1],
+                gn[0],
+                p_out,
+                norm2.weight,
+                norm2.eps,
+                p_g,
+                p_u,
+                p_d,
+            )
+        query, key, value, g, beta, z = _gdn_pre(*pre_args)
         core_attn_out, _ = _chunk_kernel(gdn)(
             query,
             key,

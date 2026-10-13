@@ -185,3 +185,24 @@ def test_fused_matches_stock_with_lora_everywhere(padded):
     for n in ref_g:
         rel = (g[n] - ref_g[n]).norm() / ref_g[n].norm().clamp_min(1e-12)
         assert rel < 5e-2, (n, float(rel))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fla kernels need a GPU")
+def test_opaque_fla_op_matches_fla_function():
+    pytest.importorskip("fla.ops.gated_delta_rule.chunk")
+    M = _load()
+    gen = torch.Generator(device = "cuda").manual_seed(0)
+    B, T, H, D = 2, 150, 4, 128
+    mk = lambda *s, dt = torch.bfloat16: torch.randn(*s, device = "cuda", dtype = dt, generator = gen)
+    q, k, v = mk(B, T, H, D), mk(B, T, H, D), mk(B, T, H, D)
+    g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
+    beta = mk(B, T, H).sigmoid()
+    assert M._fla_ops(lambda: (q, k, v, g, beta))
+    # A wrong fake meta or a numeric mismatch must turn the one-graph path off.
+    M._FLA = None
+    orig = M._chunk_meta
+    M._chunk_meta = lambda *a: orig(*a)[:-1] + (((1,), torch.bfloat16),)
+    try:
+        assert M._fla_ops(lambda: (q, k, v, g, beta)) is False
+    finally:
+        M._chunk_meta = orig
