@@ -69,7 +69,7 @@ test("Settings dims a step darker, titlebar included", () => {
 test("every popup surface carries the faint shadow without losing its ring", () => {
   const css = read("index.css");
   assert.match(css, /--popup-shadow: 0 0 12px 0 rgb\(0 0 0 \/ 0\.2\);/);
-  assert.match(css, /--popup-shadow: 0 0 32px 0 rgb\(0 0 0 \/ 0\.8\);/);
+  assert.match(css, /--popup-shadow: 0 0 32px 0 rgb\(0 0 0 \/ 0\.7\);/);
   assert.match(
     css,
     /:is\(\[data-slot="dialog-content"\], \[data-slot="alert-dialog-content"\], \[data-slot="sheet-content"\]\) \{\s*box-shadow:\s*var\(--tw-ring-offset-shadow, 0 0 #0000\),\s*var\(--tw-ring-shadow, 0 0 #0000\),\s*var\(--popup-shadow\);/,

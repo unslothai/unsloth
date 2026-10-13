@@ -445,7 +445,7 @@
 
 .dark {
 	/* Wider than light: the dimmed dark page is near black, so a tight shadow reads as an outline. */
-	--popup-shadow: 0 0 32px 0 rgb(0 0 0 / 0.8);
+	--popup-shadow: 0 0 32px 0 rgb(0 0 0 / 0.7);
 	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
