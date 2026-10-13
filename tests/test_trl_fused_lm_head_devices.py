@@ -27,6 +27,7 @@ from collections import OrderedDict
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 RL_SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl.py")
@@ -96,7 +97,7 @@ class _Kernel:
     @staticmethod
     def apply(hidden, *args):
         _Kernel.calls.append(
-            (hidden.device, torch.cuda.current_device() if torch.cuda.is_available() else None)
+            (hidden.device, torch.cuda.current_device() if hidden.device.type == "cuda" else None)
         )
         return hidden
 
@@ -208,7 +209,7 @@ def test_kernel_shim_switches_to_the_hidden_device(monkeypatch, device_type):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA devices"
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA devices"
 )
 def test_kernel_shim_runs_on_the_hidden_device():
     ns = _load()
