@@ -2609,7 +2609,7 @@ def cached_folder_target(
     keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
-    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted):
+    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted, ref.folder):
         # An ambiguous match on disk is a refusal, not a cue to act on some other download's state.
         return AUDIO_CPP_REPO, []
     # A quant cancelled before any file finished has only its download state (manifest or cancel
@@ -2622,9 +2622,10 @@ def cached_folder_target(
     return AUDIO_CPP_REPO, keys + [k for k in partial if k.lower() not in seen]
 
 
-def _on_disk_quant_named(variants: Sequence[AudioCppVariant], wanted: str) -> bool:
-    quant = wanted.strip().replace("\\", "/").strip("/").rsplit("/", 1)[-1].lower()
-    return any(quant_label(v.main_file).lower() == quant for v in variants)
+def _on_disk_quant_named(variants: Sequence[AudioCppVariant], wanted: str, folder: str) -> bool:
+    """Whether ``wanted`` is ambiguous on disk: its quant and scope words fit several variants."""
+    found, quant_given = _variants_matching(variants, wanted, folder)
+    return quant_given and len(found) > 1
 
 
 def _folder_state_keys(folder: str) -> list[str]:
@@ -2674,6 +2675,14 @@ def _cached_variants_named(
     listing (``tiny/Q8_0``) while a cache holding one size keys it ``Q8_0``, so scope words also
     match the file path; a quant must still pick exactly one, never a fallback default (``match_variant``
     would rank a bare ``Q8_0`` onto one of ``tiny/Q8_0`` and ``small/Q8_0``)."""
+    found, quant_given = _variants_matching(variants, wanted, folder)
+    return found if not quant_given or len(found) == 1 else []
+
+
+def _variants_matching(
+    variants: Sequence[AudioCppVariant], wanted: str, folder: str
+) -> tuple[list[AudioCppVariant], bool]:
+    """Every variant ``wanted`` could name, and whether it named a quant (which must be unique)."""
     low = wanted.strip().replace("\\", "/").strip("/").lower()
     exact = [
         v
@@ -2683,10 +2692,10 @@ def _cached_variants_named(
         or v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")
     ]
     if exact:
-        return exact[:1]
+        return exact[:1], False
     parts = [p for p in low.split("/") if p]
     if not parts:
-        return []
+        return [], False
     quants = {quant_label(v.main_file).lower() for v in variants}
     quant = parts[-1] if parts[-1] in quants else None
     words = parts[:-1] if quant else parts
@@ -2704,7 +2713,7 @@ def _cached_variants_named(
         if (quant is None or quant_label(v.main_file).lower() == quant)
         and all(w in scope(v) for w in words)
     ]
-    return found if quant is None or len(found) == 1 else []
+    return found, quant is not None
 
 
 def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:

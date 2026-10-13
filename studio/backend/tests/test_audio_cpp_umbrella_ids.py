@@ -741,3 +741,18 @@ def test_an_ambiguous_bare_quant_never_falls_back_to_download_state(hub, monkeyp
     acm.forget()
     assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [])
     assert medium in acm.cached_folder_target(moon, None)[1]
+
+
+def test_a_state_only_size_is_named_even_when_another_size_shares_its_quant(
+    hub, monkeypatch, tmp_path
+):
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    tiny = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
+    _add_snapshot(hub, "a" * 40, {f"{tiny}.gguf": "moonshine_asr"}, main = True)
+    medium = "Moonshine-Streaming-GGUF/moonshine-streaming-medium-q8_0"
+    _partial(hub, monkeypatch, tmp_path, [medium])
+    acm.forget()
+    assert acm.cached_folder_target(moon, "medium/Q8_0") == (AUDIO_CPP_REPO, [medium])
+    assert acm.cached_folder_target(moon, "tiny/Q8_0") == (AUDIO_CPP_REPO, [tiny])
+    # One size on disk: a bare quant still names it, not the cancelled one.
+    assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [tiny])
