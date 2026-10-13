@@ -21,13 +21,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stand-ins ONLY when the real modules are missing. sys.modules holds what has been
-# IMPORTED, not what is installed, so a bare ``setdefault`` does not defer to a real module
-# nothing has touched yet: the stub wins and shadows it for the whole session. ``loggers`` is
-# a real PACKAGE, so a plain ModuleType standing in for it breaks every later
-# ``from loggers.handlers import ...`` in any file collected after this one. structlog goes
-# first and ``exc.name`` is checked because ``loggers.handlers`` imports structlog, so a
-# missing structlog would otherwise be mistaken for a missing ``loggers``.
+# Stand-ins ONLY when the real modules are missing. sys.modules holds what has been IMPORTED, not
+# what is installed, so a bare ``setdefault`` does not defer to a real module nothing has touched
+# yet: the stub wins and shadows it for the whole session.
 try:  # noqa: E402
     import structlog  # type: ignore
 except ModuleNotFoundError:

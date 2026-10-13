@@ -662,10 +662,8 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
-    # What the CALLER asked for, kept beside the resolved identifier above rather than derived
-    # from it. The two live in different namespaces -- a repo id on one side, a resolved cache
-    # filename on the other -- and no string test is right across that gap, so the only way to
-    # compare safely is to compare requested against requested.
+    # What the CALLER asked for, kept beside the resolved identifier above rather than derived from
+    # it.
     requested_identifier: Optional[str] = None
     requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
@@ -8590,8 +8588,6 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
-        # On a paired DGX Spark serving replicas this is the in-process router that
-        # spreads requests over both nodes; None everywhere else.
         from core.inference.spark_serving import route_base_url
 
         routed = route_base_url(self)
@@ -8752,17 +8748,14 @@ class LlamaCppBackend:
 
     @property
     def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
-        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what
-        the caller typed rather than what it resolved to. Recorded in the same commit as
-        ``extra_args_source`` so the pair cannot disagree. The Spark path compares this against
-        the incoming request, which is the only same-namespace comparison available before the
-        load has resolved anything."""
+        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what the
+        caller typed rather than what it resolved to."""
         return self._extra_args_requested_source
 
     @property
     def launched_env(self) -> Optional[dict[str, str]]:
-        """The environment the running llama-server was actually spawned with, or ``None``
-        before any spawn. A copy, so a reader cannot mutate the record."""
+        """The environment the running llama-server was actually spawned with, or ``None`` before any
+        spawn."""
         env = getattr(self, "_launched_env", None)
         return dict(env) if env else None
 
@@ -20171,13 +20164,8 @@ class LlamaCppBackend:
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
-                # Cleared, not left: the two are written together at the GGUF commit point and
-                # must never disagree. A stale requested identity paired with THESE extras is
-                # read by _spark_inherited_extra_args as "the same model asked for them", so a
-                # later load of that earlier GGUF would have inherited this launch's arguments.
-                # There is no requested identity to record here -- this path has no
-                # GgufLoadIntent -- and no extras of a non-GGUF load should ever be inherited
-                # into a split, so None is the answer rather than a guess.
+                # Cleared, not left: the two are written together at the GGUF commit point and must
+                # never disagree.
                 self._extra_args_requested_source = None
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
@@ -24725,7 +24713,6 @@ class LlamaCppBackend:
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
                 return False
-            # What the child runs with after every scrub; the Spark replica relaunches from it.
             self._launched_env = dict(env)
             # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             _spawned = _spawn_on_lifetime_thread(
@@ -31761,7 +31748,6 @@ class LlamaCppBackend:
                                 self._close_attempt_log()
                                 self._health_wait_cancelled = True
                                 return False
-                            # see the note at the other spawn
                             self._launched_env = dict(env)
                             _spawned = _spawn_on_lifetime_thread(
                                 lambda: subprocess.Popen(
@@ -37764,8 +37750,6 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
-        # Name the conversation, so the router keeps every turn of this thread on the
-        # llama-server that holds its prefix in KV. The router pops the field again.
         from core.inference.spark_serving import tag_conversation
 
         tag_conversation(payload, thread_id)
@@ -38984,10 +38968,6 @@ class LlamaCppBackend:
                 "frequency_penalty": frequency_penalty,
             }
 
-            # Every round of one agent run names the same conversation, so the router
-            # keeps them on the llama-server holding its prefix. Without this the
-            # fallback hash is taken from the first user turn, which rolling compaction
-            # rewrites, so a long run drifts between replicas and re-prefills each time.
             from core.inference.spark_serving import tag_conversation
 
             tag_conversation(payload, thread_id)
@@ -41797,7 +41777,6 @@ class LlamaCppBackend:
             "frequency_penalty": frequency_penalty,
         }
 
-        # Same conversation as every round above it.
         from core.inference.spark_serving import tag_conversation
 
         tag_conversation(stream_payload, thread_id)

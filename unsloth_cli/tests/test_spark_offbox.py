@@ -743,17 +743,7 @@ _DEVICE_MAPS = [
 
 
 def _import_loader_utils():
-    """Import loader_utils, or skip when unsloth refuses to run on this machine.
-
-    Importing `unsloth.models` runs the accelerator detection, which raises on a CPU-only
-    host like the repo test job. The notice cannot be exercised where the package it lives
-    in will not import, so the honest outcome is a skip and not a failure.
-
-    ImportError is caught for the same reason and not only NotImplementedError. `torch` being
-    present does not mean `unsloth` will import: `unsloth/_gpu_init.py` raises ImportError when
-    `unsloth_zoo` is missing, so a host with torch installed and unsloth_zoo not failed 37 of
-    these tests instead of skipping them. Both are "the package will not import here", and both
-    read as a skip."""
+    """Import loader_utils, or skip when unsloth refuses to run on this machine."""
     pytest.importorskip("torch")
     try:
         from unsloth.models import loader_utils as LU
@@ -922,9 +912,8 @@ def test_recommend_topology_layer_split_when_the_model_does_not_fit() -> None:
 
 
 def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
-    """A split is the only way to run a model that does not fit, and with the fork's pipeline
-    groups it is also the one place the second GPU pays on decode. The reason says both
-    halves, because the flag is added only when the bundle's llama-server has it."""
+    """A split is the only way to run a model that does not fit, and with the fork's pipeline groups it
+    is also the one place the second GPU pays on decode."""
     sc = _load("studio/spark_cluster.py")
     out = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 32, 512, 113 * _GIB)
     assert out["topology"] == "layer_split"
@@ -954,7 +943,6 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
     assert out["split_mtp_note"] == sc.split_mtp_note()
     off = sc.recommend_topology(150 * _GIB, 0.5 * _GIB, 64, 512, 113 * _GIB)
     assert off["topology"] == "layer_split" and off["split_mtp"] is False
-    # The boundary is the SPLIT's: single and replicas carry no split verdict at all.
     for users in (1, 8, 32, 64, 128):
         fits = sc.recommend_topology(16.4 * _GIB, 0.4 * _GIB, users, 512, 113 * _GIB)
         assert fits["topology"] in ("single", "replicas"), users
@@ -978,8 +966,8 @@ def test_layer_split_reason_carries_the_pipeline_groups_numbers() -> None:
 
 
 def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -> None:
-    """Replicas beat a grouped split on a model that fits, so one still gets replicas and its
-    reason never mentions pipeline groups."""
+    """Replicas beat a grouped split on a model that fits, so one still gets replicas and its reason
+    never mentions pipeline groups."""
     sc = _load("studio/spark_cluster.py")
     assert sc.REPLICAS_DECODE_SPEEDUP[512][32] > sc.PIPELINE_GROUPS_SPLIT_SPEEDUP[32]
     for users in (8, 16, 32, 64, 128):
@@ -993,8 +981,7 @@ def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -
 
 
 def test_mtp_tables_are_the_measured_ratios_and_the_note_states_them() -> None:
-    """MTP self speculation multiplies whatever the topology gives. The planner carries the
-    single-Spark measurement and the no-op case; the serving side decides per file."""
+    """MTP self speculation multiplies whatever the topology gives."""
     sc = _load("studio/spark_cluster.py")
     assert sc.MTP_SPEEDUP_27B == {1: 2.61, 4: 1.87, 8: 1.59}
     assert sc.MTP_SPEEDUP_4B == {1: 2.04, 4: 1.67, 8: 1.46}
@@ -1863,7 +1850,6 @@ def test_training_planner_picks_data_parallel_for_a_model_that_fits() -> None:
     assert out["speedup"] == sc.TRAIN_DP_SPEEDUP_RANGE[0]
     assert f"{sc.TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
     assert f"{sc.TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
-    # Without this the user sizes a job by half the weights and OOMs on the first step.
     assert "WHOLE model per node" in out["recommendation"]
 
 
@@ -1877,10 +1863,9 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
     assert "--layer-split big" in cmd and "--shard-load" in cmd and "--grad-checkpoint" in cmd
     assert f"--schedule {sc.TRAIN_PP_SCHEDULE}" in cmd
     assert "--data-parallel" not in cmd
-    # No speedup for the capacity case: there is no single-Spark control to divide by.
     assert out["speedup"] is None and out["measured"] is False
-    # dualpipev could not train at this size at any batch tried, so the recommendation has to
-    # warn against the substitution a reader of the 2B/9B tie would make.
+    # dualpipev could not train at this size at any batch tried, so the recommendation has to warn
+    # against the substitution a reader of the 2B/9B tie would make.
     assert out["schedule"] == "1f1b"
     assert "1f1b" in out["recommendation"]
     assert "Do NOT substitute dualpipev" in out["recommendation"]
@@ -1890,9 +1875,8 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
 
 
 def test_training_planner_constants_are_measured_and_consistent() -> None:
-    """Every ratio must follow from the recorded tok/s and DP must have beaten PP on every
-    model measured, or the rule is wrong. A model with no single-Spark control may state a
-    DP-versus-PP ratio but must NOT appear in the over-one-Spark tables."""
+    """Every ratio must follow from the recorded tok/s and DP must have beaten PP on every model
+    measured, or the rule is wrong."""
     sc = _load("studio/spark_cluster.py")
     assert "__" not in sc.TRAIN_MEASUREMENT and "2026" in sc.TRAIN_MEASUREMENT
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
@@ -1924,23 +1908,20 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
 
 
 def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
-    """The split is recommended ONLY for models that do not fit, so its default schedule has
-    to be justified at that size. dualpipev leads on speed at 2B and 9B and still must not be
-    the default, because it cannot run the case the branch exists for."""
+    """The split is recommended ONLY for models that do not fit, so its default schedule has to be
+    justified at that size. dualpipev leads on speed at 2B and 9B and still must not be the default,
+    because it cannot run the case the branch exists for."""
     sc = _load("studio/spark_cluster.py")
     ev = sc.TRAIN_PP_70B
     assert sc.TRAIN_PP_SCHEDULE == "1f1b"
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
         assert arms["dualpipev"] >= arms["1f1b"], name
-    # A peak recorded for an arm that died would read as though it ran.
     assert ev["dualpipev_toks"] is None and ev["dualpipev_peak_gib"] is None
     assert "out of memory" in ev["dualpipev_outcome"]
     assert ev["1f1b_toks"] > 0 and ev["1f1b_s_per_step"] > 0
     lo, hi = ev["1f1b_peak_gib"]
-    # Both ranks need real headroom, or the arm that "ran" was one allocation from the same fate.
     assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
-    # The V layout's co-located hop saves bandwidth the link never needed. The step count and
-    # time here are the LINK cell's, not the headline cell's, so the arithmetic must use them.
+    # The V layout's co-located hop saves bandwidth the link never needed.
     used_gbs = (
         ev["link_mb_moved"]
         / 1000.0
@@ -1955,16 +1936,13 @@ def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
     peaks = ev["1f1b_peak_gib_by_microbatches"]
     assert peaks[ev["1f1b_microbatches"]] == ev["1f1b_peak_gib"]
     assert max(peaks[ev["1f1b_microbatches"]]) == min(max(v) for v in peaks.values())
-    # The record has to say the smallest configuration the V layout admits was the one that
-    # failed, or this reads as two unlucky cells.
     assert "batch 4 with M=4" in ev["dualpipev_outcome"]
     assert ev["dualpipev_rank0_weights_gib"] > ev["dualpipev_rank1_weights_gib"]
 
 
 def test_capacity_command_names_the_measured_microbatch_count() -> None:
-    """The planner used to emit no --microbatches at all, so a user got the trainer default,
-    which at 70B is the WORST point on the measured curve. A recommendation that silently
-    costs 20 percent is a defect, not a default."""
+    """The planner used to emit no --microbatches at all, so a user got the trainer default, which at
+    70B is the WORST point on the measured curve."""
     sc = _load("studio/spark_cluster.py")
     budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
     out = sc.plan_training(budget * 2, n_nodes = 2, model = "m")
@@ -1977,8 +1955,8 @@ def test_capacity_command_names_the_measured_microbatch_count() -> None:
 
 
 def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
-    """The tables that justify "one row per microbatch" must actually show it on every model
-    swept, or the rule is asserted rather than measured."""
+    """The tables that justify "one row per microbatch" must actually show it on every model swept, or
+    the rule is asserted rather than measured."""
     sc = _load("studio/spark_cluster.py")
     assert "one row per microbatch" in sc.TRAIN_PP_MICROBATCHES_RULE
     for name, by_batch in sc.TRAIN_PP_MICROBATCHES_SWEPT.items():
@@ -2010,11 +1988,7 @@ def test_training_planner_refuses_to_guess_and_handles_one_node() -> None:
 
 
 def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
-    """Both are refused before the run, not after it.
-
-    --save with --fsdp is skipped for sharded parameters, so finding out at the end costs the
-    whole training; --microbatches 0 used to reach a modulo and raise ZeroDivisionError.
-    """
+    """Both are refused before the run, not after it."""
     import ast
     from pathlib import Path
 
@@ -2037,8 +2011,8 @@ def test_data_parallel_refuses_a_save_it_cannot_perform_and_a_zero_microbatch():
 
 
 def _train_cli(monkeypatch):
-    """`unsloth spark train` with the cluster and the Spark gate stubbed, returning the argv
-    it would hand to studio.spark_cluster. Hardware-independent: nothing is launched."""
+    """`unsloth spark train` with the cluster and the Spark gate stubbed, returning the argv it would
+    hand to studio.spark_cluster."""
     import typer.testing
 
     from unsloth_cli.commands import spark as spark_cmd
@@ -2056,9 +2030,8 @@ def _train_cli(monkeypatch):
 
 
 def test_the_planner_command_for_an_oversized_model_actually_parses(monkeypatch):
-    # plan_training recommends --shard-load --grad-checkpoint for a model that does not fit
-    # on one Spark, which is the only topology that can train it at all. The train command
-    # has to accept every option that recommendation contains.
+    # plan_training recommends --shard-load --grad-checkpoint for a model that does not fit on one
+    # Spark, which is the only topology that can train it at all.
     sc = _load("studio/spark_cluster.py")
     plan = sc.plan_training(200.0, 2, model = "meta-llama/Llama-3.3-70B-Instruct")
     recommended = [c for c in plan["commands"] if c.startswith("unsloth spark train")]
@@ -2074,8 +2047,6 @@ def test_the_planner_command_for_an_oversized_model_actually_parses(monkeypatch)
 
 
 def test_data_parallel_defaults_do_not_reject_themselves(monkeypatch):
-    # The trainer requires --batch to be divisible by --microbatches, so the layer split's
-    # default of 32 against the default batch of 8 exited before loading anything.
     runner, app, seen = _train_cli(monkeypatch)
     assert runner.invoke(app, ["train", "--data-parallel", "unsloth/Qwen3-4B"]).exit_code == 0
     pipeline_args = seen[-1][seen[-1].index("--pipeline-args") + 1].split()
@@ -2084,15 +2055,14 @@ def test_data_parallel_defaults_do_not_reject_themselves(monkeypatch):
     assert batch % microbatches == 0
     assert batch % 2 == 0 and microbatches % 2 == 0  # both ranks get equal rows
 
-    # A layer split keeps the measured M=32, which is where its speedup comes from.
     seen.clear()
     assert runner.invoke(app, ["train", "--layer-split", "unsloth/Qwen3-4B"]).exit_code == 0
     assert "--microbatches 32" in seen[-1][seen[-1].index("--pipeline-args") + 1]
 
 
 def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
-    # --data-parallel is copied into layer_split and the built-in trainer branch wins, so a
-    # --script alongside it was dropped in silence and --run started the wrong program.
+    # --data-parallel is copied into layer_split and the built-in trainer branch wins, so a --script
+    # alongside it was dropped in silence and --run started the wrong program.
     runner, app, seen = _train_cli(monkeypatch)
     for argv in (
         ["train", "--script", "t.py", "--data-parallel", "unsloth/Qwen3-4B"],
@@ -2106,9 +2076,6 @@ def test_the_three_training_modes_are_mutually_exclusive(monkeypatch):
 
 
 def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
-    # A split halves the weights across the pair, so above the pair's combined budget nothing
-    # fits. Recommending one anyway spends the whole load, minutes of transfer over the rail,
-    # before llama-server runs out of memory.
     sc = _load("studio/spark_cluster.py")
     free = 113.0 * 2**30  # one node's serving budget
 
@@ -2117,26 +2084,20 @@ def test_no_topology_is_recommended_for_a_model_neither_node_can_hold() -> None:
     assert out["fits_any_topology"] is False
     assert "no two-node topology holds it" in out["reason"]
 
-    # It is the model PLUS its KV that has to fit, so a model inside the budget can still
-    # exceed it once enough users are asked for.
     kv = 4.0 * 2**30
     out = sc.recommend_topology(200.0 * 2**30, kv, 8, 512, free)
     assert out["fits_any_topology"] is False
 
-    # Just inside stays a layer split, which is the whole point of the pair.
     out = sc.recommend_topology(200.0 * 2**30, kv, 2, 512, free)
     assert out["topology"] == "layer_split" and out["fits_any_topology"] is True
 
-    # And a model that fits on one node is untouched.
     out = sc.recommend_topology(20.0 * 2**30, kv, 2, 512, free)
     assert out["topology"] == "single" and out["fits_any_topology"] is True
 
 
 def test_data_parallel_rejects_a_base_checkpoint_before_it_loads_the_model():
-    """The layer-split path refuses this right after the tokenizer, for a stated reason: the
-    error came out of `apply_chat_template` only once both ranks had loaded and materialised a
-    full model each. The data-parallel path built, moved and possibly FSDP-wrapped the model
-    first and then raised the same unhandled error, so the same input cost the whole load."""
+    """The layer-split path refuses this right after the tokenizer, for a stated reason: the error came
+    out of `apply_chat_template` only once both ranks had loaded and materialised a full model each."""
     import ast
     from pathlib import Path
 
@@ -2158,9 +2119,7 @@ def test_data_parallel_rejects_a_base_checkpoint_before_it_loads_the_model():
 
 
 def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
-    """Rank 1 deliberately writes nothing in data parallel, so `DIR/stage1` never exists on the
-    peer. Collecting it anyway ended every SUCCESSFUL run in an rsync failure and a nonzero
-    exit, after the whole training had already finished correctly."""
+    """Rank 1 deliberately writes nothing in data parallel, so `DIR/stage1` never exists on the peer."""
     import ast
     from pathlib import Path
 
@@ -2195,14 +2154,8 @@ def test_a_data_parallel_save_does_not_go_looking_for_a_peer_stage():
 
 
 def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts():
-    """DDP's default `find_unused_parameters=False` promises every parameter takes part in
-    every backward. A sparse MoE breaks that by design: an expert routed no tokens on this rank
-    produces no gradient, and the NEXT iteration fails with an unfinished reduction. It reaches
-    the DEFAULT path, not just a hand-written target list, because Qwen3-style experts name
-    their projections gate_proj/up_proj/down_proj, which is exactly what `lora_target_modules`
-    keeps. The flag costs an extra autograd traversal every step, so a dense model must not pay
-    for it.
-    """
+    """DDP's default `find_unused_parameters=False` promises every parameter takes part in every
+    backward."""
     import ast
     from pathlib import Path
     from types import SimpleNamespace
@@ -2244,18 +2197,11 @@ def test_data_parallel_enables_unused_parameter_handling_only_for_sparse_experts
     assert has_experts(SimpleNamespace(num_experts = 1)) is False
     assert has_experts(SimpleNamespace(num_experts = None)) is False
     assert has_experts(SimpleNamespace(num_experts = "many")) is False
-    # A multimodal wrapper keeps the decoder's config nested, and that is where the key lives.
     assert has_experts(SimpleNamespace(text_config = SimpleNamespace(num_experts = 60))) is True
 
 
 def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
-    """`--data-parallel --run` on a model too big for one Spark printed a NOTE and launched.
-
-    Every rank builds the COMPLETE model before DDP or FSDP wraps it, so this cannot satisfy
-    the command's documented requirement that the model fit one Spark, and `--fsdp` does not
-    rescue it: sharding happens after construction, not during. The run therefore spent the
-    whole load on both nodes to arrive at an out-of-memory already known at plan time.
-    """
+    """`--data-parallel --run` on a model too big for one Spark printed a NOTE and launched."""
     import ast
     from pathlib import Path
 
@@ -2272,15 +2218,13 @@ def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
     launch = body.index("return run_pipeline(plan)")
     assert note < refusal < launch, "the refusal must sit between the note and the launch"
 
-    # Guarded by --run, so `unsloth spark pipeline` without it still prints the plan and the
-    # note rather than becoming an error.
     between = body[note:launch]
     assert "if run:" in between, "the refusal must not fire when nothing is being launched"
 
 
-# The launch commands the planner prints are what a user pastes, so every flag that changes
-# the run has to survive into BOTH of them. --microbatches in particular: it was once omitted,
-# which cost about 20% at 70B and produced no error, only a slower run.
+# The launch commands the planner prints are what a user pastes, so every flag that changes the run
+# has to survive into BOTH of them. --microbatches in particular: it was once omitted, which cost
+# about 20% at 70B and produced no error, only a slower run.
 # The launch commands the planner prints are what a user pastes, so every flag that changes the run
 # has to survive into BOTH of them. --microbatches in particular: it was once omitted, which cost
 # about 20% at 70B and produced no error, only a slower run.

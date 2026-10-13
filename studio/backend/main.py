@@ -1038,7 +1038,6 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
-    # Stop the router and the peer's server before this node's llama-server goes down.
     try:
         from core.inference.spark_serving import shutdown as _spark_serving_shutdown
         await _spark_serving_shutdown()

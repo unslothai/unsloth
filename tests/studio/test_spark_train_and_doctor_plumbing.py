@@ -88,7 +88,6 @@ def test_the_seed_is_set_before_the_model_is_built() -> None:
     builds = [i for i, line in enumerate(lines) if "model, cfg, _ = build_stage_model(" in line]
     assert seeds and builds, "the run no longer seeds, or no longer builds a stage"
     for build in builds:
-        # Per training entry point: a seed just above the build, and the adapter after it.
         assert any(build - 5 <= seed < build for seed in seeds), (seeds, build)
         assert any(
             "get_peft_model(" in line or "apply_lora(" in line for line in lines[build:]

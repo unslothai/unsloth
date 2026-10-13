@@ -841,8 +841,8 @@ def train(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
     ),
 ) -> None:
-    """Print the two-node commands for DDP (--script), a layer split (--layer-split) or a
-    data-parallel LoRA run (--data-parallel)."""
+    """Print the two-node commands for DDP (--script), a layer split (--layer-split) or a data-parallel
+    LoRA run (--data-parallel)."""
     sc = _cluster_or_none()
     if sc is None:
         raise typer.Exit(1)
@@ -856,10 +856,10 @@ def train(
             "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
         )
         raise typer.Exit(2)
-    # All three are modes, not options that compose: --data-parallel is copied into
-    # layer_split below and the built-in trainer branch runs, so a --script given alongside
-    # either of them would be dropped without a word and, with --run, the built-in trainer
-    # would start on the other mode's model instead of the caller's program.
+    # All three are modes, not options that compose: --data-parallel is copied into layer_split
+    # below and the built-in trainer branch runs, so a --script given alongside either of them would
+    # be dropped without a word and, with --run, the built-in trainer would start on the other
+    # mode's model instead of the caller's program.
     chosen = [
         name
         for name, value in (
@@ -876,10 +876,10 @@ def train(
         typer.echo("--microbatches cannot be negative.")
         raise typer.Exit(2)
     if microbatches == 0:
-        # A data-parallel replica has no pipeline to fill, so the layer split's 32 buys it
-        # nothing and --batch must divide by it: with the default batch of 8 the trainer
-        # refuses 32 outright, and `unsloth spark train --data-parallel MODEL --run` exited
-        # before it loaded anything.
+        # A data-parallel replica has no pipeline to fill, so the layer split's 32 buys it nothing
+        # and --batch must divide by it: with the default batch of 8 the trainer refuses 32
+        # outright, and `unsloth spark train --data-parallel MODEL --run` exited before it loaded
+        # anything.
         microbatches = 2 if data_parallel else 32
     if data_parallel:
         layer_split = data_parallel

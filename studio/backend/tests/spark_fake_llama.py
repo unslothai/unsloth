@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A fake llama-server for the two-Spark router tests: asyncio, loopback, SSE.
-
-Speaks just enough HTTP/1.1 for ``httpx``, and tags its SSE frames with the server's name
-so a test can tell which backend served a request and in what order the frames arrived.
-``content_type`` switches the generation between SSE and JSON, ``die_after`` aborts the
-socket mid-stream, ``hold`` parks every generation on an event so
-admission and queueing can be observed, and ``health_ok`` flips ``/health``.
-"""
+"""A fake llama-server for the two-Spark router tests: asyncio, loopback, SSE."""
 
 from __future__ import annotations
 
@@ -35,9 +28,9 @@ class FakeLlama:
         self.die_after = die_after
         self.hold = hold
         self.health_ok = health_ok
-        # A generation is not always SSE: chat with stream false, /completion, embeddings
-        # and reranking all answer in JSON, and the router has to treat those differently
-        # when the body stops half way.
+        # A generation is not always SSE: chat with stream false, /completion, embeddings and
+        # reranking all answer in JSON, and the router has to treat those differently when the body
+        # stops half way.
         self.content_type = content_type
         self.served: List[Tuple[str, Dict[str, Any], Dict[str, str]]] = []
         self.in_flight = 0

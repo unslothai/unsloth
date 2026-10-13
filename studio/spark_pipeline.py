@@ -131,9 +131,7 @@ LORA_TARGETS_LLAMA = (
 )
 
 
-# The names a config uses to say "this block routes tokens to a subset of experts". Read from
-# the config rather than by walking the modules, because the question is whether routing is
-# CONDITIONAL, which a linear layer's name cannot answer.
+# The names a config uses to say "this block routes tokens to a subset of experts".
 _CONDITIONAL_EXPERT_KEYS = (
     "num_experts",
     "num_local_experts",
@@ -145,18 +143,7 @@ _CONDITIONAL_EXPERT_KEYS = (
 
 
 def has_conditional_experts(config) -> bool:
-    """Whether this architecture routes each token to a subset of its experts.
-
-    DDP's default ``find_unused_parameters=False`` promises every parameter takes part in every
-    backward. A sparse MoE breaks that promise by design: an expert that is routed no tokens on
-    this rank in this step produces no gradient, and the NEXT iteration fails with an
-    unfinished reduction rather than continuing. It matters for the DEFAULT path here, not only
-    for a hand-written target list, because Qwen3-style experts name their projections
-    ``gate_proj`` / ``up_proj`` / ``down_proj``, which is exactly what ``lora_target_modules``
-    keeps, so LoRA attaches to every expert.
-
-    Only for the architectures that need it: ``find_unused_parameters=True`` costs an extra
-    traversal of the autograd graph every step, so a dense model must not pay for it."""
+    """Whether this architecture routes each token to a subset of its experts."""
     seen = [config]
     for name in ("text_config", "llm_config", "decoder"):
         nested = getattr(config, name, None)
@@ -1645,17 +1632,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def apply_lora(model, r: int):
-    """The one LoRA configuration every arm trains, so that a layer split and a data
-    parallel replica of the same model train the same adapters.
-
-    Targets are read off the loaded model, the same way the layer-split arm does it, rather
-    than from the hard-coded Llama tuple. ``lora_target_modules`` returns that tuple verbatim
-    when it matches, so nothing moves for Llama or Qwen; it is the architectures whose
-    projections are named differently -- GPT-NeoX's ``query_key_value``, ``dense`` -- that were
-    aborting in PEFT with "Target modules ... not found", after the full model had been
-    allocated on both ranks. Hard-coding here while the other arm discovered was also the one
-    thing that could make the two arms train genuinely different adapters, which is the
-    comparison this file exists to make."""
+    """The one LoRA configuration every arm trains, so that a layer split and a data parallel replica
+    of the same model train the same adapters."""
     from peft import LoraConfig, get_peft_model
     return get_peft_model(
         model,
@@ -1671,19 +1649,17 @@ def apply_lora(model, r: int):
 
 
 def make_token_batches(tok, args, device):
-    """The training rows for a run as ``(input_ids, labels)``, drawn from a fixed seed on every
-    rank rather than broadcast: the layer split already relies on that (stage 0 draws the inputs
-    and the loss stage the targets, and they have to agree), and it keeps every arm on the same
-    rows. Labels are separate because padded positions have to be ignored, and pp_loss_fn
-    already honours -100."""
+    """The training rows for a run as ``(input_ids, labels)``, drawn from a fixed seed on every rank
+    rather than broadcast: the layer split already relies on that (stage 0 draws the inputs and the
+    loss stage the targets, and they have to agree), and it keeps every arm on the same rows."""
     import torch
 
     torch.manual_seed(3407)
     need = args.batch * args.steps
     if args.data:
-        # `if line.strip()` for the same reason the layer-split reader has it: dataset_problem
-        # only establishes that at least one NONBLANK row exists, so a valid file with a blank
-        # separator line reached json.loads and raised -- after both ranks had allocated a model.
+        # `if line.strip()` for the same reason the layer-split reader has it: dataset_problem only
+        # establishes that at least one NONBLANK row exists, so a valid file with a blank separator
+        # line reached json.loads and raised -- after both ranks had allocated a model.
         rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
         texts = [
             tok.apply_chat_template(
@@ -1698,17 +1674,13 @@ def make_token_batches(tok, args, device):
             padding = "max_length",
             truncation = True,
             max_length = args.seq,
-            # apply_chat_template has already rendered the template's own BOS/EOS into the
-            # text, so the default add_special_tokens=True adds a SECOND set -- a duplicated
-            # BOS on the Llama-style templates. The layer-split arm passes this at its own
-            # tokenizer call for the same reason; without it here the two arms are not
-            # training on the same examples, and neither matches inference.
+            # apply_chat_template has already rendered the template's own BOS/EOS into the text, so
+            # the default add_special_tokens=True adds a SECOND set -- a duplicated BOS on the
+            # Llama-style templates.
             add_special_tokens = False,
         )
         ids = enc.input_ids
-        # Padded positions are not text. Without this the target is the padded input, so a short
-        # example trains the model to emit pad for most of its length and the reported loss is
-        # dominated by them.
+        # Padded positions are not text.
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
         return (
@@ -1720,16 +1692,7 @@ def make_token_batches(tok, args, device):
 
 
 def _main_data_parallel(args) -> int:
-    """`--data-parallel`: one whole model per rank; the ranks average gradients.
-
-    The comparison the layer split has always lacked, on the same rows and the same loss:
-    a split of a model that FITS buys nothing by construction, since both nodes still read
-    every weight once per step. With LoRA the all-reduce carries only the adapters, so the
-    link is never the limit; `--fsdp` shards the base weights instead.
-
-    WORLD_SIZE=1 runs the identical code with no wrapper, and is the single-Spark control
-    every two-Spark number is divided by.
-    """
+    """`--data-parallel`: one whole model per rank; the ranks average gradients."""
     import contextlib
 
     import torch
@@ -1747,8 +1710,7 @@ def _main_data_parallel(args) -> int:
     if args.batch % args.microbatches:
         raise SystemExit("--batch must be divisible by --microbatches")
     if args.save and args.fsdp and world > 1:
-        # Refuse up front. The save is skipped for sharded parameters, and learning that only
-        # after the run costs the whole training.
+        # Refuse up front.
         raise SystemExit(
             "--save is not implemented for --fsdp (sharded parameters); drop one of them."
         )
@@ -1758,10 +1720,10 @@ def _main_data_parallel(args) -> int:
             f"be divisible by the world size ({world}) so every rank gets equal rows."
         )
     if args.data:
-        # The same preflight the layer-split path runs, and for the same reason: it is reached
-        # from `main` only on that path, below the dispatch to this function, so an empty or
-        # blank-only jsonl got as far as tokenization -- after both ranks had joined the process
-        # group and allocated a full model each. Fail in a second instead.
+        # The same preflight the layer-split path runs, and for the same reason: it is reached from
+        # `main` only on that path, below the dispatch to this function, so an empty or blank-only
+        # jsonl got as far as tokenization -- after both ranks had joined the process group and
+        # allocated a full model each.
         problem = dataset_problem(args.data)
         if problem:
             raise SystemExit(problem)
@@ -1785,49 +1747,32 @@ def _main_data_parallel(args) -> int:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    # The same two lines the layer-split path sets, for the same two reasons. They were missing
-    # here, so --data-parallel on a base decoder-only checkpoint raised "Asking to pad but the
-    # tokenizer does not have a padding token" out of make_token_batches -- after the whole model
-    # had been loaded and moved to the device -- and, where a pad token did exist, could pad on
-    # the left and break the assumption the label masking below is written against.
+    # The same two lines the layer-split path sets, for the same two reasons.
     if tok.pad_token is None:
-        # Base decoder-only checkpoints ship without one, and padding then raises before
-        # the first step. EOS is the usual stand-in; the labels below mask it out anyway.
+        # Base decoder-only checkpoints ship without one, and padding then raises before the first
+        # step.
         tok.pad_token = tok.eos_token
-    # Right padding keeps every real token preceded only by real tokens, so a causal model
-    # needs no padding mask for the representations; only the labels have to exclude pads.
+    # Right padding keeps every real token preceded only by real tokens, so a causal model needs no
+    # padding mask for the representations; only the labels have to exclude pads.
     tok.padding_side = "right"
-    # And the third: the layer-split path rejects a base checkpoint here, right after the
-    # tokenizer and before the model, precisely because `apply_chat_template` raised only once
-    # both ranks had loaded and materialised a full model each. This path built, moved and
-    # possibly FSDP-wrapped the model first and then raised the same unhandled tokenizer error
-    # out of `make_token_batches`. Same message, same place in the sequence.
+    # And the third: the layer-split path rejects a base checkpoint here, right after the tokenizer
+    # and before the model, precisely because `apply_chat_template` raised only once both ranks had
+    # loaded and materialised a full model each.
     if args.data and getattr(tok, "chat_template", None) is None:
         raise SystemExit(
             f"--data formats each row with the tokenizer's chat template, and {args.model} "
             f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
             f"checkpoint, or drop --data to train on synthetic ids."
         )
-    # Seed BEFORE the adapters exist. The only other manual_seed on this path is inside
-    # make_token_batches, which runs after the model is built, so LoRA's A/B matrices were
-    # drawn from an unseeded generator: two identical invocations -- including the documented
-    # WORLD_SIZE=1 control that every two-Spark number is divided by -- started from different
-    # adapter parameters. make_token_batches reseeds for the rows, as the layer-split path does.
+    # Seed BEFORE the adapters exist.
     torch.manual_seed(TRAIN_SEED)
-    # rank 0 of a world of 1: the whole stack, embedding and head, on this device.
     model, cfg, _ = build_stage_model(
         args.model, 0, 1, device, shard_load = False, dtype = dtype, log = log
     )
     if not args.full_finetune:
         model = apply_lora(model, args.lora_r)
-    # from_pretrained hands back an eval-mode model, as the layer-split path notes where it does
-    # the same thing. LoRA here is built with lora_dropout = 0.0, so this changes nothing on the
-    # mainstream configs whose base dropout is also 0.0 -- but on a checkpoint with nonzero
-    # attention/hidden dropout the data-parallel arm would train without it while the pipeline
-    # arm trains with it, which quietly invalidates the comparison this file exists to make.
     model.train()
     if args.grad_checkpoint:
-        # The HF forward is what runs here, so transformers' own switch is honoured.
         base_model = getattr(model, "base_model", model)
         inner_model = getattr(base_model, "model", base_model)
         target = inner_model if hasattr(inner_model, "gradient_checkpointing_enable") else model
@@ -1919,8 +1864,6 @@ def _main_data_parallel(args) -> int:
             ctx = contextlib.nullcontext() if (last or no_sync is None) else no_sync()
             with ctx:
                 logits = model(input_ids = x, use_cache = False).logits
-                # The same mean-reduced next-token loss and 1/M scaling as the pipeline, and the
-                # same padded-target masking, so the two arms stay comparable.
                 loss = pp_loss_fn(logits, y) / mb_per_rank
                 loss.backward()
             acc += loss.detach().float()

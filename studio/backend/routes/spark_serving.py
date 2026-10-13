@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two-Spark serving status, so the UI can show both nodes working. One endpoint, which
-answers ``{"enabled": false, ...}`` off a paired DGX Spark. Studio and Desktop share this
-backend, so both read the same field."""
+"""Two-Spark serving status, so the UI can show both nodes working."""
 
 from __future__ import annotations
 

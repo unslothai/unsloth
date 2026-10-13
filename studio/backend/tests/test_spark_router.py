@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two-Spark request router, against fake llama-servers on loopback.
-
-Every test drives real sockets, with ``httpx`` as the client the Studio backend uses.
-Health probing runs on demand rather than on the interval, so nothing here depends on
-timing."""
+"""The two-Spark request router, against fake llama-servers on loopback."""
 
 from __future__ import annotations
 
@@ -142,8 +138,8 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
             for path, body, _headers in first_fake(a, b, first.name).served:
                 if path.startswith("/v1/chat"):
                     assert CONVERSATION_FIELD not in body
-            # Consistent hashing, not a rotation: the key comes back to its own
-            # backend once that backend is healthy again.
+            # Consistent hashing, not a rotation: the key comes back to its own backend once that
+            # backend is healthy again.
             await router.mark_down(first, "test")
             other = router.pick("thread-1")
             assert other is not None and other is not first
@@ -290,7 +286,6 @@ def test_peer_dying_mid_stream_gives_that_client_a_clean_error_and_keeps_the_oth
                 frames = await _chat(
                     client, router.base_url, {"prompt": "x", CONVERSATION_FIELD: key_on_b}
                 )
-                # The two frames that made it, then one in-band error, then a clean end.
                 assert frames[:2] == ["b-0", "b-1"]
                 assert len(frames) == 3 and frames[2].startswith("error:")
                 assert "mid-response" in frames[2]
@@ -406,40 +401,33 @@ def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
 
 
 def test_openai_end_user_id_is_not_a_conversation_key():
-    # "user" is OpenAI's stable per-end-user abuse identifier, superseded by safety_identifier,
-    # not a thread id. Keying on it collapses every conversation a person has onto one backend,
-    # which on a single-user Studio session pins all traffic to one node and defeats replicas.
+    # "user" is OpenAI's stable per-end-user abuse identifier, superseded by safety_identifier, not
+    # a thread id.
     a = {"user": "u-1", "messages": [{"role": "user", "content": "first topic"}]}
     b = {"user": "u-1", "messages": [{"role": "user", "content": "unrelated topic"}]}
     ka = sr.conversation_key({}, a)
     kb = sr.conversation_key({}, b)
     assert ka != kb, "two conversations from one end user collapsed onto one routing key"
 
-    # A real conversation id still pins, and still wins over the prompt hash.
     c = {"conversation_id": "c-9", "messages": [{"role": "user", "content": "x"}]}
     d = {"conversation_id": "c-9", "messages": [{"role": "user", "content": "y"}]}
     assert sr.conversation_key({}, c) == sr.conversation_key({}, d) == "conversation_id:c-9"
 
-    # previous_response_id is what the Responses API uses for continuity.
     e = {"previous_response_id": "resp-1", "messages": [{"role": "user", "content": "z"}]}
     assert sr.conversation_key({}, e) == "previous_response_id:resp-1"
 
 
 def test_prefix_key_does_not_join_the_whole_embedding_batch():
-    # Byte-identical to the eager join, without copying the batch to keep a kilobyte.
     batch = [f"row-{i}-" + "x" * 200 for i in range(5000)]
     eager = " ".join(batch)[: sr.PREFIX_KEY_CHARS]
     assert sr._join_to_limit(batch) == eager
     assert sr._prompt_prefix({"input": batch}) == eager
-    # and the single-element and empty cases
     assert sr._join_to_limit(["a", "b"]) == "a b"
     assert sr._join_to_limit([]) == ""
 
 
 def test_a_json_response_that_dies_mid_body_fails_the_transfer_instead_of_looking_complete():
-    # /v1/embeddings, /completion and chat with stream false all answer in JSON. An SSE error
-    # frame appended to one of those is not a message the client can read, and ending the
-    # chunked body cleanly after it presents truncated JSON as a complete 200.
+    # /v1/embeddings, /completion and chat with stream false all answer in JSON.
     async def scenario():
         b = await FakeLlama("b", chunks = 6, die_after = 2, content_type = "application/json").start()
         router = await _router(b)
@@ -458,8 +446,6 @@ def test_a_json_response_that_dies_mid_body_fails_the_transfer_instead_of_lookin
 
 
 def test_an_sse_response_that_dies_mid_stream_still_gets_the_in_band_error():
-    # The other half of the same choice: a reader of text/event-stream can be told in-band,
-    # and llama-server reports its own mid-stream errors the same way.
     async def scenario():
         b = await FakeLlama("b", chunks = 6, die_after = 2).start()
         router = await _router(b)
@@ -476,8 +462,6 @@ def test_an_sse_response_that_dies_mid_stream_still_gets_the_in_band_error():
 
 
 def test_an_oversized_chunked_body_gets_the_same_413_as_content_length(monkeypatch):
-    # Uncaught, the limit reached _serve_connection's connection-level handler and the socket
-    # closed with no response at all, while the Content-Length form got a 413.
     monkeypatch.setattr(sr, "_BODY_LIMIT", 1024)
 
     async def scenario():
@@ -505,9 +489,8 @@ def test_an_oversized_chunked_body_gets_the_same_413_as_content_length(monkeypat
 
 
 def test_a_client_that_leaves_while_queued_gives_its_slot_back():
-    # dispatch waits in the admission queue, and for a non-streaming call llama-server may
-    # send no headers until the generation is finished. Watching for the disconnect only
-    # after dispatch returned left the request queued, forwarded and prefilled for nobody.
+    # dispatch waits in the admission queue, and for a non-streaming call llama-server may send no
+    # headers until the generation is finished.
     async def scenario():
         hold = asyncio.Event()
         a = await FakeLlama("a", hold = hold).start()
@@ -517,7 +500,6 @@ def test_a_client_that_leaves_while_queued_gives_its_slot_back():
                 first = asyncio.ensure_future(_chat(holder, router.base_url, {"prompt": "x"}))
                 await _until(lambda: router.get_backend("a").in_flight == 1)
 
-                # Second caller queues behind it, then goes away before it is admitted.
                 leaver = httpx.AsyncClient(timeout = 10)
                 queued = asyncio.ensure_future(_chat(leaver, router.base_url, {"prompt": "y"}))
                 await _until(lambda: router.get_backend("a").queued == 1)
@@ -542,8 +524,6 @@ def test_a_client_that_leaves_while_queued_gives_its_slot_back():
 
 
 def test_a_peer_that_died_since_its_health_probe_does_not_cost_a_request():
-    # The connect failure happens before any response header is written, so the request can
-    # still be placed on the surviving node instead of closing the client's connection.
     async def scenario():
         a = await FakeLlama("a").start()
         b = await FakeLlama("b").start()
@@ -568,7 +548,6 @@ def test_a_peer_that_died_since_its_health_probe_does_not_cost_a_request():
 
 
 def test_every_backend_being_gone_still_ends_the_request():
-    # The retry is bounded by the backend count: each failure takes one out of rotation.
     async def scenario():
         a = await FakeLlama("a").start()
         router = await _router(a)
@@ -586,22 +565,11 @@ def test_every_backend_being_gone_still_ends_the_request():
 
 
 def test_a_replica_that_closes_before_headers_is_retried_on_the_primary():
-    """A pre-header disconnect is a connect failure in every way that matters.
-
-    A replica that closes a pooled connection after ACCEPTING the request and before returning
-    headers is the ordinary shutdown and crash race on this pair -- it is why the relaunch
-    supervisor exists at all. httpx raises `RemoteProtocolError` for it, which fell into the
-    generic `HTTPError` branch: the backend was marked neither down nor unreachable, so
-    `dispatch` could not fail over to the healthy primary and sticky routing kept choosing the
-    same dead peer until the health loop caught up. No client bytes have been written at that
-    point, so the request is safely retryable.
-    """
+    """A pre-header disconnect is a connect failure in every way that matters."""
 
     async def scenario():
         a = await FakeLlama("a").start()
 
-        # A backend that accepts, reads the request and closes without writing a response.
-        # A real llama-server dying between accept() and its first write looks exactly so.
         accepted = []
 
         async def _hang_up(reader, writer):
@@ -620,7 +588,6 @@ def test_a_replica_that_closes_before_headers_is_retried_on_the_primary():
         router.add_backend("b", "127.0.0.1", port, 4)
         await router.start()
         try:
-            # The peer answers its health probe (it accepts), so the router believes it.
             router.get_backend("b").healthy = True
             key_on_b = next(k for k in (f"t{i}" for i in range(200)) if router.pick(k).name == "b")
             async with httpx.AsyncClient(timeout = 10) as client:

@@ -84,8 +84,6 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 # Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
-# Otherwise, on a paired DGX Spark, the load-path hooks reach for ssh from unrelated load
-# tests. The spark tests stub the cluster module and override this themselves.
 os.environ.setdefault("UNSLOTH_SPARK_SERVING", "0")
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
