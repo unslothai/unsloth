@@ -789,3 +789,93 @@ def test_capture_lock_is_one_lock_per_device():
     from unsloth.models.diffusion_infer import capture_lock
     assert capture_lock("cuda:0") is capture_lock(torch.device("cuda", 0))
     assert capture_lock("cuda:0") is not capture_lock("cuda:1")
+
+
+def test_grouped_stack_is_dropped_when_the_block_moves(monkeypatch):
+    # model.to(...) moves the experts' parameters but not the cached stack tuple; it must not outlive the move.
+    block = _RemoteMoE()
+    assert _stack(monkeypatch, block) is not None
+    block.to(torch.float64)
+    assert "_unsloth_grouped_experts" not in block.__dict__
+    assert _stack(monkeypatch, block)[0].dtype == torch.float64
+
+
+def test_drop_on_move_forgets_only_the_registered_cache():
+    from unsloth.models.diffusion_infer import drop_on_move
+
+    class _Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(2, 2)
+
+    model = _Model()
+    model.__dict__["_unsloth_llada2_graphs"] = {"key": object()}
+    model.__dict__["_unrelated"] = 1
+    drop_on_move(model, "_unsloth_llada2_graphs")
+    model.to(torch.float64)
+    assert "_unsloth_llada2_graphs" not in model.__dict__ and model._unrelated == 1
+    assert model.linear.weight.dtype == torch.float64
+
+
+def test_concurrent_first_generates_stack_the_experts_once(monkeypatch):
+    import threading
+    import time
+
+    from unsloth.models import remote_moe_shims
+
+    def slow(weights):
+        time.sleep(0.05)
+        return "grouped_mm"
+
+    monkeypatch.setattr(remote_moe_shims, "_grouped_mm_for", slow)
+    block = _RemoteMoE()
+    results = []
+    threads = [
+        threading.Thread(target = lambda: results.append(remote_moe_shims._grouped_experts(block)))
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len({id(result) for result in results}) == 1
+
+
+def test_graphed_commit_replay_checks_for_a_stop_first():
+    # A stop asked for while the block-end frame is delivered must land before the commit forward.
+    from unsloth.models import diffusion_infer_block
+
+    calls, stop = [], []
+
+    def graph(window, start):
+        calls.append(start)
+        logits = torch.full((window.shape[0], window.shape[1], VOCAB), -10.0)
+        logits[..., 5] = 10.0
+        return logits
+
+    def check_stop():
+        if stop:
+            raise RuntimeError("stop")
+
+    frames = _Frames(
+        lambda frame: stop.append(1) if frame["step"] == frame["total"] else None, check_stop, 0.0
+    )
+    x = torch.full((1, 8), MASK_ID)
+    with pytest.raises(RuntimeError):
+        diffusion_infer_block._graph_block_sample(
+            graph,
+            x,
+            prompt_length = 0,
+            num_blocks = 2,
+            block_length = 4,
+            steps = 4,
+            counts = torch.full((4, 1, 1), 1),
+            temperature = 0.0,
+            top_k = 0,
+            top_p = 1.0,
+            mask_id = MASK_ID,
+            eos = None,
+            confidence_threshold = 0.9,
+            frames = frames,
+        )
+    assert calls == [0]  # the block's one denoising forward, no commit replay after the stop

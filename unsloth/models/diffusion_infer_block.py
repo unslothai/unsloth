@@ -28,6 +28,7 @@ import torch.nn.functional as F
 from .diffusion_infer import (
     DiffusionGenerationCancelled,
     capture_lock,
+    drop_on_move,
     graphs_disabled,
     host_synced_moe,
     side_stream,
@@ -290,6 +291,8 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
         graphs[key] = graph
         # Taken after capture: its warm-up may re-point weights (the MoE shim stacks experts lazily).
         graphs["weights"] = _weight_addresses(base)
+        # model.to("cpu") does not see this dict: drop the graphs, their pool and static cache with the move.
+        drop_on_move(base, "_unsloth_llada2_graphs")
     return graph
 
 
@@ -518,5 +521,6 @@ def _graph_block_sample(
         if eos is not None and bool(torch.isin(x[:, prompt_length:end], eos).any()):
             return x[:, prompt_length:end]
         if block + 1 < num_blocks:
+            frames.check()  # replay runs no forward hooks: a stop asked for at the block-end frame lands here
             graph(window, start)
     return x[:, prompt_length:]

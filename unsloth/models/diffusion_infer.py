@@ -5,6 +5,7 @@
 active-block-only output head, and regional compile of the backbone for inference."""
 
 import contextlib
+import functools
 import os
 import threading
 import time
@@ -141,6 +142,27 @@ def capture_lock(device):
     device = torch.device(device)
     index = device.index if device.index is not None else torch.cuda.current_device()
     return _CAPTURE_LOCKS.setdefault(index, threading.Lock())
+
+
+def drop_on_move(module, attr):
+    """Forget ``module.<attr>`` whenever the module's tensors are moved or cast (``to`` / ``cpu`` / ``cuda`` /
+    ``half`` / ``float`` all go through ``Module._apply``): a cache kept as a plain attribute is not moved with
+    them, so it would keep the old device's memory alive until the next generate."""
+    cls = type(module)
+    attrs = cls.__dict__.get("_unsloth_drop_on_apply")
+    if attrs is None:
+        attrs = set()
+        original = cls._apply
+
+        @functools.wraps(original)
+        def _apply(self, *args, **kwargs):
+            for name in attrs:
+                self.__dict__.pop(name, None)
+            return original(self, *args, **kwargs)
+
+        cls._apply = _apply
+        cls._unsloth_drop_on_apply = attrs
+    attrs.add(attr)
 
 
 def graphs_disabled():

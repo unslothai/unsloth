@@ -16,6 +16,7 @@ structure, never repo name; no-op for transformers' own models."""
 
 import functools
 import os
+import threading
 
 import torch
 
@@ -329,6 +330,7 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
 
 
 _EXPERT_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+_STACK_LOCK = threading.Lock()
 
 
 def _plain_expert(expert, dtype):
@@ -441,9 +443,24 @@ def _grouped_experts(block):
     so no weight is held twice. The Parameter objects stay the same (an optimizer built earlier still owns
     them). None when the experts are not plain bf16 / fp16 linears on a device torch._grouped_mm serves."""
     cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
-    if cached is not _MISSING:
-        if cached is None or _grouped_experts_live(block, cached, every = False):
+    if cached is not _MISSING and (
+        cached is None or _grouped_experts_live(block, cached, every = False)
+    ):
+        return cached
+    # One thread stacks and re-points the weights; a concurrent first generate waits instead of capturing a
+    # graph over half re-pointed experts.
+    with _STACK_LOCK:
+        cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
+        if cached is not _MISSING and (
+            cached is None or _grouped_experts_live(block, cached, every = False)
+        ):
             return cached
+        return _stack_experts(block)
+
+
+def _stack_experts(block):
+    from .diffusion_infer import drop_on_move
+
     experts = block.experts
     stacked = grouped_mm = None
     first = experts[0] if isinstance(experts, torch.nn.ModuleList) and len(experts) else None
@@ -463,6 +480,8 @@ def _grouped_experts(block):
                 getattr(expert, name).weight.data = buffer[index]
             stacked.append(buffer)
         stacked = (*stacked, grouped_mm)
+        # model.to("cpu") moves the experts' parameters but not this tuple: drop it so the GPU stack is freed.
+        drop_on_move(block, "_unsloth_grouped_experts")
     block.__dict__["_unsloth_grouped_experts"] = stacked
     return stacked
 
