@@ -7,7 +7,6 @@ quants and the original safetensors. Whisper keeps its Transformers path."""
 
 from __future__ import annotations
 
-import functools
 import importlib.util
 import json
 from pathlib import Path
@@ -16,15 +15,19 @@ from pathlib import Path
 MLX_STT_MODEL_TYPES = frozenset({"qwen3_asr"})
 
 
-@functools.lru_cache(maxsize = 1)
+_found = False
+
+
 def mlx_stt_available() -> bool:
-    from utils.hardware.hardware import is_apple_silicon
-    if not is_apple_silicon():
-        return False
-    try:
-        return importlib.util.find_spec("mlx_audio") is not None
-    except (ImportError, ValueError):
-        return False
+    # Only a hit is kept: the MLX self-repair can install mlx-audio while Studio runs.
+    global _found
+    if not _found:
+        from utils.hardware.hardware import is_apple_silicon
+        try:
+            _found = is_apple_silicon() and importlib.util.find_spec("mlx_audio") is not None
+        except (ImportError, ValueError):
+            _found = False
+    return _found
 
 
 def is_mlx_stt_config(config: object) -> bool:

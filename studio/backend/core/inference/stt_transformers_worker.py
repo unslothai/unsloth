@@ -197,17 +197,46 @@ def load_mlx_stt(
     return _MlxSttModel(model)
 
 
+# Whisper language codes -> the names Qwen3-ASR lists in config.support_languages.
+_MLX_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
 def _mlx_language(model, code: Optional[str]) -> Optional[str]:
     """The checkpoint's own name for a Whisper language code, or None to let it detect one."""
-    if not code:
-        return None
-    try:
-        from transformers.models.whisper.tokenization_whisper import LANGUAGES
-    except Exception:  # noqa: BLE001 - no table, no hint
-        return None
-    name = LANGUAGES.get(code, "").lower()
+    name = _MLX_LANGUAGE_NAMES.get(code or "", "").lower()
     supported = getattr(getattr(model, "config", None), "support_languages", None) or []
-    return next((lang for lang in supported if str(lang).lower() == name), None)
+    return next((lang for lang in supported if name and str(lang).lower() == name), None)
 
 
 def transcribe_mlx_window(

@@ -85,12 +85,9 @@ def test_mlx_stt_is_unavailable_off_apple_silicon(monkeypatch):
     import utils.hardware.hardware as hardware
 
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
-    stt_mlx.mlx_stt_available.cache_clear()
-    try:
-        assert stt_mlx.mlx_stt_available() is False
-        assert stt_mlx.is_mlx_stt_config(_QWEN3_ASR_CONFIG) is False
-    finally:
-        stt_mlx.mlx_stt_available.cache_clear()
+    monkeypatch.setattr(stt_mlx, "_found", False)
+    assert stt_mlx.mlx_stt_available() is False
+    assert stt_mlx.is_mlx_stt_config(_QWEN3_ASR_CONFIG) is False
 
 
 def test_mlx_stt_needs_mlx_audio_installed(monkeypatch):
@@ -99,12 +96,14 @@ def test_mlx_stt_needs_mlx_audio_installed(monkeypatch):
     import utils.hardware.hardware as hardware
 
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(stt_mlx, "_found", False)
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    stt_mlx.mlx_stt_available.cache_clear()
-    try:
-        assert stt_mlx.mlx_stt_available() is False
-    finally:
-        stt_mlx.mlx_stt_available.cache_clear()
+    assert stt_mlx.mlx_stt_available() is False
+    # The repair installs it later in the same process: the next check sees it, then keeps it.
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    assert stt_mlx.mlx_stt_available() is True
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert stt_mlx.mlx_stt_available() is True
 
 
 def test_only_listed_families_and_never_whisper_go_to_mlx(mlx_host):
@@ -387,7 +386,7 @@ def test_translation_is_untouched_off_a_mac(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     ("code", "hint"),
-    [("fr", "French"), ("en", "English"), ("sw", None), (None, None), ("zz", None)],
+    [("fr", "French"), ("en", "English"), ("sw", None), (None, None), ("zz", None), ("ja", None)],
 )
 def test_the_chosen_language_reaches_mlx_only_when_the_checkpoint_knows_it(code, hint):
     seen = {}

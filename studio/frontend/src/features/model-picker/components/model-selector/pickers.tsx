@@ -4658,6 +4658,12 @@ export function HubModelPicker({
               meta.source === "exported" ||
               meta.source === "local",
             ...(hubEvidenceById.get(id) ?? {}),
+          }) &&
+          !macMlxSttRowIsRunnable({
+            isMac,
+            isStt: pickedTask === "automatic-speech-recognition",
+            isGguf: Boolean(meta.isGguf || meta.ggufFilename),
+            libraryName: cachedModels.find((c) => c.repo_id === id)?.library_name,
           })
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
@@ -4681,7 +4687,7 @@ export function HubModelPicker({
       }
       onSelectProp(id, meta);
     },
-    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
+    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp, isMac, cachedModels],
   );
 
   // Fine-tuned models for the On Device section: flat, query-filtered, newest first.

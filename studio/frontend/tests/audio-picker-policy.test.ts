@@ -378,7 +378,12 @@ test("an on-device mlx-audio speech-to-text row is runnable on a Mac only", () =
     pickerSource,
     /communityAudioRowIsRunnable\(\{[\s\S]*\}\) \|\|\s*macMlxSttRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isStt: c\.task === "automatic-speech-recognition",[\s\S]*libraryName: c\.library_name/,
   );
-  assert.equal(pickerSource.split("macMlxSttRowIsRunnable(").length - 1, 1);
+  // The Chat-to-Audio handoff asks the same gate, on the cached row's library.
+  assert.match(
+    pickerSource,
+    /\.\.\.\(hubEvidenceById\.get\(id\) \?\? \{\}\),\s*\}\) &&\s*!macMlxSttRowIsRunnable\(\{[\s\S]*libraryName: cachedModels\.find\(\(c\) => c\.repo_id === id\)\?\.library_name,\s*\}\)\s*\) \{/,
+  );
+  assert.equal(pickerSource.split("macMlxSttRowIsRunnable(").length - 1, 2);
 });
 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
