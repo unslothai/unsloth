@@ -135,7 +135,7 @@ _remove_agent_instruction_files() {
     done
 }
 
-# ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
 _FRONTEND_BG_PID=""
 _FRONTEND_BG_LOG=""
 # Build state, not a source input, so the CI dist cache key rightly leaves it out.
@@ -176,11 +176,8 @@ _frontend_proc_id() {
     ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
 }
 
-# A build marks the tree before it touches node_modules or dist and clears the mark only once
-# it succeeded, so a build that died at any point is redone instead of trusted (the freshness
-# check reads it). Wait while the marked build is alive (another setup on this checkout, or one
-# just interrupted and being stopped), then up to 30 s for children left in its group, then
-# undo what it hid, so two builds never share the tree.
+# Mark set before a build touches the tree, cleared only on success. Wait for a live marked
+# build (then 30 s for its group) and undo what it hid, so two builds never share the tree.
 _frontend_build_begin() {
     local _owner="" _pid _n=0 _self
     _self=$(exec sh -c 'echo "$PPID"')
@@ -203,9 +200,8 @@ _frontend_build_begin() {
     _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
 }
 
-# TERM the build's group, KILL it once the leader is gone or after 5 s (npm ci ignores TERM;
-# KILL skips the build's EXIT trap, hence the cleanup). The group's own watcher keeps its id
-# from being reused until this KILL, the last signal any path sends it.
+# TERM, then KILL after 5 s (npm ci ignores TERM; KILL skips its EXIT trap, hence the cleanup).
+# The group's watcher keeps its id from being reused until this KILL.
 _frontend_bg_stop() {
     local _n=0
     kill -TERM -- "-$1" 2>/dev/null || return 0
@@ -217,8 +213,7 @@ _frontend_bg_stop() {
     kill -KILL -- "-$1" 2>/dev/null || :
 }
 
-# Own process group, output to a file. setup_fail stops it synchronously; a watcher inside
-# the group, ignoring HUP/INT/TERM, stops it if setup dies any other way (errexit, Ctrl-C).
+# Own process group; a watcher ignoring HUP/INT/TERM stops it if setup dies (errexit, Ctrl-C).
 _frontend_bg_start() {
     local _monitor=off
     case "$-" in *m*) _monitor=on ;; esac
@@ -2660,8 +2655,7 @@ fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
 
-# A background build runs this itself once it is built: it shares the npm mirror the build may
-# have switched to, and nothing else writes either node_modules meanwhile.
+# A background build runs this itself: it shares the npm mirror the build may have switched to.
 if [ -z "$_FRONTEND_BG_PID" ]; then
     _install_oxc_runtime
     _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"

@@ -207,7 +207,7 @@ function Exit-SetupFailure {
     exit $Code
 }
 
-# ── Frontend build overlapped with the Python, sidecar and llama.cpp steps (#8818) ──
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
 $script:FrontendBuildProc = $null
 $script:FrontendBuildFiles = @()
 $script:FrontendBuildHidden = @()
@@ -251,8 +251,7 @@ function Start-FrontendBuildBackground {
     return $true
 }
 
-# A setup killed mid-build leaves its background build running: wait for it, so two builds
-# never share node_modules and dist. The marker names it by id and start time.
+# Wait for a build a killed setup left running (marker = id + start time).
 function Wait-FrontendBuildOwner {
     try { $owner = @(([System.IO.File]::ReadAllText($FrontendBuildMark)).Trim() -split ' ') } catch { return }
     if ($owner.Count -ne 2) { return }
@@ -283,8 +282,7 @@ function Remove-FrontendBuildFiles {
     $script:FrontendBuildFiles = @()
 }
 
-# Kill the build's whole process tree and put back what it hid; the build mark stays, so the
-# next run rebuilds.
+# Kill the build's process tree and restore what it hid; the mark stays, so the next run rebuilds.
 function Stop-FrontendBuildBackground {
     $proc = $script:FrontendBuildProc
     if (-not $proc) { return }
