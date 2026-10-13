@@ -50,6 +50,25 @@ test("three run at once across every page and the rest wait their turn", async (
   await tick();
 });
 
+test("a page with many waiting can't keep another page waiting until its queue drains", async () => {
+  const busy = setup();
+  const other = setup();
+  for (let i = 0; i < 6; i++) busy.requests.request(`b${i}`, request);
+  for (let i = 0; i < 2; i++) other.requests.request(`o${i}`, request);
+  assert.equal(busy.calls.length, 3);
+  assert.equal(other.calls.length, 0);
+  busy.calls[0].finish(true);
+  busy.calls[1].finish(true);
+  await tick();
+  // The freed slots alternate between the two pages.
+  assert.equal(busy.calls.length, 4);
+  assert.equal(other.calls.length, 1);
+  busy.requests.stop();
+  other.requests.stop();
+  for (const call of [...busy.calls, ...other.calls]) call.finish(false);
+  await tick();
+});
+
 test("one the panel won't make, or with no page address to make it for, fails at once", () => {
   const t = setup();
   t.requests.request("bad", null);

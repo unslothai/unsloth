@@ -9,7 +9,17 @@ import type { PageRequest } from "./frame-message";
 const MAX_RUNNING = 3;
 const MAX_QUEUED = 256;
 let running = 0;
-const waiting = new Set<() => void>();
+// Pages with requests waiting, in turn order. A page that starts one goes to the back, so one busy
+// page can't take every slot another page is waiting for.
+const turns = new Set<() => boolean>();
+
+function schedule() {
+  for (const startOne of turns) {
+    if (running >= MAX_RUNNING) return;
+    turns.delete(startOne);
+    if (startOne()) turns.add(startOne);
+  }
+}
 
 type Job = { id: string; request: PageRequest; controller: AbortController };
 
@@ -22,8 +32,9 @@ export function pageRequests(
 ) {
   const open = new Map<string, AbortController>();
   const queue: Job[] = [];
-  const next = () => {
-    while (running < MAX_RUNNING && queue.length) {
+  /** Starts this page's next request; whether more are waiting. */
+  const startOne = () => {
+    while (queue.length) {
       const job = queue.shift() as Job;
       if (job.controller.signal.aborted) continue;
       const page = pageUrl();
@@ -39,11 +50,12 @@ export function pageRequests(
           running--;
           if (open.get(job.id) === job.controller) open.delete(job.id);
           if (!job.controller.signal.aborted) reply(job.id, answer);
-          for (const wake of waiting) wake();
+          schedule();
         });
+      break;
     }
+    return queue.length > 0;
   };
-  waiting.add(next);
   return {
     /** `request` null is one the panel won't make: it fails at once. */
     request(id: string, request: PageRequest | null) {
@@ -55,7 +67,8 @@ export function pageRequests(
       open.get(id)?.abort();
       open.set(id, controller);
       queue.push({ id, request, controller });
-      next();
+      turns.add(startOne);
+      schedule();
     },
     abort(id: string) {
       open.get(id)?.abort();
@@ -66,7 +79,7 @@ export function pageRequests(
       for (const controller of open.values()) controller.abort();
       open.clear();
       queue.length = 0;
-      waiting.delete(next);
+      turns.delete(startOne);
     },
   };
 }
