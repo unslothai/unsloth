@@ -444,8 +444,8 @@
 }
 
 .dark {
-	/* Same geometry; a dark page needs more alpha for it to read. */
-	--popup-shadow: 0 2px 8px -2px rgb(0 0 0 / 0.7);
+	/* Close to the edge like light, but wider and denser so it reads on a dark page. */
+	--popup-shadow: 0 4px 16px 0 rgb(0 0 0 / 0.85);
 	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
