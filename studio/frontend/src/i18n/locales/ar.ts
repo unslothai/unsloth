@@ -2004,6 +2004,8 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
+        chartToggle: "مخطط",
+        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",
@@ -2595,6 +2597,13 @@ export const ar = {
         "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
       scrollToBottomButtonKeywords:
         "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
+      replyNotification: "الإشعار عند انتهاء الرد",
+      replyNotificationDescription:
+        "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
+      replyNotificationBlocked:
+        "الإشعارات محظورة. اسمح بها لـ Unsloth في إعدادات المتصفح أو النظام، ثم حاول مرة أخرى.",
+      replyNotificationKeywords:
+        "إشعار تنبيه انتهى اكتمل جاهز رد خلفية مصغر notify notification alert done finished reply background",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -2615,14 +2624,14 @@ export const ar = {
       autoCompactKeywords:
         "ضغط تلقائي سياق نافذة اقتطاع منزلقة نقطة تحقق هامش أرشيف استرجاع بحث compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "طول مخرجات الأدوات",
-      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
-      toolResultLimitHint: "تُحفظ المخرجات الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
+      toolResultLimitDescription: "عدد أحرف نتيجة Python أو Terminal أو أداة MCP الواحدة التي يقرأها النموذج. القيمة الافتراضية {count}.",
+      toolResultLimitHint: "تُحفظ مخرجات Python وTerminal الأطول في ملف يمكن للنموذج قراءته على أجزاء. ينطبق الحد الأعلى على النماذج التي تعمل في Unsloth، وتظل نوافذ السياق الصغيرة تحصل على أقل. تحتفظ نماذج API بالقيمة الافتراضية ما لم تخفضها.",
       toolResultLimitDefault: "{count} (افتراضي)",
       toolResultLimitLocked: "مضبوط بواسطة UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "تعذر تحميل طول مخرجات الأدوات.",
       toolResultLimitSaveError: "تعذر حفظ طول مخرجات الأدوات.",
       toolResultLimitKeywords:
-        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "مخرجات نتيجة اقتطاع حد أحرف طول tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "مطوي",
         auto: "التوسيع أثناء التشغيل",

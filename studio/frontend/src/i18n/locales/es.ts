@@ -2026,6 +2026,8 @@ export const es = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana del {date} · {tokens}",
+        chartToggle: "Gráfico",
+        chartToggleHint: "Mostrar Semanal y Acumulada como gráfico con ejes etiquetados",
         less: "Menos",
         more: "Más",
         insightsTitle: "Análisis de actividad",
@@ -2625,6 +2627,13 @@ export const es = {
         "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
       scrollToBottomButtonKeywords:
         "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
+      replyNotification: "Avisar cuando termine una respuesta",
+      replyNotificationDescription:
+        "Muestra una notificación del sistema cuando termina una respuesta mientras Unsloth está minimizado o en segundo plano.",
+      replyNotificationBlocked:
+        "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
+      replyNotificationKeywords:
+        "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado notify notification alert done finished reply background",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -2645,14 +2654,14 @@ export const es = {
       autoCompactKeywords:
         "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen archivo recuperación búsqueda compaction rolling headroom archive retrieval rag",
       toolResultLimit: "Longitud de la salida de herramientas",
-      toolResultLimitDescription: "Caracteres de un resultado de Python o Terminal que lee el modelo. El valor predeterminado es {count}.",
-      toolResultLimitHint: "La salida más larga se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",
+      toolResultLimitDescription: "Caracteres de un resultado de Python, Terminal o herramienta MCP que lee el modelo. El valor predeterminado es {count}.",
+      toolResultLimitHint: "La salida más larga de Python y Terminal se guarda en un archivo que el modelo puede leer por partes. Un límite mayor se aplica a los modelos que se ejecutan en Unsloth, y las ventanas de contexto pequeñas siguen recibiendo menos. Los modelos de API mantienen el valor predeterminado salvo que lo bajes.",
       toolResultLimitDefault: "{count} (predeterminado)",
       toolResultLimitLocked: "Definido por UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "No se pudo cargar la longitud de la salida de herramientas.",
       toolResultLimitSaveError: "No se pudo guardar la longitud de la salida de herramientas.",
       toolResultLimitKeywords:
-        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "salida resultado truncar recortar límite caracteres longitud tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Contraído",
         auto: "Expandir mientras se ejecuta",

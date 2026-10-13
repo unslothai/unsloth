@@ -2000,6 +2000,8 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
+        chartToggle: "차트",
+        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",
@@ -2588,6 +2590,13 @@ export const ko = {
         "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
       scrollToBottomButtonKeywords:
         "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
+      replyNotification: "응답이 끝나면 알림",
+      replyNotificationDescription:
+        "Unsloth가 최소화되었거나 백그라운드에 있을 때 응답이 끝나면 시스템 알림을 표시합니다.",
+      replyNotificationBlocked:
+        "알림이 차단되어 있습니다. 브라우저 또는 시스템 설정에서 Unsloth의 알림을 허용한 후 다시 시도하세요.",
+      replyNotificationKeywords:
+        "알림 통지 완료 끝 준비 응답 백그라운드 최소화 notify notification alert done finished reply background",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -2608,14 +2617,14 @@ export const ko = {
       autoCompactKeywords:
         "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 보관 검색 회수 compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "도구 출력 길이",
-      toolResultLimitDescription: "모델이 읽는 Python 또는 터미널 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
-      toolResultLimitHint: "더 긴 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
+      toolResultLimitDescription: "모델이 읽는 Python, 터미널 또는 MCP 도구 결과 하나의 문자 수입니다. 기본값은 {count}입니다.",
+      toolResultLimitHint: "더 긴 Python 및 터미널 출력은 모델이 나눠서 읽을 수 있는 파일에 저장됩니다. 더 높은 제한은 Unsloth에서 실행되는 모델에 적용되며, 컨텍스트 창이 작으면 여전히 더 적게 받습니다. API 모델은 낮추지 않는 한 기본값을 유지합니다.",
       toolResultLimitDefault: "{count} (기본값)",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS로 설정됨",
       toolResultLimitLoadError: "도구 출력 길이를 불러오지 못했습니다.",
       toolResultLimitSaveError: "도구 출력 길이를 저장하지 못했습니다.",
       toolResultLimitKeywords:
-        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "출력 결과 잘림 제한 문자 길이 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "접힘",
         auto: "실행 중 펼치기",

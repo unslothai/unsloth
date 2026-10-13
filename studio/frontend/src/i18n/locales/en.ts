@@ -2049,6 +2049,8 @@ export const en = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Week of {date} · {tokens}",
+        chartToggle: "Chart",
+        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -2635,6 +2637,13 @@ export const en = {
         "Show a button to jump back to the latest message after you scroll up.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show",
+      replyNotification: "Notify when a reply finishes",
+      replyNotificationDescription:
+        "Show a system notification when a reply finishes while Unsloth is minimized or in the background.",
+      replyNotificationBlocked:
+        "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
+      replyNotificationKeywords:
+        "notify notification alert done finished complete ready response reply background minimized desktop sound",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2656,14 +2665,14 @@ export const en = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search",
       toolResultLimit: "Tool output length",
-      toolResultLimitDescription: "Characters of one Python or Terminal result the model reads. Default is {count}.",
-      toolResultLimitHint: "Longer output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
+      toolResultLimitDescription: "Characters of one Python, Terminal or MCP tool result the model reads. Default is {count}.",
+      toolResultLimitHint: "Longer Python and Terminal output is saved to a file the model can read in parts. A higher limit applies to models running in Unsloth, and small context windows still get less. API models keep the default unless you lower it.",
       toolResultLimitDefault: "{count} (default)",
       toolResultLimitLocked: "Set by UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "Failed to load the tool output length.",
       toolResultLimitSaveError: "Failed to save the tool output length.",
       toolResultLimitKeywords:
-        "tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "Collapsed",
         auto: "Expand while running",

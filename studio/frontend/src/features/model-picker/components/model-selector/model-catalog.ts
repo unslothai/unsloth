@@ -584,6 +584,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         75,
         { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
       ),
+      // 21.0B is every tensor of the single-file DiT the quants are cut from.
+      gguf("unsloth/LTX-2.5-GGUF", { totalParams: 21_004_025_600 }),
     ],
   },
   {

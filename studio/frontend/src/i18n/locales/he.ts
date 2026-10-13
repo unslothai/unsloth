@@ -2087,6 +2087,8 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
+        chartToggle: "תרשים",
+        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -2699,6 +2701,13 @@ export const he = {
         "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
+      replyNotification: "התראה כשתשובה מסתיימת",
+      replyNotificationDescription:
+        "הצגת התראת מערכת כשתשובה מסתיימת בזמן ש-Unsloth ממוזער או ברקע.",
+      replyNotificationBlocked:
+        "ההתראות חסומות. יש לאפשר אותן ל-Unsloth בהגדרות הדפדפן או המערכת ולנסות שוב.",
+      replyNotificationKeywords:
+        "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
@@ -2719,14 +2728,14 @@ export const he = {
       autoCompactKeywords:
         "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
       toolResultLimit: "אורך פלט הכלים",
-      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python או Terminal שהמודל קורא. ברירת המחדל היא {count}.",
-      toolResultLimitHint: "פלט ארוך יותר נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
+      toolResultLimitDescription: "מספר התווים מתוצאה אחת של Python, Terminal או כלי MCP שהמודל קורא. ברירת המחדל היא {count}.",
+      toolResultLimitHint: "פלט ארוך יותר של Python ו-Terminal נשמר בקובץ שהמודל יכול לקרוא בחלקים. מגבלה גבוהה יותר חלה על מודלים שרצים ב-Unsloth, וחלונות הקשר קטנים עדיין מקבלים פחות. מודלי API נשארים בברירת המחדל אלא אם תוריד אותה.",
       toolResultLimitDefault: "{count} (ברירת מחדל)",
       toolResultLimitLocked: "מוגדר על ידי UNSLOTH_TOOL_RESULT_MAX_CHARS",
       toolResultLimitLoadError: "טעינת אורך פלט הכלים נכשלה.",
       toolResultLimitSaveError: "שמירת אורך פלט הכלים נכשלה.",
       toolResultLimitKeywords:
-        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "פלט תוצאה קיצוץ מגבלה תווים אורך tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",
