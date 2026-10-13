@@ -6320,6 +6320,9 @@ def claude(
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    # The route gate is a hook the Windows claude cannot run from WSL, so its own tools would stay on.
+    if auto_route and _wsl_windows_executable(["claude"]):
+        _fail("--auto-route needs claude installed inside WSL, not the Windows claude.")
     as_subagent = as_subagent or auto_route
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"

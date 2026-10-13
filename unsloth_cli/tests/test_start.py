@@ -1901,6 +1901,14 @@ def test_claude_as_subagent_without_auto_route_keeps_only_the_plan_gate(fake_stu
     assert sorted(p.name for p in (plugin / "hooks").iterdir()) == ["hooks.json", "plan_gate.py"]
 
 
+def test_claude_auto_route_rejects_the_windows_claude_under_wsl(fake_studio, monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda command: "/mnt/c/claude.exe")
+    result = CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"])
+    assert result.exit_code == 1
+    assert "--auto-route needs claude installed inside WSL" in result.output
+    assert not (tmp_path / "agents" / "claude-subagent").exists()
+
+
 @pytest.mark.parametrize("flag", ["--auto-route", "--auto-route=true"])
 def test_pi_rejects_auto_route(flag):
     result = CliRunner().invoke(start.start_app, ["pi", "--as-subagent", flag])
