@@ -292,6 +292,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert _sanitize_public_query("Authorization: RBAC role=admin") == "role=admin"
     for text in (
         "Authorization: Bearer\r\n abcdefghijklmnop why",
+        "why Authorization:\r\n Bearer abcdefghijklmnop fails",
         "Authorization: ApiKey abcdefghijklmnop why",
         "Authorization: Basic YTpi request /debug/YTpi/status failed",
     ):
