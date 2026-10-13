@@ -264,19 +264,27 @@ SEGMENTS = [
 ]
 
 
-# A text-only answer reports the language asked for; timestamps ask for verbose_json.
+UNTIMED = {key: value for key, value in VERBOSE.items() if key != "segments"}
+
+
+# A text-only answer reports the language asked for; timestamps ask for verbose_json and always
+# come back as a list, empty when the route timed no speech.
 @pytest.mark.parametrize(
-    "answer,model,timestamps",
-    [(TRANSCRIPT, "openai/whisper-small", False), (VERBOSE, None, True)],
+    "answer,model,timestamps,segments",
+    [
+        (TRANSCRIPT, "openai/whisper-small", False, None),
+        (VERBOSE, None, True, SEGMENTS),
+        (UNTIMED, None, True, []),
+    ],
 )
 def test_small_audio_goes_as_multipart_with_openai_field_names(
-    monkeypatch, answer, model, timestamps
+    monkeypatch, answer, model, timestamps, segments
 ):
     args = _memo("memo.wav", language = "en", model = model, timestamps = timestamps)
     result, studio = run_tool(monkeypatch, {TRANSCRIPTIONS: answer}, "transcribe", args)
     out = result["structuredContent"]
     assert (out["text"], out["language"]) == ("Hello from Studio.", "en")
-    assert out["segments"] == (SEGMENTS if timestamps else None)
+    assert out["segments"] == segments
     assert out["saved_to_history"] is False
     fields = form(studio, "/v1/audio/transcriptions")
     assert fields["file"] == ("memo.wav", WAV)
@@ -293,7 +301,7 @@ def test_small_audio_goes_as_multipart_with_openai_field_names(
 
 def test_translate_drops_language_and_reports_english_however_spelled(monkeypatch):
     verbose = {**VERBOSE, "task": "translate", "language": "english"}
-    args = _memo(translate = True, timestamps = True, language = "de")
+    args = _memo(translate = True, language = "de")
     result, studio = run_tool(monkeypatch, {TRANSLATIONS: verbose}, "transcribe", args)
     assert result["structuredContent"]["language"] == "en"
     assert "language" not in form(studio, "/v1/audio/translations")

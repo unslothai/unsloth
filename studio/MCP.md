@@ -275,7 +275,9 @@ and pass the returned id as `input_id`.
 `transcribe` sends files up to 25 MB directly. Larger files, and audio given by
 id, are uploaded to Unsloth Studio first, and their transcript is saved to Audio
 history. Translation needs a file under 25 MB. Transcribing from a URL or a
-YouTube link is not supported.
+YouTube link is not supported. `timestamps` needs a speech-to-text model that
+times segments, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; other models
+refuse it, and translation never has timestamps.
 
 Tool results never contain paths on the Unsloth Studio computer. Checkpoints are named
 `<run folder>` or `<run folder>/checkpoint-N`. Exports are named relative to

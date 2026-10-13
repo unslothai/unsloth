@@ -141,13 +141,17 @@ async def generate_audio(
 # OpenAI's own upload limit for /audio/transcriptions; past it the tool uploads first.
 MULTIPART_LIMIT = 25 * 1024 * 1024
 NOT_DOWNLOADED = "is not downloaded"
-TIMESTAMPS_HINT = "Pass language with timestamps, or use an audio.cpp speech-to-text model."
+TIMESTAMPS_HINT = (
+    "Timestamps need a speech-to-text model that times segments, such as Qwen3-ASR (audio.cpp) "
+    "or Parakeet-TDT; pass it as model."
+)
 
 
-def _segments(payload: dict) -> Optional[list[TranscriptSegment]]:
+def _segments(payload: dict) -> list[TranscriptSegment]:
+    # The routes leave segments out when there are none, which is not the same as not asking.
     rows = payload.get("segments")
     if not isinstance(rows, list):
-        return None
+        return []
     return [TranscriptSegment.from_route(row) for row in rows if isinstance(row, dict)]
 
 
@@ -274,7 +278,11 @@ async def transcribe(
     model: Optional[str] = None,
     ctx: Optional[Context] = None,
 ) -> TranscriptResult:
-    """Transcribe speech with Unsloth Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Unsloth Studio computer, or an Unsloth Studio id. Audio over 25 MB or given by id is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments; most engines then need ``language``. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
+    """Transcribe speech with Unsloth Studio's speech-to-text, or translate it to English with ``translate``. ``audio`` is inline base64 with a filename, a path on the Unsloth Studio computer, or an Unsloth Studio id. Audio over 25 MB or given by id is stored with Unsloth Studio first and its transcript is saved to Audio history (``saved_to_history``); translation needs a smaller file. ``timestamps`` adds segments and needs a model that times them, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; others refuse it, and translation has none. A missing model is downloaded first. Without ``model`` the loaded speech-to-text model or Unsloth Studio's default is used."""
+    if translate and timestamps:
+        raise ToolError(
+            "Translation returns text only; leave out timestamps, or transcribe without translate."
+        )
     caller = current_caller()
     data, name = audio_bytes(caller, audio) if audio.is_upload else (None, None)
     if data is None or len(data) > MULTIPART_LIMIT:
@@ -312,7 +320,9 @@ async def transcribe(
     if response.status_code == 409 and NOT_DOWNLOADED in response.text:
         await _download_then_retry(caller, ctx, model)
         response = await send()
-    hints = {501: TIMESTAMPS_HINT} if timestamps else None
+    # Off audio.cpp the route refuses timestamps up front: 501 without language, 400 with it.
+    untimed = timestamps and engine != "audiocpp"
+    hints = {400: TIMESTAMPS_HINT, 501: TIMESTAMPS_HINT} if untimed else None
     payload = raise_for_route(response, hints = hints)
     if not isinstance(payload, dict):
         raise ToolError("Unsloth Studio returned no transcript")

@@ -81,6 +81,7 @@ REFUSED = [
     ],
     ("generate_audio", _huge_wav, "larger than 200 MiB"),
     ("transcribe", {"audio": {"clip_id": "clip-7"}, "translate": True}, "under 25 MB"),
+    ("transcribe", {"audio": WAV_INPUT, "translate": True, "timestamps": True}, "text only"),
     ("generate_image", {"prompt": "x", "mask_image": PNG_URL}, "mask_image needs init_image"),
     ("generate_image", {"prompt": "x", "upscale": 2}, None),
     (
@@ -183,12 +184,28 @@ ROUTE_ERRORS = [
         {("POST", "/v1/audio/run"): openai_error("speaker_wav refused.", 400, param = "options")},
         "Invalid arguments: speaker_wav refused.",
     ),
+    # Off audio.cpp, timestamps are refused as a 501 without language and a 400 with it.
+    *[
+        (
+            "transcribe",
+            {"audio": WAV_INPUT, "timestamps": True, **args},
+            {("POST", "/v1/audio/transcriptions"): openai_error("No timings.", status)},
+            f"No timings. (HTTP {status}) Timestamps need a speech-to-text model that times"
+            " segments, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; pass it as model.",
+        )
+        for status, args in ((501, {}), (400, {"language": "en"}))
+    ],
+    # An audio.cpp model's own refusal already says what to do.
     (
         "transcribe",
         {"audio": WAV_INPUT, "timestamps": True},
-        {("POST", "/v1/audio/transcriptions"): openai_error("No language detection.", 501)},
-        "No language detection. (HTTP 501) Pass language with timestamps, or use an audio.cpp"
-        " speech-to-text model.",
+        {
+            ("GET", "/api/inference/audio/stt/status"): {
+                "audiocpp": stt_state(loaded = "Parakeet-TDT-0.6B-v3-GGUF")
+            },
+            ("POST", "/v1/audio/transcriptions"): openai_error("Send the 'language'.", 501),
+        },
+        "Send the 'language'. (HTTP 501)",
     ),
     (
         "generate_video",
