@@ -506,11 +506,7 @@ def test_v1_models_advertises_the_quant_a_bare_repo_id_loads(monkeypatch, tmp_pa
     assert entry["quant"] == bare_variant
     pin_ids = {o["id"] for o in objects if o["id"].startswith("Org/Model-GGUF:")}
     # The union covers every row: the single-quant parked copy pins too.
-    assert {
-        "Org/Model-GGUF:Q8_0",
-        "Org/Model-GGUF:Q6_K",
-        "Org/Model-GGUF:UD-Q4_K_XL",
-    } <= pin_ids
+    assert {"Org/Model-GGUF:Q8_0", "Org/Model-GGUF:Q6_K", "Org/Model-GGUF:UD-Q4_K_XL"} <= pin_ids
 
 
 def test_collect_local_models_keeps_the_cache_label_for_a_folder_registered_over_the_cache(

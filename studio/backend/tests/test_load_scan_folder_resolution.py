@@ -127,7 +127,11 @@ def test_native_path_lease_keeps_the_requested_id(monkeypatch):
 _REPO = "unsloth/Tiny-Probe-GGUF"
 
 
-def _cache_repo(root, files, repo = _REPO):
+def _cache_repo(
+    root,
+    files,
+    repo = _REPO,
+):
     repo_dir = root / ("models--" + repo.replace("/", "--"))
     (repo_dir / "refs").mkdir(parents = True)
     (repo_dir / "refs" / "main").write_text("abc")

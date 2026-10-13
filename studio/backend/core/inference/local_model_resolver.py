@@ -815,7 +815,9 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
-def _register_index_entry(index: dict[str, _LocalGgufEntry], key: str, entry: _LocalGgufEntry) -> None:
+def _register_index_entry(
+    index: dict[str, _LocalGgufEntry], key: str, entry: _LocalGgufEntry
+) -> None:
     """First source wins the key (HF caches ahead of scan folders, like every load path).
 
     A later row of the same repo that holds variants the winner does not must still answer a

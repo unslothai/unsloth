@@ -1172,9 +1172,7 @@ def collect_local_models(
     # answers only when it holds weights: a weightless skeleton or partial download must not
     # claim the id away from the loadable parked copy.
     claimed_repo_ids = {
-        m.model_id.casefold()
-        for m in local_models
-        if m.model_id and _row_answers_repo_id(m)
+        m.model_id.casefold() for m in local_models if m.model_id and _row_answers_repo_id(m)
     }
     for folder in custom_folders:
         folder_path = Path(folder["path"])
