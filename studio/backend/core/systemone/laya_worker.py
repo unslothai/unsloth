@@ -54,8 +54,14 @@ class LayaWorker:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
+        from utils.process_lifetime import (
+            adopt_pid,
+            is_process_shutting_down,
+            spawn_on_lifetime_thread,
+        )
 
+        if is_process_shutting_down():
+            raise LayaWorkerError("Studio is shutting down; the Laya worker was not started.")
         self._conn, child = _CTX.Pipe()
         with native_path_secret_removed_for_child_start():
             self._process = _CTX.Process(
@@ -72,6 +78,8 @@ class LayaWorker:
         try:
             deadline = time.monotonic() + LOAD_TIMEOUT_S
             while not self._conn.poll(1.0):
+                if is_process_shutting_down():
+                    raise LayaWorkerError("The Laya worker was stopped while it loaded.")
                 if cancelled():
                     raise LayaWorkerError("A training run took the GPU while Laya loaded.")
                 if time.monotonic() > deadline:
