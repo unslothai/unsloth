@@ -128,7 +128,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
     "settings.chat.toolResultLimit",
-  "settings.chat.firstTokenLabel",
+    "settings.chat.firstTokenLabel",
     "settings.chat.autoScroll",
     "settings.chat.scrollToBottomButton",
     "settings.profile.greetingSloth",
