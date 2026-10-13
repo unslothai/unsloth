@@ -3025,6 +3025,8 @@ class FastSentenceTransformer(FastModel):
                     lora_dropout = lora_dropout,
                     bias = bias,
                     use_dora = use_dora,
+                    init_lora_weights = init_lora_weights,
+                    loftq_config = loftq_config or {},
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
