@@ -77,9 +77,15 @@ def test_lora_with_gradient_checkpointing_trains_under_ddp(tmp_path, arch):
     ]
     for p in procs:
         p.start()
-    results = [queue.get(timeout = 900) for _ in procs]
+    try:
+        # A rank that raised can leave the other blocked in an all-reduce, so bound the wait.
+        results = [queue.get(timeout = 900) for _ in procs]
+    finally:
+        for p in procs:
+            p.join(120)
+            if p.is_alive():
+                p.kill()
     for p in procs:
-        p.join(120)
         assert p.exitcode == 0
     for rank, error, trained in results:
         assert error is None, f"rank {rank}: {error}"
