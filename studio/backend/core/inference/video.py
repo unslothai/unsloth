@@ -1997,6 +1997,7 @@ def _video_seed_stays_resident(
     text_encoder_quant: Optional[str],
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
+    hf_token: Optional[str] = None,
 ) -> bool:
     """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
 
@@ -2005,7 +2006,7 @@ def _video_seed_stays_resident(
     from .diffusion_component_sizes import video_components_gb
 
     # pre-download: headers of the repo about to load (ranged Hub reads only where the table does not describe it)
-    components = video_components_gb(fam, base_repo, allow_hub = True)
+    components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token)
     if not components:
         return scheme is not None
     import torch
@@ -4609,6 +4610,7 @@ class VideoBackend:
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
                     reclaimable_mib = reclaimable,
+                    hf_token = hf_token,
                 ):
                     # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
                     return None
@@ -4623,6 +4625,7 @@ class VideoBackend:
                         getattr(resident, "pipe", None),
                         ordinal = _target_ordinal(target),
                     ),
+                    hf_token = hf_token,
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
@@ -6326,7 +6329,7 @@ class VideoBackend:
 
         # Safetensors headers of the pipeline repo, reconciled with the family table (the offline fallback).
         components = video_components_gb(
-            fam, repo_id if kind == "pipeline" else None, allow_hub = True
+            fam, repo_id if kind == "pipeline" else None, allow_hub = True, token = hf_token
         )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its encoder PRE-CAST from
@@ -9890,6 +9893,18 @@ class VideoBackend:
                         getattr(state, "repo_id", None),
                         state.offload_policy,
                         device_obj,
+                        # everything about the load that moves its activation peak, the concrete artifact included
+                        kind = getattr(state, "kind", None),
+                        gguf_filename = getattr(state, "gguf_filename", None),
+                        variant_id = getattr(state, "variant_id", None),
+                        h3_task = getattr(state, "h3_task", None),
+                        dtype = getattr(state, "dtype", None),
+                        attention_backend = getattr(state, "attention_backend", None),
+                        speed_mode = getattr(state, "speed_mode", None),
+                        speed_optims = tuple(getattr(state, "speed_optims", ()) or ()),
+                        transformer_cache = getattr(state, "transformer_cache", None),
+                        vae_tiling = getattr(state, "vae_tiling", None),
+                        memory_mode = getattr(state, "memory_mode", None),
                         transformer_quant = getattr(state, "transformer_quant", None),
                         text_encoder_quant = getattr(state, "text_encoder_quant", None),
                     )

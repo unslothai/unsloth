@@ -25,7 +25,19 @@ logger = logging.getLogger(__name__)
 
 # Default cap of the size helpers; callers that historically used a tighter cap pass their own.
 MAX_HEADER_BYTES = 256 * 1024 * 1024
-FLOAT_WIDTH = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2}
+# Every floating dtype safetensors names, with its stored width. Float8 (and the sub-byte float4 / MX scale types) are
+# floating parameters: a float8-stored checkpoint loaded at bf16 / fp16 occupies 2 bytes per parameter on device.
+FLOAT_WIDTH = {
+    "F64": 8,
+    "F32": 4,
+    "F16": 2,
+    "BF16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "F8_E4M3FNUZ": 1,
+    "F8_E5M2FNUZ": 1,
+    "F8_E8M0": 1,
+}
 _GB = 1000.0**3
 
 ReadRange = Callable[[int, int], bytes]
@@ -117,20 +129,11 @@ class ComponentSizes:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.components))
 
-    def resident_gb(
-        self,
-        names: Iterable[str],
-        itemsize: int = 2,
-    ) -> float:
-        return (
-            sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components)
-            / _GB
-        )
+    def resident_gb(self, names: Iterable[str], itemsize: int = 2) -> float:
+        return sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components) / _GB
 
 
-def _accumulate(
-    name: str, headers: Iterable[tuple[str, Optional[dict]]]
-) -> Optional[ComponentSize]:
+def _accumulate(name: str, headers: Iterable[tuple[str, Optional[dict]]]) -> Optional[ComponentSize]:
     stored = float_params = nonfloat = 0
     by_dtype: dict[str, int] = {}
     files: list[str] = []
@@ -186,9 +189,7 @@ def _stem_order(folder: str) -> tuple[str, str]:
 
 
 def select_weight_files(
-    names: Iterable[str],
-    index_files: Optional[Iterable[str]] = None,
-    folder: str = "",
+    names: Iterable[str], index_files: Optional[Iterable[str]] = None, folder: str = ""
 ) -> list[str]:
     """The safetensors files ``from_pretrained`` reads in one component folder (default variant). ``index_files``
     are the shard names an index lists; when given they win (a stray shard of an older layout is not counted)."""
@@ -200,9 +201,7 @@ def select_weight_files(
         return []  # an index naming a file not present: incomplete, unknown
     for stem in _stem_order(folder):
         default = sorted(
-            n
-            for n in names
-            if _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-"))
+            n for n in names if _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-"))
         )
         if default:
             return default
@@ -218,11 +217,7 @@ def _index_shards(text: str) -> Optional[list[str]]:
         return None
 
 
-def _pick_files(
-    names: Iterable[str],
-    read_text: Callable[[str], str],
-    folder: str = "",
-) -> list[str]:
+def _pick_files(names: Iterable[str], read_text: Callable[[str], str], folder: str = "") -> list[str]:
     """Weight files of one folder. An index wins when every shard it lists is present (a folder can carry two
     indexes, e.g. a transformers ``model`` one and a stale diffusers one: the complete one is what loads)."""
     names = list(names)
@@ -243,9 +238,7 @@ def _pick_files(
     return [] if indexed else select_weight_files(names, folder = folder)
 
 
-def local_component_sizes(
-    root: Any, components: Optional[Iterable[str]] = None
-) -> Optional[ComponentSizes]:
+def local_component_sizes(root: Any, components: Optional[Iterable[str]] = None) -> Optional[ComponentSizes]:
     """Component sizes of a local diffusers directory (every top-level folder holding safetensors, or just
     ``components``). None when the directory is unreadable or holds no weights. Never raises."""
     try:
@@ -275,6 +268,7 @@ def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
     """The newest cached snapshot of ``repo_id`` (None when not cached); no network."""
     try:
         from .diffusion_small_host import resolve_snapshot_dir
+
         return resolve_snapshot_dir(repo_id, cache_dir)
     except Exception:  # noqa: BLE001
         return None
@@ -284,39 +278,42 @@ def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
 
 HUB_TIMEOUT_SECONDS = 20.0
 HUB_RETRY_SECONDS = 600.0
+# A size read through a mutable ref (None / "main" / a branch / a tag) is revalidated after this long: one metadata call
+# resolves the ref, and header reads only repeat when it now points at a different commit.
+HUB_REFRESH_SECONDS = 600.0
 _HUB_CACHE: dict = {}
+# (repo, resolved commit sha, components, token id) -> sizes: immutable, so never re-read.
+_HUB_SHA_CACHE: dict = {}
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _token_id(token: Any) -> Optional[str]:
+    """Cache partition for a token (a digest, never the token): a gated repo read with one token is not served to a
+    load without it."""
+    if not token or not isinstance(token, str):
+        return None if not token else "implicit"
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 _HUB_LOCK = threading.Lock()
 
 
 def hub_disabled() -> bool:
     """Ranged Hub reads are off when the Hub is offline or ``UNSLOTH_DIFFUSION_HEADER_FETCH=0``."""
-    if (os.environ.get("UNSLOTH_DIFFUSION_HEADER_FETCH") or "").strip().lower() in (
-        "0",
-        "off",
-        "false",
-        "no",
-    ):
+    if (os.environ.get("UNSLOTH_DIFFUSION_HEADER_FETCH") or "").strip().lower() in ("0", "off", "false", "no"):
         return True
     return (os.environ.get("HF_HUB_OFFLINE") or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-def _hub_header(
-    repo_id: str, filename: str, revision: str, token: Any, size: int, deadline: float
-) -> Optional[dict]:
+def _hub_header(repo_id: str, filename: str, revision: str, token: Any, size: int, deadline: float) -> Optional[dict]:
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers
 
-        from .prequant_header_probe import (
-            MAX_SAFETENSORS_HEADER_BYTES,
-            _hub_range_reader,
-            _json_within,
-        )
+        from .prequant_header_probe import MAX_SAFETENSORS_HEADER_BYTES, _hub_range_reader, _json_within
 
         reader = _hub_range_reader(
-            hf_hub_url(repo_id, filename, revision = revision),
-            dict(build_hf_headers(token = token)),
-            deadline,
+            hf_hub_url(repo_id, filename, revision = revision), dict(build_hf_headers(token = token)), deadline
         )
         (length,) = struct.unpack("<Q", reader(0, 7))
         if not 0 < length <= MAX_SAFETENSORS_HEADER_BYTES or 8 + length > size:
@@ -338,20 +335,25 @@ def hub_component_sizes(
     token: Any = None,
     timeout_seconds: float = HUB_TIMEOUT_SECONDS,
 ) -> Optional[ComponentSizes]:
-    """Component sizes of a Hub diffusers repo from ranged header reads (a few MB at most, no weights), cached per
-    (repo, commit). None offline, on any refusal, or past ``timeout_seconds``. Never raises."""
+    """Component sizes of a Hub diffusers repo from ranged header reads (a few MB at most, no weights), read with
+    ``token`` (the load's own token for a gated / private repo). Cached per resolved commit; an answer for a mutable ref
+    is revalidated after ``HUB_REFRESH_SECONDS``, a failure retried after ``HUB_RETRY_SECONDS``. None offline, on any
+    refusal, or past ``timeout_seconds``. Never raises."""
     if hub_disabled():
         return None
     import time
 
     wanted = set(components) if components is not None else None
-    key = (repo_id, revision, tuple(sorted(wanted)) if wanted is not None else None)
+    key = (repo_id, revision, tuple(sorted(wanted)) if wanted is not None else None, _token_id(token))
+    immutable = bool(revision and _SHA_RE.match(str(revision)))
     with _HUB_LOCK:
         if key in _HUB_CACHE:
             hit, stamp = _HUB_CACHE[key]
-            # an answer stands for the process; a failure is retried after HUB_RETRY_SECONDS (never a stall per load)
-            if hit is not None or time.monotonic() - stamp < HUB_RETRY_SECONDS:
+            age = time.monotonic() - stamp
+            if hit is not None and (immutable or age < HUB_REFRESH_SECONDS):
                 return hit
+            if hit is None and age < HUB_RETRY_SECONDS:
+                return None  # never a stall per load
     result = _hub_component_sizes(repo_id, wanted, revision, token, float(timeout_seconds))
     with _HUB_LOCK:
         _HUB_CACHE[key] = (result, time.monotonic())
@@ -365,14 +367,44 @@ def _hub_component_sizes(
 
     deadline = time.monotonic() + timeout_seconds
     try:
-        from huggingface_hub import HfApi, hf_hub_url
-        from huggingface_hub.utils import build_hf_headers, get_session
+        from huggingface_hub import HfApi
+
         info = HfApi(token = token).model_info(
             repo_id, revision = revision, files_metadata = True, timeout = timeout_seconds
         )
     except Exception:  # noqa: BLE001 - offline, gated, missing: the table answers
         return None
     commit = getattr(info, "sha", None) or revision
+    sha_key = (
+        repo_id,
+        commit,
+        tuple(sorted(wanted)) if wanted is not None else None,
+        _token_id(token),
+    )
+    with _HUB_LOCK:
+        if commit and sha_key in _HUB_SHA_CACHE:
+            return _HUB_SHA_CACHE[sha_key]  # the ref still points at a commit already read
+    result = _read_hub_sizes(repo_id, info, commit, wanted, token, deadline, timeout_seconds)
+    if result is not None and commit:
+        with _HUB_LOCK:
+            _HUB_SHA_CACHE[sha_key] = result
+    return result
+
+
+def _read_hub_sizes(
+    repo_id: str,
+    info: Any,
+    commit: Optional[str],
+    wanted: Optional[set],
+    token: Any,
+    deadline: float,
+    timeout_seconds: float,
+) -> Optional[ComponentSizes]:
+    import time
+
+    from huggingface_hub import hf_hub_url
+    from huggingface_hub.utils import build_hf_headers, get_session
+
     by_folder: dict[str, dict[str, int]] = {}
     for sib in getattr(info, "siblings", None) or ():
         parts = str(getattr(sib, "rfilename", "")).split("/")
@@ -384,7 +416,6 @@ def _hub_component_sizes(
     out: dict[str, ComponentSize] = {}
     try:
         for folder, files in sorted(by_folder.items()):
-
             def _read_index(n: str, folder: str = folder) -> str:
                 # fetched, never cached: a stray index in the HF cache would read as a started download
                 response = get_session().get(
@@ -405,12 +436,7 @@ def _hub_component_sizes(
             size = _accumulate(
                 folder,
                 (
-                    (
-                        f,
-                        _hub_header(
-                            repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline
-                        ),
-                    )
+                    (f, _hub_header(repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline))
                     for f in picked
                 ),
             )
@@ -427,8 +453,13 @@ def component_sizes(
     components: Optional[Iterable[str]] = None,
     allow_hub: bool = False,
     cache_dir: Any = None,
+    required: Optional[Iterable[str]] = None,
+    token: Any = None,
 ) -> Optional[ComponentSizes]:
-    """Local headers first (a path, or the repo's cached snapshot), then, with ``allow_hub``, ranged Hub reads."""
+    """Local headers first (a path, or the repo's cached snapshot), then, with ``allow_hub``, ranged Hub reads (with
+    ``token``). ``components`` are the folders counted when present; the local answer is complete once every
+    ``required`` folder (default: all of ``components``) is there, so optional folders never send a cached model to
+    the Hub."""
     if repo_or_dir is None:
         return None
     path = Path(str(repo_or_dir)).expanduser()
@@ -436,10 +467,11 @@ def component_sizes(
         return local_component_sizes(path, components)
     snap = local_snapshot_dir(str(repo_or_dir), cache_dir)
     local = local_component_sizes(snap, components) if snap is not None else None
-    if local is not None and (components is None or all(c in local.components for c in components)):
+    need = tuple(required) if required is not None else (tuple(components) if components is not None else ())
+    if local is not None and all(c in local.components for c in need):
         return local
     if allow_hub:
-        hub = hub_component_sizes(str(repo_or_dir), components = components)
+        hub = hub_component_sizes(str(repo_or_dir), components = components, token = token)
         if hub is not None:
             return hub
     return local
@@ -465,6 +497,20 @@ def table_mismatches() -> dict:
     return dict(_MISMATCHES)
 
 
+def video_required_roles(fam: Any) -> tuple[str, ...]:
+    """The folders without which ``video_header_components_gb`` cannot answer: the denoiser (both experts for MoE),
+    the text encoder, the VAE and, for an audio family, the audio VAE. Connectors, vocoder, upsampler, a second text
+    encoder are optional: counted when present, never a reason to go to the Hub."""
+    denoiser = getattr(fam, "denoiser_attr", None) or "transformer"
+    roles = [denoiser]
+    if bool(getattr(fam, "is_moe", False)):
+        roles.append("transformer_2")
+    roles += ["text_encoder", "vae"]
+    if bool(getattr(fam, "has_audio", False)):
+        roles.append("audio_vae")
+    return tuple(dict.fromkeys(roles))
+
+
 def video_header_components_gb(
     fam: Any, sizes: Optional[ComponentSizes]
 ) -> Optional[tuple[float, float, float]]:
@@ -487,19 +533,16 @@ def video_header_components_gb(
     if bool(getattr(fam, "has_audio", False)) and sizes.get("audio_vae") is None:
         return None
     vae_itemsize = 4 if bool(getattr(fam, "vae_force_fp32", False)) else 2
-    vae_gb = (
-        sum(sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2) for n in vae)
-        / _GB
-    )
+    vae_gb = sum(
+        sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2) for n in vae
+    ) / _GB
     return (sizes.resident_gb(denoisers), sizes.resident_gb(text), vae_gb)
 
 
 IMAGE_ROLE_DENOISER = ("transformer", "transformer_2", "unconditional_transformer", "unet", "prior")
 
 
-def image_header_components_gb(
-    sizes: Optional[ComponentSizes],
-) -> Optional[tuple[float, float, float]]:
+def image_header_components_gb(sizes: Optional[ComponentSizes]) -> Optional[tuple[float, float, float]]:
     """``(denoiser(s), text encoders, vae)`` bf16-resident GB of an image pipeline, the ``_FAMILY_BF16_GB`` layout;
     None unless a denoiser, a text encoder and a VAE are all present."""
     if sizes is None:
@@ -545,13 +588,7 @@ def reconcile_with_table(
     return tuple(max(float(h), float(t)) for h, t in zip(rounded, table))  # type: ignore[return-value]
 
 
-def reconcile_scalar(
-    header: Optional[float],
-    table: float,
-    *,
-    is_base: bool,
-    key: Any = None,
-) -> float:
+def reconcile_scalar(header: Optional[float], table: float, *, is_base: bool, key: Any = None) -> float:
     """``reconcile_with_table`` for one term (a per-component constant such as LTX-2.5's latent upsampler)."""
     out = reconcile_with_table(
         None if header is None else (float(header),), (float(table),), is_base = is_base, key = key
@@ -564,10 +601,12 @@ def video_components_gb(
     repo: Any = None,
     *,
     allow_hub: bool = False,
+    token: Any = None,
 ) -> Optional[tuple[float, float, float]]:
     """``(denoiser(s), text encoders, VAE + audio)`` bf16-resident decimal GB for ``fam`` loaded from ``repo``
-    (default: the family's base repo), from safetensors headers (local snapshot, then ranged Hub reads when
-    ``allow_hub``) reconciled with ``fam.bf16_components_gb``. Never raises; None when neither answers."""
+    (default: the family's base repo), from safetensors headers (local snapshot, then ranged Hub reads with the load's
+    ``token`` when ``allow_hub``) reconciled with ``fam.bf16_components_gb``. Never raises; None when neither
+    answers."""
     table = getattr(fam, "bf16_components_gb", None)
     try:
         base = getattr(fam, "base_repo", None)
@@ -582,7 +621,11 @@ def video_components_gb(
             *VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "")), ()),
         )
         sizes = component_sizes(
-            target, components = wanted, allow_hub = allow_hub and (table is None or not is_base)
+            target,
+            components = wanted,
+            required = video_required_roles(fam),
+            allow_hub = allow_hub and (table is None or not is_base),
+            token = token,
         )
         header = video_header_components_gb(fam, sizes)
         return reconcile_with_table(
@@ -592,13 +635,7 @@ def video_components_gb(
         return table
 
 
-def component_gb(
-    repo: Any,
-    component: str,
-    *,
-    itemsize: int = 2,
-    default: Optional[float] = None,
-) -> Optional[float]:
+def component_gb(repo: Any, component: str, *, itemsize: int = 2, default: Optional[float] = None) -> Optional[float]:
     """One component's resident GB from local headers (no network), else ``default``."""
     try:
         sizes = component_sizes(repo, components = (component,))

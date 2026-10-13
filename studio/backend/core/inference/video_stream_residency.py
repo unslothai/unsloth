@@ -153,7 +153,7 @@ def calibration_key(
         str(family or ""),
         str(repo or ""),
         str(offload_policy or ""),
-        str(getattr(device, "type", device) or ""),
+        str(device or ""),  # the card too: a different GPU model can pick different kernels and workspaces
         tuple(sorted((k, str(v)) for k, v in extra.items())),
     )
 
