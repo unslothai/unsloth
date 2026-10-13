@@ -124,6 +124,10 @@ import {
 } from "./lib/superseded-refresh";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
+  listingTagsForFormat,
+  recommendedNeedsLikes,
+} from "./lib/format-filters";
+import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
@@ -928,6 +932,10 @@ export function ModelsPage() {
     direction: effectiveDirection,
     channel: listChannel,
     ownerScope,
+    listingTags:
+      mode === "search"
+        ? listingTagsForFormat(effectiveDiscoverFormat, checkpointQuantFormats)
+        : undefined,
     filters: searchFilters,
     task:
       capabilityFilter === "audio" ? (linkedAudioTask ?? undefined) : undefined,
@@ -1048,6 +1056,7 @@ export function ModelsPage() {
         // search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
+          (mode === "search" && !recommendedNeedsLikes(effectiveSort)) ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         (effectiveDiscoverFormat === "recommended"
@@ -1076,6 +1085,8 @@ export function ModelsPage() {
     hiddenEmbeddingModelIds,
     isDatasetMode,
     hasQuery,
+    mode,
+    effectiveSort,
     effectiveDiscoverFormat,
     checkpointQuantFormats,
     diffusionQuantFormats,

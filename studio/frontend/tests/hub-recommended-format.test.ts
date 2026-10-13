@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   checkpointQuantFormat,
+  listingTagsForFormat,
   matchesFormat,
   matchesRecommended,
+  recommendedNeedsLikes,
 } from "../src/features/hub/lib/format-filters.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -73,7 +75,7 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*resolveOwnerProviderLogo/,
+    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*\(mode === "search" && !recommendedNeedsLikes\(effectiveSort\)\) \|\|\s*resolveOwnerProviderLogo/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");
@@ -139,5 +141,29 @@ test("a capable Recommended channel query drops the GGUF-only tag", async () => 
   assert.match(
     page,
     /tags: widenRecommendedChannel\s*\?\s*withoutGgufTag\(liveListChannel\.tags\)\s*:\s*liveListChannel\.tags/,
+  );
+});
+
+test("Newest and Recently updated skip the likes floor no fresh upload can meet", () => {
+  for (const sort of ["trendingScore", "downloads", "likes"]) {
+    assert.equal(recommendedNeedsLikes(sort), true, sort);
+  }
+  assert.equal(recommendedNeedsLikes("createdAt"), false);
+  assert.equal(recommendedNeedsLikes("lastModified"), false);
+});
+
+test("GGUF-only views ask the Hub for GGUF repos, others list every format", async () => {
+  assert.deepEqual(listingTagsForFormat("gguf", []), ["gguf"]);
+  assert.deepEqual(listingTagsForFormat("gguf", ["fp8"]), ["gguf"]);
+  assert.deepEqual(listingTagsForFormat("recommended", []), ["gguf"]);
+  // FP8 / NVFP4 checkpoints pass Recommended here, and they are not GGUF repos.
+  assert.equal(listingTagsForFormat("recommended", ["fp8"]), undefined);
+  for (const format of ["all", "checkpoint", "mlx", "npu"] as const) {
+    assert.equal(listingTagsForFormat(format, []), undefined, format);
+  }
+  const page = await readSrcAsync("features/hub/hub-page.tsx");
+  assert.match(
+    page,
+    /listingTags:\s*mode === "search"\s*\?\s*listingTagsForFormat\(effectiveDiscoverFormat, checkpointQuantFormats\)\s*:\s*undefined/,
   );
 });
