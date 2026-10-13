@@ -109,6 +109,7 @@ def _run_sh(
         "UNSLOTH_GPUS",
         "UNSLOTH_ALLOW_CPU",
         "UNSLOTH_STUDIO_VOLUME",
+        "UNSLOTH_WORKSPACE_VOLUME",
         "UNSLOTH_IMAGE",
         "UNSLOTH_ROCM",
         "HSA_OVERRIDE_GFX_VERSION",
@@ -273,6 +274,13 @@ class TestRunShRocm:
         mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
         assert "unsloth-studio:/opt/unsloth-studio" in mounts, mounts
         assert any(m.endswith(":/workspace/.cache/huggingface") for m in mounts), mounts
+
+    def test_the_workspace_volume_is_not_shared_with_the_cuda_image(self, tmp_path):
+        rocm, _ = _run_sh(tmp_path, ["--rocm", "true"])
+        cuda, _ = _run_sh(tmp_path, ["true"], nvidia = True)
+        ws = lambda argv: [argv[i + 1] for i, a in enumerate(argv) if a == "-v" and argv[i + 1].endswith(":/workspace")]
+        assert ws(rocm) == ["unsloth-workspace-rocm:/workspace"], rocm
+        assert ws(cuda) == ["unsloth-workspace:/workspace"], cuda
 
     def test_a_custom_image_is_kept(self, tmp_path):
         argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {"UNSLOTH_IMAGE": "me/rocm:dev"})

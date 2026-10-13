@@ -43,7 +43,8 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
-#   UNSLOTH_WORKSPACE_VOLUME=unsloth-workspace  named volume for /workspace; empty to skip it
+#   UNSLOTH_WORKSPACE_VOLUME=unsloth-workspace  named volume for /workspace (unsloth-workspace-rocm
+#                                           under --rocm); empty to skip it
 #   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
 #                                           checkpoint on docker stop; --stop-timeout is
 #                                           set 30s above it
@@ -187,7 +188,10 @@ STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then
     STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
 fi
-WORKSPACE_VOLUME="${UNSLOTH_WORKSPACE_VOLUME-unsloth-workspace}"
+# per image family: a new volume keeps the files of the first image that mounts it
+WORKSPACE_DEFAULT=unsloth-workspace
+[[ $ROCM -eq 1 ]] && WORKSPACE_DEFAULT=unsloth-workspace-rocm
+WORKSPACE_VOLUME="${UNSLOTH_WORKSPACE_VOLUME-$WORKSPACE_DEFAULT}"
 WORKSPACE_MOUNT=()
 if [ -n "$WORKSPACE_VOLUME" ]; then
     WORKSPACE_MOUNT=(-v "$WORKSPACE_VOLUME":/workspace)
