@@ -804,3 +804,89 @@ def test_generate_tags_before_the_fit_and_keys_the_request_mode():
     call = src[key_at : src.index("\n                    )", key_at)]
     for field in ("fps", "conditioning", "first_frame", "last_frame", "references", "cfg"):
         assert f"{field} = " in call, field
+
+
+# ---- review round 3 ----
+
+
+def test_local_files_only_scope_disables_hub_reads(monkeypatch):
+    from core.inference.diffusion_prequant import _LOCAL_FILES_ONLY
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
+    assert not dcs.hub_disabled()
+    token = _LOCAL_FILES_ONLY.set(True)
+    try:
+        assert dcs.hub_disabled()
+        assert dcs.hub_component_sizes("o/r") is None
+    finally:
+        _LOCAL_FILES_ONLY.reset(token)
+
+
+def test_load_pipeline_passes_local_only_to_the_sizing_path():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend.load_pipeline)
+    call = src[src.index("components = video_components_gb(") :]
+    call = call[: call.index("\n        )")]
+    assert "allow_hub = not local_files_only" in call
+
+
+def test_snapshot_lookup_uses_the_active_cache_root(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    from utils import hf_cache_settings
+
+    custom = tmp_path / "custom_hub"
+    snap = custom / "models--o--r" / "snapshots" / ("e" * 40)
+    _component(snap, "transformer", 0.001)
+    (snap / "model_index.json").write_text("{}")
+    (custom / "models--o--r" / "refs").mkdir(parents = True)
+    (custom / "models--o--r" / "refs" / "main").write_text("e" * 40)
+    assert constants.HF_HUB_CACHE != str(custom)  # huggingface_hub's own default does not see it
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(custom))
+    assert dcs.local_snapshot_dir("o/r") == snap
+    assert dcs.component_sizes("o/r").names() == ("transformer",)
+
+
+def test_shards_without_an_index_are_unknown(tmp_path):
+    t = tmp_path / "transformer"
+    _write_header(t / "diffusion_pytorch_model-00001-of-00002.safetensors", {"a": ("BF16", 10)})
+    _write_header(t / "diffusion_pytorch_model-00002-of-00002.safetensors", {"b": ("BF16", 10)})
+    assert dcs.local_component_sizes(tmp_path) is None
+    assert dcs.select_weight_files(["model-00001-of-00001.safetensors"], folder = "text_encoder") == []
+    # the unsharded file alone is a complete answer, a stray shard beside it is ignored
+    _write_header(t / "diffusion_pytorch_model.safetensors", {"c": ("BF16", 30)})
+    assert dcs.local_component_sizes(tmp_path).get("transformer").files == ("diffusion_pytorch_model.safetensors",)
+
+
+def test_mixed_format_variant_keeps_its_known_larger_terms(tmp_path, monkeypatch):
+    monkeypatch.setattr(dcs, "_MISMATCHES", {})
+    fam = _fam("wan2.2-ti2v-5b")
+    table = fam.bf16_components_gb
+    _component(tmp_path, "transformer", table[0] + 3.0)
+    (tmp_path / "text_encoder").mkdir()
+    (tmp_path / "text_encoder" / "pytorch_model.bin").write_bytes(b"\0" * 16)  # header-less: unknown term
+    _component(tmp_path, "vae", 0.1, "F32")
+    terms = dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))
+    assert terms[1] is None and terms[0] == pytest.approx(table[0] + 3.0)
+    got = dcs.video_components_gb(fam, str(tmp_path))
+    # known larger denoiser wins, unknown text encoder and smaller VAE take the table
+    assert got == (round(table[0] + 3.0, 1), table[1], table[2])
+    # the base repo keeps the table on every term
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    assert dcs.video_components_gb(fam) == table
+    # without a table an unknown term means no answer
+    assert dcs.reconcile_with_table((1.0, None, 1.0), None, is_base = False) is None
+
+
+def test_transformer_2_counts_only_for_moe(tmp_path):
+    _component(tmp_path, "transformer", 2.0)
+    _component(tmp_path, "transformer_2", 2.0)
+    _component(tmp_path, "text_encoder", 1.0, stem = "model")
+    _component(tmp_path, "vae", 0.5)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[0] == pytest.approx(2.0)
+    assert dcs.video_header_terms(_fam("wan2.2-t2v-a14b"), sizes)[0] == pytest.approx(4.0)

@@ -179,6 +179,7 @@ def _accumulate(
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
+_SHARD_RE = re.compile(r"^.+-\d{5}-of-\d{5}\.safetensors$")
 _INDEX_RE = re.compile(r"^(?:diffusion_pytorch_model|model)\.safetensors\.index\.json$")
 
 
@@ -204,14 +205,15 @@ def select_weight_files(
         if all(n in names for n in listed):
             return listed
         return []  # an index naming a file not present: incomplete, unknown
+    # Without an index only an UNSHARDED file is a complete answer: shards alone (index missing or not yet downloaded)
+    # make the component unknown, never the sum of whichever shards happen to be here.
     for stem in _stem_order(folder):
-        default = sorted(
-            n
-            for n in names
-            if _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-"))
-        )
-        if default:
-            return default
+        if f"{stem}.safetensors" in names:
+            return [f"{stem}.safetensors"]
+        if any(_SHARD_RE.match(n) and n.startswith(stem + "-") for n in names):
+            return []
+    if any(_SHARD_RE.match(n) for n in names):
+        return []
     plain = sorted(n for n in names if "." not in n[: -len(".safetensors")])
     return plain
 
@@ -245,7 +247,7 @@ def _pick_files(
         if any(
             _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-")) for n in names
         ):
-            # this stem's weights without an index: the loader stops here too
+            # this stem's weights without an index: the loader stops here too (shards alone are unknown)
             return select_weight_files(
                 [n for n in names if n.startswith((stem + ".", stem + "-"))], folder=folder
             )
@@ -280,12 +282,22 @@ def local_component_sizes(
         return None
 
 
+def active_cache_dir() -> Optional[str]:
+    """Studio's LIVE hub cache root (the one every loader is pinned to), not huggingface_hub's import-time default."""
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        return active_hf_hub_cache()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
     """The newest cached snapshot of ``repo_id`` (None when not cached); no network."""
     try:
         from .diffusion_small_host import resolve_snapshot_dir
 
-        return resolve_snapshot_dir(repo_id, cache_dir)
+        return resolve_snapshot_dir(repo_id, cache_dir if cache_dir is not None else active_cache_dir())
     except Exception:  # noqa: BLE001
         return None
 
@@ -317,7 +329,15 @@ _HUB_LOCK = threading.Lock()
 
 
 def hub_disabled() -> bool:
-    """Ranged Hub reads are off when the Hub is offline or ``UNSLOTH_DIFFUSION_HEADER_FETCH=0``."""
+    """Ranged Hub reads are off when the Hub is offline, inside a local-files-only load (the prequant scope's
+    ``_LOCAL_FILES_ONLY``), or with ``UNSLOTH_DIFFUSION_HEADER_FETCH=0``."""
+    try:
+        from .diffusion_prequant import _LOCAL_FILES_ONLY
+
+        if _LOCAL_FILES_ONLY.get():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     if (os.environ.get("UNSLOTH_DIFFUSION_HEADER_FETCH") or "").strip().lower() in (
         "0",
         "off",
@@ -598,33 +618,54 @@ def video_required_roles(fam: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(roles))
 
 
+def video_header_terms(
+    fam: Any, sizes: Optional[ComponentSizes]
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Each term of the family triple from header sizes, or None for a term whose required folders are not all
+    known (e.g. a ``.bin`` text encoder beside a safetensors transformer). The denoiser term needs every expert
+    (``transformer_2`` counts only for an MoE family), the text term ``text_encoder``, the VAE term ``vae`` (+
+    ``audio_vae`` for an audio family); optional folders add when present. Float terms are cast to bf16, a
+    ``vae_force_fp32`` family keeps its VAE at fp32 (as the table records it)."""
+    if sizes is None:
+        return (None, None, None)
+    name = str(getattr(fam, "name", "") or "")
+    moe = bool(getattr(fam, "is_moe", False))
+    primary = getattr(fam, "denoiser_attr", None) or "transformer"
+    denoiser_names = tuple(dict.fromkeys((primary, "transformer_2") if moe else (primary,)))
+    denoiser = (
+        sizes.resident_gb(denoiser_names)
+        if all(sizes.get(n) is not None for n in denoiser_names)
+        else None
+    )
+    text = (
+        sizes.resident_gb([n for n in VIDEO_ROLE_TEXT if sizes.get(n) is not None])
+        if sizes.get("text_encoder") is not None
+        else None
+    )
+    vae_names = VIDEO_ROLE_VAE + VIDEO_EXTRA_VAE_ROLE.get(name, ())
+    vae_ok = sizes.get("vae") is not None and (
+        not bool(getattr(fam, "has_audio", False)) or sizes.get("audio_vae") is not None
+    )
+    vae = None
+    if vae_ok:
+        vae_itemsize = 4 if bool(getattr(fam, "vae_force_fp32", False)) else 2
+        vae = (
+            sum(
+                sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2)
+                for n in vae_names
+                if sizes.get(n) is not None
+            )
+            / _GB
+        )
+    return (denoiser, text, vae)
+
+
 def video_header_components_gb(
     fam: Any, sizes: Optional[ComponentSizes]
 ) -> Optional[tuple[float, float, float]]:
-    """The family triple from header sizes, or None unless every role is present. Float terms are cast to bf16, a
-    ``vae_force_fp32`` family keeps its VAE at fp32 (as the table records it)."""
-    if sizes is None:
-        return None
-    name = str(getattr(fam, "name", "") or "")
-    denoiser_names = tuple(
-        n for n in (getattr(fam, "denoiser_attr", "transformer"), *VIDEO_ROLE_DENOISER) if n
-    )
-    denoisers = [n for n in dict.fromkeys(denoiser_names) if sizes.get(n) is not None]
-    if bool(getattr(fam, "is_moe", False)) and len(denoisers) < 2:
-        return None
-    text = [n for n in VIDEO_ROLE_TEXT if sizes.get(n) is not None]
-    vae_names = VIDEO_ROLE_VAE + VIDEO_EXTRA_VAE_ROLE.get(name, ())
-    vae = [n for n in vae_names if sizes.get(n) is not None]
-    if not denoisers or not text or sizes.get("vae") is None:
-        return None
-    if bool(getattr(fam, "has_audio", False)) and sizes.get("audio_vae") is None:
-        return None
-    vae_itemsize = 4 if bool(getattr(fam, "vae_force_fp32", False)) else 2
-    vae_gb = (
-        sum(sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2) for n in vae)
-        / _GB
-    )
-    return (sizes.resident_gb(denoisers), sizes.resident_gb(text), vae_gb)
+    """The family triple from header sizes, or None unless every term is known (``video_header_terms``)."""
+    terms = video_header_terms(fam, sizes)
+    return None if any(t is None for t in terms) else terms  # type: ignore[return-value]
 
 
 IMAGE_ROLE_DENOISER = ("transformer", "transformer_2", "unconditional_transformer", "unet", "prior")
@@ -655,12 +696,19 @@ def reconcile_with_table(
     table's precision). Both: the table where they agree within rounding; on a disagreement the table still wins for
     the family's own base repo (the disagreement is recorded for review, never applied silently). A different repo (a
     variant / finetune / local copy the table does not describe) takes the larger of the two per term: a variant
-    bigger than its base is priced at its own size, a smaller or same-size one keeps today's table plan."""
-    if header is None:
+    bigger than its base is priced at its own size, a smaller or same-size one keeps today's table plan.
+
+    A header term may be None (unknown, e.g. a ``.bin`` component): that term takes the table, the known ones are
+    reconciled on their own, so a mixed-format variant keeps its known larger denoiser. Without a table every term
+    must be known."""
+    if header is None or all(h is None for h in header):
         return table
-    rounded = tuple(round(float(v), 1) for v in header)
     if table is None:
-        return rounded  # type: ignore[return-value]
+        if any(h is None for h in header):
+            return None
+        return tuple(round(float(v), 1) for v in header)  # type: ignore[return-value]
+    header = tuple(t if h is None else h for h, t in zip(header, table))
+    rounded = tuple(round(float(v), 1) for v in header)
     agree = all(abs(float(h) - float(t)) <= TABLE_ROUNDING_GB for h, t in zip(header, table))
     if agree:
         return table
@@ -707,7 +755,8 @@ def video_components_gb(
             return table  # modular (H3) layouts are not a diffusers component tree
         is_base = str(target).lower() == str(base or "").lower()
         wanted = (
-            *VIDEO_ROLE_DENOISER,
+            *(VIDEO_ROLE_DENOISER if getattr(fam, "is_moe", False) else VIDEO_ROLE_DENOISER[:1]),
+            *(() if getattr(fam, "denoiser_attr", "transformer") in VIDEO_ROLE_DENOISER else (fam.denoiser_attr,)),
             *VIDEO_ROLE_TEXT,
             *VIDEO_ROLE_VAE,
             *VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "")), ()),
@@ -719,7 +768,7 @@ def video_components_gb(
             allow_hub=allow_hub and (table is None or not is_base),
             token=token,
         )
-        header = video_header_components_gb(fam, sizes)
+        header = video_header_terms(fam, sizes)
         return reconcile_with_table(
             header, table, is_base=is_base, key=(getattr(fam, "name", None), str(target))
         )

@@ -6329,7 +6329,11 @@ class VideoBackend:
 
         # Safetensors headers of the pipeline repo, reconciled with the family table (the offline fallback).
         components = video_components_gb(
-            fam, repo_id if kind == "pipeline" else None, allow_hub = True, token = hf_token
+            fam,
+            repo_id if kind == "pipeline" else None,
+            # a local-only load never probes the Hub (hub_disabled also reads the scoped flag)
+            allow_hub = not local_files_only,
+            token = hf_token,
         )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its encoder PRE-CAST from
