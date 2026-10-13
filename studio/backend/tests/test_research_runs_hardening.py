@@ -204,6 +204,9 @@ def test_sanitize_query_redacts_scheme_and_credential_in_authorization_header():
         f"Authorization: Basic {secret}",
         f"Authorization: Digest {secret}",
         f"Authorization: token {secret}",
+        f"Authorization: Negotiate {secret}",
+        f"Authorization: NTLM {secret}",
+        f"Authorization: DPoP {secret}",
         f"Proxy-Authorization: Basic {secret}",
     ):
         cleaned = _sanitize_public_query(f"why does curl fail with {header} on the api")
