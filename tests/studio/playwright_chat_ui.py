@@ -228,10 +228,13 @@ FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
 FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
 
 
+PERMISSION_PILL = 'button[aria-label="Permission level for tool calls"]:visible'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
-    pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    pill = page.locator(PERMISSION_PILL).first
     expect(pill).to_be_visible()
 
     # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
@@ -1226,6 +1229,12 @@ with sync_playwright() as p:
         wall_kick()  # as in the change-password loop: the retry logs with bare print()
         try:
             composer.wait_for(state = "visible", timeout = 60_000)
+            # The textarea showing once is not the shell settling. On the Windows lane the shell has been seen to
+            # drop to the full-page "Loading..." route fallback right after the composer painted, while the backend
+            # stalled ~5 s warming torch, and stay there past the next step's 5 s expect. Wait for the composer
+            # toolbar (the pill the next step drives) too, so a shell that never comes back still gets the re-goto.
+            page.locator(PERMISSION_PILL).first.wait_for(state = "visible", timeout = 30_000)
+            composer.wait_for(state = "visible", timeout = 5_000)
             last_err = None
             break
         except Exception as e:
@@ -1234,9 +1243,14 @@ with sync_playwright() as p:
                 cur_url = page.url
             except Exception:
                 cur_url = "<page closed>"
+            try:
+                route_fallback = page.get_by_text("Loading...", exact = True).count()
+            except Exception:
+                route_fallback = -1
             print(
                 f"[ui]   composer.wait_for attempt {_attempt + 1} failed: "
                 f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"route_fallback={route_fallback}; "
                 f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
                 flush = True,
             )
