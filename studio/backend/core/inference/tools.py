@@ -19206,7 +19206,7 @@ def _check_signal_escape_patterns(code: str):
                 other.update(_binding_names(node))
         return frozenset(imported - other), frozenset(imported)
 
-    def _local_database_scope_bindings(root):
+    def _local_database_direct_bindings(root):
         imported: set[str] = set()
         other: set[str] = set()
         args = getattr(root, "args", None)
@@ -19243,6 +19243,91 @@ def _check_signal_escape_patterns(code: str):
                 other.update(_binding_names(node))
             stack.extend(ast.iter_child_nodes(node))
         return frozenset(imported), frozenset(other)
+
+    def _local_database_declarations(root):
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
+        body = getattr(root, "body", ())
+        stack = list(body) if isinstance(body, list) else [body]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(node, ast.Global):
+                global_names.update(node.names)
+            elif isinstance(node, ast.Nonlocal):
+                nonlocal_names.update(node.names)
+            stack.extend(ast.iter_child_nodes(node))
+        return frozenset(global_names), frozenset(nonlocal_names)
+
+    def _local_database_scope_bindings(root):
+        scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        roots: dict[int, ast.AST] = {0: root}
+        parents: dict[int, int | None] = {0: None}
+
+        def walk(node, scope):
+            if isinstance(node, scope_types):
+                child_scope = id(node)
+                roots[child_scope] = node
+                parents[child_scope] = scope
+                for field, value in ast.iter_fields(node):
+                    field_scope = child_scope if field == "body" else scope
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, ast.AST):
+                                walk(item, field_scope)
+                    elif isinstance(value, ast.AST):
+                        walk(value, field_scope)
+                return
+            for child in ast.iter_child_nodes(node):
+                walk(child, scope)
+
+        for statement in getattr(root, "body", ()):
+            walk(statement, 0)
+
+        direct_bindings = {
+            scope: _local_database_direct_bindings(scope_root)
+            for scope, scope_root in roots.items()
+        }
+        bindings = {
+            scope: [set(imported), set(other)]
+            for scope in roots
+            for imported, other in [direct_bindings[scope]]
+        }
+        declarations = {
+            scope: _local_database_declarations(scope_root)
+            for scope, scope_root in roots.items()
+        }
+        for scope, (global_names, nonlocal_names) in declarations.items():
+            imported, other = bindings[scope]
+            for name in global_names:
+                if name in imported:
+                    bindings[0][0].add(name)
+                if name in other:
+                    bindings[0][1].add(name)
+            for name in nonlocal_names:
+                owner = parents[scope]
+                while owner not in (None, 0):
+                    owner_root = roots[owner]
+                    owner_global, owner_nonlocal = declarations[owner]
+                    owner_imported, owner_other = direct_bindings[owner]
+                    if (
+                        not isinstance(owner_root, ast.ClassDef)
+                        and name not in owner_global
+                        and name not in owner_nonlocal
+                        and name in owner_imported | owner_other
+                    ):
+                        target_imported, target_other = bindings[owner]
+                        if name in imported:
+                            target_imported.add(name)
+                        if name in other:
+                            target_other.add(name)
+                        break
+                    owner = parents[owner]
+        return roots, {
+            scope: (frozenset(imported), frozenset(other))
+            for scope, (imported, other) in bindings.items()
+        }
 
     # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
@@ -19472,7 +19557,7 @@ def _check_signal_escape_patterns(code: str):
             # accumulate function aliases for the same scope-insensitive rebinding case
             self.func_aliases: dict[str, set[str]] = {}
             self.local_databases: "tuple[frozenset, frozenset] | None" = None
-            self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]]" = {}
+            self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]] | None" = None
             self.local_database_scopes: "dict[int, ast.AST] | None" = None
             # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
@@ -19870,25 +19955,17 @@ def _check_signal_escape_patterns(code: str):
             if owner.id not in imported_anywhere:
                 return False
             if self.local_database_scopes is None:
-                self.local_database_scopes = {
-                    **{
-                        id(node): node
-                        for node in tree_nodes
-                        if isinstance(
-                            node,
-                            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-                        )
-                    },
-                    0: tree,
-                }
+                (
+                    self.local_database_scopes,
+                    self.local_database_bindings,
+                ) = _local_database_scope_bindings(tree)
+            assert self.local_database_bindings is not None
             last = len(self.scope_stack) - 1
             for index in range(last, -1, -1):
                 scope = self.scope_stack[index]
                 root = self.local_database_scopes[scope]
                 if isinstance(root, ast.ClassDef) and index != last:
                     continue
-                if scope not in self.local_database_bindings:
-                    self.local_database_bindings[scope] = _local_database_scope_bindings(root)
                 imported, other = self.local_database_bindings[scope]
                 if owner.id in other:
                     return False
