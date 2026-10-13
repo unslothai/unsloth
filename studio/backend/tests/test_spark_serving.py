@@ -4284,32 +4284,67 @@ def test_the_launch_key_reaches_the_peer_over_stdin_only(monkeypatch, tmp_path):
     assert remote.startswith("umask 077") and "chmod 600" in remote
 
 
-def test_a_respawned_primary_key_is_recopied_and_the_replica_restarted(monkeypatch, tmp_path):
-    """The respawn rewrites the key file in place with a new key; the replica read the old one."""
-    key = tmp_path / "llama_api_key_0123"
-    key.write_bytes(b"old")
+def _replica_state(peer_argv):
     events = []
 
     class _Peer:
+        argv = list(peer_argv)
+
         async def stop(self, timeout = None):
             events.append("stop")
 
         async def start(self):
-            events.append("start")
+            events.append(("start", list(self.argv)))
+
+    state = ss.SparkServing()
+    state.topology = "replicas"
+    state.peer, state.peer_process = "192.168.200.13", _Peer()
+    state.replica_binary, state.replica_port = "/peer/llama-server", 8081
+    return state, events
+
+
+def _primary(argv):
+    return SimpleNamespace(_process = SimpleNamespace(args = argv), launched_env = {})
+
+
+def test_a_respawned_primary_key_is_recopied_and_the_replica_restarted(monkeypatch, tmp_path):
+    """The respawn rewrites the key file in place with a new key; the replica read the old one."""
+    monkeypatch.chdir(tmp_path)
+    key = tmp_path / "llama_api_key_0123"
+    key.write_bytes(b"old")
+    primary = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--api-key-file", str(key)]
+    peer_argv = ss.replica_argv(
+        primary, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081
+    )
+    state, events = _replica_state(peer_argv)
+    state.peer_keys = {str(key): b"old"}
 
     async def copy(peer, files):
         events.append(("copy", peer, [Path(f).read_bytes() for f in files]))
         return None
 
     monkeypatch.setattr(ss, "replicate_secret_files", copy)
-    state = ss.SparkServing()
-    state.peer, state.peer_process = "192.168.200.13", _Peer()
-    state.peer_keys = {str(key): b"old"}
-
-    run(state._refresh_peer_key())
-    assert events == [], "an unchanged key must not restart the replica"
+    respawned = _primary(primary[:4] + ["9100"] + primary[5:])
+    run(state._sync_replica(respawned))
+    assert events == [], "a respawn with the same flags and key must not restart the replica"
 
     key.write_bytes(b"new")
-    run(state._refresh_peer_key())
-    assert events == [("copy", "192.168.200.13", [b"new"]), "stop", "start"]
+    run(state._sync_replica(respawned))
+    assert events == [("copy", "192.168.200.13", [b"new"]), "stop", ("start", peer_argv)]
     assert state.peer_keys == {str(key): b"new"}
+
+
+def test_the_replica_drops_the_flags_the_mtp_fallback_dropped(monkeypatch, tmp_path):
+    """The MTP crash fallback reloads the primary with speculation off; a replica still running the
+    old flags would keep crashing on them."""
+    monkeypatch.chdir(tmp_path)
+    mtp = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--spec-type", "draft-mtp"]
+    state, events = _replica_state(
+        ss.replica_argv(mtp, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081)
+    )
+    plain = ["/l/llama-server", "-m", "/m.gguf", "--port", "9100"]
+    run(state._sync_replica(_primary(plain)))
+    assert events[0] == "stop"
+    started = events[1][1]
+    assert "--spec-type" not in started and started[0] == "/peer/llama-server"
+    assert "8081" in started

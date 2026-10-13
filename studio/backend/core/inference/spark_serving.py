@@ -1170,8 +1170,8 @@ def redacted_argv(argv: List[str]) -> List[str]:
 
 
 def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[str]:
-    """``ggml-rpc-server`` on the peer, caching tensors only when the model file is there to cache
-    from."""
+    """``ggml-rpc-server`` on the peer. `-c` writes every received tensor to the peer's disk, a copy
+    of the remote half of the model, so it is only enabled where the user already keeps the GGUF."""
     argv = [binary, "-H", bind, "-p", str(port)]
     if cache:
         argv.append("-c")
@@ -2196,8 +2196,11 @@ class SparkServing:
         self.peer: Optional[str] = None
         self.attached_backend: Any = None
         self.attached_port: Optional[int] = None
-        # The key files the peer replica was launched with and their bytes, see _refresh_peer_key.
+        # The key files the peer replica was launched with and their bytes, and the remote binary
+        # and port it runs on, see _sync_replica.
         self.peer_keys: Dict[str, bytes] = {}
+        self.replica_binary: Optional[str] = None
+        self.replica_port: Optional[int] = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -2873,6 +2876,7 @@ class SparkServing:
         )
         log_dir = _log_dir()
         self.peer = peer
+        self.replica_binary, self.replica_port = binary, peer_port
         self.peer_process = PeerProcess(
             "llama-server", peer, peer_argv, log_dir / "peer-llama-server.log" if log_dir else None
         )
@@ -3064,24 +3068,36 @@ class SparkServing:
         if port and port != self.attached_port and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
             self.attached_port = int(port)
-            await self._refresh_peer_key()
+            await self._sync_replica(backend)
 
-    async def _refresh_peer_key(self) -> None:
-        """A respawned primary rewrites its key file with a new key, so the replica, which read the
-        old one at startup, would answer every routed request 401: recopy it and restart the peer."""
+    async def _sync_replica(self, backend: Any) -> None:
+        """Bring the replica in line with a primary that was relaunched without a load request: a
+        respawn rewrites the key file with a new key (the replica would answer 401), and the MTP
+        crash fallback drops the speculative flags (the replica would keep crashing on them)."""
         process, peer = self.peer_process, self.peer
-        if process is None or not peer or not self.peer_keys:
+        if process is None or not peer or self.topology != "replicas" or not self.replica_binary:
             return
-        now = _read_keys(list(self.peer_keys))
-        if now == self.peer_keys:
-            return
-        failed = await replicate_secret_files(peer, list(now))
-        if failed:
-            logger.warning(
-                "spark serving: the new llama-server key could not reach %s: %s", peer, failed
+        argv = list(getattr(getattr(backend, "_process", None), "args", None) or [])
+        rebuilt = process.argv
+        if argv:
+            rebuilt = with_replica_env(
+                replica_argv(
+                    argv, binary = self.replica_binary, host = peer, port = int(self.replica_port)
+                ),
+                replica_env(getattr(backend, "launched_env", None) or None),
             )
+        keys = _read_keys(list(self.peer_keys))
+        if rebuilt == process.argv and keys == self.peer_keys:
             return
-        self.peer_keys = now
+        if keys != self.peer_keys:
+            failed = await replicate_secret_files(peer, list(keys))
+            if failed:
+                logger.warning(
+                    "spark serving: the new llama-server key could not reach %s: %s", peer, failed
+                )
+                return
+            self.peer_keys = keys
+        process.argv = rebuilt
         try:
             await process.stop(timeout = 5.0)
             await process.start()
@@ -3164,6 +3180,7 @@ class SparkServing:
             self.attached_backend = None
             self.attached_port = None
             self.peer_keys = {}
+            self.replica_binary = self.replica_port = None
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
             self.split_config, self.split_config_reason = None, None
             if self.topology != "single":
