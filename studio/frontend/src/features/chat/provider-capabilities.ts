@@ -1205,14 +1205,17 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none". https://docs.ollama.com/api/openai-compatibility
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama errors a
-// thinking request at a model without the /api/tags "thinking" capability, so gate on it (#9649).
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
+// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
   modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
+    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1257,7 +1260,8 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   ollama: { levels: null, off: "unified" },
-  vllm: LOCAL_SERVER_WIRE,
+  // The backend narrows to low / medium / high only for a vLLM older than 0.21, which 400s on the rest.
+  vllm: { levels: null, off: "unified" },
   llama_cpp: LOCAL_SERVER_WIRE,
 };
 
@@ -1491,9 +1495,9 @@ export function providerModelReplaysReasoning(
   return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
 }
 
-/** Sent as a llama-server template kwarg, so the model's template must still read it. */
+/** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */
 export function providerSupportsPreserveThinking(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType === "llama_cpp";
+  return providerType === "llama_cpp" || providerType === "vllm";
 }

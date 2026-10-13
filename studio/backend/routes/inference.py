@@ -27686,6 +27686,7 @@ def _build_external_messages(
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
     model: Optional[str] = None,
+    preserve_thinking: Optional[bool] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -27830,7 +27831,11 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
-    replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
+    replays_reasoning = (
+        provider_type == "llama_cpp"
+        or (provider_type == "vllm" and preserve_thinking is True)
+        or _is_kimi_k3(provider_type, model)
+    )
     result = []
     for msg in messages:
         replay = (
@@ -29026,6 +29031,7 @@ async def _proxy_to_external_provider(
             provider_type, _supports_vision, model, _pinfo
         ),
         model = model,
+        preserve_thinking = payload.preserve_thinking,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
