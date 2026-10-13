@@ -124,6 +124,24 @@ def test_assets_of_another_release_never_decide_the_offer(managed):
     assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 56_000_000
 
 
+def test_a_tag_that_extends_the_offered_one_is_another_release(managed, monkeypatch):
+    # Upstream publishes v0.8.2 and later v0.8.2-audio8-perf-hotfix: the hotfix's assets start with
+    # "audio-v0.8.2-" too, yet say nothing about v0.8.2.
+    monkeypatch.setattr(aupd, "_target", lambda: ("0xShug0/audio.cpp", None))
+    _write_record(
+        managed.tree,
+        published_repo = "0xShug0/audio.cpp",
+        release_tag = "v0.8.1",
+        asset = "audio-v0.8.1-bin-ubuntu-x64-cpu-portable.tar.gz",
+    )
+    managed.state.latest = "v0.8.2"
+    managed.state.assets = {"audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-cpu.zip": 1}
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is True and plan["status"]["update_size_bytes"] is None
+    managed.state.assets["audio-v0.8.2-bin-ubuntu-x64-cpu-portable.tar.gz"] = 5
+    assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 5
+
+
 def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
     monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
     monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")

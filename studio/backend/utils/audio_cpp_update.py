@@ -195,9 +195,9 @@ def _plan(*, force_refresh: bool = False) -> dict:
             return plan
         assets = _freshness.latest_release_assets(repo, force_refresh = force_refresh)
         # The tag can come from the 24h disk cache while the asset list is fetched fresh, so after a newer release the two can disagree: keep only the offered release's assets.
-        prefix = f"audio-{latest}-"
+        prefixes = (f"audio-{latest}-bin-", f"audio-{latest}-cudart-")
         assets = {
-            name: size for name, size in (assets or {}).items() if name.startswith(prefix)
+            name: size for name, size in (assets or {}).items() if name.startswith(prefixes)
         } or None
         names = list(assets) if assets else None
         status["update_size_bytes"] = _update_size_bytes(assets, record, installed, latest)
