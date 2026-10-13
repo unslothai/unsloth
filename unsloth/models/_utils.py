@@ -8338,13 +8338,19 @@ def _block_swap_for_trainer_backend(trainer):
 
 
 def _zero3_leaf_classes(model):
-    """Classes repeated in a ModuleList (decoder layers, vision blocks): the units ZeRO-3 gathers whole."""
+    """Outermost classes repeated in a ModuleList (decoder layers, vision blocks): the units ZeRO-3
+    gathers whole. Nothing inside one is a candidate, so MoE experts stay inside their decoder layer:
+    a per-expert leaf would issue routing-dependent all-gathers that differ across ranks."""
     classes = set()
-    for module in model.modules():
-        if isinstance(module, torch.nn.ModuleList) and len(module) > 1:
+    stack = [model]
+    while stack:
+        module = stack.pop()
+        if isinstance(module, torch.nn.ModuleList) and len(module):
             first = type(module[0])
             if all(type(x) is first for x in module) and any(True for _ in module[0].parameters()):
                 classes.add(first)
+                continue
+        stack.extend(module.children())
     return classes
 
 

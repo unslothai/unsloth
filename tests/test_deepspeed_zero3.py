@@ -133,3 +133,42 @@ def test_no_zero3_no_change(zero3, fake_deepspeed, deepspeed, enabled):
     assert _utils._prepare_model_for_deepspeed_zero3(_trainer(model, deepspeed)) == 0
     assert fake_deepspeed == {"leaf": [], "external": []}
     assert not any(getattr(m, "_z3_leaf", False) for m in model.modules())
+
+
+def test_one_layer_model_still_gets_a_leaf(zero3, fake_deepspeed):
+    zero3(True)
+    model = _tiny_llama()
+    del model.model.layers[1]
+    _utils._prepare_model_for_deepspeed_zero3(_trainer(model))
+    assert fake_deepspeed["leaf"] == [[type(model.model.layers[0])]]
+    owners = {id(param) for _, param in fake_deepspeed["external"]}
+    assert not {id(p) for p in model.model.layers.parameters()} & owners
+
+
+class _Expert(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.up = torch.nn.Linear(4, 4)
+
+
+class _MoeBlock(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.router = torch.nn.Linear(4, 2)
+        self.experts = torch.nn.ModuleList([_Expert(), _Expert()])
+
+
+class _MoeModel(torch.nn.Module):
+    def __init__(self, n_layers):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([_MoeBlock() for _ in range(n_layers)])
+        self.head = torch.nn.Linear(4, 4)
+
+
+@pytest.mark.parametrize("n_layers", [1, 2])
+def test_moe_experts_stay_inside_their_layer_leaf(zero3, fake_deepspeed, n_layers):
+    """Per-expert leaves would all-gather by routing, which differs across ranks."""
+    zero3(True)
+    model = _MoeModel(n_layers)
+    _utils._prepare_model_for_deepspeed_zero3(_trainer(model))
+    assert fake_deepspeed["leaf"] == [[_MoeBlock]]
