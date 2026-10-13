@@ -23,15 +23,20 @@ SETUP_SH="${1:-$SCRIPT_DIR/../../studio/setup.sh}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# From the pin read to the end of the acting if/elif chain.
-# Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
-# counting assignments truncates the block as soon as an arm is added, silently.
-awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
+# From the pin read to the closing brace of _fast_path_escapes(), which BOTH fast-path branches
+# call. Not the Nth _SKIP_PYTHON_DEPS=false: counting assignments truncates silently when an arm is
+# added.
+awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^}$/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
+# The anchor must be the helper's own closing brace, or the slice drags in unrelated code.
+grep -q '^_fast_path_escapes() {$' "$SETUP_SH" \
+    || { echo "FATAL: _fast_path_escapes is no longer a top-level function in $SETUP_SH" >&2; exit 1; }
+grep -q 'INSTALLED_VER' "$WORK/blk.sh" \
+    && { echo "FATAL: extraction ran past the end of _fast_path_escapes" >&2; exit 1; }
 # An extraction that lost any of the three moving parts would make cases below pass vacuously.
 _arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
-[ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
+[ "$_arms" = "4" ] || { echo "FATAL: expected 4 escape arms, extracted $_arms" >&2; exit 1; }
 for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton _setup_pin_known_nonxpu \
              _setup_known_nonxpu_leaf; do
     grep -q "$_need" "$WORK/blk.sh" || { echo "FATAL: extraction lost $_need" >&2; exit 1; }
@@ -100,6 +105,17 @@ check "no pin, cpu wheel, generic triton" \
 check "no pin, untagged wheel"  "$(escape "$(make_venv '2.9.1' yes f)" "")" true
 check "no pin, no torch at all" "$(escape "$(make_venv '' yes g)" "")" true
 check "no pin, no venv at all"  "$(escape "$WORK/nope" "")" true
+
+echo "an explicit pin of another curated family over a labelled wheel forces the pass (setup.ps1 parity)"
+check "cu128 pin, +cpu wheel"          "$(escape "$(make_venv '2.9.1+cpu' no h)" "" cu128)" false
+check "cu128 pin, +cu130 wheel"        "$(escape "$(make_venv '2.9.1+cu130' no i)" "" cu128)" true
+check "rocm7.1 pin, +cpu wheel"        "$(escape "$(make_venv '2.9.1+cpu' no j)" "" rocm7.1)" false
+check "gfx1201 pin, +cu128 wheel"      "$(escape "$(make_venv '2.9.1+cu128' no k)" "" gfx1201)" false
+check "cpu pin, +cu130 wheel"          "$(escape "$(make_venv '2.9.1+cu130' no l)" "" cpu)" false
+check "cu128 pin, untagged wheel"      "$(escape "$(make_venv '2.9.1' no m)" "" cu128)" true
+check "cu128 pin, no torch at all"     "$(escape "$(make_venv '' no n)" "" cu128)" true
+check "cu128-private pin, +cpu wheel"  "$(escape "$(make_venv '2.9.1+cpu' no o)" "" cu128-private)" true
+check "cu128 URL pin, +cpu wheel"      "$(escape "$(make_venv '2.9.1+cpu' no p)" "https://download.pytorch.org/whl/cu128")" false
 
 echo "an explicit xpu pin still repairs a mismatched wheel"
 check "pin + cpu wheel"        "$(escape "$(make_venv '2.9.1+cpu' no h)" "$XPU")" false
@@ -171,7 +187,8 @@ check "cpu pin + cpu wheel"    "$(escape "$(make_venv '2.9.1+cpu' yes v)" "https
 # ask both predicates rather than trust them to stay in step.
 PY_STACK="$SCRIPT_DIR/../../studio/install_python_stack.py"
 if [ -f "$PY_STACK" ] && command -v python3 >/dev/null 2>&1; then
-    awk '/^        _setup_known_nonxpu_leaf\(\) \{/{on=1} on{print} on && /^        \}$/{exit}' \
+    # One indent level shallower: the predicate lives in a function now.
+    awk '/^    _setup_known_nonxpu_leaf\(\) \{/{on=1} on{print} on && /^    \}$/{exit}' \
         "$WORK/blk.sh" > "$WORK/leaf.sh"
     grep -q 'rocm\[0-9\]' "$WORK/leaf.sh" || { echo "FATAL: predicate not extracted" >&2; exit 1; }
     # shellcheck disable=SC1091

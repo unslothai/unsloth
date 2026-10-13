@@ -17,12 +17,99 @@ write is never reached.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# Ten of the eleven tests below start from one of three identical setups, each of
+# which writes 500 notebooks, commits them and then drives one or two real sync
+# runs over the lot. Build each one once per process and `copytree` it in, which is
+# ~0.04s: nothing any of them writes embeds its own absolute path (the clone lives
+# in the script's own $TMP and is gone by the time the run returns, and `up`'s git
+# repo has no remote), so the copy is the same tree at a different place. Each test
+# still gets a private directory under its own `tmp_path` that it is free to
+# mutate, so the isolation is unchanged -- and the corpus is still 500 notebooks,
+# which is what opens the failure window these tests aim at.
+_PROTOTYPES: dict[str, Path] = {}
+
+
+def _prototype(key: str, build) -> Path:
+    prototype = _PROTOTYPES.get(key)
+    if prototype is None:
+        prototype = Path(tempfile.mkdtemp(prefix = "unsloth-nbsync-"))
+        atexit.register(shutil.rmtree, prototype, True)
+        build(prototype)
+        _PROTOTYPES[key] = prototype
+    return prototype
+
+
+def _copy_of(key: str, tmp_path: Path, build):
+    root = tmp_path / key
+    shutil.copytree(_prototype(key, build), root, symlinks = True)
+    return root / "dest", root / "tpl", root / "up"
+
+
+def _build_seed_synced(root: Path):
+    """Seed-only template, 500 one-byte notebooks upstream, initial no-refresh sync."""
+    tpl, dest, up = _template(root), root / "dest", _upstream(root)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+
+
+def _build_refreshed(root: Path):
+    """`_build_seed_synced` plus one uncapped refresh: everything published and recorded."""
+    _build_seed_synced(root)
+    _run(root / "tpl", root / "dest", root / "up", refresh = True)
+
+
+def _build_big_synced(root: Path):
+    """500-notebook baked template, same upstream, initial no-refresh sync."""
+    tpl, dest, up = _big_template(root, NOTEBOOKS), root / "dest", _upstream(root)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+
+
+# The capped refresh is itself shared, not just the tree it ran against: the two
+# tests below drive the SAME capped run over the SAME tree and then ask different
+# questions of it -- whether anything was published without a record, and whether
+# the next refresh restores what was rolled back. Neither mutates anything before
+# it reads the result, so one run answers both, and the file size limit is what
+# makes the window either way: RLIMIT_FSIZE caps a file's SIZE and the state
+# records RELATIVE names, so running it under the prototype's directory rather
+# than the test's changes nothing about where the appends start failing.
+_CAPPED_FIRST_REFRESH: subprocess.CompletedProcess | None = None
+
+
+def _build_capped_first_refresh(root: Path):
+    global _CAPPED_FIRST_REFRESH
+    _build_seed_synced(root)
+    _CAPPED_FIRST_REFRESH = _run(
+        root / "tpl",
+        root / "dest",
+        root / "up",
+        cap_kib = CAP_KIB,
+        refresh = True,
+    )
+
+
+def _shared_capped_first_refresh(tmp_path):
+    dest, tpl, up = _copy_of("capped", tmp_path, _build_capped_first_refresh)
+    return dest, tpl, up, _CAPPED_FIRST_REFRESH
+
+
+def _shared_setup_1(tmp_path):
+    return _copy_of("s1", tmp_path, _build_refreshed)
+
+
+def _shared_big_synced(tmp_path):
+    return _copy_of("big", tmp_path, _build_big_synced)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
@@ -124,11 +211,7 @@ def _published(dest: Path) -> set[str]:
 def test_no_notebook_is_published_without_a_record(tmp_path: Path):
     """The invariant. A file we wrote but could not record is the unrecoverable
     state, so it must be rolled back rather than left behind."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-
-    run = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
+    dest, tpl, up, run = _shared_capped_first_refresh(tmp_path)
     assert "could not be written" in run.stdout, (
         "the cap did not bite; this test proves nothing unless some append failed\n"
         + run.stdout
@@ -145,11 +228,7 @@ def test_no_notebook_is_published_without_a_record(tmp_path: Path):
 @needs_git
 def test_the_next_refresh_recovers_everything_that_was_rolled_back(tmp_path: Path):
     """Rollback is only correct if the retry actually restores them."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-
-    first = _run(tpl, dest, up, cap_kib = CAP_KIB, refresh = True)
+    dest, tpl, up, first = _shared_capped_first_refresh(tmp_path)
     assert "could not be written" in first.stdout, first.stdout + first.stderr
     # strictly fewer than the full set: `< NOTEBOOKS + 1` was vacuous, since the
     # run yields NOTEBOOKS either way and seed.ipynb is dropped as deleted upstream
@@ -192,10 +271,7 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
     version of this test passed without executing the code it named. The assertion
     that some pristine notebook WAS removed is what keeps it honest.
     """
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)  # uncapped: everything published and recorded
+    dest, tpl, up = _shared_setup_1(tmp_path)  # uncapped: everything published and recorded
     assert len(_published(dest)) == NOTEBOOKS
 
     edited = {f"nb{i:09d}.ipynb" for i in range(2, NOTEBOOKS + 1, 2)}
@@ -268,10 +344,7 @@ def _json_upstream(tmp_path: Path, count: int) -> Path:
 @needs_git
 def test_the_refresh_child_never_republishes_an_unreadable_state_as_empty(tmp_path: Path):
     """No UNSLOTH_SKIP_NOTEBOOK_REFRESH here: that flag is what hid this."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
@@ -301,6 +374,11 @@ def test_a_failed_record_on_an_unchanged_notebook_rolls_it_back(tmp_path: Path):
     missing one (early return), so the suite could call it seven times and roll back
     zero. The `unchanged` branch is the reachable one that must actually remove.
     """
+    # Its own build, not a shared prototype: this is the only test upstream of
+    # `_json_upstream`, whose notebooks are valid notebook JSON rather than the one
+    # byte the others use. That difference is the whole point -- the body-aware
+    # comparison can only report SAME, and so only reach the `unchanged` branch,
+    # against real JSON.
     tpl, dest = _template(tmp_path), tmp_path / "dest"
     up = _json_upstream(tmp_path, NOTEBOOKS)
     dest.mkdir()
@@ -329,10 +407,7 @@ def test_keeping_a_removed_notebook_keeps_its_record_too(tmp_path: Path):
     """UNSLOTH_KEEP_REMOVED_NOTEBOOKS kept the FILE and dropped its RECORD, so the
     next refresh read it as a user edit -- and turning the option back off never
     recovered it, because by then it is no longer in the state."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     victim = f"nb{1:09d}.ipynb"
     assert victim in _recorded(dest)
 
@@ -364,10 +439,7 @@ def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path)
     state would strand every notebook the run DID record. The only repair is for a
     later refresh to notice that a file identical to the clone was never a user edit
     and take it back under management."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
     state = dest / ".unsloth_sync_state"
@@ -395,10 +467,7 @@ def test_a_genuinely_edited_unrecorded_notebook_is_still_left_alone(tmp_path: Pa
     """The adoption above must key on the content matching the clone EXACTLY. An
     unrecorded file whose bytes differ is the real user-edit case and must keep its
     hands-off treatment."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
     state = dest / ".unsloth_sync_state"
@@ -453,10 +522,7 @@ def test_a_kept_removed_notebook_survives_a_failed_state_append(tmp_path: Path):
     exactly what UNSLOTH_KEEP_REMOVED_NOTEBOOKS was set to preserve, and no retry
     recovers it -- not with the option on, not with it off, because by then it is in
     neither the clone nor the state."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     victim = f"nb{1:09d}.ipynb"
     assert victim in _recorded(dest)
     _delete_upstream(up, victim)
@@ -499,9 +565,7 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
     was BEFORE the restores -- so the restored files have to go back too. Leaving them
     means the next refresh sees baked content where the state holds post-refresh
     hashes and reads every one as a user edit."""
-    tpl, dest, up = _big_template(tmp_path, NOTEBOOKS), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
+    dest, tpl, up = _shared_big_synced(tmp_path)
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
@@ -543,9 +607,7 @@ def test_a_lost_merge_record_does_not_publish_the_short_state(tmp_path: Path):
     abandon the staged state rather than publish it and merely withhold the marker.
     A failed COPY is different and still publishes, because the next boot re-walks the
     template."""
-    tpl, dest, up = _big_template(tmp_path, NOTEBOOKS), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
+    dest, tpl, up = _shared_big_synced(tmp_path)
 
     # notebooks the refresh had added: present in $DEST and in the state, absent from
     # the baked template, so only the merge loop can carry their records forward

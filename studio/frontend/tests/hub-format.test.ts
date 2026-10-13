@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { formatEta } from "../src/features/hub/lib/format.ts";
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -50,4 +51,32 @@ test("no ETA is ever reported in days", () => {
   for (let s = 1; s <= 3 * DAY; s += 137) {
     assert.doesNotMatch(formatEta(s), /\d+d\b/);
   }
+});
+
+test("disk free space and download progress use decimal units", async () => {
+  const [folders, resources, training, chat] = await Promise.all([
+    readSrcAsync("features/hub/catalog/on-device-folders-dialog.tsx"),
+    readSrcAsync("features/settings/tabs/resources-tab.tsx"),
+    readSrcAsync("features/studio/training-start-overlay.tsx"),
+    readSrcAsync("features/chat/api/chat-adapter.ts"),
+  ]);
+  assert.match(folders, /`\$\{formatBytes\(bytes\)\} free`/);
+  assert.match(resources, /free: formatBytes\(hfCache\.freeBytes\)/);
+  assert.match(
+    training,
+    /import \{[^}]*\bformatBytes\b[^}]*\} from "@\/features\/hub"/,
+  );
+  assert.match(
+    training,
+    /import \{[^}]*\bformatRate\b[^}]*\} from "@\/features\/hub"/,
+  );
+  for (const source of [folders, resources, training]) {
+    assert.doesNotMatch(source, /function formatBytes\b/);
+  }
+  for (const source of [folders, training]) {
+    assert.doesNotMatch(source, /\/ 1024 \*\* 3/);
+  }
+  const toast = chat.match(/function formatDownloadBytes[\s\S]*?\n}/);
+  assert.ok(toast, "formatDownloadBytes not found");
+  assert.doesNotMatch(toast[0], /1024/);
 });

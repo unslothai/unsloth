@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Drive one coding agent against the running `unsloth run` server for the
 # Local Agent Guides CI. All failures from here are failure class (c)
 # "guide drift": the server preflight already passed and the agent CLI
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
-#
-# Self-updating: for all seven agents (claude, codex, hermes, openclaw,
-# opencode, pi, dsh) we obtain the exact env + command from
+# Self-updating: for all eight agents (claude, codex, hermes, openclaw,
+# opencode, pi, dsh, vibe) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
-#
 # Every agent invocation is wrapped in `timeout` so a headless-TTY prompt
 # can never hang the runner -- a timeout is reported as guide drift with a
 # distinct message.
-#
 # Usage:
 #   agent-guides-drive.sh connection     <agent>
 #   agent-guides-drive.sh file-edit      <agent>
 #   agent-guides-drive.sh attribution-ab claude
-#
 # Required env (exported by serve-unsloth-run.sh):
 #   UNSLOTH_BASE_URL UNSLOTH_API_KEY UNSLOTH_MODEL_ID
 #   UNSLOTH_LLAMA_LOG_DIR  AGENT_INVOKE_TIMEOUT  UNSLOTH_SEED
@@ -79,7 +74,6 @@ CONNECT_REF="unsloth_cli/commands/start.py"
 # and restricting tools cuts the prefill to a few hundred tokens so it completes
 # quickly on CPU. These only shape the request size; the start.py recipe
 # (endpoint, auth, model) is still exercised end to end.
-#
 # The bulk of Claude Code's prompt is the built-in tool JSON schemas: measured
 # via `claude -p /context`, the default prompt is ~28k tokens of which ~18k is
 # "System tools" alone. --allowedTools/--disallowedTools only gate PERMISSION to
@@ -88,7 +82,6 @@ CONNECT_REF="unsloth_cli/commands/start.py"
 # (~16 tok/s) overran claude's own request timeout into a retry loop. --tools is
 # the flag that restricts which schemas are sent. (The ~8k "Memory files" chunk
 # is auto-loaded CLAUDE.md; the unsloth repo ships none, so it is 0 in CI.)
-#
 # Connection probe: --tools "" sends ZERO tool schemas, leaving ~20 tokens total
 # (a one-line --system-prompt-file + the user turn), which prefills instantly.
 CLAUDE_CONNECT_FLAGS=(
@@ -154,7 +147,6 @@ assert_reply() {
 # Blaming start.py for the second is wrong, so flag it and let the caller judge
 # the turn on its assertions. TIMED_OUT is global: callers with no assertion that
 # can rescue a partial turn (connection, resume, attribution-ab) treat it as fatal.
-#
 # Deciding that the cap was hit needs care. timeout(1) reports 124 when the
 # command dies on the TERM it sends, but a CLI that catches or ignores TERM is
 # not bounded at all without --kill-after (measured: a TERM-ignoring loop under
@@ -362,12 +354,24 @@ crosscheck_contract() {
         || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
       home="$(raw_env DSH_HOME)"
       [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
-      cfg="$home/settings.yaml"
-      if [ -f "$cfg" ]; then
-        grep -q 'openai-completions' "$cfg" \
-          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
-        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
-      fi
+      # A --patch overlay, not settings.yaml: dsh 0.1.7 imports that only after the first boot.
+      cfg="$home/unsloth.patch.yml"
+      [ -f "$cfg" ] || guide_fail "dsh patch $cfg missing (start.py write_dsh_patch)"
+      grep -qF -- "--patch $cfg" "$raw" \
+        || guide_fail "dsh launch command no longer passes --patch $cfg (start.py _dsh_command)"
+      grep -q 'openai-completions' "$cfg" \
+        || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_patch)"
+      cp "$cfg" "$REDACTED_DIR/dsh-patch.yml"
+      ;;
+    vibe)
+      grep -q 'UNSLOTH_API_KEY' "$raw" \
+        || guide_fail "Vibe env key is no longer UNSLOTH_API_KEY (start.py _VIBE_ENV_KEY)"
+      # Provider and model ride in the env layer (start.py _vibe_env), not a config file.
+      cfg="$(raw_env VIBE_PROVIDERS)"
+      [ -n "$cfg" ] || guide_fail "VIBE_PROVIDERS missing from connect output (start.py _vibe_env)"
+      grep -q '"api_style": "openai"' <<<"$cfg" \
+        || echo "::warning::Vibe provider api_style is no longer 'openai' (start.py _vibe_env)"
+      printf '%s\n%s\n' "$cfg" "$(raw_env VIBE_MODELS)" > "$REDACTED_DIR/vibe-env.json"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
@@ -444,12 +448,31 @@ p = sys.argv[2]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
 agents = cfg.setdefault("agents", {})
 agents.setdefault("defaults", {})["skipBootstrap"] = True
-lst = [a for a in agents.get("list", []) if a.get("id") != "ci"]
-agent = {"id": "ci", "contextInjection": "never"}
+# OpenClaw 2026.10.1 rejects the legacy agents.list array ("agents.list moved to
+# keyed agents.entries") and refuses to start. Keyed entries are read since at least
+# 2026.8.1, so always define the ci agent under agents.entries.
+entries = agents.get("entries")
+entries = dict(entries) if isinstance(entries, dict) else {}
+# `unsloth start` never writes agents.list, and a fresh managed dir has none; migrating one
+# correctly is OpenClaw Doctor's job, so refuse rather than half-migrate it here.
+if "list" in agents:
+    sys.exit("[openclaw] unexpected legacy agents.list in the config unsloth start wrote; "
+             "run `openclaw doctor --fix` on it")
+owner = None
+for key, entry in entries.items():
+    if isinstance(entry, dict) and entry.pop("default", None) is True and owner is None:
+        owner = key
+agent = {"contextInjection": "never"}
 if mode == "notools":
     agent["tools"] = {"deny": ["*"]}
-lst.append(agent)
-agents["list"] = lst
+entries["ci"] = agent
+agents["entries"] = entries
+# More than one agent needs explicit ownership (the retired default marker is rejected).
+if len(entries) > 1:
+    owner = owner or next(k for k in entries if k != "ci")
+    agents.setdefault("ownership", "explicit")
+    agents["defaults"].setdefault("systemAgent", {}).setdefault("agentId", owner)
+    agents["defaults"].setdefault("heartbeat", {}).setdefault("agentId", owner)
 with open(p, "w") as fh:
     json.dump(cfg, fh, indent=2)
 print(f"[openclaw] agent ci tools = {agent.get('tools', 'default')}")
@@ -501,7 +524,6 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   return "$rc"
 }
 
-# ═════════════════════════════════════════════════════════════════════════
 case "$MODE" in
   # ── connection: trivial prompt, assert a non-empty, error-free reply ────
   connection)
@@ -518,6 +540,8 @@ case "$MODE" in
       codex)    invoke_via_connect "$OUT" exec --dangerously-bypass-approvals-and-sandbox "$PROMPT" ;;
       opencode) invoke_via_connect "$OUT" run "$PROMPT" ;;
       pi)       invoke_via_connect "$OUT" -p "$PROMPT" ;;
+      # Zero tool schemas, as for claude/hermes: only the endpoint, auth and model are under test.
+      vibe)     invoke_via_connect "$OUT" --disabled-tools '*' -p "$PROMPT" ;;
       hermes)   patch_hermes_tools none
                 invoke_via_connect "$OUT" -z "$PROMPT" ;;
       openclaw) patch_openclaw_agent notools
@@ -581,7 +605,7 @@ case "$MODE" in
     # gate tool approval through their config (prompting by default), so file-edit
     # opts them into auto-approval to run edits/commands headlessly.
     case "$AGENT" in
-      opencode|openclaw) CONNECT_YOLO=1 ;;
+      opencode|openclaw|vibe) CONNECT_YOLO=1 ;;
       # A headless run has nobody to answer dsh's approval asks.
       dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
     esac
@@ -631,6 +655,14 @@ case "$MODE" in
           fi ;;
         opencode) invoke_via_connect "$out" run "$prompt" ;;
         hermes)   invoke_via_connect "$out" -z "$prompt" ;;
+        vibe)
+          # Only the schemas the task needs, as for claude; -c continues the session under VIBE_HOME.
+          local tools=(--enabled-tools bash --enabled-tools read_file --enabled-tools write_file)
+          if [ "$cont" = "continue" ]; then
+            invoke_via_connect "$out" "${tools[@]}" -c -p "$prompt"
+          else
+            invoke_via_connect "$out" "${tools[@]}" -p "$prompt"
+          fi ;;
         openclaw) CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$out" agent --local --agent ci \
                     --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$prompt" ;;
         *)        invoke_via_connect "$out" "$prompt" ;;

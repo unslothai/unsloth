@@ -2,20 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
+import { readSrc } from "./helpers/kit.ts";
+
 // Exercise production event handlers with a deterministic state seam.
 function renderer() {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/markdown-text.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(
     "markdown-text.tsx",
     source,

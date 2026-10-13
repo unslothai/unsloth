@@ -22,8 +22,7 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // WebKit is not assumed to special-case "0" here, so presence alone is an operator override
 // and the setting below is the documented way off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
-// Ours, not WebKit's. 1 forces the compositing workaround on, 0 forces it off, so a report
-// from outside the narrow rule below is settled without shipping a new predicate.
+// Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // Comma-joined list of the variables we set, so a relaunch tells our own inherited output
 // from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
@@ -53,9 +52,6 @@ enum RenderingWorkaround {
     /// returns before mode.add(SharedMemory), so FORCE_DMABUF stands that check down and
     /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
     ForceSharedMemoryOnNvidia,
-    /// NVIDIA X11 AppImage only: its accelerated path retains one sync-file descriptor
-    /// per redraw. Keeps the two variables above so a library that ignores the compositing
-    /// switch still lands on the shared-memory transport rather than the empty set.
     DisableCompositingOnNvidiaX11,
     DisableDmabuf,
     /// Not a transport at all. The others choose how buffers reach the compositor; this
@@ -122,6 +118,16 @@ fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
 
+/// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
+/// fallback they were opting out of.
+fn compositing_setting(value: &OsStr) -> Option<bool> {
+    match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
@@ -175,8 +181,7 @@ fn rendering_plan(
         wayland_socket,
         x11_open,
     );
-    let nvidia_x11_appimage = is_appimage
-        && nvidia_driver_loaded
+    let nvidia_x11 = nvidia_driver_loaded
         && !force_dmabuf
         && !wayland_session
         && gles_usable
@@ -195,18 +200,18 @@ fn rendering_plan(
     // module. Requiring BOTH is overfitted on purpose: with one host on each side neither
     // axis is established, so the conservative rule leaves every measured machine as it is
     // today. Anyone outside it reporting the same freeze gets the setting above.
-    let compositing_setting = env(DISABLE_COMPOSITING_SETTING);
-    let requested = |wanted: &str| compositing_setting.as_deref() == Some(OsStr::new(wanted));
-    if !requested("0")
-        && (requested("1")
+    let setting = env(DISABLE_COMPOSITING_SETTING);
+    let requested = |wanted: bool| setting.as_deref().and_then(compositing_setting) == Some(wanted);
+    if !requested(false)
+        && (requested(true)
             || (wayland_session && nvidia_driver_loaded && mixed_gpu_vendors && open_kernel_module))
     {
-        let reason = if requested("1") {
+        let reason = if requested(true) {
             COMPOSITING_FORCED_REASON
         } else {
             COMPOSITING_REASON
         };
-        let workaround = if requested("1") && nvidia_x11_appimage {
+        let workaround = if requested(true) && nvidia_x11 {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         } else {
             RenderingWorkaround::DisableCompositing
@@ -214,36 +219,11 @@ fn rendering_plan(
         return RenderingPlan::Apply(workaround, reason);
     }
 
-    // The DMA-BUF transport breaks on the proprietary driver on either display server, so
-    // this cannot be gated on a Wayland session. Upstream declined the fix (bug 262607
-    // WONTFIX, PR 18614 closed), so Debian and Ubuntu carry disable-nvidia-dmabuf.patch
-    // and Fedora, Arch and the tarballs do not. Both shipped artifacts get a patched
-    // library anyway (the .deb from the host, the AppImage bundles Ubuntu 22.04's), so
-    // here this covers hosts where that patch's GL_VENDOR probe disagrees with the module
-    // probe, plus the GBM open and throwaway GL context isNVIDIA() does at startup.
-    //
-    // The fallbacks are not interchangeable, so pick per failure mode, not per GPU:
-    //   Wayland  DISABLE_DMABUF. The failure is the explicit-sync disconnect, and
-    //            FORCE_SHM routes every commit down the wl_shm path that trips it
-    //            (bug 315436). It is also the switch reported to fix Error 71.
-    //   X11      FORCE_SHM. The AppImage also turns compositing off: its accelerated
-    //            path leaks a sync-file fd per redraw until WebKit hits its descriptor
-    //            limit. That switch clears the web preference too, so the null backing
-    //            store below is unreachable. The native library leaks the same way once
-    //            explicit sync is reachable; it is left alone here only because the
-    //            bundled runtime is the one we ship. See the note on the branch below.
-    // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
-    // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
-    // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
-    // behind an ASSERT release builds drop. block/buzz#3654 hits that SIGSEGV on NVIDIA
-    // X11, on the same iGPU-presenting topology the probe below over-triggers on.
-    //
-    // That probe is module presence, not the GPU that will render, so a PRIME laptop on
-    // its iGPU takes a workaround it does not need. The compositing rule accepts that
-    // scope: a fence leak is terminal and this path already CPU-copies. Deliberate:
-    // reading the rendering GPU needs a GL context and this runs before GTK init so that
-    // none exists. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0, or keep
-    // compositing alone with UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
+    // Per display server, not per GPU. Wayland: DISABLE_DMABUF, FORCE_SHM still hits the
+    // failing explicit-sync path (bug 315436). X11: SHM plus compositing off for the
+    // sync-file leak (#10795); DISABLE_DMABUF is WRONG there, it can leave no backing-store
+    // transport at all (block/buzz#3654). Over-matches a PRIME iGPU laptop, which opts out
+    // with WEBKIT_DISABLE_DMABUF_RENDERER=0 or UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -262,12 +242,7 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else if !is_appimage || requested("0") {
-            // Native packages keep compositing, and =0 puts an AppImage back here.
-            // Not because they are unaffected: the host 2.52.6 library was measured
-            // leaking the same fd per redraw once a render node makes explicit sync
-            // reachable. Narrowing to the AppImage is a deliberate first step, since the
-            // bundled runtime is ours to pin; native needs its own change.
+        } else if requested(false) {
             RenderingWorkaround::ForceSharedMemoryOnNvidia
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
@@ -624,14 +599,11 @@ mod tests {
     }
 
     #[test]
-    fn native_nvidia_x11_keeps_the_crash_safe_accelerated_transport() {
-        // The native package keeps acceleration and only avoids the empty backing-store
-        // set. That is scope, not health: the host library leaks the same way when
-        // explicit sync is reachable, and covering it needs its own change.
+    fn native_nvidia_x11_disables_compositing_like_the_appimage() {
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -854,7 +826,7 @@ mod tests {
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -904,13 +876,21 @@ mod tests {
         // Older launches set it beside FORCE_SHM; a relaunch must not see its own output
         // as an operator standing the NVIDIA branch down while migrating to the new plan.
         let claimed = [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(",");
+        let inherited = [
+            (FORCE_SHARED_MEMORY, "1"),
+            (FORCE_DMABUF, "1"),
+            (APPLIED_WORKAROUND, claimed.as_str()),
+        ];
         assert_eq!(
-            plan_on_nvidia(&[
-                (APPIMAGE, "/tmp/Unsloth.AppImage"),
-                (FORCE_SHARED_MEMORY, "1"),
-                (FORCE_DMABUF, "1"),
-                (APPLIED_WORKAROUND, &claimed),
-            ]),
+            plan_on_nvidia(&inherited),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_REASON
+            )
+        );
+        let appimage = [&[(APPIMAGE, "/tmp/Unsloth.AppImage")], &inherited[..]].concat();
+        assert_eq!(
+            plan_on_nvidia(&appimage),
             RenderingPlan::Apply(
                 RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_APPIMAGE_X11_REASON
@@ -980,7 +960,7 @@ mod tests {
                 (X11_DISPLAY, ":0"),
             ]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1087,7 +1067,7 @@ mod tests {
         assert_eq!(
             plan_on_host_with_socket(&[(X11_DISPLAY, ":0")], MODERN_WEBKIT, true, true, false),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1220,7 +1200,7 @@ mod tests {
         assert_eq!(
             plan_on_displays(session, MODERN_WEBKIT, true, true, true, true),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1234,7 +1214,7 @@ mod tests {
         assert_eq!(
             plan_on_host_with_socket(session, MODERN_WEBKIT, true, true, false),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1290,15 +1270,21 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_x11_appimage_takes_its_dedicated_compositing_fallback() {
-        // Repeated redraws exhaust WebKit's descriptor limit, one retained sync file per
-        // frame, and the nonempty transport stays as the fallback.
-        let x11: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+    fn nvidia_x11_takes_its_dedicated_compositing_fallback() {
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         assert_eq!(
-            plan_on_graphics(x11, true, false, false),
+            plan_on_graphics(appimage, true, false, false),
             RenderingPlan::Apply(
                 RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_on_graphics(native, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_REASON
             )
         );
     }
@@ -1335,21 +1321,69 @@ mod tests {
                 NVIDIA_APPIMAGE_X11_REASON
             )
         );
+        let native_off: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "0")];
+        assert_eq!(
+            plan_on_graphics(native_off, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
     }
 
     #[test]
-    fn forcing_the_nvidia_x11_appimage_workaround_keeps_its_transport_fallback() {
+    fn the_setting_reads_the_spellings_people_write() {
+        // An unrecognized opt-out is no longer a no-op: it leaves the host on the fallback.
+        for off in ["0", "false", "no", "off", "FALSE", "Off", " 0 ", "\tno\n"] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, off)], true, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                    NVIDIA_REASON
+                ),
+                "{off:?} should keep compositing"
+            );
+        }
+        for on in ["1", "true", "yes", "on", "TRUE", "On", " 1 "] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, on)], false, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositing,
+                    COMPOSITING_FORCED_REASON
+                ),
+                "{on:?} should force the workaround"
+            );
+        }
+        for unknown in ["", "maybe", "2", "-1", "enabled"] {
+            assert_eq!(
+                plan_on_graphics(
+                    &[(DISABLE_COMPOSITING_SETTING, unknown)],
+                    true,
+                    false,
+                    false
+                ),
+                plan_on_graphics(&[], true, false, false),
+                "{unknown:?} should not read as an instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn forcing_the_nvidia_x11_workaround_keeps_its_transport_fallback() {
         let forced: &[(&str, &str)] = &[
             (APPIMAGE, "/tmp/Unsloth.AppImage"),
             (DISABLE_COMPOSITING_SETTING, "1"),
         ];
-        assert_eq!(
-            plan_on_graphics(forced, true, false, false),
-            RenderingPlan::Apply(
-                RenderingWorkaround::DisableCompositingOnNvidiaX11,
-                COMPOSITING_FORCED_REASON
-            )
-        );
+        let native: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "1")];
+        for vars in [forced, native] {
+            assert_eq!(
+                plan_on_graphics(vars, true, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                    COMPOSITING_FORCED_REASON
+                )
+            );
+        }
     }
 
     #[test]

@@ -26,6 +26,23 @@ function withoutServerOwnership(record: MessageRecord): MessageRecord {
   return Object.keys(kept).length > 0 ? { ...rest, metadata: kept } : rest;
 }
 
+function withoutGeminiContinuationReplay<T>(metadata: T): T {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return metadata;
+  }
+  const record = metadata as Record<string, unknown>;
+  const custom = record.custom;
+  if (!custom || typeof custom !== "object" || Array.isArray(custom)) {
+    return metadata;
+  }
+  const customRecord = custom as Record<string, unknown>;
+  if (!("geminiContinuationReplay" in customRecord)) {
+    return metadata;
+  }
+  const { geminiContinuationReplay: _stale, ...keptCustom } = customRecord;
+  return { ...record, custom: keptCustom } as T;
+}
+
 type ThreadImportExport = {
   export: () => ExportedMessageRepository;
   import: (data: ExportedMessageRepository) => void;
@@ -85,8 +102,7 @@ export function extractTaggedText(content: any): string {
       const text = part.text || part.content || "";
       if (!text) return "";
 
-      // Trim the text first so we don't accumulate newlines
-      // around the tags on every save.
+      // Trim the text first so we don't accumulate newlines around the tags on every save.
       if (part.type === 'reasoning') {
         return `${open}THINK${close}\n${escapeMarkers(text.trim())}\n${open}/THINK${close}`;
       }
@@ -218,6 +234,7 @@ export async function updateThreadMessage(args: {
       message: {
         ...m.message,
         content: finalContent,
+        metadata: withoutGeminiContinuationReplay(m.message.metadata),
       },
     };
   }) as typeof currentExport.messages;

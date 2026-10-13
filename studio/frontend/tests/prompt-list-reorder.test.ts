@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   type RowBox,
@@ -10,6 +9,8 @@ import {
   insertionIndex,
   ownsDrag,
 } from "../src/features/chat/prompt-storage/reorder.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const GAP = 2;
 
@@ -184,13 +185,7 @@ test("sub-pixel settling is not worth a transform", () => {
 // flipShifts is only correct if the component hands it a baseline read at the
 // reorder, so keep the capture where it belongs.
 test("the baseline is captured when the reorder is requested", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/chat/prompt-storage/sortable-prompt-items.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/prompt-storage/sortable-prompt-items.tsx");
   const captures = source.split("prevOffsets.current = measureOffsets();").length - 1;
   assert.equal(captures, 1, "the FLIP baseline is captured somewhere else too");
   const [beforeApply] = source.split("const applyOrder");

@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
 
 
 # ST is unpinned in pyproject.toml; track the last few minors plus main.
@@ -24,14 +24,16 @@ ST_TAGS = [
     "master",
 ]
 
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
+pytestmark = pytest.mark.parametrize("tag", ST_TAGS)
+
 
 # Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
     needed = ("SentenceTransformer", "SentenceTransformerTrainer")
-    missing = [n for n in needed if n not in src]
+    missing = [n for n in needed if not is_bound(src, n)]
     assert not missing, (
         f"{tag}: sentence_transformers top-level missing {missing}; "
         f"unsloth.models.sentence_transformer:1467,2154 will ImportError"
@@ -39,7 +41,6 @@ def test_st_top_level_exports(tag: str):
 
 
 # Sub-modules: unsloth walks `sentence_transformers.models` for these classes.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_models_re_exports(tag: str):
     """Transformer / Pooling / Normalize must stay reachable via
     `sentence_transformers.models` despite the ST 5.4 package reorg."""
@@ -52,7 +53,7 @@ def test_st_models_re_exports(tag: str):
     needed = ("Transformer", "Pooling", "Normalize")
     if legacy_hit is not None:
         _path, src = legacy_hit
-        missing = [n for n in needed if n not in src]
+        missing = [n for n in needed if not is_bound(src, n)]
         assert not missing, (
             f"{tag}: legacy sentence_transformers/models layout missing "
             f"{missing}; unsloth.models.sentence_transformer:1016,1206,1467 "
@@ -105,7 +106,6 @@ def test_st_models_re_exports(tag: str):
 
 
 # Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
         "sentence_transformers/models/Transformer.py",
@@ -125,7 +125,6 @@ def test_st_transformer_base_class_either_path(tag: str):
 
 
 # Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
     """unsloth builds saved ST models via Transformer.load(...) so the saved
     modality_config is honored (#6881). If .load stops accepting the hub kwargs it
@@ -161,7 +160,6 @@ def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
 
 
 # sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_util_helpers(tag: str):
     """util.{import_from_string, load_dir_path} must resolve; accept either the
     flat or the ST 5.4+ package layout, or a re-export from a util submodule."""
@@ -173,9 +171,7 @@ def test_st_util_helpers(tag: str):
     assert hit is not None, f"{tag}: sentence_transformers/util[.py|/__init__.py] both missing"
     _path, src = hit
     for fn in ("import_from_string", "load_dir_path"):
-        defined_here = has_def(src, fn, "func")
-        reexported = bool(re.search(rf"\b{re.escape(fn)}\b", src))
-        if not (defined_here or reexported):
+        if not is_bound(src, fn):
             subpaths = [
                 "sentence_transformers/util/import_utils.py",
                 "sentence_transformers/util/file_utils.py",
@@ -185,7 +181,7 @@ def test_st_util_helpers(tag: str):
             found = False
             for sp in subpaths:
                 sub = fetch_text("UKPLab/sentence-transformers", tag, sp)
-                if sub and (has_def(sub, fn, "func") or fn in sub):
+                if sub and is_bound(sub, fn):
                     found = True
                     break
             assert found, (

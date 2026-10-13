@@ -10,23 +10,19 @@
 // generating" from storage alone, and no loop may run without a bound.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test, { afterEach } from "node:test";
-import { fileURLToPath } from "node:url";
 
 import type { ChatGenerationRun } from "../src/features/chat/api/chat-generation-api.ts";
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 registerBundlerResolver();
 installLocalStorageFake();
-
-const read = (relative: string): string =>
-  readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -188,7 +184,7 @@ test("the reload path gates the running status on corroboration", () => {
   // Source-pinned: toThreadMessage needs a MessageRecord and the module's whole import
   // graph, so the rule is asserted where it sits. Losing the call restores the wedge
   // while every behavioural test stays green.
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   const gate = provider.indexOf("generationIsCorroboratedLive(custom, m.threadId)");
   assert.ok(gate > 0, "toThreadMessage no longer asks whether the run is live");
   assert.match(
@@ -210,7 +206,7 @@ test("the reload path gates the running status on corroboration", () => {
 });
 
 test("the interrupted restore keeps the partial body untouched", () => {
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   // The only content assignment in toThreadMessage is the clone of the stored parts.
   // Nothing between the gate and the return may drop or truncate it.
   const start = provider.indexOf("function toThreadMessage(");
@@ -406,7 +402,7 @@ test("the default deadline outlasts any reasonable generation", () => {
 // C. the stop path after a reload
 
 test("stopChatThread falls back to the server when the registries are empty", () => {
-  const api = read("../src/features/chat/utils/stop-chat-thread.ts");
+  const api = readText("../src/features/chat/utils/stop-chat-thread.ts");
   assert.match(
     api,
     /getActiveChatGenerationRuns/,
@@ -431,7 +427,7 @@ test("a failed second active-run read leaves the thread unanswered", () => {
   // Source-pinned for the same reason as the gate above. `missed` proves the first list
   // predates the run, so keeping it AND recording it as an answer would restore a live
   // reply as interrupted and re-enable a conflicting send.
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   assert.match(provider, /let answered = true;/);
   assert.match(
     provider,
@@ -446,7 +442,7 @@ test("a failed second active-run read leaves the thread unanswered", () => {
 });
 
 test("the recovery follower settles when the follow throws a stall", () => {
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   assert.match(
     provider,
     /catch \(error\) \{\s*if \(!\(error instanceof ChatGenerationStalledError\)\) throw error;\s*followStalled = true;\s*\}/,
@@ -507,7 +503,7 @@ test("a locally interrupted follower is not revived by the benefit of the doubt"
 });
 
 test("the marker is cleared when the server corroborates the run", () => {
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   assert.match(
     provider,
     /generationLocallyInterrupted: false,/,
@@ -531,7 +527,7 @@ test("the marker is cleared when the server corroborates the run", () => {
 });
 
 test("a legacy fallback releases the durable claim at once", () => {
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const fallback = adapter.indexOf('generationDecision = "legacy";\n                    //');
   assert.ok(fallback > 0, "the legacy-fallback branch moved");
   const release = adapter.indexOf("releaseLiveGenerationRun(cancelId);", fallback);
@@ -548,7 +544,7 @@ test("the initial durable stream marks itself interrupted when it stalls", () =>
   // metadata still reads running and unsettled. Without the marker, generationNeedsRecovery
   // stays true, the next reload attaches another follower, and the composer is blocked for
   // another full deadline.
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const stream = adapter.indexOf("const durableStream = async function* () {");
   assert.ok(stream > 0, "the durable stream moved");
   const caught = adapter.indexOf("instanceof ChatGenerationStalledError", stream);
@@ -597,7 +593,7 @@ test("a completed run overrides the local interruption marker", () => {
 });
 
 test("a failed initial active-run read retracts the earlier answer too", () => {
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   assert.match(
     provider,
     /if \(!activeGenerationRunsLoaded\) \{[^]*?markServerActiveGenerationRunsUnknown\(remoteId\)/,
@@ -606,7 +602,7 @@ test("a failed initial active-run read retracts the earlier answer too", () => {
 });
 
 test("the lease is renewed while the model is being prepared", () => {
-  const runs = read("../../backend/core/inference/chat_generation_runs.py");
+  const runs = readText("../../backend/core/inference/chat_generation_runs.py");
   assert.match(runs, /_renew_lease_while_preparing/);
   assert.match(
     runs,
@@ -711,7 +707,7 @@ test("a run finished between the two reads never reaches the durable registry", 
   // The registry sync runs BEFORE the overlay, so skipping only at the overlay left the
   // thread reading as durable. In another tab nothing removes that mapping, and the next
   // subscriber-owned stream on the thread would be capped and lose its tail.
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   const filter = provider.indexOf("terminalMessageRuns");
   const sync = provider.indexOf("syncServerActiveGenerationRuns(", filter);
   assert.ok(filter > 0, "the terminal-message filter is missing");
@@ -722,7 +718,6 @@ test("a run finished between the two reads never reaches the durable registry", 
     "the list itself must be filtered, so sync and overlay both see it",
   );
 });
-
 
 test("a pre-admission claim does not make the thread bounded yet", () => {
   resetServerActiveGenerationRuns();
@@ -751,7 +746,6 @@ test("releasing a provisional claim clears it rather than leaving it bounded", (
   assert.equal(threadHasDurableGenerationRun("thread-2"), true);
   releaseLiveGenerationRun("run-2");
 });
-
 
 test("a repeated keep-alive stamp does NOT hold the follower open", async () => {
   // The other half of the rule above, and the case the whole frontend fallback exists for:
@@ -885,7 +879,7 @@ test("a stalled follower fences the server run before offering Continue", () => 
   // Settling only in this tab leaves the row queued/running/cancelling, and create_run
   // refuses a thread that already has an active generation, so Continue and the next
   // message would both 409 against a reply the UI had just declared finished.
-  const provider = read("../src/features/chat/runtime-provider.tsx");
+  const provider = readText("../src/features/chat/runtime-provider.tsx");
   const settle = provider.indexOf("followStalled || generationNeedsRecovery(currentMetadata)");
   assert.ok(settle > 0, "the stall settle branch moved");
   const commit = provider.indexOf("incomplete: { reason: \"interrupted\" as const }", settle);

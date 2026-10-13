@@ -127,6 +127,23 @@ test("an edited reply keeps the metadata the turn was stored with", async () => 
   assert.deepEqual(record.metadata, CUSTOM);
 });
 
+test("editing clears stale Gemini continuation replay and keeps other metadata", async () => {
+  const record = await saveOwnedReply({
+    ...CUSTOM,
+    geminiContinuationReplay: {
+      turns: [{ text: "the original reply", thoughtSignature: "SIG-OLD" }],
+      visiblePrefix: "the original reply",
+      stripVisiblePrefix: true,
+    },
+  });
+
+  assert.deepEqual(record.metadata, CUSTOM);
+  assert.equal(
+    "geminiContinuationReplay" in (record.metadata as Record<string, unknown>),
+    false,
+  );
+});
+
 test("the edit still rewrites the content and its identity", async () => {
   const record = await save("an edited reply");
 

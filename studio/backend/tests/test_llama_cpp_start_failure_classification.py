@@ -37,6 +37,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure
 
@@ -70,6 +71,16 @@ class TestDiffusionArchitectures:
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
         assert arch in msg
+
+    def test_an_image_arch_this_host_cannot_build_promises_no_page(self, monkeypatch):
+        import core.inference.diffusion_engine_router as router
+
+        monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+        out = "error loading model: unknown model architecture: 'qwen_image21'"
+        msg = _classify(out, "/models/qwen-image-2.1-Q4_K_M.gguf", "unsloth/Qwen-Image-2.1-GGUF")
+        assert "qwen_image21" in msg
+        assert "Use Unsloth's Images page to generate" not in msg
+        assert "does not list it either" in msg
 
     # A video arch must name the VIDEO page: Images cannot run it either.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
@@ -192,6 +203,68 @@ class TestOllamaAndFallback:
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
 
+    def test_missing_gguf_key_names_key_not_memory(self):
+        # #8513: a MiniMax-M3 GGUF made before llama.cpp's native MSA support.
+        out = (
+            "llama_model_load: error loading model: error loading model hyperparameters: "
+            "key not found in model: minimax-m3.attention.indexer.head_count\n"
+            "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(
+            out, "/models/MiniMax-M3-UD-Q6_K_XL-00001-of-00009.gguf", "unsloth/MiniMax-M3-GGUF", 1
+        )
+        assert "'minimax-m3.attention.indexer.head_count'" in msg
+        assert "not a memory problem" in msg
+        assert "updated GGUF" in msg
+        assert "GGUF file is valid" not in msg
+        assert "minimax-m3.attention.indexer.head_count\n" in msg
+
+    @pytest.mark.parametrize(
+        "line, named",
+        [
+            # #11259 comment, prism-ml/Ternary-Bonsai-2-27B-gguf PQ2_0 on the bundled build.
+            (
+                "gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. "
+                "should be in [0, 67)\n"
+                "gguf_init_from_reader: failed to read tensor info\n",
+                "quantization type 142",
+            ),
+            # #11259 report: a group-128 Q2_0 tensor where the build defines group-64 Q2_0.
+            (
+                "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
+                "expected 357584192\n"
+                "gguf_init_from_reader: failed to read tensor data\n",
+                "download it again",
+            ),
+        ],
+    )
+    def test_unreadable_tensor_type_names_the_build_not_memory(self, line, named):
+        out = (
+            "load_model: loading model 'Ternary-Bonsai-27B-PQ2_0.gguf'\n"
+            + line
+            + "llama_model_load: error loading model: llama_model_loader: failed to load model\n"
+            "srv  llama_server: exiting due to model loading error\n"
+        )
+        msg = _classify(
+            out, "/models/Ternary-Bonsai-27B-PQ2_0.gguf", "prism-ml/Ternary-Bonsai-27B-gguf", 1
+        )
+        assert named in msg
+        assert "download it again" in msg
+        assert "not a memory problem" in msg
+        assert "another quant" in msg
+        assert "GGUF file is valid" not in msg
+
+    def test_truncated_gguf_keeps_the_generic_message(self):
+        # What a cut-off download prints: the header parses, the data does not fit.
+        out = (
+            "llama_model_load: error loading model: tensor 'output.weight' data is not "
+            "within the file bounds, model is corrupted or incomplete\n"
+            "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "cannot read this GGUF" not in msg
+
     def test_generic_oom_keeps_memory_message(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
         assert "enough memory" in msg.lower()
@@ -205,7 +278,9 @@ class TestOllamaAndFallback:
         # A live server that never returns 200 on /health must name the probe and
         # proxy/context causes, not blame a bad GGUF (#5740).
         msg = _classify(
-            "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
+            "llama-server health check timed out: no startup progress for 600s",
+            "/models/x.gguf",
+            "local/x",
         )
         assert "/health" in msg
         assert "NO_PROXY" in msg
@@ -961,7 +1036,7 @@ class TestMacOSLoaderEdgeCases:
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: '/x/libllama.dylib' (no such file)\n"
-            "llama-server health check timed out after 600.0s"
+            "llama-server health check timed out: no startup progress for 600s"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "health check timed out" not in msg
@@ -1020,7 +1095,6 @@ class TestDiagnosticsDoNotLeak:
         # measures the runner instead, which is why this exact assertion goes red on
         # the Windows runner for main as well as for a branch. The stopwatch stays
         # only as a catastrophic guard, loose enough that no runner can trip it.
-        import time
 
         buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
@@ -1211,7 +1285,6 @@ class TestTheDyldReasonIsBounded:
     def test_a_pathological_reason_does_not_stall_the_classifier(self):
         # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured
         # before the cap, against 0.0s on main, on the thread serving the load.
-        import time
 
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
@@ -1487,8 +1560,6 @@ class TestAnEncodedSecretIsStillRedacted:
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
-        import time
-
         start = time.monotonic()
         _classify(blob, "/m.gguf", "u/x", 1)
         assert time.monotonic() - start < 2.0
@@ -1711,8 +1782,6 @@ class TestTheRedactionHolesCodexFound:
         ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
-        import time
-
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0

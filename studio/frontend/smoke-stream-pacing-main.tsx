@@ -5,17 +5,14 @@
 // assistant-ui runtime, fed a fixed reply at a fixed rate, so the measured main-thread cost
 // is the chat renderer's own. Same shape as smoke-autoscroll.html and smoke-research.html:
 // a vite entry, no backend, no auth, no model.
-//
 // Four merged PRs moved this path (#7892 transition starvation, #8750 incremental Markdown,
 // #8845 publish coalescing, #8935 incremental fence tokenization) and each rebuilt a
 // throwaway harness to prove it. The number they all reported is `longestStallMs`: the
 // longest the bubble stops growing while text is still arriving.
-//
 // A local runtime rather than a bare component: MarkdownText reads its message part from
 // assistant-ui context and its BlockComponent reads `useAuiState`, so mounting it outside a
 // provider throws. The real runtime also puts assistant-ui's own update scheduling inside
 // the measurement, which is where #7892's starvation lived.
-//
 // The reply is a fixed string, not a model's output. #8845's first measurement attempts
 // failed because free-form sampling gave the two sides different essays, and the renderer's
 // cost is superlinear in length, so comparing across different text says nothing.
@@ -203,11 +200,10 @@ function Harness(): ReactElement {
           state.paintedChars = painted;
           lastGrowthAt = now;
         } else {
-          // Measure the stall in progress: a stall closed only by a LATER paint misses a
-          // freeze that runs to the end of the stream, whose lost tail can hide inside the
-          // 90% floor. stallInProgress caps it at stream end, so a freeze spanning that
-          // moment is still recorded in full while the settle check's own quiet frames are
-          // not counted as one.
+          // Measure the stall in progress: a stall closed only by a LATER paint misses a freeze
+          // that runs to the end of the stream, whose lost tail can hide inside the 90% floor.
+          // stallInProgress caps it at stream end, so a freeze spanning that moment is still
+          // recorded in full while the settle check's own quiet frames are not counted as one.
           const stall = stallInProgress(
             lastGrowthAt,
             now,
@@ -218,12 +214,11 @@ function Harness(): ReactElement {
             state.longestStallMs = stall;
           }
         }
-        // Settled is counted in FRAMES without growth, not wall clock: #8845's last
-        // failed attempt used a 1.5s quiet window and called a reply finished mid
-        // freeze. A freeze blocks the frame loop too, so a frame counter cannot tick
-        // through one. Rendered length is compared against itself, not the bytes sent,
-        // because Markdown syntax (fences, list markers, math delimiters) never
-        // reaches textContent.
+        // Settled is counted in FRAMES without growth, not wall clock: #8845's last failed attempt
+        // used a 1.5s quiet window and called a reply finished mid freeze. A freeze blocks the
+        // frame loop too, so a frame counter cannot tick through one. Rendered length is compared
+        // against itself, not the bytes sent, because Markdown syntax (fences, list markers, math
+        // delimiters) never reaches textContent.
         if (state.streamEndedAtMs !== null && state.timeToFullyPaintedMs === null) {
           if (painted > settledChars) {
             settledChars = painted;
@@ -245,13 +240,12 @@ function Harness(): ReactElement {
       handle = requestAnimationFrame(watch);
     });
 
-    // `observe({type})` aborts silently on an unsupported entry type instead of throwing,
-    // so a try/catch never fires and the long-task total stays 0, a perfect score on the
-    // budget that matters most. Only supportedEntryTypes answers the question, and the
-    // answer is recorded so the driver can fail the run instead of reporting the zero.
-    // Chromium alone ships longtask (Gecko bug 1348405 open, WebKit never shipped it).
-    // run() moves measureFrom to the moment the stream is asked for, so nothing the page
-    // did while loading lands in the budget.
+    // `observe({type})` aborts silently on an unsupported entry type instead of throwing, so a
+    // try/catch never fires and the long-task total stays 0, a perfect score on the budget that
+    // matters most. Only supportedEntryTypes answers the question, and the answer is recorded so
+    // the driver can fail the run instead of reporting the zero. Chromium alone ships longtask
+    // (Gecko bug 1348405 open, WebKit never shipped it). run() moves measureFrom to the moment the
+    // stream is asked for, so nothing the page did while loading lands in the budget.
     let measureFrom = Number.POSITIVE_INFINITY;
     let observer: PerformanceObserver | null = null;
     state.longTaskSupported =

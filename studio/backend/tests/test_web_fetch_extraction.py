@@ -12,7 +12,9 @@ the skip-link / nav / footer furniture, and the README rendered inside
 
 from __future__ import annotations
 
+import email
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference._html_to_md import _is_aria_heading, html_to_markdown
+from core.inference._html_to_md import SiteLinks, _is_aria_heading, html_to_markdown
 from core.inference.tools import (
     _fetch_page_text,
     _fetch_url_raw,
@@ -113,60 +115,106 @@ _GITHUB_PAGE = f"""<!DOCTYPE html>
 # ── html_to_markdown: hidden elements ────────────────────────────
 
 
-def test_hidden_attribute_subtree_is_dropped():
-    html = "<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>"
+@pytest.mark.parametrize(
+    "html, present_first, present_second, absent",
+    [
+        pytest.param(
+            "<body><p>visible</p><div hidden><p>secret error text</p></div><p>after</p></body>",
+            "visible",
+            "after",
+            "secret error text",
+            id = "hidden_attribute_subtree_is_dropped",
+        ),
+        # Error/loading blocks are often hidden with inline CSS rather than the
+        # ``hidden`` attribute; browsers do not render them, so they must not leak.
+        pytest.param(
+            "<body><p>visible</p>"
+            '<div style="display:none">secret loading block</div>'
+            "<p>after</p></body>",
+            "visible",
+            "after",
+            "secret loading block",
+            id = "inline_style_display_none_subtree_is_dropped",
+        ),
+        # A hidden void element (<hr>/<br>) never joins the open-element stack, so it
+        # must be suppressed inline rather than emitting its markup.
+        pytest.param(
+            '<body><p>before</p><hr aria-hidden="true"><p>after</p></body>',
+            "before",
+            "after",
+            "---",
+            id = "hidden_void_element_is_suppressed",
+        ),
+        # The hidden <br> must not inject a newline between the two runs.
+        pytest.param(
+            "<body><p>one<br hidden>two</p></body>",
+            "one",
+            "two",
+            "one\ntwo",
+            id = "hidden_void_br_emits_no_break",
+        ),
+        # Without main_content the whole document converts (backwards compatible),
+        # boilerplate included; only hidden subtrees are dropped.
+        pytest.param(
+            "<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>",
+            "Skip to content",
+            "hello",
+            "gone",
+            id = "default_conversion_unscoped_and_unstripped",
+        ),
+    ],
+)
+def test_hidden_subtrees_are_dropped_from_the_conversion(
+    html, present_first, present_second, absent
+):
     out = html_to_markdown(html)
-    assert "visible" in out
-    assert "after" in out
-    assert "secret error text" not in out
+    assert present_first in out
+    assert present_second in out
+    assert absent not in out
 
 
-def test_aria_hidden_true_subtree_is_dropped():
-    html = '<body><p>keep</p><span aria-hidden="true">decoration</span></body>'
+@pytest.mark.parametrize(
+    "html, absent",
+    [
+        pytest.param(
+            '<body><p>keep</p><span aria-hidden="true">decoration</span></body>',
+            "decoration",
+            id = "aria_hidden_true_subtree_is_dropped",
+        ),
+        pytest.param(
+            '<body><p>keep</p><span style="visibility:hidden">ghost</span></body>',
+            "ghost",
+            id = "inline_style_visibility_hidden_subtree_is_dropped",
+        ),
+        # The !important flag must not defeat the display:none detection.
+        pytest.param(
+            '<body><p>keep</p><div style="display:none !important">gone</div></body>',
+            "gone",
+            id = "inline_style_display_none_important_is_dropped",
+        ),
+        pytest.param(
+            '<body><p>keep</p><div style="color: red; display : none ; margin:0">gone</div></body>',
+            "gone",
+            id = "inline_style_display_none_among_other_declarations",
+        ),
+        # ``hidden`` is enumerated: the spec maps invalid/empty values to the Hidden
+        # state, so hidden="false" is NOT rendered and must not reach the Markdown.
+        pytest.param(
+            '<body><p>keep</p><div hidden="false">not rendered</div></body>',
+            "not rendered",
+            id = "hidden_false_is_still_hidden",
+        ),
+    ],
+)
+def test_hidden_markers_other_than_the_attribute_are_dropped(html, absent):
     out = html_to_markdown(html)
     assert "keep" in out
-    assert "decoration" not in out
+    assert absent not in out
 
 
 def test_aria_hidden_false_subtree_is_kept():
     html = '<body><span aria-hidden="false">still here</span></body>'
     assert "still here" in html_to_markdown(html)
-
-
-def test_inline_style_display_none_subtree_is_dropped():
-    # Error/loading blocks are often hidden with inline CSS rather than the
-    # ``hidden`` attribute; browsers do not render them, so they must not leak.
-    html = (
-        "<body><p>visible</p>"
-        '<div style="display:none">secret loading block</div>'
-        "<p>after</p></body>"
-    )
-    out = html_to_markdown(html)
-    assert "visible" in out
-    assert "after" in out
-    assert "secret loading block" not in out
-
-
-def test_inline_style_visibility_hidden_subtree_is_dropped():
-    html = '<body><p>keep</p><span style="visibility:hidden">ghost</span></body>'
-    out = html_to_markdown(html)
-    assert "keep" in out
-    assert "ghost" not in out
-
-
-def test_inline_style_display_none_important_is_dropped():
-    # The !important flag must not defeat the display:none detection.
-    html = '<body><p>keep</p><div style="display:none !important">gone</div></body>'
-    out = html_to_markdown(html)
-    assert "keep" in out
-    assert "gone" not in out
-
-
-def test_inline_style_display_none_among_other_declarations():
-    html = '<body><p>keep</p><div style="color: red; display : none ; margin:0">gone</div></body>'
-    out = html_to_markdown(html)
-    assert "keep" in out
-    assert "gone" not in out
 
 
 def test_inline_style_visible_display_is_kept():
@@ -185,12 +233,40 @@ def test_inline_style_visible_display_is_kept():
     assert "link kept" in out
 
 
-def test_hidden_recovers_from_omitted_close_tags():
-    # <p hidden> is never closed; the parent </div> must still end the hidden region.
-    html = "<body><div><p hidden>gone</div><p>kept</p></body>"
+@pytest.mark.parametrize(
+    "html, absent, present",
+    [
+        # <p hidden> is never closed; the parent </div> must still end the hidden region.
+        pytest.param(
+            "<body><div><p hidden>gone</div><p>kept</p></body>",
+            "gone",
+            "kept",
+            id = "hidden_recovers_from_omitted_close_tags",
+        ),
+        # Void elements also imply closes: <hr> ends an open <p hidden>.
+        pytest.param(
+            "<body><p hidden>secret<hr>kept text</body>",
+            "secret",
+            "kept text",
+            id = "hr_implicitly_closes_hidden_paragraph",
+        ),
+        # A nested <table> re-scopes <tr>/<td>: an inner <td> must not be an
+        # optional-close sibling of a hidden outer <td> across the nested table.
+        pytest.param(
+            "<body><table><tr>"
+            "<td hidden>outer<table><tr><td>secret cell</td></tr></table></td>"
+            "<td>visible cell</td>"
+            "</tr></table></body>",
+            "secret cell",
+            "visible cell",
+            id = "nested_hidden_table_does_not_leak_inner_cells",
+        ),
+    ],
+)
+def test_hidden_regions_end_at_the_implied_close_tag(html, absent, present):
     out = html_to_markdown(html)
-    assert "gone" not in out
-    assert "kept" in out
+    assert absent not in out
+    assert present in out
 
 
 def test_nested_hidden_regions():
@@ -199,15 +275,6 @@ def test_nested_hidden_regions():
     assert "inner" not in out
     assert "outer" not in out
     assert "ok" in out
-
-
-def test_hidden_false_is_still_hidden():
-    # ``hidden`` is enumerated: the spec maps invalid/empty values to the Hidden
-    # state, so hidden="false" is NOT rendered and must not reach the Markdown.
-    html = '<body><p>keep</p><div hidden="false">not rendered</div></body>'
-    out = html_to_markdown(html)
-    assert "keep" in out
-    assert "not rendered" not in out
 
 
 def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
@@ -223,21 +290,40 @@ def test_hidden_paragraph_omitted_close_does_not_swallow_siblings():
     assert "after" in out
 
 
-def test_hidden_list_item_omitted_close_keeps_following_items():
-    # <li hidden> without </li> is implicitly closed by the next <li>.
-    html = "<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>"
+@pytest.mark.parametrize(
+    "html, present_first, present_second",
+    [
+        # <li hidden> without </li> is implicitly closed by the next <li>.
+        pytest.param(
+            "<body><ul><li hidden>secret<li>shown A</li><li>shown B</li></ul></body>",
+            "shown A",
+            "shown B",
+            id = "hidden_list_item_omitted_close_keeps_following_items",
+        ),
+        # A browser closes an open <p> when a <div> arrives, even with an unclosed
+        # <span> on top of it. The hidden region must end there, not swallow the
+        # following visible blocks.
+        pytest.param(
+            "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>",
+            "visible div",
+            "visible paragraph",
+            id = "hidden_paragraph_with_inline_child_implicitly_closed_by_block",
+        ),
+        pytest.param(
+            "<body><ul><li hidden><span>secret<li>visible item</ul><p>after</p></body>",
+            "visible item",
+            "after",
+            id = "hidden_list_item_with_inline_child_closed_by_next_item",
+        ),
+    ],
+)
+def test_hidden_regions_with_inline_children_end_at_the_implied_close(
+    html, present_first, present_second
+):
     out = html_to_markdown(html)
     assert "secret" not in out
-    assert "shown A" in out
-    assert "shown B" in out
-
-
-def test_hr_implicitly_closes_hidden_paragraph():
-    # Void elements also imply closes: <hr> ends an open <p hidden>.
-    html = "<body><p hidden>secret<hr>kept text</body>"
-    out = html_to_markdown(html)
-    assert "secret" not in out
-    assert "kept text" in out
+    assert present_first in out
+    assert present_second in out
 
 
 def test_skipped_tag_implicitly_closes_hidden_paragraph():
@@ -252,23 +338,146 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
-def test_hidden_void_element_is_suppressed():
-    # A hidden void element (<hr>/<br>) never joins the open-element stack, so it
-    # must be suppressed inline rather than emitting its markup.
-    html = '<body><p>before</p><hr aria-hidden="true"><p>after</p></body>'
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            '<h3 data-state="closed"><button type="button" aria-controls="r1" aria-expanded="false">'
+            'What is the right plan for me?<span aria-hidden="true">v</span></button></h3>'
+            '<div id="r1" role="region"><p>Answer text.</p></div>',
+            "### What is the right plan for me?",
+        ),
+        (
+            '<h2 class="accordion-header">\n  <button class="accordion-button" type="button" '
+            'aria-expanded="true" aria-controls="c1">\n    What is the right plan for me?\n  </button>\n</h2>'
+            '<div id="c1"><div class="accordion-body">Answer text.</div></div>',
+            "What is the right plan for me?",
+        ),
+        (
+            "<h3><button>What is the right plan for me?</button></h3><p>Answer text.</p>",
+            "### What is the right plan for me?",
+        ),
+        (
+            '<div role="heading" aria-level="3"><button aria-expanded="false">'
+            "What is the right plan for me?</button></div><p>Answer text.</p>",
+            "What is the right plan for me?",
+        ),
+    ],
+)
+def test_accordion_question_in_a_heading_button_is_kept(html, heading):
     out = html_to_markdown(html)
-    assert "before" in out
-    assert "after" in out
-    assert "---" not in out
+    assert heading in out
+    assert "Answer text." in out
 
 
-def test_hidden_void_br_emits_no_break():
-    html = "<body><p>one<br hidden>two</p></body>"
+def test_buttons_that_are_not_a_heading_title_are_still_dropped():
+    html = (
+        "<h4><span>Create Artifacts</span><button aria-expanded='false'>"
+        "<span class='sr-only'>More information</span></button></h4>"
+        "<p>Body text.</p><button>Subscribe</button>"
+    )
     out = html_to_markdown(html)
-    assert "one" in out
-    assert "two" in out
-    # The hidden <br> must not inject a newline between the two runs.
-    assert "one\ntwo" not in out
+    assert "#### Create Artifacts" in out
+    assert "Body text." in out
+    assert "More information" not in out
+    assert "Subscribe" not in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<h4>&#67;&#114;&#101;&#97;&#116;&#101;<button>More information</button></h4><p>Body text.</p>",
+        "<h4>&eacute;<button>More information</button></h4><p>Body text.</p>",
+        "<hgroup><h1>Create</h1><h2></h2><button>More information</button></hgroup><p>Body text.</p>",
+    ],
+)
+def test_a_button_after_entity_or_nested_heading_text_is_dropped(html):
+    out = html_to_markdown(html)
+    assert "Body text." in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
+    "between", ["", "<!-- </h4> -->", "<span hidden>" + "x" * 5000 + "</span>"]
+)
+def test_a_leading_control_before_the_heading_title_is_dropped(between):
+    html = (
+        f"<h4><button aria-expanded='false'>More information</button>{between}<span>Create Artifacts</span></h4>"
+        "<p>Body text.</p>"
+    )
+    out = html_to_markdown(html)
+    assert "#### Create Artifacts" in out
+    assert "More information" not in out
+
+
+@pytest.mark.parametrize(
+    "html, heading",
+    [
+        (
+            "<hgroup><h1><button>Question</button></h1><p>Sub</p></hgroup><p>Answer text.</p>",
+            "# Question",
+        ),
+        (
+            "<h3><button hidden>old</button><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        (
+            "<h3><span hidden><button>old</button></span><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<h3><button>Question</button><br></h3><p>Answer text.</p>", "### Question"),
+        ("<h3><em><button>Question</button></em></h3><p>Answer text.</p>", "### *Question*"),
+        (
+            "<h3><button aria-label='Settings'><svg><path/></svg></button><button>Question</button></h3>"
+            "<p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<ul><li><h3><button>Question</button><li>Answer text.</ul>", "### Question"),
+        (
+            "<ul><li hidden>old<li><h3><button>Question</button></h3>Answer text.</ul>",
+            "### Question",
+        ),
+        ("<p hidden>old<h3><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
+            '<script>const x="<h3><button>"</script><!-- <h2><button> -->'
+            "<h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<h3><!-- </h3> --><button>Question</button></h3><p>Answer text.</p>", "### Question"),
+        (
+            "<title-card>Card</title-card><h3><button>Question</button></h3><p>Answer text.</p>",
+            "### Question",
+        ),
+        (
+            '<div data-example="<script>"></div><h3 data-template="</h3>"><button>Question</button></h3>'
+            "<p>Answer text.</p>",
+            "### Question",
+        ),
+        ("<p>a\nb</p>\n<h3>\n  <button>Question</button></h3><p>Answer text.</p>", "Question"),
+        (
+            '<div role="presentation heading" aria-level="3"><button>Question</button></div><p>Answer text.</p>',
+            "Question",
+        ),
+    ],
+)
+def test_heading_button_title_edge_cases(html, heading):
+    out = html_to_markdown(html)
+    assert heading in out
+    assert "Answer text." in out
+    assert "old" not in out
+
+
+@pytest.mark.parametrize(
+    "cut", ["<h3><button>Question", "<h3><button>Question</button>", "<h3><button>Question<svg>"]
+)
+def test_heading_button_cut_by_the_fetch_cap_keeps_its_title(cut):
+    assert "### Question" in html_to_markdown("<p>Answer text.</p>" + cut)
+
+
+@pytest.mark.parametrize("title", ["<em>Question</em> one", "First<br>Second", "Q &amp; A"])
+def test_a_heading_button_title_renders_like_the_plain_heading(title):
+    plain = html_to_markdown(f"<h3>{title}</h3><p>Answer text.</p>")
+    assert html_to_markdown(f"<h3><button>{title}</button></h3><p>Answer text.</p>") == plain
 
 
 def test_visible_void_hr_still_renders():
@@ -276,6 +485,27 @@ def test_visible_void_hr_still_renders():
     html = "<body><p>a</p><hr><p>b</p></body>"
     out = html_to_markdown(html)
     assert "---" in out
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
+            "* First item\n\n* Second item",
+        ),
+        ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
+        ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
+    ],
+)
+def test_block_opening_list_item_stays_on_marker_line(html, expected):
+    assert html_to_markdown(html) == expected
+
+
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
 
 
 # ── html_to_markdown: main-content scoping ───────────────────────
@@ -342,16 +572,6 @@ def test_sibling_articles_do_not_leak_after_main_selected():
     out = html_to_markdown(html, main_content = True)
     assert "Main article body content" in out
     assert "Unrelated related-post" not in out
-
-
-def test_default_conversion_unscoped_and_unstripped():
-    # Without main_content the whole document converts (backwards compatible),
-    # boilerplate included; only hidden subtrees are dropped.
-    html = "<body><p>Skip to content</p><div hidden>gone</div><main><p>hello</p></main></body>"
-    out = html_to_markdown(html)
-    assert "Skip to content" in out
-    assert "hello" in out
-    assert "gone" not in out
 
 
 def test_boilerplate_filter_preserves_phrase_inside_real_prose():
@@ -519,8 +739,12 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     assert "There was an error while loading" not in out
 
 
-def test_fetch_page_text_non_html_returned_raw(monkeypatch):
-    raw = "line one\n    indented code\nline three"
+_RAW_TEXT_PAGE = "line one\n    indented code\nline three"
+_HTML_FRAGMENT = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
+
+
+def _page_text(monkeypatch, url, body, content_type):
+    """``_fetch_page_text`` with the fetch stubbed to answer `body` under `content_type`."""
 
     def fake_fetch(
         url,
@@ -529,28 +753,69 @@ def test_fetch_page_text_non_html_returned_raw(monkeypatch):
         deadline = None,
         cancel_event = None,
     ):
-        return None, raw, "text/plain"
+        return None, body, content_type
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://raw.githubusercontent.com/o/r/main/file.txt")
-    # Whitespace preserved: the HTML renderer would have collapsed it.
-    assert "    indented code" in out
+    return _fetch_page_text(url)
 
 
-def test_fetch_page_text_html_conversion(monkeypatch):
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, _GITHUB_PAGE, "text/html"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://github.com/unslothai/unsloth/tree/main")
-    assert "Unsloth Studio" in out
-    assert "Uh oh!" not in out
+@pytest.mark.parametrize(
+    "url, body, content_type, present, absent",
+    [
+        # Whitespace preserved: the HTML renderer would have collapsed it.
+        pytest.param(
+            "https://raw.githubusercontent.com/o/r/main/file.txt",
+            _RAW_TEXT_PAGE,
+            "text/plain",
+            ["    indented code"],
+            [],
+            id = "fetch_page_text_non_html_returned_raw",
+        ),
+        pytest.param(
+            "https://github.com/unslothai/unsloth/tree/main",
+            _GITHUB_PAGE,
+            "text/html",
+            ["Unsloth Studio"],
+            ["Uh oh!"],
+            id = "fetch_page_text_html_conversion",
+        ),
+        # A header-less bare HTML fragment must still be sniffed and converted, not served raw.
+        pytest.param(
+            "https://example.com/fragment",
+            _HTML_FRAGMENT,
+            "",
+            ["Doc Title", "Readable fragment body."],
+            ["<article"],
+            id = "fetch_page_text_missing_content_type_fragment_converted",
+        ),
+        # A header-less server returning plain text stays raw (whitespace kept).
+        pytest.param(
+            "https://example.com/no-content-type.txt",
+            _RAW_TEXT_PAGE,
+            "",
+            ["    indented code"],
+            [],
+            id = "fetch_page_text_missing_content_type_plain_text_raw",
+        ),
+        # text/plain on an HTML body is sniffed and converted, as before extraction existed.
+        pytest.param(
+            "https://example.com/mislabeled",
+            _GITHUB_PAGE,
+            "text/plain",
+            ["Unsloth Studio"],
+            ["<html"],
+            id = "fetch_page_text_mislabeled_text_plain_html_converted",
+        ),
+    ],
+)
+def test_fetch_page_text_content_type_handling(
+    monkeypatch, url, body, content_type, present, absent
+):
+    out = _page_text(monkeypatch, url, body, content_type)
+    for fragment in present:
+        assert fragment in out
+    for fragment in absent:
+        assert fragment not in out
 
 
 def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
@@ -567,6 +832,347 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
     assert _fetch_page_text("https://example.com/missing") == (
         "Failed to fetch URL: HTTP 404 Not Found"
     )
+
+
+_WIKI_URL = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+
+
+def _wiki_article(paragraphs):
+    body = "".join(
+        f'<p>Paragraph {i} links <a href="https://en.wikipedia.org/wiki/Some_Long_Article_Title_{i}">'
+        f'topic {i}</a>, <a href="/wiki/Another_Related_Page_{i}">a related page</a> and a note'
+        f'<sup><a href="#cite_note-{i}">[{i}]</a></sup>.</p>'
+        for i in range(paragraphs)
+    )
+    return (
+        f"<html><body><main><article>{body}"
+        "<p>Python 3.0 was released on 3 December 2008.</p>"
+        '<p>See <a href="https://www.python.org/doc/">the docs</a>.</p>'
+        "</article></main></body></html>"
+    )
+
+
+def test_long_page_spends_its_budget_on_text_not_links_into_the_site(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(150), "text/html")
+    assert "Python 3.0 was released on 3 December 2008." in out
+    assert "topic 149, a related page and a note[149]." in out
+    assert "[the docs](https://www.python.org/doc/)" in out
+    assert "wikipedia.org" not in out
+    assert "/wiki/" not in out
+    assert "#cite_note" not in out
+
+
+def test_page_that_fits_keeps_its_links(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(3), "text/html")
+    assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
+    assert "[a related page](/wiki/Another_Related_Page_1)" in out
+    assert "[[1]](#cite_note-1)" in out
+
+
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("(2<sup>53</sup> &ndash; 1)", "(2^53 – 1)"),
+        ("2<sup>&minus;52</sup>", "2^−52"),
+        ("1.898&times;10<sup>27</sup> kg", "1.898×10^27 kg"),
+        ("6.02214076&times;10<sup>23</sup> mol<sup>&minus;1</sup>", "6.02214076×10^23 mol^−1"),
+        ("2<sup><i>n</i>+1</sup> nodes", "2^(*n*+1) nodes"),
+        ("2<sup>n + 1</sup>", "2^(n + 1)"),
+        ("the 1<sup>st</sup> and 2<sup>nd</sup>", "the 1st and 2nd"),
+        ("Intel<sup>&reg;</sup> Core<sup>&trade;</sup> i7", "Intel® Core™ i7"),
+        ("now $19<sup>.99</sup> only", "now $19.99 only"),
+        ("price<sup>*</sup> and terms<sup>&dagger;</sup>", "price* and terms†"),
+        ("10<sup>6 </sup>years", "10^6 years"),
+        ("Add <sup>1</sup>&frasl;<sub>2</sub> cup", "Add 1⁄2 cup"),
+        ("Add 1 <sup>1</sup>/<sub>2</sub> cups", "Add 1 1/2 cups"),
+        ("<sup>1</sup> Footnote text", "1 Footnote text"),
+        ("Add <em><sup>1</sup></em>&frasl; cup", "Add *1*⁄ cup"),
+        ("the 1<sup><em>st</em></sup> one", "the 1*st* one"),
+        ("a<b><sup>2</sup></b>", "a**^2**"),
+        ("x<sup>n&times;2</sup>", "x^(n×2)"),
+        ("x<sup>2n</sup> and y<sup>n2</sup>", "x^(2n) and y^(n2)"),
+        ("x<sup>2<em>n</em></sup>", "x^(2*n*)"),
+        ("x<sup>2*3</sup> and x<sup><em>n</em></sup>", "x^(2*3) and x^*n*"),
+        ("e<sup>i&pi;</sup> + 1 = 0", "e^(iπ) + 1 = 0"),
+        ("now $19<sup>99</sup> or &euro; 1,299<sup>95</sup>", "now $1999 or € 1,29995"),
+        ("<b>$19</b><sup>99</sup>", "**$19**99"),
+        ("$<b>19</b><sup>99</sup>", "$**19**99"),
+        ("Brand<sup>TM</sup> and Service<sup>SM</sup>", "BrandTM and ServiceSM"),
+        ("el 1<sup>º</sup> y la 2<sup>ª</sup>, x<sup>a</sup>", "el 1º y la 2ª, x^a"),
+        (
+            "le XV<sup>e</sup> siècle, François I<sup>er</sup>, MAX<sup>e</sup>",
+            "le XVe siècle, François Ier, MAX^e",
+        ),
+        ("<span>$</span> <b>19</b><sup>99</sup>", "$ **19**99"),
+        (
+            "&#8378;19<sup>99</sup> or &#8369;19<sup>99</sup>, a19<sup>2</sup>",
+            "₺1999 or ₱1999, a19^2",
+        ),
+        (
+            "CHF 19<sup>95</sup> or USD 19<sup>99</sup>, ABC 10<sup>3</sup>",
+            "CHF 1995 or USD 1999, ABC 10^3",
+        ),
+        (
+            "AED 19<sup>99</sup>, TWD 19<sup>99</sup>, ILS 19<sup>99</sup>",
+            "AED 1999, TWD 1999, ILS 1999",
+        ),
+        (
+            "ZWG 19<sup>99</sup>, les 1<sup>ers</sup> et 1<sup>res</sup>",
+            "ZWG 1999, les 1ers et 1res",
+        ),
+        ("$2<sup>n</sup> and USD 10<sup>6</sup>, $19<sup>99</sup>", "$2^n and USD 10^6, $1999"),
+        (
+            'XCG 19<sup>99</sup>, claim<sup role="doc-noteref presentation">2</sup>',
+            "XCG 1999, claim2",
+        ),
+        ("le P<sup>r</sup> Martin et les P<sup>rs</sup>", "le Pr Martin et les Prs"),
+        ("CHF 1’299<sup>95</sup> or CHF 1'299<sup>95</sup>", "CHF 1’29995 or CHF 1'29995"),
+        ("Marque<sup>MC</sup> et Produit<sup>MD</sup>", "MarqueMC et ProduitMD"),
+        ("Brand<sup>(TM)</sup> and Other<sup>(R)</sup>", "Brand(TM) and Other(R)"),
+        (
+            "KWD 19<sup>950</sup>, BHD 1<sup>234</sup>, USD 10<sup>100</sup>",
+            "KWD 19950, BHD 1234, USD 10^100",
+        ),
+        ("M<sup>r</sup>, M<sup>s</sup> and M<sup>rs</sup> Smith", "Mr, Ms and Mrs Smith"),
+        ("JPY 10<sup>12</sup> and KRW 10<sup>12</sup>", "JPY 10^12 and KRW 10^12"),
+        ("les 1<sup>ères</sup> places", "les 1ères places"),
+        ("John J<sup>r</sup> and John S<sup>r</sup>", "John Jr and John Sr"),
+        ("VED 19<sup>99</sup> and S<sup>T</sup>", "VED 1999 and S^T"),
+        (
+            'claim<sup class="footnote-reference">2</sup>, la 2<sup>de</sup>, le 2<sup>d</sup>',
+            "claim2, la 2de, le 2d",
+        ),
+        (
+            "la P<sup>re</sup> Durand, 12<sup>bis</sup> rue, article 3<sup>ter</sup>",
+            "la Pre Durand, 12bis rue, article 3ter",
+        ),
+        (
+            'claim<sup class="citation">2</sup> and fact<sup class="endnote-ref">3</sup>',
+            "claim2 and fact3",
+        ),
+        ("la D<sup>re</sup> Roy et les D<sup>res</sup>", "la Dre Roy et les Dres"),
+        (
+            'x<sup class="excited">2</sup> and 10<sup>.5</sup>, $19<sup>.99</sup>',
+            "x^2 and 10^(.5), $19.99",
+        ),
+        (
+            'claim<sup class="fnref">2</sup>, fact<sup class="fn-ref">3</sup>, Marca<sup>MR</sup>',
+            "claim2, fact3, MarcaMR",
+        ),
+        (
+            "les S<sup>ts</sup>, les S<sup>tes</sup> et les C<sup>ies</sup>",
+            "les Sts, les Stes et les Cies",
+        ),
+        ("les 2<sup>nds</sup>", "les 2nds"),
+        ("（a+b）<sup>2</sup> and 「引用」<sup>1</sup>", "（a+b）^2 and 「引用」1"),
+        (
+            '&euro;19<sup>,99</sup> and claim<sup class="reference-number">2</sup>',
+            "€19,99 and claim2",
+        ),
+        (
+            "SVC 19<sup>99</sup>, claim<sup>1&ndash;3</sup>, fact<sup>2,5</sup>, 10<sup>-3</sup>",
+            "SVC 1999, claim1–3, fact2,5, 10^-3",
+        ),
+        ("x<sup>2,5</sup> and 10<sup>1,000</sup>", "x^2,5 and 10^1,000"),
+        ("&#8363;10<sup>12</sup> and &#8361;10<sup>12</sup>", "₫10^12 and ₩10^12"),
+        ("claim<sup>1,3&ndash;5</sup>", "claim1,3–5"),
+        ("Doors 9:30<sup>pm</sup>, ends 11<sup>p.m.</sup>", "Doors 9:30pm, ends 11p.m."),
+        ("10<sup>6&ndash;8</sup> CFU/mL and 10<sup>d</sup>", "10^(6–8) CFU/mL and 10^d"),
+        ("(x+1)<sup>2&ndash;4</sup>", "(x+1)^(2–4)"),
+        (
+            "M<sup>me</sup> Dupont, D<sup>r</sup> Martin, n<sup>o</sup> 5, Om<sup>e</sup>",
+            "Mme Dupont, Dr Martin, no 5, Om^e",
+        ),
+        ("&euro;1.299<sup>95</sup> or &euro;1 299<sup>95</sup>", "€1.29995 or €1 29995"),
+        (
+            'claim<sup role="doc-noteref">1</sup> and fact<sup class="footnote">2</sup>',
+            "claim1 and fact2",
+        ),
+        ("x<sup>-n</sup> and 10<sup>2.5</sup>", "x^-n and 10^2.5"),
+        ("now $19<sup><em>.99</em></sup>", "now $19*.99*"),
+        ("A fact.<sup>1</sup> Next, a list,<sup>2</sup>", "A fact.1 Next, a list,2"),
+        ("(a+b)<sup>2</sup> and km<sup>2</sup>.", "(a+b)^2 and km^2."),
+        ("le 1<sup>er</sup> mai, 2<sup>e</sup> et x<sup>e</sup>", "le 1er mai, 2e et x^e"),
+    ],
+)
+def test_superscripts_keep_their_exponent(markup, expected):
+    assert html_to_markdown(f"<p>{markup}</p>") == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "<h1><a href='/p'>E=mc<sup>2</sup></a></h1>",
+        "<a href='/p'><h1>E=mc<sup>2</sup></h1></a>",
+    ],
+)
+def test_linked_header_title_keeps_one_exponent(title):
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header>{title}{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert out.count("E=mc") == 1
+    assert "E=mc^2](/p)" in out
+
+
+def test_stripped_header_keeps_the_exponent_in_its_heading():
+    nav = "".join(f"<a href='/s{i}'>Section number {i}</a> " for i in range(12))
+    html = f"<header><h1>E=mc<sup>2</sup></h1>{nav}</header><p>{'Body text here. ' * 40}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "# E=mc^2" in out
+    assert "E=mc2" not in out
+
+
+def test_deeply_nested_superscripts_track_a_bounded_depth():
+    out = html_to_markdown("<p>x" + "<sup>a" * 50 + "</sup>" * 50 + "</p>")
+    assert out.translate(str.maketrans("", "", "^()")) == "x" + "a" * 50
+    assert out.count("^") == 8
+
+
+def test_linked_footnote_wrapping_its_superscript_renders_unchanged():
+    html = '<p>text<a role="doc-noteref" href="#fn1"><sup>1</sup></a> more</p>'
+    assert html_to_markdown(html) == "text[1](#fn1) more"
+
+
+def test_exponent_headings_do_not_read_as_body_prose():
+    heads = "".join(f"<h2>x<sup>n+{i}</sup></h2>" for i in range(67))
+    body = "<p>" + "Real document body sentence. " * 12 + "</p>"
+    html = f"<html><body><article>{heads}</article><div>{body}</div></body></html>"
+    assert "Real document body" in html_to_markdown(html, main_content = True)
+
+
+def test_same_site_linked_base_keeps_its_exponent():
+    site_links = SiteLinks("https://e.com/page")
+    html = '<p>5 <a href="/metre">m</a><sup>2</sup> and <a href="https://x.org/m">m</a><sup>3</sup></p>'
+    out = site_links.clean(html_to_markdown(html, site_links = site_links))
+    assert out == "5 [m](/metre)^2 and [m](https://x.org/m)^3"
+
+
+def test_empty_superscripts_do_not_rescan_the_page():
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "<i></i><sup></sup>" * 8000 + "</p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown("<p>" + "*" * 250000 + "<sup></sup>" * 23000 + "</p>")
+    assert time.perf_counter() - start < 3
+    start = time.perf_counter()
+    html_to_markdown("<p>claim<sup>" + "1–" * 16000 + "x</sup></p>")
+    assert time.perf_counter() - start < 2
+    start = time.perf_counter()
+    html_to_markdown(
+        "<p>" + "<b>" + "word 1 " * 40000 + "</b>" * 1 + "9" + "<sup></sup>" * 20000 + "</p>"
+    )
+    assert time.perf_counter() - start < 3
+
+
+def test_unclosed_superscripts_do_not_exhaust_the_depth_cap():
+    html = "<p>x<sup>2</p>" * 10 + "<p>1.898&times;10<sup>27</sup> kg</p>"
+    assert html_to_markdown(html).endswith("1.898×10^27 kg")
+
+
+def test_untracked_superscripts_keep_the_stack_bounded():
+    from core.inference._html_to_md import _MarkdownRenderer
+
+    renderer = _MarkdownRenderer()
+    renderer.feed("<p>" + "<sup>" * 5000 + "x")
+    assert len(renderer._sup_starts) <= 8
+
+
+def test_footnote_superscripts_render_unchanged():
+    html = (
+        '<p>mass<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and '
+        "volume<sup>[13]</sup></p>"
+    )
+    assert html_to_markdown(html) == "mass[[12]](#cite_note-12) and volume[13]"
+
+
+def test_fetched_page_keeps_exponents_beside_footnotes(monkeypatch):
+    body = (
+        "<html><body><main><article><p>Jupiter has a mass of 1.898&times;10<sup>27</sup> kg"
+        '<sup class="reference"><a href="#cite_note-12">[12]</a></sup> and a surface area of '
+        "6.1419&times;10<sup>10</sup> km<sup>2</sup>.</p></article></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://en.wikipedia.org/wiki/Jupiter", body, "text/html")
+    assert "1.898×10^27 kg[[12]](#cite_note-12) and a surface area of 6.1419×10^10 km^2." in out
+
+
+def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
+    from core.inference import tools
+
+    context = tools._REQUEST_CONTEXT_TOKENS.set(32768)
+    room = tools._REQUEST_RESULT_BUDGET.set(1200)
+    try:
+        out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(60), "text/html")
+    finally:
+        tools._REQUEST_RESULT_BUDGET.reset(room)
+        tools._REQUEST_CONTEXT_TOKENS.reset(context)
+    assert "(truncated," in out
+    assert "wikipedia.org" not in out
+
+
+def test_dropping_site_link_urls_leaves_code_samples_alone(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        '<html><body><main><p>See <a href="#install">Install</a> or <a href="#usage">Usage</a>.</p>'
+        "<pre>[Install](#install)</pre><p>Inline <code>[Usage](#usage)</code>.</p>"
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert "```\n[Install](#install)\n```" in out
+    assert "Inline `[Usage](#usage)`." in out
+
+
+def test_dropping_site_link_urls_only_rewrites_links_emitted_by_renderer(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        "<html><body><main>"
+        "<p>Literal Markdown: [Install](#install).</p>"
+        '<p>Inline code: <code><a href="#install">Install</a></code>.</p>'
+        '<p>Actual link: <a href="#install">Install</a>.</p>'
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert out.startswith(
+        "Literal Markdown: [Install](#install).\n\n"
+        "Inline code: `[Install](#install)`.\n\n"
+        "Actual link: Install."
+    )
+
+
+def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):
+    linked = "".join(
+        f'<p>Story one fact {i} see <a href="/topics/a-very-long-topic-slug-number-{i}">topic {i}</a>.</p>'
+        for i in range(300)
+    )
+    plain = "".join(
+        f"<p>Story two paragraph {i} with plain prose and no links.</p>" for i in range(300)
+    )
+    page = f"<html><body><article><h1>STORY ONE</h1>{linked}</article><article><h1>STORY TWO</h1>{plain}</article></body></html>"
+    out = _page_text(monkeypatch, "https://news.example.com/story-one", page, "text/html")
+    assert out.startswith("# STORY ONE\n\nStory one fact 0 see topic 0.")
+    assert "STORY TWO" not in out
+
+
+def test_dropping_site_link_urls_keeps_a_link_header_as_furniture(monkeypatch):
+    labels = "machine learning,deep learning,pytorch,cuda,transformers,lora,gguf,llama,quantization,finetuning,inference,qlora"
+    tags = "".join(
+        f'<a href="/category/topics/{t}/archive/page/1/?ref=card-header">{t}</a> '
+        for t in labels.split(",")
+    )
+    prose = "".join(
+        f"<p>Main page prose the user asked about, paragraph {i}, with enough words.</p>"
+        for i in range(250)
+    )
+    page = (
+        f"<html><body><main><h1>Main Post</h1>{prose}<aside><article><header>{tags}</header>"
+        "<p>A short teaser for a related post that is just long enough to read like a real sentence or two here.</p>"
+        "</article></aside></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://blog.example.com/main-post", page, "text/html")
+    assert out.startswith("# Main Post\n\nMain page prose the user asked about, paragraph 0")
 
 
 def test_looks_like_html():
@@ -614,17 +1220,61 @@ def test_looks_like_html_leading_table_stays_markdown():
     assert not _looks_like_html("<tr><td>cell</td></tr>")
 
 
-def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
-    # A Markdown README opening with a fenced HTML snippet must be served verbatim,
-    # never run through html_to_markdown (which would drop the fences/tags).
-    md_readme = (
-        "```html\n"
-        "<!DOCTYPE html>\n"
-        "<html><body><h1>Demo</h1></body></html>\n"
-        "```\n\n"
-        "# My Project\n\nInstall and run.\n"
-    )
-
+@pytest.mark.parametrize(
+    "md_readme, first, second, third",
+    [
+        # A Markdown README opening with a fenced HTML snippet must be served verbatim,
+        # never run through html_to_markdown (which would drop the fences/tags).
+        # Markdown preserved verbatim: the fence and literal tags survive.
+        pytest.param(
+            "```html\n"
+            "<!DOCTYPE html>\n"
+            "<html><body><h1>Demo</h1></body></html>\n"
+            "```\n\n"
+            "# My Project\n\nInstall and run.\n",
+            "```html",
+            "<!DOCTYPE html>",
+            "# My Project",
+            id = "fetch_page_text_keeps_markdown_readme_with_html_example",
+        ),
+        # A README opening with a raw HTML <table> badge/layout row then continuing in
+        # Markdown must be served verbatim, never run through html_to_markdown (which
+        # would collapse the list/fence/heading body onto one line).
+        # Markdown body verbatim: list, fence and heading survive on their own lines.
+        pytest.param(
+            '<table align="center">\n'
+            '<tr><td><img src="logo.png"></td><td>Badges</td></tr>\n'
+            "</table>\n\n"
+            "# My Project\n\n"
+            "- feature one\n"
+            "- feature two\n\n"
+            "```python\nprint('hi')\n```\n",
+            "- feature one\n- feature two",
+            "```python",
+            "# My Project",
+            id = "fetch_page_text_keeps_markdown_readme_with_leading_table",
+        ),
+        # A raw-Markdown README that OPENS with an HTML block tag (<blockquote>, <ul>,
+        # <pre>, ...) must not be run through html_to_markdown, which would collapse its
+        # headings/list/fence. Only a real HTML document (doctype / <html>) is converted.
+        # Markdown structure survives verbatim (heading, list, fenced code).
+        pytest.param(
+            "<blockquote>Note: pre-release.</blockquote>\n\n"
+            "# My Project\n\n"
+            "Install:\n\n"
+            "- step one\n"
+            "- step two\n\n"
+            "```bash\npip install myproject\n```\n",
+            "# My Project",
+            "- step one",
+            "```bash",
+            id = "fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown",
+        ),
+    ],
+)
+def test_fetch_page_text_keeps_a_markdown_readme_verbatim(
+    monkeypatch, md_readme, first, second, third
+):
     def fake_fetch(
         url,
         timeout = 30,
@@ -633,48 +1283,14 @@ def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
         cancel_event = None,
     ):
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
-        return None, md_readme, "text/plain"
+        return (None, md_readme, "text/plain")
 
     monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
     out = _fetch_page_text("https://github.com/unslothai/unsloth")
     assert "README of https://github.com/unslothai/unsloth" in out
-    # Markdown preserved verbatim: the fence and literal tags survive.
-    assert "```html" in out
-    assert "<!DOCTYPE html>" in out
-    assert "# My Project" in out
-
-
-def test_fetch_page_text_keeps_markdown_readme_with_leading_table(monkeypatch):
-    # A README opening with a raw HTML <table> badge/layout row then continuing in
-    # Markdown must be served verbatim, never run through html_to_markdown (which
-    # would collapse the list/fence/heading body onto one line).
-    md_readme = (
-        '<table align="center">\n'
-        '<tr><td><img src="logo.png"></td><td>Badges</td></tr>\n'
-        "</table>\n\n"
-        "# My Project\n\n"
-        "- feature one\n"
-        "- feature two\n\n"
-        "```python\nprint('hi')\n```\n"
-    )
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
-        return None, md_readme, "text/plain"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://github.com/unslothai/unsloth")
-    assert "README of https://github.com/unslothai/unsloth" in out
-    # Markdown body verbatim: list, fence and heading survive on their own lines.
-    assert "- feature one\n- feature two" in out
-    assert "```python" in out
-    assert "# My Project" in out
+    assert first in out
+    assert second in out
+    assert third in out
 
 
 def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
@@ -705,13 +1321,302 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.tools._validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
     err, body, content_type = _fetch_url_raw("https://example.com/")
     assert err is None
     assert "hello" in body
     assert content_type == ""
+
+
+def _four_address_getaddrinfo(hostname, port, *args, **kwargs):
+    import socket as _socket
+    return [
+        (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::1", port, 0, 0)),
+        (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:4700::2", port, 0, 0)),
+        (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("104.16.0.1", port)),
+        (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("104.16.0.2", port)),
+    ]
+
+
+def test_validate_and_resolve_host_returns_every_validated_address(monkeypatch):
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _four_address_getaddrinfo)
+    ok, reason, ips = tools_mod._validate_and_resolve_host("example.com", 443)
+
+    assert (ok, reason) == (True, "")
+    assert ips == ["2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2"]
+
+
+class _FakeSocket:
+    def __init__(self, address):
+        self.address = address
+
+    def settimeout(self, value):
+        self.timeout = value
+
+
+def _recording_create_connection(
+    monkeypatch,
+    unreachable = (),
+    stall = (),
+    answers_above = None,
+    overrun = 1.0,
+):
+    """``socket.create_connection`` on a virtual clock: a dial charges its timeout
+    rather than sleeping it. *stall* burns the whole dial (*overrun* times it),
+    *answers_above* is an ``(ip, seconds)`` that connects only when given more."""
+    calls = []
+    spent = [0.0]
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + spent[0])
+
+    def create(
+        address,
+        timeout = None,
+        source_address = None,
+    ):
+        calls.append((address[0], timeout))
+        if address[0] in stall:
+            spent[0] += timeout * overrun
+            raise TimeoutError("timed out")
+        if address[0] in unreachable:
+            raise OSError(101, f"unreachable {address[0]}")
+        if answers_above is not None and address[0] == answers_above[0]:
+            if timeout is None or timeout <= answers_above[1]:
+                spent[0] += timeout
+                raise TimeoutError("timed out")
+            spent[0] += answers_above[1]
+        return _FakeSocket(address)
+
+    return calls, create
+
+
+@pytest.mark.parametrize("timeout", [30, None])
+def test_pinned_dial_walks_to_the_next_address_when_first_is_unreachable(monkeypatch, timeout):
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    # Only the third answers, so trying just the ends cannot pass.
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
+    unreachable = set(addresses) - {addresses[2]}
+    calls, create = _recording_create_connection(monkeypatch, unreachable = unreachable)
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    sock = dial((addresses[0], 443), timeout)
+
+    assert sock.address == (addresses[2], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses[:3])
+    capped = tools_mod._PINNED_DIAL_TIMEOUT if timeout else None
+    assert [dialled for _ip, dialled in calls] == [capped] * 3
+
+    calls.clear()
+    assert dial(("proxy.corp", 3128), timeout).address == ("proxy.corp", 3128)
+    assert [ip for ip, _timeout in calls] == ["proxy.corp"]
+
+    calls.clear()
+    with pytest.raises(OSError):
+        tools_mod._pinned_create_connection(addresses[:2])((addresses[0], 443), timeout)
+    assert len(calls) == (2 if timeout is None else 4)
+
+
+@pytest.mark.parametrize("overrun,budget", [(1.0, 0.3), (4.0, 0.001)])
+def test_pinned_dial_asks_for_no_more_than_the_callers_timeout(monkeypatch, overrun, budget):
+    # One budget for both passes; an overrunning dial still leaves the rest an attempt.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1")
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        stall = set(addresses),
+        overrun = overrun,
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    with pytest.raises(OSError):
+        dial((addresses[0], 443), budget)
+
+    assert sum(timeout for _ip, timeout in calls) <= budget
+    assert all(timeout >= 0 for _ip, timeout in calls)
+    assert [ip for ip, _timeout in calls] == list(addresses) * 2
+
+
+def test_pinned_dial_probe_stays_affordable_for_many_records(monkeypatch):
+    # A share of what is left compounds: half the remainder each time spent three
+    # quarters of a 31-record budget on probing alone.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = tuple(f"198.51.100.{i}" for i in range(31))
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        stall = set(addresses[:-1]),
+        unreachable = {addresses[-1]},
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    with pytest.raises(OSError, match = addresses[-1]):
+        dial((addresses[0], 443), 1.0)
+
+    probes = [timeout for _ip, timeout in calls[: len(addresses)]]
+    assert sum(probes) == pytest.approx(tools_mod._PINNED_PROBE_BUDGET)
+    assert calls[len(addresses)][1] == pytest.approx(
+        (1 - tools_mod._PINNED_PROBE_BUDGET) / len(addresses),
+        rel = 0.05,
+    )
+
+
+def test_pinned_dial_shares_what_is_left_so_no_address_strands_the_next(monkeypatch):
+    # The probe is a first look, not a verdict.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_PINNED_DIAL_TIMEOUT", 0.02)
+    addresses = ("192.0.2.1", "2606:4700::2", "104.16.0.1")
+    calls, create = _recording_create_connection(
+        monkeypatch,
+        unreachable = {addresses[0]},
+        stall = {addresses[1]},
+        answers_above = (addresses[2], 0.05),
+    )
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    dial = tools_mod._pinned_create_connection(addresses)
+    sock = dial((addresses[0], 443), 0.6)
+
+    assert sock.address == (addresses[2], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses) * 2
+    assert [timeout for _ip, timeout in calls[:3]] == [0.02] * 3
+    # The first fails for free, so the next share rises from a third to a half.
+    assert calls[3][1] == pytest.approx((0.6 - 0.04) / 3, rel = 0.01)
+    assert calls[4][1] == pytest.approx(calls[3][1] * 3 / 2, rel = 0.01)
+    assert sock.timeout == 0.6
+
+
+def test_pinned_https_connection_walks_a_bracketed_ipv6_host(monkeypatch):
+    # http.client strips the brackets; the walk must still see a pinned address.
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:2800:220:1::1", "93.184.216.34")
+    calls, create = _recording_create_connection(monkeypatch, unreachable = {addresses[0]})
+    monkeypatch.setattr(_socket, "create_connection", create)
+
+    handler = tools_mod._SNIHTTPSHandler("example.com", addresses)
+    conn = handler._sni_connection(f"[{addresses[0]}]", timeout = 30)
+    sock = conn._create_connection((conn.host, conn.port), conn.timeout, None)
+
+    assert sock.address == (addresses[1], 443)
+    assert [ip for ip, _timeout in calls] == list(addresses)
+
+
+def test_pinned_http_handler_walks_through_a_real_opener(monkeypatch):
+    # urllib reaches the walk itself, through http_open; only the dial is faked.
+    import socket as _socket
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    addresses = ("2606:4700::1", "2606:4700::2", "203.0.113.9")
+    dialled = []
+    real_create_connection = _socket.create_connection
+    server = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def create(
+        address,
+        timeout = None,
+        source_address = None,
+    ):
+        dialled.append(address[0])
+        if address[0] != addresses[2]:
+            raise OSError(101, "Network is unreachable")
+        sock = real_create_connection(server.getsockname(), timeout)
+        conn, _addr = server.accept()
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nthird one ok")
+        return sock
+
+    monkeypatch.setattr(_socket, "create_connection", create)
+    opener = urllib.request.build_opener(
+        tools_mod._PinnedHTTPHandler(addresses),
+        urllib.request.ProxyHandler({}),
+    )
+    with opener.open(f"http://[{addresses[0]}]/page", timeout = 5) as resp:
+        body = resp.read()
+    server.close()
+
+    assert body == b"third one ok"
+    assert dialled == list(addresses)
+
+
+def test_fetch_url_raw_pins_one_address_and_hands_urllib_every_address(monkeypatch):
+    # The URL pins one address, all of them reach the connection, response keeps all.
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"slow origin answered"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    seen = {"timeouts": []}
+
+    class _SlowOriginOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            seen["timeouts"].append(timeout)
+            seen["url"] = req.full_url
+            if timeout is not None and timeout < 9:
+                raise urllib.error.URLError(TimeoutError("timed out"))
+            return _FakeResp()
+
+    def fake_build_opener(*handlers):
+        seen["handlers"] = handlers
+        return _SlowOriginOpener()
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _four_address_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        timeout = 30,
+        deadline = time.monotonic() + 30,
+    )
+
+    assert err is None
+    assert "slow origin answered" in body
+    assert seen["url"] == "https://[2606:4700::1]/"
+    assert seen["timeouts"] == [pytest.approx(30, abs = 1)]
+    addresses = ("2606:4700::1", "2606:4700::2", "104.16.0.1", "104.16.0.2")
+    for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
+        handler = next(h for h in seen["handlers"] if isinstance(h, handler_type))
+        assert handler._addresses == addresses
 
 
 @pytest.mark.parametrize(
@@ -758,11 +1663,17 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     def resolve(host, port):
         resolved.append((host, port))
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    built = []
+
+    def fake_build_opener(*handlers):
+        built.append(handlers)
+        return _FakeOpener()
+
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
     # Patch the lookups rather than the env: getproxies/proxy_bypass read system
     # settings on macOS and Windows.
     monkeypatch.setattr(
@@ -781,6 +1692,9 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     assert resolved == [("example.com", 8443)]
     assert [req.full_url for req in requested] == [expected_url]
     assert requested[0].get_header("Host") == "example.com:8443"
+    for handler_type in (tools_mod._SNIHTTPSHandler, tools_mod._PinnedHTTPHandler):
+        handler = next(h for h in built[0] if isinstance(h, handler_type))
+        assert handler._addresses == (() if proxied else ("203.0.113.7",))
 
 
 def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
@@ -818,7 +1732,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"HTTPS": "http://proxy.corp:3128"})
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
@@ -891,7 +1805,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
 
@@ -945,83 +1859,7 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     assert "Uh oh!" not in out
 
 
-def test_fetch_page_text_missing_content_type_fragment_converted(monkeypatch):
-    # A header-less server returning a bare HTML fragment (no <html>/doctype) must
-    # still be sniffed as HTML and converted, not served as raw markup.
-    fragment = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, fragment, ""
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/fragment")
-    assert "Doc Title" in out
-    assert "Readable fragment body." in out
-    assert "<article" not in out
-
-
-def test_fetch_page_text_missing_content_type_plain_text_raw(monkeypatch):
-    # A header-less server returning plain text stays raw (whitespace kept).
-    raw = "line one\n    indented code\nline three"
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, raw, ""
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/no-content-type.txt")
-    assert "    indented code" in out
-
-
-def test_fetch_page_text_mislabeled_text_plain_html_converted(monkeypatch):
-    # An explicit text/plain header on an HTML body is sniffed and converted, like
-    # the pre-extraction behavior of always converting HTML pages.
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        return None, _GITHUB_PAGE, "text/plain"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://example.com/mislabeled")
-    assert "Unsloth Studio" in out
-    assert "<html" not in out
-
-
 # ── implicit-close past unclosed inline descendants (finding 14) ──
-
-
-def test_hidden_paragraph_with_inline_child_implicitly_closed_by_block():
-    # A browser closes an open <p> when a <div> arrives, even with an unclosed
-    # <span> on top of it. The hidden region must end there, not swallow the
-    # following visible blocks.
-    html = "<body><p hidden><span>secret<div>visible div</div><p>visible paragraph</body>"
-    out = html_to_markdown(html)
-    assert "secret" not in out
-    assert "visible div" in out
-    assert "visible paragraph" in out
-
-
-def test_hidden_list_item_with_inline_child_closed_by_next_item():
-    html = "<body><ul><li hidden><span>secret<li>visible item</ul><p>after</p></body>"
-    out = html_to_markdown(html)
-    assert "secret" not in out
-    assert "visible item" in out
-    assert "after" in out
 
 
 # ── nested hidden list/table contents must stay suppressed ──
@@ -1061,20 +1899,6 @@ def test_nested_hidden_list_with_omitted_closes_stays_suppressed():
     assert "visible sibling" in out
 
 
-def test_nested_hidden_table_does_not_leak_inner_cells():
-    # A nested <table> re-scopes <tr>/<td>: an inner <td> must not be an
-    # optional-close sibling of a hidden outer <td> across the nested table.
-    html = (
-        "<body><table><tr>"
-        "<td hidden>outer<table><tr><td>secret cell</td></tr></table></td>"
-        "<td>visible cell</td>"
-        "</tr></table></body>"
-    )
-    out = html_to_markdown(html)
-    assert "secret cell" not in out
-    assert "visible cell" in out
-
-
 # ── aggregate tiny <article> cards must not displace <main> (finding 15) ──
 
 
@@ -1090,8 +1914,7 @@ def test_many_tiny_articles_do_not_displace_substantial_main():
 
 
 def test_single_substantial_article_still_preferred_over_main():
-    # GitHub-README case: one substantial <article> inside <main> must still win
-    # over sibling <main> furniture.
+    # GitHub README pages mix a substantial <article> with repository furniture.
     article_body = "Real README documentation body text. " * 20
     html = (
         "<body><main>"
@@ -1104,16 +1927,115 @@ def test_single_substantial_article_still_preferred_over_main():
     assert "JavaScript 89.3%" not in out
 
 
-# ── truncated (unclosed) main-content scopes must still be scored ──
+def test_one_card_does_not_stand_in_for_a_listing_main():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    html = f"<body><main><h1>Pricing</h1>{cards}</main></body>"
+    out = html_to_markdown(html, main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_article_listing_without_main_uses_the_document():
+    cards = "".join(
+        f"<article><h2>Plan {i}</h2><p>{f'Plan {i} feature and price detail. ' * 8}</p></article>"
+        for i in range(6)
+    )
+    out = html_to_markdown(f"<body><h1>Pricing</h1>{cards}</body>", main_content = True)
+    for i in range(6):
+        assert f"Plan {i} feature and price detail." in out
+
+
+def test_post_body_outside_article_beats_author_bio_card():
+    post = "Main post body paragraph with the actual story. " * 30
+    bio = "Author bio describing the writer and their work. " * 6
+    related = "".join(
+        f"<article class='related'><h3>Related {i}</h3><p>{'Teaser for another post. ' * 9}</p></article>"
+        for i in range(3)
+    )
+    html = (
+        "<body><main><h1>Post title</h1>"
+        f"<div class='post-content'><p>{post}</p></div>"
+        f"<article class='author-card'><p>{bio}</p></article>{related}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Main post body paragraph" in out
+
+
+def test_lone_readme_article_is_kept_over_repo_page_chrome():
+    readme = "Short README describing the library. " * 8
+    rows = "".join(
+        f"<tr><td><a href='/o/r/tree/main/dir{i}'>dir{i}</a></td>"
+        f"<td><a href='/o/r/commit/{i}'>Update the dir{i} module and its tests</a></td><td>2 days ago</td></tr>"
+        for i in range(25)
+    )
+    html = (
+        "<body><main><h2>Repository files navigation</h2>"
+        f"<table><tr><th>Name</th><th>Last commit message</th><th>Last commit date</th></tr>{rows}</table>"
+        f"<article class='markdown-body'><h1>Lib</h1><p>{readme}</p></article>"
+        "<div><h2>About</h2><p>A small library for doing one thing well.</p></div>"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Short README describing the library." in out
+    assert "Last commit message" not in out
+
+
+def test_link_heavy_comments_do_not_pull_main_over_the_post():
+    post = "The post explains the topic in full detail here. " * 50
+    comments = "".join(
+        f"<article class='comment'><p><a href='https://example.com/author/{i}?{'utm_source=comments&' * 20}'>Reader {i}</a> "
+        f"says: {'Thanks for writing this up. ' * 9}</p></article>"
+        for i in range(6)
+    )
+    html = (
+        f"<body><main><article class='post'><h1>Post</h1><p>{post}</p></article>"
+        f"<section id='comments'>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up." not in out
+
+
+def test_generated_table_spans_do_not_pull_main_over_the_post():
+    post = "Primary article prose with real details. " * 30
+    related = "Related card teaser. " * 12
+    rows = "".join(f"<tr><td>row {i}</td></tr>" for i in range(1, 80))
+    table = f"<table><tr><td rowspan='80'>repeated marker</td><td>row 0</td></tr>{rows}</table>"
+    html = (
+        "<body><main>"
+        f"<article><h1>Primary</h1><p>{post}</p></article>"
+        f"<article><p>{related}</p></article>{table}"
+        "</main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "Primary article prose" in out
+    assert "Related card teaser." not in out
+
+
+@pytest.mark.parametrize("hide", ["hidden", "aria-hidden='true'", "style='display:none'"])
+def test_hidden_duplicate_article_is_not_a_second_card(hide):
+    post = "The post explains the topic in full detail here. " * 20
+    comments = "".join(
+        f"<div class='comment'><p>Reader {i} says: {'Thanks for writing this up, it helped. ' * 6}</p></div>"
+        for i in range(8)
+    )
+    html = (
+        f"<body><main><article><h1>Post</h1><p>{post}</p></article>"
+        f"<article {hide}><p>Duplicate</p></article><section>{comments}</section></main></body>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "The post explains the topic" in out
+    assert "Thanks for writing this up" not in out
 
 
 def test_truncated_open_article_scope_is_scored_and_preferred():
-    # _fetch_url_raw caps large pages, so the download can end before the closing
-    # </article>. The scope is still the main content and must be preferred over the
-    # whole document (which re-leaks the page chrome).
+    # _fetch_url_raw may truncate before </article>, so the open scope must exclude page chrome.
     chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
     article_body = "Real README documentation body text. " * 20
-    # No closing </article> / </body> -- the fetch cap truncated the page.
     html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
     out = html_to_markdown(html, main_content = True)
     assert "Real README documentation body text." in out
@@ -1166,7 +2088,7 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _RedirectingOpener())
 
@@ -1178,6 +2100,41 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
     assert hops["n"] < 5
+
+
+def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
+    # A header chosen for unsloth.ai must not ride a redirect to another site.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    sent = []
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            sent.append((req.get_header("Host"), req.get_header("X-unsloth-studio")))
+            raise HTTPError(
+                req.full_url, 302, "Found", {"Location": "https://example.com/next"}, None
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", ["203.0.113.7"]),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    tools_mod._fetch_url_raw(
+        "https://unsloth.ai/",
+        host_headers = lambda host: {"X-Unsloth-Studio": "1"} if host == "unsloth.ai" else {},
+    )
+    assert sent[0] == ("unsloth.ai", "1")
+    assert sent[1] == ("example.com", None)
 
 
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
@@ -1204,7 +2161,7 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1279,7 +2236,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1290,6 +2247,47 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     )
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
+
+
+def test_read_capped_body_deadline_bounds_a_real_socket_drip():
+    # A buffered read(n) keeps receiving until n bytes arrive, so only a real socket shows
+    # whether a server sending one byte at a time can outlast the deadline.
+    import socket
+    import threading
+    import urllib.request
+
+    from core.inference.tools import _read_capped_body
+
+    server = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def _drip():
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+            try:
+                while not stop.is_set():
+                    conn.sendall(b"x")
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    threading.Thread(target = _drip, daemon = True).start()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    resp = opener.open(f"http://127.0.0.1:{server.getsockname()[1]}/", timeout = 15)
+    started = time.monotonic()
+    try:
+        err, _body = _read_capped_body(resp, 1_000_000, 15, started + 0.5, None)
+    except TimeoutError:
+        err = "timed out"
+    finally:
+        stop.set()
+        resp.close()
+        server.close()
+
+    assert err is not None
+    assert time.monotonic() - started < 5
 
 
 def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
@@ -1306,7 +2304,7 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
     def slow_resolve(host, port):
         release.wait(5.0)  # block until released; the budget should abort first
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", slow_resolve)
 
@@ -1358,38 +2356,6 @@ def test_web_search_query_cancelled_skips_search(monkeypatch):
     out = tools_mod._web_search("some query", cancel_event = ev)
     assert out == "Search cancelled."
     assert called["n"] == 0
-
-
-def test_fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown(monkeypatch):
-    # A raw-Markdown README that OPENS with an HTML block tag (<blockquote>, <ul>,
-    # <pre>, ...) must not be run through html_to_markdown, which would collapse its
-    # headings/list/fence. Only a real HTML document (doctype / <html>) is converted.
-    md_readme = (
-        "<blockquote>Note: pre-release.</blockquote>\n\n"
-        "# My Project\n\n"
-        "Install:\n\n"
-        "- step one\n"
-        "- step two\n\n"
-        "```bash\npip install myproject\n```\n"
-    )
-
-    def fake_fetch(
-        url,
-        timeout = 30,
-        extra_headers = None,
-        deadline = None,
-        cancel_event = None,
-    ):
-        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
-        return None, md_readme, "text/plain"
-
-    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
-    out = _fetch_page_text("https://github.com/unslothai/unsloth")
-    assert "README of https://github.com/unslothai/unsloth" in out
-    # Markdown structure survives verbatim (heading, list, fenced code).
-    assert "# My Project" in out
-    assert "- step one" in out
-    assert "```bash" in out
 
 
 def test_looks_like_html_document_only_matches_real_documents():
@@ -1614,30 +2580,44 @@ def test_long_hrefs_count_toward_the_header_size_floor():
     assert out.index("Article body.") < 16000
 
 
-def test_linked_heading_does_not_condemn_the_byline_beside_it():
-    body = (
-        "<article><header><h1><a href='/p'>%s</a></h1><p>By Jane Doe, July 2026</p></header><p>%s</p></article>"
-        % (
-            "A Very Long Linked Headline About Assorted Things In The World Today " * 5,
-            "Article body. " * 30,
-        )
-    )
+@pytest.mark.parametrize(
+    "template, filler, repeats, present, also_present",
+    [
+        pytest.param(
+            "<article><header><h1><a href='/p'>%s</a></h1><p>By Jane Doe, July 2026</p></header><p>%s</p></article>",
+            "A Very Long Linked Headline About Assorted Things In The World Today ",
+            5,
+            "By Jane Doe",
+            "Very Long Linked",
+            id = "linked_heading_does_not_condemn_the_byline_beside_it",
+        ),
+        pytest.param(
+            "<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>",
+            "Introductory prose that renders as plain text. ",
+            8,
+            "Introductory prose",
+            "Byline",
+            id = "anchor_without_href_is_prose_not_link_furniture",
+        ),
+        # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
+        pytest.param(
+            "<article><header><h1><a href='/p?%s'>Title</a></h1>"
+            "<a href='/author/jane'>Jane</a></header><p>%s</p></article>",
+            "q",
+            900,
+            "Title",
+            "Jane",
+            id = "a_long_heading_href_does_not_condemn_the_rest_of_the_header",
+        ),
+    ],
+)
+def test_header_link_density_is_measured_on_rendered_text(
+    template, filler, repeats, present, also_present
+):
+    body = template % (filler * repeats, "Article body. " * 30)
     out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "By Jane Doe" in out
-    assert "Very Long Linked" in out
-
-
-def test_anchor_without_href_is_prose_not_link_furniture():
-    body = (
-        "<article><header><h1>T</h1><a name='intro'>%s</a><p>Byline</p></header><p>%s</p></article>"
-        % (
-            "Introductory prose that renders as plain text. " * 8,
-            "Article body. " * 30,
-        )
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Introductory prose" in out
-    assert "Byline" in out
+    assert present in out
+    assert also_present in out
 
 
 def test_linked_heading_is_not_emitted_twice():
@@ -1677,18 +2657,6 @@ def test_furniture_only_card_does_not_suppress_the_main_it_sits_in():
     assert "Language 7" not in out
 
 
-def test_a_long_heading_href_does_not_condemn_the_rest_of_the_header():
-    # The heading is kept anyway, so its size must not clear the floor for the metadata beside it.
-    body = (
-        "<article><header><h1><a href='/p?%s'>Title</a></h1>"
-        "<a href='/author/jane'>Jane</a></header><p>%s</p></article>"
-        % ("q" * 900, "Article body. " * 30)
-    )
-    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
-    assert "Title" in out
-    assert "Jane" in out
-
-
 def test_a_preserved_heading_is_terminated():
     # The closing tag's blank line lands after the heading mark pops, so render must supply it.
     body = "<main><header><h1>Title</h1><ul>%s</ul></header>Article body text here.</main>" % (
@@ -1723,6 +2691,187 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
         f"<body>{html}</body>"
     )
+    continued = "<table><tr><td><header><table><tr><td>x</td></tr></table></header>after</td><td>sibling</td></tr></table>"
+    assert html_to_markdown(continued, main_content = True) == html_to_markdown(continued)
+
+
+def test_nested_tables_flatten_into_their_outer_cell():
+    nested = "<table><tr><td>A</td><td><table><tr><td>x | y</td><td>z</td></tr></table></td><td>C</td></tr></table>"
+    assert html_to_markdown(nested).splitlines() == ["| A | x \\| y z | C |", "| --- | --- | --- |"]
+    deep = "<table><tr><td>" * 500 + "x" + "</td></tr></table>" * 500
+    assert html_to_markdown(deep) == "| x |\n| --- |"
+    article = "<article>" + "<table><tr><td>" * 8 + "x" + "</td></tr></table>" * 8 + "</article>"
+    main = "<main>" + "<p>Real page body.</p>" * 20 + "</main>"
+    assert "Real page body." in html_to_markdown(article + main, main_content = True)
+
+
+def test_spanned_table_cells_stay_in_their_columns():
+    html = (
+        "<table>"
+        "<tr><th>Rank</th><th>Nation</th><th>Gold</th><th>Silver</th><th>Bronze</th><th>Total</th></tr>"
+        "<tr><td rowspan='2'>25</td><th>Latvia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><th>Estonia</th><td>0</td><td>1</td><td>0</td><td>1</td></tr>"
+        "<tr><td>27</td><th>Spain</th><td>0</td><td>0</td><td>1</td><td rowspan='2'>1</td></tr>"
+        "<tr><td>28</td><th>Chile</th><td>0</td><td>0</td><td>1</td></tr>"
+        "<tr><th colspan='2'>Totals (5 entries)</th><td>0</td><td>2</td><td>2</td><td>4</td></tr>"
+        "</table>"
+    )
+    lines = html_to_markdown(f"<body>{html}</body>").splitlines()
+    assert lines == [
+        "| Rank | Nation | Gold | Silver | Bronze | Total |",
+        "| --- | --- | --- | --- | --- | --- |",
+        "| 25 | Latvia | 0 | 1 | 0 | 1 |",
+        "| 25 | Estonia | 0 | 1 | 0 | 1 |",
+        "| 27 | Spain | 0 | 0 | 1 | 1 |",
+        "| 28 | Chile | 0 | 0 | 1 | 1 |",
+        "| Totals (5 entries) |  | 0 | 2 | 2 | 4 |",
+    ]
+
+
+def test_spanned_site_links_strip_on_every_repeated_row():
+    html = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'><a href='/r25'>25</a></td><td>Estonia</td></tr>"
+        "<tr><td>Georgia</td></tr>"
+        "<tr><td colspan='2'><a href='https://ex.com/t'>Totals | all</a></td></tr></table>"
+    )
+    site_links = SiteLinks("https://ex.com/page")
+    full = html_to_markdown(f"<body>{html}</body>", site_links = site_links)
+    assert full.splitlines()[2:] == [
+        "| [25](/r25) | Estonia |",
+        "| [25](/r25) | Georgia |",
+        "| [Totals \\| all](https://ex.com/t) |  |",
+    ]
+    assert site_links.strip(full).splitlines()[2:] == [
+        "| 25 | Estonia |",
+        "| 25 | Georgia |",
+        "| Totals \\| all |  |",
+    ]
+
+
+def test_table_spans_do_not_multiply_the_page_size():
+    small_wide = "<table><tr>" + "<td colspan='1000'>x</td>" * 3 + "</tr></table>"
+    wide = "<table><tr>" + "<td colspan='1000'>x" * 30000 + "</table>"
+    tall = "<table><tr><td rowspan='65534'>" + "word " * 2000 + "<tr><td>b" * 5000 + "</table>"
+    for html in (small_wide, wide, tall):
+        assert len(html_to_markdown(html)) < 3 * len(html)
+
+    repeated = (
+        "<table><tr><td rowspan='1001'>"
+        + "x" * 100
+        + "</td></tr>"
+        + "<tr></tr>" * 1000
+        + "</table>"
+    )
+    rendered = html_to_markdown(repeated + "<p>Article sentinel.</p>")
+    assert rendered.index("Article sentinel.") < 16_000
+    quoted = (
+        "<blockquote><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></blockquote><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(quoted).index("Article sentinel.") < 16_000
+    nested = (
+        "<table><tr><td>"
+        + "s" * 7000
+        + "<table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></td></tr></table><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(nested).index("Article sentinel.") < 16_000
+
+
+def test_table_spans_fit_a_small_fetch_budget(monkeypatch):
+    tall = (
+        "<html><body><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table><p>Article sentinel.</p></body></html>"
+    )
+    assert html_to_markdown(tall, max_span_chars = 1000).index("Article sentinel.") < 2000
+
+    def fake_fetch(url, **kwargs):
+        return None, tall, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    assert "Article sentinel." in _fetch_page_text("https://example.com/t", max_chars = 2000)
+
+
+def test_table_span_budget_is_page_wide_and_token_weighted():
+    from core.inference._html_to_md import _new_renderer
+
+    candidate = "<article><table><tr><td colspan='1000'>x</td></tr></table></article>"
+    page = candidate * 3000
+    renderer = _new_renderer(page, frozenset({"article"}), True)
+    assert sum(len(seg) for seg in renderer.scope_segments) < 10 * len(page)
+
+    cell = "中文表格单元内容很长" * 20
+    rows = "".join(f"<tr><td>r{i}</td></tr>" for i in range(1, 50))
+    html = f"<table><tr><td rowspan='50'>{cell}</td><td>r0</td></tr>{rows}</table><p>Article sentinel.</p>"
+    assert html_to_markdown(html, max_span_chars = 3404).count(cell) == 1
+
+
+def test_nested_colspan_padding_does_not_spend_the_span_budget():
+    layout = "<table><tr><td><table><tr><td colspan='1000'>x</td></tr></table></td></tr></table>"
+    data = (
+        "<table><tr><th>Rank</th><th>Nation</th></tr>"
+        "<tr><td rowspan='2'>25</td><td>Estonia</td></tr><tr><td>Georgia</td></tr></table>"
+    )
+    pad = "<p>" + "Body text. " * 400 + "</p>"
+    assert html_to_markdown(pad + layout + data).splitlines()[-1] == "| 25 | Georgia |"
+
+
+def test_generated_table_spans_do_not_make_a_main_content_candidate():
+    body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
+    decoys = (
+        "<article><table><tr><td rowspan='51'>x</td></tr>"
+        + "<tr></tr>" * 50
+        + "</table></article>",
+        "<article><blockquote><table><tr><td rowspan='101'>x</td></tr>"
+        + "<tr></tr>" * 100
+        + "</table></blockquote></article>",
+        "<article><header><table><tr><td colspan='1000'><a href='/nav'>"
+        + "Navigation " * 12
+        + "</a></td></tr></table></header><p>"
+        + "Teaser. " * 12
+        + "</p></article>",
+    )
+    for decoy in decoys:
+        out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
+        assert "Real page body." in out
+
+    exhausted = (
+        "<article><table><tr><td colspan='1000' rowspan='2'>x</td></tr><tr></tr></table></article>"
+    )
+    substantive = (
+        "<article><p>"
+        + "Real page body. " * 20
+        + "</p><table><tr><td rowspan='2'>rank</td><td>one</td></tr><tr><td>two</td></tr></table></article>"
+    )
+    assert "| rank | two |" in html_to_markdown(exhausted + substantive, main_content = True)
+
+
+def test_table_spans_stop_at_row_groups_tables_and_long_cells():
+    def rows(html):
+        return html_to_markdown(f"<body>{html}</body>").splitlines()
+
+    covered_row = "<table><tr><th>A</th><th>B</th></tr><tr><td rowspan=2>a</td><td rowspan=2>b</td></tr><tr></tr><tr><td>c</td><td>d</td></tr></table>"
+    assert rows(covered_row)[-3:] == ["| a | b |", "| a | b |", "| c | d |"]
+    footer = "<table><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody><tr><td>x</td><td rowspan=2>5</td></tr></tbody><tfoot><tr><td>Total</td><td>5</td></tr></tfoot></table>"
+    assert rows(footer)[-1] == "| Total | 5 |"
+    nested = "<table><tr><td>T1</td><td><table><tr><td rowspan=2>GK</td><td>P1</td></tr></table></td></tr><tr><td>T2</td><td>S2</td></tr></table>"
+    assert rows(nested)[-1] == "| T2 | S2 |"
+    nested_under_span = "<table><tr><td rowspan=2>A</td><td><table><tr><td>B</td></tr></table></td></tr><tr><td>C</td></tr></table>"
+    assert rows(nested_under_span)[-1] == "| A | C |"
+    to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
+    assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
+    sidebar = (
+        "<table><tr><td rowspan=5>"
+        + "Article body text. " * 120
+        + "</td><td>Home</td></tr>"
+        + "<tr><td>Link</td></tr>" * 4
+        + "</table>"
+    )
+    assert html_to_markdown(sidebar).count("Article body text.") == 120
 
 
 def test_truncated_header_and_blockquote_keep_source_order():
@@ -1730,7 +2879,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
+# headers interact with every buffer, where one-off bugs occur
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
     "aria": "<div role='heading'>Page Title</div>",

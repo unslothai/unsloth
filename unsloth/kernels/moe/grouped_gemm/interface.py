@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import functools
+import inspect
 import logging
 import warnings
+from typing import Optional
 from dataclasses import asdict
 from unsloth import DEVICE_TYPE
 
@@ -33,15 +36,13 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support to avoid graph breaks: it needs an NVIDIA GPU with capability >= 9
-# (Hopper+) and a triton with the TMA API (make_tensor_descriptor).
+# Precompute TMA support (NVIDIA capability >= 9 plus a triton carrying make_tensor_descriptor) to avoid graph breaks.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
-    # Support both the old experimental and the new stable API names.
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -58,19 +59,8 @@ def supports_tma():
     return _SUPPORTS_TMA
 
 
-try:
-    from torch.compiler import allow_in_graph
-except ImportError:
-    from torch._dynamo import allow_in_graph
-
-
 def _is_tracing(*tensors):
-    """
-    True if tensors are fake tensors used during torch.compile tracing (Triton can't run).
-
-    NOTE: We do NOT use torch.compiler.is_compiling() because it returns True during both
-    tracing AND execution; we only want to skip kernels during tracing on fake tensors.
-    """
+    """True if tensors are fake tensors used during torch.compile tracing (Triton cannot run). Not torch.compiler.is_compiling(): that is True during both tracing AND execution, and only tracing must skip the kernels."""
     for t in tensors:
         name = type(t).__name__
         if name in ("FakeTensor", "FunctionalTensor", "FunctionalTensorWrapper"):
@@ -79,6 +69,7 @@ def _is_tracing(*tensors):
 
 
 _per_device_alloc_fns = {}
+_FUSED_MUL_WARN = False
 
 
 def get_per_device_per_stream_alloc_fn(device):
@@ -108,15 +99,13 @@ def log_kernel_info(
         logger.debug(f"{kernel_name} autotuned best_config: {best_config}")
 
 
-@allow_in_graph
-def grouped_gemm_forward(
+def _grouped_gemm_forward_impl(
     X: torch.Tensor,
     W: torch.Tensor,
     topk: int,
     m_sizes: torch.Tensor,
     gather_indices: torch.Tensor = None,
     topk_weights: torch.Tensor = None,
-    # Fusions
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
@@ -135,29 +124,15 @@ def grouped_gemm_forward(
     flatten: bool = True,
     debug: bool = False,
 ) -> torch.Tensor:
-    """
-    Grouped GEMM forward pass for MoE MLPs.
+    """Grouped GEMM forward pass for MoE MLPs.
 
-    The implementation offers a number of fusions specific to MoE:
-    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
-        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
-        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
-    - `fuse_mul_pre`: fuse the multiplication of the routed input with topk_weights, only done in the first grouped GEMM in an MoE MLP as for Llama4.  Do not use, since results in performance regression as it interrupts the GEMM mainloop.
-    - `fuse_mul_post`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
+    X is (num_tokens, K) when permute_x, else (num_tokens * topk, K) already sorted into expert-grouped order; W is (E, N, K); m_sizes is the token count per expert; gather_indices is (total_tokens,) token indices per expert; topk_weights is (total_tokens,); returns y (total_tokens, N).
 
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    W: (E, N, K) expert weights, where E is number of experts, N in the intermediate (output) dim, and K is the reduction dim
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    topk_weights: (total_tokens,) weights to multiply routed output by in expert MLP calculation, used only when `fuse_mul_post` is True (see note on `fuse_mul_post`).
-    use_fast_accum: currently unused; trade off faster accumulation dtype in GEMM for less precision.
-    use_tma_load_x: use TMA for loading activations, incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing output, incompatible with permute_y.  TODO: add TMA scatter support for Blackwell+.
-
-    Returns:
-        y: (total_tokens, N) output of grouped GEMM
+    permute_x fuses the token-order to expert-order permutation (first GEMM of an MoE MLP); permute_y fuses the reverse (second GEMM).
+    fuse_mul_pre is a performance regression since it interrupts the GEMM mainloop: do not use it.
+    fuse_mul_post requires permute_y and is inference-only, never training.
+    use_tma_load_x is incompatible with permute_x and use_tma_store with permute_y (no TMA gather / scatter before Blackwell+); use_tma_load_w should always be on where TMA is supported, being faster than a global memory load.
+    use_fast_accum is currently unused.
     """
 
     assert X.device.type == "cuda", "X and W must be on CUDA"
@@ -167,7 +142,6 @@ def grouped_gemm_forward(
     W = W.contiguous()
     m_sizes = m_sizes.contiguous()
 
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
@@ -183,7 +157,6 @@ def grouped_gemm_forward(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
@@ -270,9 +243,7 @@ def grouped_gemm_forward(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        # TopK weight merging
         "FUSE_MUL_POST": fuse_mul_post,
-        # Loop pipelining
         "FLATTEN": flatten,
     }
     if not autotune:
@@ -302,8 +273,7 @@ def grouped_gemm_forward(
     return y
 
 
-@allow_in_graph
-def grouped_gemm_dX(
+def _grouped_gemm_dX_impl(
     dY: torch.Tensor,
     W: torch.Tensor,
     gather_indices: torch.Tensor,
@@ -325,25 +295,11 @@ def grouped_gemm_dX(
     fuse_mul_post: bool = False,
     autotune: bool = False,
 ) -> torch.Tensor:
-    """
-    dX backward kernel
-    grad_output: (M, N)
-    gather_indices: (total_tokens,), indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert. May be None when neither `permute_x` nor `permute_y` is True.
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    topk: number of experts chosen per token.
-    `permute_x`: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
-    - In the forward pass, if we permuted X on load, we need to permute store in the backward pass
-    - Shapes
-        - the forward pass input X shape is [NUM_TOKENS, K], reduce across K, output y is [NUM_TOKENS * TOPK, K]
-        - the backward pass input dy shape is [NUM_TOKENS * TOPK, N], reduce across N, output dX is [NUM_TOKENS * TOPK, K]
-    - Note that in the backward pass, the output size is still [NUM_TOKENS * TOPK, K] since we still need to accumulate gradients for each expert chosen by the token in a post-processing step.
-    `permute_y`: whether the output was permuted on store in the forward pass, typically only used for the second grouped GEMM in an MoE MLP to restore to the original token order.
-    - In the forward pass, if we permuted output on store (e.g., in the second grouped GEMM in fused MoE MLP), we need to permute on load to get from token order to expert grouped order
-    - We still store in contiguous order since we are writing out dX which will be the input to the backwards pass of the first grouped GEMM
-    `fuse_mul_{pre,post}`: always set to False since this should only be used for inference.
-    use_tma_load_dy: use TMA for loading dy. use_tma_load_dy is incompatible with permute_y.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_y and use_tma_load_dy.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
+    """Backward dX kernel. grad_output is (M, N); m_sizes is the token count per expert; gather_indices (total_tokens,) holds the token index per expert slot and may be None unless permute_x or permute_y.
+
+    permute_x and permute_y describe what the forward pass did, and the backward is its mirror: a forward permute on load becomes a permute on store, a forward permute on store becomes a permute on load. dX stays [NUM_TOKENS * TOPK, K] because the gradients of every expert a token chose are accumulated in a later step.
+    fuse_mul_pre and fuse_mul_post must stay False here, being inference-only.
+    use_tma_load_dy is incompatible with permute_y and use_tma_store with permute_x (no TMA gather / scatter before Blackwell+); use_tma_load_w should always be on where TMA is supported.
     """
     assert not fuse_mul_pre, "fuse_mul_pre should only be used for inference, not for training"
     assert not fuse_mul_post, "fuse_mul_post should only be used for inference, not for training"
@@ -352,8 +308,6 @@ def grouped_gemm_dX(
     assert m_sizes.is_contiguous()
     assert m_sizes.ndim == 1
 
-    # Preconditions
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
     # Flipped from the forward pass: a y permuted in the forward must be permuted on load in the backward.
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
@@ -367,7 +321,6 @@ def grouped_gemm_dX(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
@@ -400,8 +353,7 @@ def grouped_gemm_dX(
     total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # The output shape stays [NUM_TOKENS * TOPK, K] even under permute_x, since gradients must
-    # accumulate across all experts a token chose; reduced in a post-processing step.
+    # The output stays [NUM_TOKENS * TOPK, K] even under permute_x: gradients accumulate across every expert a token chose, reduced in a post-processing step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
@@ -433,7 +385,6 @@ def grouped_gemm_dX(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        # Loop pipelining
         "FLATTEN": flatten,
     }
     if not autotune:
@@ -462,8 +413,7 @@ def grouped_gemm_dX(
     return dX
 
 
-@allow_in_graph
-def grouped_gemm_dW(
+def _grouped_gemm_dW_impl(
     X: torch.Tensor,
     dY: torch.Tensor,
     m_sizes: torch.Tensor,
@@ -485,23 +435,10 @@ def grouped_gemm_dW(
     autotune: bool = False,
     debug: bool = False,
 ) -> torch.Tensor:
-    """
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    dY: (M, N)
-    topk: number of experts to choose per token.
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    permute_x: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
-    - for the first grouped GEMM, we permuted on load -> X was [num_tokens, K] and stored y in expert grouped order [num_tokens * topk, K]
-    - in the backwards pass, we need to permute on load of X while loading dy in contiguous (expert grouped) order
-    - since we are writing out dW, there is no need to permute on store
-    permute_y: whether the output was permuted on store in the forward pass, typically only used for the second grouped GEMM in an MoE MLP to restore to the original token order.
-    - for the second grouped GEMM, we permuted on store -> y was permuted from expert grouped order to token order while X was loaded in expert grouped order since it was the output of the first grouped GEMM
-    - in the backwards pass, we need to permute on load of dy to get from token order to expert grouped order to match the order of X
-    - since we are writing out dW, there is no need to permute on store
-    use_tma_load_dy: use TMA for loading dy. use_tma_load_dy is incompatible with permute_y.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_y and use_tma_load_dy.
-    use_tma_load_x: use TMA for loading x. use_tma_load_x is incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_load_x.
-    use_tma_store: use TMA for storing dW.  If TMA supported, this should always be enabled as it is faster than global memory store.
+    """Backward dW kernel. X is (num_tokens, K) when permute_x, else (num_tokens * topk, K); dY is (M, N); m_sizes is the token count per expert; gather_indices is (total_tokens,) token indices per expert.
+
+    permute_x and permute_y describe what the forward pass did; the backward permutes on LOAD to bring X and dy into the same expert-grouped order, and never on store since it writes dW.
+    use_tma_load_dy is incompatible with permute_y and use_tma_load_x with permute_x (no TMA gather / scatter before Blackwell+); use_tma_store should always be on where TMA is supported, being faster than a global memory store.
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
@@ -522,7 +459,6 @@ def grouped_gemm_dW(
         use_tma_store = False
 
     if use_tma or autotune:
-        # Respect the global persistent allocator if set.
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
@@ -624,6 +560,100 @@ def grouped_gemm_dW(
     return dW
 
 
+# Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
+# Not triton_op: torch.compile rejects prune_configs_by on triton.autotune.
+def _fwd_fake(X, W, topk, m_sizes, gather_indices, topk_weights, permute_x, permute_y, *args):
+    N = W.shape[1] if W.ndim == 3 else W.shape[0] // m_sizes.shape[0]
+    total_tokens = gather_indices.shape[0] if (permute_x or permute_y) else X.numel() // X.shape[-1]
+    return X.new_empty((total_tokens, N))
+
+
+def _dX_fake(dY, W, gather_indices, m_sizes, topk, *args):
+    total_tokens = (
+        gather_indices.shape[0] if gather_indices is not None else dY.numel() // dY.shape[-1]
+    )
+    return dY.new_empty((total_tokens, W.shape[-1]))
+
+
+def _dW_fake(X, dY, m_sizes, *args):
+    return X.new_empty((m_sizes.shape[0], dY.shape[-1], X.shape[-1]))
+
+
+_OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
+
+
+def _make_op(name, impl, fake):
+    """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return torch._dynamo.disable(impl)
+    existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
+    if existing is not None:
+        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
+        return existing
+    params = [
+        p.replace(
+            default = inspect.Parameter.empty,
+            annotation = Optional[torch.Tensor] if p.name in _OPTIONAL_TENSORS else p.annotation,
+        )
+        for p in inspect.signature(impl).parameters.values()
+    ]
+    names = [p.name for p in params]
+
+    def op(*args):
+        return impl(**dict(zip(names, args)))
+
+    op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
+    op.__name__ = name
+    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
+    op.register_fake(fake)
+    return op
+
+
+_grouped_gemm_forward_op = _make_op("grouped_gemm_forward", _grouped_gemm_forward_impl, _fwd_fake)
+_grouped_gemm_dX_op = _make_op("grouped_gemm_dX", _grouped_gemm_dX_impl, _dX_fake)
+_grouped_gemm_dW_op = _make_op("grouped_gemm_dW", _grouped_gemm_dW_impl, _dW_fake)
+
+
+def _signature(impl):
+    params = inspect.signature(impl).parameters.values()
+    return tuple(p.name for p in params), {
+        p.name: p.default for p in params if p.default is not p.empty
+    }
+
+
+_SIGNATURES = {
+    impl: _signature(impl)
+    for impl in (_grouped_gemm_forward_impl, _grouped_gemm_dX_impl, _grouped_gemm_dW_impl)
+}
+
+
+def _dispatch(impl, op, args, kwargs):
+    names, defaults = _SIGNATURES[impl]
+    bound = dict(defaults)
+    bound.update(zip(names, args))
+    bound.update(kwargs)
+    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
+    if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
+        return op(*[bound[n] for n in names])
+    return impl(**bound)
+
+
+@functools.wraps(_grouped_gemm_forward_impl)
+def grouped_gemm_forward(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_forward_impl, _grouped_gemm_forward_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dX_impl)
+def grouped_gemm_dX(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dX_impl, _grouped_gemm_dX_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dW_impl)
+def grouped_gemm_dW(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dW_impl, _grouped_gemm_dW_op, args, kwargs)
+
+
 class GroupedGemm(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -679,9 +709,7 @@ class GroupedGemm(torch.autograd.Function):
             permute_x = permute_x,
             permute_y = permute_y,
             fuse_mul_post = fuse_mul_post,
-            # Autotune overrides the manual kernel config when true.
             autotune = autotune,
-            # Manual kernel config
             **fwd_config,
         )
 
@@ -732,9 +760,7 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune overrides the manual kernel config when true.
                 autotune = autotune,
-                # Manual kernel config
                 **bwd_dW_config,
             )
         else:
@@ -760,9 +786,7 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune overrides the manual kernel config when true.
                 autotune = autotune,
-                # Manual kernel config
                 **bwd_dX_config,
             )
 
@@ -870,28 +894,14 @@ def grouped_gemm(
     dX_only: bool = False,
     dW_only: bool = False,
 ):
-    """
-    Grouped GEMM for MoE MLPs.
+    """Grouped GEMM for MoE MLPs.
 
-    The implementation offers a number of fusions specific to MoE:
-    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
-        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
-        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
-    - `fuse_mul`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
+    X is (num_tokens, K) when permute_x, else (num_tokens * topk, K) already sorted into expert-grouped order; W is (E, N, K); m_sizes is the token count per expert; gather_indices (total_tokens,) is required when either permutation is on; topk_weights is used only with fuse_mul.
 
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    W: (E, N, K) expert weights, where E is number of experts, N in the intermediate (output) dim, and K is the reduction dim
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert. Needed when either `permute_x` or `permute_y` is True.
-    topk_weights: (total_tokens,) weights to multiply routed output by in expert MLP calculation, used only when `fuse_mul` is True (see note on `fuse_mul`).
-    kernel_config_fwd: KernelConfigForward for forward pass.
-    kernel_config_bwd_dX: KernelConfigBackward_dX for backward pass of dX.
-    kernel_config_bwd_dW: KernelConfigBackward_dW for backward pass of dW.
-    autotune: whether to autotune the kernel, if yes, kernel_config_fwd, kernel_config_bwd_dX, and kernel_config_bwd_dW will be ignored.
-    is_first_gemm: whether this is the first grouped GEMM in an MoE MLP.  This is needed to check whether kernel configs are valid.  `permute_x` should only be used for first gemm; `permute_y` should only be used for second gemm.
-    This will impact whether TMA can be used for loading and storing.
-
+    permute_x fuses the token-order to expert-order permutation (first GEMM of an MoE MLP); permute_y fuses the reverse (second GEMM).
+    fuse_mul requires permute_y and is inference-only, never training.
+    autotune ignores kernel_config_fwd, kernel_config_bwd_dX and kernel_config_bwd_dW.
+    is_first_gemm gates config validation: permute_x belongs to the first GEMM and permute_y to the second, which also decides where TMA load and store may be used.
     """
     if not autotune:
         assert (

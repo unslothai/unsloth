@@ -84,9 +84,10 @@ def _doc(
 
 def test_signed_drop_is_copied_into_the_uploads_root(rag_home, tmp_path):
     source = _doc(tmp_path)
-    stored_path, filename = _save_native_path_upload(_sign(source))
+    stored_path, filename, content_hash = _save_native_path_upload(_sign(source))
 
     assert filename == "notes.txt"
+    assert content_hash == hashlib.sha256(source.read_bytes()).hexdigest()
     # Copied, not referenced: ingestion must not read from wherever the user dragged from.
     assert os.path.realpath(stored_path) != os.path.realpath(source)
     with open(stored_path, encoding = "utf-8") as handle:

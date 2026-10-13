@@ -5,7 +5,9 @@ export const LOCAL_MODEL_SOURCE = {
   MODELS_DIR: "models_dir",
   HF_CACHE: "hf_cache",
   LMSTUDIO: "lmstudio",
+  OMLX: "omlx",
   OLLAMA: "ollama",
+  HERMES: "hermes",
   CUSTOM: "custom",
 } as const;
 
@@ -13,7 +15,9 @@ export const LOCAL_MODEL_SOURCES = [
   LOCAL_MODEL_SOURCE.MODELS_DIR,
   LOCAL_MODEL_SOURCE.HF_CACHE,
   LOCAL_MODEL_SOURCE.LMSTUDIO,
+  LOCAL_MODEL_SOURCE.OMLX,
   LOCAL_MODEL_SOURCE.OLLAMA,
+  LOCAL_MODEL_SOURCE.HERMES,
   LOCAL_MODEL_SOURCE.CUSTOM,
 ] as const;
 export type LocalSource = (typeof LOCAL_MODEL_SOURCES)[number];

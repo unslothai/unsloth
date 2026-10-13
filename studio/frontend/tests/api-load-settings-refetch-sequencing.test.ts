@@ -8,18 +8,12 @@
 // server no longer has, and it stays there until the panel remounts. Last issued wins.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const SOURCE = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/api-monitor/components/saved-model-settings.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
+import { readSrc } from "./helpers/kit.ts";
+
+const SOURCE = readSrc(
+  "features/api-monitor/components/saved-model-settings.tsx",
 );
 
 const LOAD = SOURCE.slice(

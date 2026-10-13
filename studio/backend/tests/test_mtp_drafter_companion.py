@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark, DFlash and EAGLE3.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -86,6 +86,17 @@ DRAFTER_CASES = [
     ("laguna-xs21-dflash-q4.gguf", False),
     ("xdspark/model.gguf", False),
     ("dspark/README.md", False),
+    ("eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("EAGLE3-gpt-oss-20b-BF16.gguf", True),
+    ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    # <model>-dspark-<quant>.gguf drafters; a name going on past the kind is the model.
+    ("Ternary-Bonsai-27B-dspark-Q4_1.gguf", True),
+    ("Bonsai-27B-dspark-bf16.gguf", True),
+    ("Qwen3.6-27B-DSpark-Q4_K_M.gguf", True),
+    ("model-dspark-Q8_0-00001-of-00002.gguf", True),
+    ("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16-00001-of-00004.gguf", False),
 ]
 
 
@@ -156,6 +167,43 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.download_size_bytes == 4_600
 
 
+GPT_OSS_FILES = [
+    "eagle3-gpt-oss-20b-BF16.gguf",
+    "eagle3-gpt-oss-20b-Q8_0.gguf",
+    "gpt-oss-20b-MXFP4.gguf",
+]
+
+
+def test_eagle3_draft_head_is_not_a_variant_or_the_default():
+    from hub.utils.gguf import pick_best_gguf
+
+    assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
+
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(GPT_OSS_FILES)]
+    )
+    assert set(plans) == {"mxfp4"}
+    assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
+BONSAI_FILES = [
+    "Bonsai-27B-F16.gguf",
+    "Bonsai-27B-Q1_0.gguf",
+    "Bonsai-27B-dspark-Q4_1.gguf",
+    "Bonsai-27B-dspark-bf16.gguf",
+    "Bonsai-27B-mmproj-BF16.gguf",
+]
+
+
+def test_bonsai_dspark_drafter_is_not_a_variant():
+    # #11259: the drafter was the smallest row, and llama-server cannot load it as a model.
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(BONSAI_FILES)]
+    )
+    assert set(plans) == {"f16", "q1_0"}
+    assert plans["q1_0"].main_filenames == frozenset({"Bonsai-27B-Q1_0.gguf"})
+
+
 def test_baked_in_repo_plans_unchanged():
     plans = build_gguf_variant_plans([_sib("Qwen3.6-27B-MTP-Q4_K_M.gguf", 4_000, "q4")])
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
@@ -174,6 +222,34 @@ def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
     assert plan.companion_hashes == frozenset({"drafter", "mmproj"})
     assert plan.required_hashes == frozenset({"drafter", "main", "mmproj"})
     assert plan.download_size_bytes == 4_600
+
+
+def test_variant_plan_keeps_every_nested_mtp_shard_or_none():
+    main = _sib("Qwen3.8-Flash-Next-Q4_K_M.gguf", 100, "main")
+    first = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        20,
+        "mtp-1",
+    )
+    second = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+        20,
+        "mtp-2",
+    )
+
+    complete = build_gguf_variant_plans([main, first, second])["q4_k_m"]
+    assert complete.target_filenames == (
+        "Qwen3.8-Flash-Next-Q4_K_M.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+    )
+    assert complete.companion_hashes == frozenset({"mtp-1", "mtp-2"})
+    assert complete.download_size_bytes == 140
+
+    incomplete = build_gguf_variant_plans([main, first])["q4_k_m"]
+    assert incomplete.target_filenames == ("Qwen3.8-Flash-Next-Q4_K_M.gguf",)
+    assert incomplete.companion_hashes == frozenset()
+    assert incomplete.download_size_bytes == 100
 
 
 def test_old_manifest_resume_reclassifies_drafter():
@@ -230,6 +306,31 @@ def test_detect_dspark_file_prefers_matching_q8_sidecar(tmp_path):
     (folder / "dspark-Other-Model-Q8_0.gguf").write_bytes(b"foreign")
 
     assert detect_dspark_file(str(weight)) == str(q8.resolve())
+
+
+def test_detect_dspark_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    # Hermes' catalog ships DeepSeek V4 Flash with its DSpark drafter under models/assets/,
+    # the folder its router never lists; the weight sits one level up as a flat split.
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf").write_bytes(b"target")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    sidecar = assets / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"q8")
+    (assets / "mmproj-Qwen3.8-27B-BF16.gguf").write_bytes(b"projector")
+
+    assert detect_dspark_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_mtp_file_finds_the_sidecar_hermes_stages_under_assets(tmp_path):
+    (tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf").write_bytes(b"x")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "mtp-gemma-4-12B-it.gguf").write_bytes(b"x")
+
+    found = detect_mtp_file(str(tmp_path / "gemma-4-12B-it-qat-Q4_0.gguf"))
+    assert found == str((assets / "mtp-gemma-4-12B-it.gguf").resolve())
 
 
 def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
@@ -676,6 +777,7 @@ def test_variant_plans_new_scheme_uses_root_drafter():
 
 def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
     # _pick_mtp is nested; capture it via the companion-download seam.
+
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)  # online: skip reuse probe
@@ -710,8 +812,8 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
 
 
 def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -789,8 +891,8 @@ def _capture_companion_download(backend):
 
 
 def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -809,8 +911,8 @@ def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path
 
 
 def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -833,8 +935,8 @@ def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkey
 
 
 def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -859,9 +961,8 @@ def _stub_hub(
     listing_fails = False,
 ):
     """The live repo without a network, stubbed below the helper's own snapshot lookup."""
-    import huggingface_hub
-
     import core.inference.llama_cpp as llama_cpp_module
+    import huggingface_hub
 
     def _list(repo, token = None):
         if listing_fails:
@@ -880,8 +981,8 @@ def _stub_hub(
 def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_path, monkeypatch):
     """The helper repeats _companion_snapshot_sibling before listing, so the caller's
     fall-through returned the same borrowing head (unsloth#10322). Uses the real helper."""
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -911,8 +1012,8 @@ def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_pat
 def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
     tmp_path, monkeypatch
 ):
-    import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.gguf_metadata as gm
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
@@ -930,8 +1031,8 @@ def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
 
 
 def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
-    import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap = _seed_snapshot(
@@ -951,8 +1052,9 @@ def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
 
 def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, monkeypatch):
     # Pre-fix build may have fetched only the MTP/ copy; reuse it offline.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap = _seed_snapshot(
@@ -971,8 +1073,9 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
 def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):
     # A newer partial snapshot holds only the MTP/ copy; an older one has the
     # root. Must still return the small root, not the large subdir copy.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snap_partial = _seed_snapshot(tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"])
@@ -986,8 +1089,9 @@ def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatc
 def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch):
     # Two snapshots both hold a root drafter; newest-first order must win so a
     # fresh main GGUF is not paired with a stale drafter revision.
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     newest = _seed_snapshot(tmp_path / "newest", ["mtp-gemma-4-E4B-it.gguf"])
@@ -999,8 +1103,8 @@ def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch
 
 
 def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
-    import utils.models.model_config as mc
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     snapshots = tmp_path / "models--unsloth--gemma" / "snapshots"
@@ -1050,8 +1154,9 @@ def test_download_mtp_skips_discovery_for_embedded_head(tmp_path, monkeypatch):
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     # Online, do not reuse a cached copy: go to the download path so a changed
     # drafter is refetched (hf_hub_download checks the current revision).
-    import utils.models.model_config as mc
+
     from core.inference.llama_cpp import LlamaCppBackend
+    import utils.models.model_config as mc
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     snap = _seed_snapshot(tmp_path, ["mtp-gemma-4-E4B-it.gguf"])
@@ -1090,8 +1195,8 @@ def _dspark_download_probe(
     """Run _download_dspark against a stubbed capability probe and an optionally
     cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
     was reached."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -1147,8 +1252,8 @@ def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
 def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
     """The reuse check retries a failed fetch but must never retry a repo that
     ships none, so the two "returned None" cases have to stay distinguishable."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -1188,8 +1293,8 @@ def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tm
     """A listing that never completed says nothing about the repo. Recording it as
     a definitive absence would suppress the reuse check's retry, so DSpark would
     never be fetched once connectivity returned."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2160,6 +2265,80 @@ def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
     assert backend._spec_drafter_kind == "dflash"
 
 
+def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
+    """ "Present but unopenable" is not "not found", and the remedies differ.
+
+    drafter_not_found tells a local load to place an mtp-*.gguf that is already on disk,
+    and offers a remote load a refetch that returns the same file -- which this branch
+    deliberately stands down. It is also in the frontend's RETRYABLE_SPEC_FALLBACKS, so
+    Apply kept sending a reload the backend then deduped.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        # The arm is _mtp_drafter_missing, which is the name-only (Gemma) MTP shape.
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp"])
+def test_a_dropped_sidecar_is_explained_on_a_non_gemma_quant(monkeypatch, mode):
+    """The PR's own motivating case, which the Gemma-only fallback used to miss.
+
+    RVN-Q6_K.gguf reports no nextn_predict_layers and carries no -mtp in its name, so
+    the sidecar beside it was its ONLY MTP signal. Clearing mtp_draft_path made
+    is_mtp_model read false, _mtp_drafter_missing recognised Gemma alone, and neither
+    Auto nor forced MTP reached the fallback: MTP went off with spec_fallback_reason
+    null, so the panel had nothing to show. No --model-draft either way; emitting MTP
+    without a drafter is what aborts llama-server.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = mode,
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+    assert "draft-mtp" not in flags
+
+
+def test_a_plain_quant_with_no_sidecar_at_all_is_untouched(monkeypatch):
+    """The negative: keeping the dropped sidecar as a signal must not invent MTP for a
+    model that never had any. Nothing was dropped here, so nothing is explained."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = "auto",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason is None
+
+
+def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
+    """The negative: the new reason must not swallow the case it was split out of."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_not_found"
+
+
 def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
     """Mirrors llama.cpp's own downloader, which ranks dspark ahead of dflash.
     In practice a repo ships one kind or neither; this pins that adding DFlash
@@ -2217,6 +2396,16 @@ def _write_gguf(path: Path, architecture: str) -> Path:
     blob += struct.pack("<I", 8) + struct.pack("<Q", len(value)) + value
     path.write_bytes(blob)
     return path
+
+
+def test_detect_dflash_file_leaves_a_shared_assets_pool_alone(tmp_path):
+    # The published sidecar names no family, so one under a Hermes assets/ pool could be any
+    # download's; DSpark and MTP sidecars name their weight, DFlash keeps the root-only rule.
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    (tmp_path / "assets").mkdir()
+    _write_gguf(tmp_path / "assets" / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) is None
 
 
 def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):
@@ -2306,8 +2495,8 @@ def _dflash_download_probe(
     supports_dflash,
     cached = None,
 ):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2387,8 +2576,8 @@ def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(tmp_path, 
 def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
     """Most repos publish none, and retrying that on every Apply would relaunch
     an identical server forever; a failed fetch must still be retried."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2465,8 +2654,8 @@ _MULTI_FAMILY_LISTING = [
 
 def _dflash_download_pick(monkeypatch, *, listing, near_path):
     """The sidecar _download_dflash's picker chooses out of a repo listing."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2620,10 +2809,13 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     an order of magnitude under the ~11 GB DSpark case the rule was written for.
     The positive control below shows the reclaim itself still works."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
     from hub.utils.gguf import is_reclaimable_drafter_path
 
     assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
     assert is_reclaimable_drafter_path("dspark-model-Q8_0.gguf") is True
+    assert is_reclaimable_drafter_path("Ternary-Bonsai-27B-dspark-Q4_1.gguf") is True
+    assert is_reclaimable_drafter_path("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4.gguf") is False
 
     repo, snap = _cache_repo(
         tmp_path,
@@ -2635,6 +2827,22 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
     assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()
+
+
+def test_deleting_the_last_bonsai_variant_reclaims_its_dspark_drafter(tmp_path):
+    """The menu hides <model>-dspark-<quant>.gguf as a companion, so once the last real
+    variant is deleted nothing could ever launch it; its blob must go too."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "prism-ml/Bonsai-27B-gguf",
+        ["Bonsai-27B-Q1_0.gguf", "Bonsai-27B-dspark-Q4_1.gguf"],
+    )
+    _delete_gguf_variant_from_repos("prism-ml/Bonsai-27B-gguf", "Q1_0", [repo], None, root = tmp_path)
+
+    assert not (snap / "Bonsai-27B-Q1_0.gguf").is_symlink()
+    assert not (snap / "Bonsai-27B-dspark-Q4_1.gguf").is_symlink()
 
 
 def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):
@@ -2688,14 +2896,6 @@ def test_detect_dflash_file_ignores_the_suffix_form_the_picker_cannot_hide(tmp_p
     assert _is_companion_gguf_path("dflash-kquant.gguf") is True
 
 
-def test_dflash_prefix_form_is_still_found_beside_the_weight(tmp_path):
-    """Dropping the suffix form must not cost the published sidecar."""
-    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
-    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
-
-    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
-
-
 def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_path, monkeypatch):
     """A native grant answers through ``accept``, and its answer has to arrive
     before the file is opened.
@@ -2705,7 +2905,6 @@ def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_
     rejection takes a read back, so the order is: resolve, ask accept, then read.
     """
     import os
-
     import utils.models.model_config as mc
 
     leased = tmp_path / "leased"
@@ -2761,8 +2960,8 @@ def _dflash_repo_download(
     sibling = None,
 ):
     """Drive _download_dflash over a repo listing whose files exist in tmp_path."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -2918,13 +3117,33 @@ class _StopAfterDownloads(Exception):
     """Ends the load once Phase 2 is done, which is all these tests observe."""
 
 
-def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dflash, dspark_cached):
+def _dflash_fetch_during_auto_load(
+    monkeypatch,
+    *,
+    supports_dspark,
+    supports_dflash,
+    dspark_cached,
+    speculative_type = "auto",
+    tensor_parallel = False,
+    extra_args = None,
+    gguf_path = None,
+    dflash_draft_path = None,
+    mtp_draft_path = None,
+    mtp_loads = True,
+    mtp_token = "draft-mtp",
+    model_file = "/cache/snap/model-Q4_K_M.gguf",
+    dflash_file = "/cache/snap/dflash-kquant.gguf",
+    mmproj_file = None,
+    disable_vision = False,
+):
     """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
 
     Drives the real load path: the suppression lives inline in load_model's
     download phase, so nothing short of running it can pin the interaction.
     """
+    from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
+
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
     monkeypatch.setattr(
@@ -2935,6 +3154,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
                 "found": True,
                 "supports_dspark": supports_dspark,
                 "supports_dflash": supports_dflash,
+                "mtp_token": mtp_token,
             }
         ),
     )
@@ -2952,19 +3172,35 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
-    monkeypatch.setattr(
-        backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
-    )
-    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: None)
+    monkeypatch.setattr(backend, "_download_gguf", lambda **_kwargs: model_file)
+    monkeypatch.setattr(backend, "_resolve_launch_mmproj_path", lambda **_kwargs: mmproj_file)
+    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: mtp_draft_path)
+    monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _path: mtp_loads)
     # Exactly what _download_dspark does for a cached sidecar on a binary that
     # cannot run it: the path comes back regardless of the capability.
     monkeypatch.setattr(backend, "_download_dspark", lambda **_kwargs: dspark_cached)
 
     def _fetch_dflash(**_kwargs):
         seen["dflash_fetched"] = True
-        return "/cache/snap/dflash-kquant.gguf"
+        return dflash_file
 
     monkeypatch.setattr(backend, "_download_dflash", _fetch_dflash)
+    seen["log"] = []
+    _real_info = llama_cpp_module.logger.info
+
+    def _info(msg, *args, **kwargs):
+        seen["log"].append(str(msg))
+        return _real_info(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "info", _info)
+    seen["warnings"] = []
+    _real_warning = llama_cpp_module.logger.warning
+
+    def _warning(msg, *args, **kwargs):
+        seen["warnings"].append(str(msg))
+        return _real_warning(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", _warning)
 
     def _stop(*_args, **_kwargs):
         raise _StopAfterDownloads
@@ -2973,15 +3209,24 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     # settled by then.
     monkeypatch.setattr(backend, "_read_gguf_metadata", _stop)
 
+    source = (
+        {"gguf_path": gguf_path, "model_identifier": gguf_path}
+        if gguf_path
+        else {"hf_repo": "org/repo", "hf_variant": "Q4_K_M", "model_identifier": "org/repo"}
+    )
     with pytest.raises(_StopAfterDownloads):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "org/repo",
-                hf_variant = "Q4_K_M",
-                model_identifier = "org/repo",
-                speculative_type = "auto",
+                **source,
+                speculative_type = speculative_type,
+                tensor_parallel = tensor_parallel,
+                extra_args = tuple(extra_args) if extra_args is not None else None,
+                dflash_draft_path = dflash_draft_path,
+                mtp_draft_path = mtp_draft_path if gguf_path else None,
+                disable_vision = disable_vision,
             )
         )
+    seen["dflash_promoted"] = any("using draft-dflash" in m for m in seen["log"])
     return seen
 
 
@@ -3017,6 +3262,160 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
         supports_dspark = True,
         supports_dflash = True,
         dspark_cached = None,
+    )
+    assert seen["dflash_fetched"] is True
+
+
+# #11308: DFlash2 + --split-mode tensor aborts at startup, so Auto keeps tensor split with MTP.
+
+_MTP = "/cache/snap/MTP/mtp-model-Q4_0.gguf"
+
+
+@pytest.mark.parametrize(
+    "tensor_parallel, extra_args",
+    [(True, None), (False, ["-sm", "tensor"]), (False, ["--split-mode", "tensor"])],
+)
+def test_auto_skips_dflash_under_tensor_split_when_mtp_is_available(
+    monkeypatch, tensor_parallel, extra_args
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = tensor_parallel,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+    assert seen["dflash_promoted"] is False
+
+
+def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_loads = False,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_binary_cannot_run_mtp(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_token = None,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_an_extras_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        extra_args = ["-sm", "tensor", "--model-draft", "/models/dflash-model.gguf"],
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_a_target_with_an_embedded_head(monkeypatch):
+    import utils.models.gguf_metadata as gguf_metadata
+
+    monkeypatch.setattr(gguf_metadata, "read_gguf_nextn_predict_layers", lambda _path: 1)
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_does_not_promote_a_local_dflash_sidecar_under_tensor_split(monkeypatch, tmp_path):
+    model = tmp_path / "Qwen3.8-27B-UD-Q6_K_XL.gguf"
+    model.write_bytes(b"GGUF")
+    sidecar = tmp_path / "dflash-Qwen3.8-27B-Q8_0.gguf"
+    sidecar.write_bytes(b"GGUF")
+    mtp = tmp_path / "MTP" / "mtp-Qwen3.8-27B-Q4_0.gguf"
+    mtp.parent.mkdir()
+    mtp.write_bytes(b"GGUF")
+    kwargs = dict(
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        gguf_path = str(model),
+        dflash_draft_path = str(sidecar),
+        mtp_draft_path = str(mtp),
+    )
+    tensor = _dflash_fetch_during_auto_load(monkeypatch, extra_args = ["-sm", "tensor"], **kwargs)
+    assert tensor["dflash_promoted"] is False
+    assert any("keeping tensor split" in m for m in tensor["log"])
+    layer = _dflash_fetch_during_auto_load(monkeypatch, **kwargs)
+    assert layer["dflash_promoted"] is True
+
+
+@pytest.mark.parametrize("extra_args", [None, ["-sm", "layer"]])
+def test_auto_still_uses_dflash_without_tensor_split(monkeypatch, extra_args):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = extra_args is not None,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_explicit_dflash_still_fetches_under_tensor_split(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
     )
     assert seen["dflash_fetched"] is True
 
@@ -3236,8 +3635,8 @@ def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, mon
 
 
 def _split_companion_download(tmp_path, monkeypatch, listing):
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo, token = None: list(listing))
@@ -3324,8 +3723,8 @@ def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
 def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeypatch):
     """The offline cache lookup is the third way a shard can reach --model-draft,
     and offline there is no fetch left to complete the set."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
@@ -3416,8 +3815,8 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp
 def _dflash_hub_download(tmp_path, monkeypatch, *, listing, fetch):
     """Drive _download_dflash through the real _download_companion_gguf, with only
     the two Hub calls stubbed out."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -3684,8 +4083,9 @@ def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch
 def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkeypatch):
     """The snapshot and cache paths both refuse half a split companion; the download
     path returned shard 1 and handed llama-server a set it cannot open."""
-    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
+    import core.inference.llama_cpp as llama_cpp_module
+    import huggingface_hub
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(
@@ -3693,7 +4093,6 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
     )
     # Patched at the source: _download_companion_gguf imports list_repo_files inside
     # its own body, so a module attribute on llama_cpp is never consulted.
-    import huggingface_hub
 
     monkeypatch.setattr(
         huggingface_hub,
@@ -3780,9 +4179,9 @@ def test_download_dflash_sums_a_split_family_before_the_size_bound(monkeypatch, 
 def test_download_companion_records_an_incomplete_listing_as_settled():
     """The completeness rejection lands after outcome["listed"] was set true, so
     without this the caller reads a settled answer as one worth retrying forever."""
+    from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
     import huggingface_hub
-    from core.inference.llama_cpp import LlamaCppBackend
 
     import pytest as _pytest
 
@@ -3861,3 +4260,313 @@ def test_split_completeness_is_scoped_to_the_files_own_directory():
     assert not split_listing_is_complete(names, names[1])
     whole = ["Q4/model-00001-of-00002.gguf", "Q4/model-00002-of-00002.gguf"]
     assert split_listing_is_complete(whole, whole[0])
+
+
+def _write_drafter_gguf(
+    path: Path,
+    *,
+    tensors: list[str],
+    arch: str = "qwen35",
+    shared: bool = False,
+    split_count: int = 0,
+) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), arch)
+    if shared:
+        writer.add_bool(f"{arch}.nextn_shared_target_tensors", True)
+    if split_count:
+        writer.add_uint16("split.count", split_count)
+    for name in tensors:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+_HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_proj.weight"]
+
+
+@pytest.mark.parametrize(
+    "tensors,shared,expected",
+    [
+        # Published shapes: a bare head extract, unsloth's MTP/ head, a -shared- head. Each
+        # verdict is what llama-server b10909-mix-bea84f7 gives for that file as
+        # --model-draft: the first ends the launch on a missing token_embd.weight, the
+        # other two serve.
+        (_HEAD_EXTRACT, False, False),
+        (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, True),
+        (_HEAD_EXTRACT, True, True),
+    ],
+)
+def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, expected):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared)
+    assert _mtp_drafter_loads_standalone(str(drafter)) is expected
+
+
+def test_a_lone_file_claiming_to_be_a_split_set_is_still_judged(tmp_path):
+    """``split.count`` alone is not an excuse: llama-server opens shards by FILENAME.
+
+    Exempting anything whose header said ``split.count > 1`` let a head-only file
+    through untested, and llama-server then ended the launch on it anyway (measured).
+    The exemption belongs to a set whose shards cannot all be inspected, not to a
+    single file that merely declares one.
+    """
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2)
+    assert _mtp_drafter_loads_standalone(str(drafter)) is False
+
+
+def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
+    """Shard 1 need not list every tensor, so the whole set answers, as for cls.*."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00002-of-00002.gguf",
+        tensors = ["token_embd.weight"],
+        split_count = 2,
+    )
+    # The embeddings live in shard 2; judging shard 1 alone would drop a working set.
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
+
+    # The same set with the embeddings nowhere in it: every shard is readable and none
+    # carries them, so this one really cannot be opened as a draft.
+    headless = tmp_path / "headless"
+    headless.mkdir()
+    _write_drafter_gguf(
+        headless / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        headless / "mtp-model-00002-of-00002.gguf",
+        tensors = ["blk.65.nextn.eh_proj.weight"],
+        split_count = 2,
+    )
+    assert _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
+
+
+def test_an_incomplete_split_drafter_fails_open(tmp_path):
+    """A shard that is not here could hold the embeddings, so llama-server decides."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    lone = _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00003.gguf", tensors = _HEAD_EXTRACT, split_count = 3
+    )
+    assert _mtp_drafter_loads_standalone(str(lone)) is True
+
+
+def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
+    """The estimate route asks on every settings change; it must not reparse each time."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    from utils.models import gguf_metadata
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT)
+    calls: list[str] = []
+    real = gguf_metadata._parse_gguf_has_named_tensor
+
+    def counting(path, wanted_name):
+        calls.append(path)
+        return real(path, wanted_name)
+
+    gguf_metadata._parse_gguf_has_named_tensor = counting
+    try:
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert len(calls) == 1
+
+        # Rewritten in place with its embeddings: a new (mtime, size) is a new answer, so
+        # a repaired sidecar is picked up rather than served from the cache.
+        _write_drafter_gguf(
+            tmp_path / "mtp-model.gguf", tensors = ["token_embd.weight", *_HEAD_EXTRACT]
+        )
+        assert _mtp_drafter_loads_standalone(str(drafter)) is True
+    finally:
+        gguf_metadata._parse_gguf_has_named_tensor = real
+
+
+def test_mtp_drafter_loads_standalone_fails_open_on_an_unreadable_header(tmp_path):
+    """A refusal that rejects working input is worse than the crash it prevents."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    junk = tmp_path / "mtp-model.gguf"
+    junk.write_bytes(b"not a gguf")
+    assert _mtp_drafter_loads_standalone(str(junk))
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "missing.gguf"))
+
+
+def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(
+        tmp_path / "mtp-model.gguf",
+        tensors = ["token_embd.weight", "output.weight", "blk.48.nextn.eh_proj.weight"],
+        arch = "qwen4exp",
+    )
+    assert _mtp_drafter_loads_standalone(str(drafter))
+
+
+# #13511: a NeoX DFlash drafter cannot follow an M-RoPE image, so Auto keeps vision without it.
+
+
+def _gguf_header(path, arch, kv):
+    import struct
+
+    entries = [("general.architecture", arch), *kv.items()]
+    out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+    for key, val in entries:
+        out.append(struct.pack("<Q", len(key)) + key.encode())
+        if isinstance(val, str):
+            out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+        elif isinstance(val, bool):
+            out.append(struct.pack("<I?", 7, val))
+        elif isinstance(val, list):
+            out.append(struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val))
+        else:
+            out.append(struct.pack("<II", 4, val))
+    path.write_bytes(b"".join(out))
+    return str(path)
+
+
+@pytest.fixture
+def vision_files(tmp_path):
+    return {
+        "mrope_model": _gguf_header(
+            tmp_path / "Qwen3.8-27B-Q4_K_M.gguf",
+            "qwen35",
+            {"qwen35.rope.dimension_sections": [11, 11, 10, 0], "qwen35.block_count": 64},
+        ),
+        "neox_model": _gguf_header(
+            tmp_path / "Muse-30B-Q4_K_M.gguf", "llama", {"llama.block_count": 2}
+        ),
+        "neox_dflash": _gguf_header(
+            tmp_path / "dflash-Qwen3.8-27B-BF16.gguf",
+            "dflash",
+            {"dflash.rope.freq_base_u": 1, "tokenizer.ggml.pre": "qwen35"},
+        ),
+        "mrope_dflash": _gguf_header(
+            tmp_path / "dflash-mrope.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [11, 11, 10, 0]},
+        ),
+        "zero_dflash": _gguf_header(
+            tmp_path / "dflash-zero.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [0, 0, 0, 0]},
+        ),
+        "image_mmproj": _gguf_header(
+            tmp_path / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}
+        ),
+        "audio_mmproj": _gguf_header(
+            tmp_path / "mmproj-audio.gguf",
+            "clip",
+            {"clip.has_vision_encoder": False, "clip.has_audio_encoder": True},
+        ),
+    }
+
+
+def test_mrope_sections_reader(vision_files, tmp_path):
+    from utils.models.gguf_metadata import gguf_has_mrope_sections
+
+    assert gguf_has_mrope_sections(vision_files["mrope_model"]) is True
+    assert gguf_has_mrope_sections(vision_files["mrope_dflash"]) is True
+    assert gguf_has_mrope_sections(vision_files["neox_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["zero_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["neox_model"]) is False
+    # Another namespace's sections are not this architecture's.
+    other = _gguf_header(
+        tmp_path / "other.gguf", "dflash", {"qwen35.rope.dimension_sections": [1, 1, 1, 0]}
+    )
+    assert gguf_has_mrope_sections(other) is False
+    garbage = tmp_path / "garbage.gguf"
+    garbage.write_bytes(b"not a gguf at all")
+    assert gguf_has_mrope_sections(str(garbage)) is None
+    truncated = tmp_path / "truncated.gguf"
+    truncated.write_bytes(Path(vision_files["mrope_model"]).read_bytes()[:40])
+    assert gguf_has_mrope_sections(str(truncated)) is None
+    assert gguf_has_mrope_sections(str(tmp_path / "missing.gguf")) is None
+
+
+@pytest.mark.parametrize(
+    "model, dflash, mmproj, expected",
+    [
+        ("mrope_model", "neox_dflash", "image_mmproj", True),
+        ("mrope_model", "zero_dflash", "image_mmproj", True),
+        ("mrope_model", "mrope_dflash", "image_mmproj", False),
+        ("neox_model", "neox_dflash", "image_mmproj", False),
+        ("mrope_model", "neox_dflash", "audio_mmproj", False),
+        ("mrope_model", "neox_dflash", None, False),
+        ("mrope_model", "missing", "image_mmproj", False),
+    ],
+)
+def test_dflash_drafter_breaks_on_images(vision_files, tmp_path, model, dflash, mmproj, expected):
+    from core.inference.llama_cpp import _dflash_drafter_breaks_on_images
+    files = {**vision_files, "missing": str(tmp_path / "missing.gguf")}
+    assert (
+        _dflash_drafter_breaks_on_images(
+            files[model], files[dflash], files[mmproj] if mmproj else None
+        )
+        is expected
+    )
+
+
+def test_auto_skips_neox_dflash_on_an_mrope_vision_load(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is False
+    assert any("no M-RoPE sections" in m for m in seen["log"])
+
+
+@pytest.mark.parametrize(
+    "dflash, mmproj, model, disable_vision",
+    [
+        ("mrope_dflash", "image_mmproj", "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "neox_model", False),
+        ("neox_dflash", "audio_mmproj", "mrope_model", False),
+        ("neox_dflash", None, "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "mrope_model", True),
+    ],
+)
+def test_auto_keeps_dflash_when_images_cannot_break_it(
+    monkeypatch, vision_files, dflash, mmproj, model, disable_vision
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files[model],
+        dflash_file = vision_files[dflash],
+        mmproj_file = vision_files[mmproj] if mmproj else None,
+        disable_vision = disable_vision,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert any("DFlash forced" in m for m in seen["warnings"])

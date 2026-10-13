@@ -44,6 +44,7 @@ export interface DownloadJobStatus {
   state: DownloadJobState;
   error?: string | null;
   generation?: number;
+  attempt?: number;
 }
 
 // "repository_owned": a dictation model download holds this repository's cache.
@@ -225,6 +226,7 @@ export async function startModelDownload(payload: {
   scope_id?: string | null;
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
+  download_dir?: string;
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {

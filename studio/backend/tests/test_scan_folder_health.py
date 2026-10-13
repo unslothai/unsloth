@@ -428,6 +428,7 @@ def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
                 [],
                 [],
                 [],
+                [],
                 list(rows),
             )
         )
@@ -461,6 +462,7 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
                 tmp_path / "hf",
                 tmp_path / "legacy",
                 tmp_path / "default",
+                [],
                 [],
                 [],
                 [],
@@ -789,6 +791,26 @@ def test_a_denied_hf_snapshot_commit_directory_is_not_ok(tmp_path: Path):
     (repo / "blobs" / "deadbeef").write_bytes(b"stub")
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    commit = repo / "snapshots" / ("a" * 40)
+    commit.mkdir(parents = True)
+    (commit / "config.json").write_text("{}", encoding = "utf-8")
+    commit.chmod(0o000)
+    try:
+        status, cause = probe_folder(str(tmp_path), children = True)
+        assert status == STATUS_PERMISSION_DENIED
+        assert cause == str(commit)
+
+        note_scan_folder_scanned(str(tmp_path), found = False)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PERMISSION_DENIED
+    finally:
+        commit.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_a_denied_hf_snapshot_under_a_registered_hf_home_is_not_ok(tmp_path: Path):
+    repo = tmp_path / "hub" / "models--org--model"
+    (repo / "blobs").mkdir(parents = True)
+    (repo / "blobs" / "deadbeef").write_bytes(b"stub")
     commit = repo / "snapshots" / ("a" * 40)
     commit.mkdir(parents = True)
     (commit / "config.json").write_text("{}", encoding = "utf-8")

@@ -14,8 +14,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
 import { useHfTokenWarningStore } from "./store";
+import { useHfTokenRejectedToast } from "./use-hf-token-rejected-toast";
 
 export function HfTokenWarningDialog() {
+  useHfTokenRejectedToast();
   const open = useHfTokenWarningStore((state) => state.open);
   const allowAnonymous = useHfTokenWarningStore(
     (state) => state.allowAnonymous,

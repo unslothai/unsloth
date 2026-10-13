@@ -350,7 +350,7 @@ class TestSetupPs1:
         and the CPU configure carry them."""
         text = _ps1()
         native = text.index("$CmakeArgs += '-DGGML_NATIVE=ON'")
-        cuda = text.index("if ($HasNvidiaSmi -and $NvccPath) {", native)
+        cuda = text.index("if ($HasNvidiaDriverEvidence -and $NvccPath) {", native)
         for flag in ("$CmakeArgs += '-DGGML_RPC=ON'", "$CmakeArgs += '-DGGML_RPC_RDMA=OFF'"):
             assert text.count(flag) == 1
             assert native < text.index(flag) < cuda

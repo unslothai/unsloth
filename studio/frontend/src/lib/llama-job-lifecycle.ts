@@ -68,14 +68,101 @@ export function llamaUpdatePresentation(
   };
 }
 
-/**
- * Whether the banner's version line has anything to say.
- *
- * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
- * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
- * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
- * running -- which is exactly where a migration is offered.
- */
+export type UpdateComponent = "llama.cpp" | "whisper.cpp" | "audio.cpp";
+
+export interface UpdateComponentFlags {
+  llama: boolean;
+  whisper: boolean;
+  audio: boolean;
+}
+
+// backend naming order matches the job installation order.
+const UPDATE_COMPONENT_KEYS: Record<
+  UpdateComponent,
+  keyof UpdateComponentFlags
+> = {
+  "llama.cpp": "llama",
+  "whisper.cpp": "whisper",
+  "audio.cpp": "audio",
+};
+
+export function updateComponentKey(
+  component: UpdateComponent,
+): keyof UpdateComponentFlags {
+  return UPDATE_COMPONENT_KEYS[component];
+}
+
+/** pending components remain listed even when their notifications are muted. */
+export function updateBannerComponents(
+  pending: UpdateComponentFlags,
+): UpdateComponent[] {
+  return (Object.keys(UPDATE_COMPONENT_KEYS) as UpdateComponent[]).filter(
+    (component) => pending[UPDATE_COMPONENT_KEYS[component]],
+  );
+}
+
+export function audibleComponents(
+  listed: readonly UpdateComponent[],
+  muted: UpdateComponentFlags,
+): UpdateComponent[] {
+  return listed.filter((component) => !muted[UPDATE_COMPONENT_KEYS[component]]);
+}
+
+/** an audible due component opens the card; it stays open until every listed component is muted. */
+export function updateBannerAllowed(
+  listed: readonly UpdateComponent[],
+  due: UpdateComponentFlags,
+  muted: UpdateComponentFlags,
+  open: boolean,
+): boolean {
+  const audible = audibleComponents(listed, muted);
+  return (
+    audible.length > 0 &&
+    (open || audible.some((component) => due[UPDATE_COMPONENT_KEYS[component]]))
+  );
+}
+
+/** holds initial rows as phases leave status; releasing the hold lets retries use remaining rows. */
+export function heldJobRows<T>(
+  held: T[] | null,
+  applying: boolean,
+  live: T[],
+): T[] | null {
+  if (!applying) {
+    return null;
+  }
+  return held ?? (live.length > 0 ? live : null);
+}
+
+export function updateComponentsLabel(
+  components: readonly UpdateComponent[],
+): string {
+  if (components.length <= 1) {
+    return components[0] ?? "llama.cpp";
+  }
+  return `${components.slice(0, -1).join(", ")} and ${components[components.length - 1]}`;
+}
+
+/** non-llama offers use their advertised tag because job `to_tag` always identifies llama.cpp. */
+export function updateToastTag(
+  component: UpdateComponent,
+  jobTag: string | null | undefined,
+  offerTag: string | null | undefined,
+): string | null {
+  const preferred = component === "llama.cpp" ? jobTag : offerTag;
+  return preferred ?? offerTag ?? jobTag ?? null;
+}
+
+/** holds the opening preference because completed phases disappear during a chained job. */
+export function heldUpdateBannerPref(
+  held: boolean | null,
+  inFlight: boolean,
+  live: boolean,
+): boolean | null {
+  return inFlight ? (held ?? live) : null;
+}
+
+/** trust `updateAvailable` because installed tags are normalized but fork identities are not. */
 export function llamaReleaseChanged(
   updateAvailable: boolean,
   installedTag: string | null,
@@ -86,12 +173,7 @@ export function llamaReleaseChanged(
   );
 }
 
-/** What to tell the user a finished Update actually did.
- *
- * A migration runs at the release already installed and can end on the backend already
- * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
- * a pending whisper update named the toast. The job's own message is accurate.
- */
+/** migration messages avoid misleading tags; null tags omit versions for bundled updates. */
 export function llamaUpdateToastMessage({
   component,
   migrating,
@@ -102,15 +184,16 @@ export function llamaUpdateToastMessage({
   component: string;
   migrating: boolean;
   jobMessage: string | null | undefined;
-  updatedTag: string;
+  updatedTag: string | null;
   reloadRequired: boolean | null | undefined;
 }): string {
   const reloadHint = reloadRequired ? " Reload your model to use it." : "";
   const migrationMessage = migrating ? (jobMessage ?? "").trim() : "";
   if (!migrationMessage) {
-    return `${component} updated to ${updatedTag}.${reloadHint}`;
+    const toTag = updatedTag === null ? "" : ` to ${updatedTag}`;
+    return `${component} updated${toTag}.${reloadHint}`;
   }
-  // The phase appends its own reload hint when it has one to give.
+  // avoid duplicating a reload hint already supplied by the phase.
   return migrationMessage.includes("Reload")
     ? migrationMessage
     : `${migrationMessage}${reloadHint}`;

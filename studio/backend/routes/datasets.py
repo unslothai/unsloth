@@ -13,13 +13,13 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest as HubAiAssistMappingRequest,
     CheckFormatRequest as HubCheckFormatRequest,
 )
-from hub.utils.hf_tokens import HfTokenArg
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from hub.services.datasets import downloads, formatting, local
 from models.datasets import (
     AiAssistMappingRequest,
@@ -74,12 +74,20 @@ async def get_dataset_download_progress(
 def check_format(
     request: CheckFormatRequest,
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> CheckFormatResponse:
     hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
+    # Same credential as the header on a legacy route, so classified the same way: raw, it
+    # makes a UI session look like an API key and costs it its own cached dataset offline.
+    body_token = (
+        hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient_token)
+        if request.hf_token
+        else None
+    )
     return formatting.check_format_response(
         hub_request,
-        request.hf_token or hf_token,
+        body_token if body_token else hf_token,
         allow_unlabeled_tier1_fallback = True,
     )
 

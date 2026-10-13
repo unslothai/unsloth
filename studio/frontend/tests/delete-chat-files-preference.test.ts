@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrcAsync, registerBundlerResolver } from "./helpers/kit.ts";
 
 // The store reaches a relative import written without its extension, which bare
 // node resolves only through this. Registered before the dynamic import, since a
@@ -25,10 +25,7 @@ test("deleting a chat leaves its files alone until asked", () => {
 test("a saved payload without the key still defaults to off", async () => {
   // Preferences written before this setting existed rehydrate through merge,
   // and a missing key there must not read as "yes, delete the files".
-  const source = await readFile(
-    new URL("../src/features/chat/stores/chat-preferences-store.ts", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/chat/stores/chat-preferences-store.ts");
   assert.match(
     source,
     /alwaysDeleteChatFiles: saved\?\.alwaysDeleteChatFiles \?\? false/,

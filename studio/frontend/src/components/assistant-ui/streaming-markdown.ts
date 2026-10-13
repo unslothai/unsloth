@@ -7,7 +7,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
 import remend from "remend";
-import { parseMarkdownIntoBlocks } from "streamdown";
+import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
 
 // Cheap gate: a bullet marker then only thematic-break punctuation. Not
 // asterisk specific, `- --verbose` and `* ___under___` flash too.
@@ -16,6 +16,7 @@ const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
 // Real prefixes are short, and parsing a long run is quadratic (100k dashes
 // cost 8s), so a runaway line is left alone.
 const MAX_AMBIGUOUS_LINE = 120;
+const FENCE_BLOCK_RE = /^ {0,3}(?:`{3,}|~{3,})/;
 
 type MarkdownNode = {
   readonly type: string;
@@ -104,7 +105,10 @@ export function stabilizeStreamingMarkdown(
   // Run what Streamdown runs: repair, split, then read only the trailing block
   // so the cost does not grow with the response.
   const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
-  const markerIndex = block === undefined ? -1 : ambiguousMarkerIndex(block);
+  const markerIndex =
+    block === undefined || FENCE_BLOCK_RE.test(block)
+      ? -1
+      : ambiguousMarkerIndex(block);
   if (
     block === undefined ||
     markerIndex < 0 ||

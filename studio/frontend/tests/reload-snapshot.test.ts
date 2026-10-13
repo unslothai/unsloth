@@ -2,133 +2,56 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const script = readFileSync(
-  new URL("../public/reload-snapshot.js", import.meta.url),
-  "utf8",
-);
-const indexHtml = readFileSync(
-  new URL("../index.html", import.meta.url),
-  "utf8",
-);
-const indexCss = readFileSync(
-  new URL("../src/index.css", import.meta.url),
-  "utf8",
-);
-const rootRouteSource = readFileSync(
-  new URL("../src/app/routes/__root.tsx", import.meta.url),
-  "utf8",
-);
-const runtimeProviderSource = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
-const chatPageSource = readFileSync(
-  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-  "utf8",
-);
-const sharedComposerSource = readFileSync(
-  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-  "utf8",
-);
-const imageDropzoneSource = readFileSync(
-  new URL("../src/components/image-dropzone.tsx", import.meta.url),
-  "utf8",
-);
-const attachmentPreviewSource = readFileSync(
-  new URL(
-    "../src/components/assistant-ui/attachment-preview.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const attachmentSource = readFileSync(
-  new URL("../src/components/assistant-ui/attachment.tsx", import.meta.url),
-  "utf8",
-);
-const imagesPageSource = readFileSync(
-  new URL("../src/features/images/images-page.tsx", import.meta.url),
-  "utf8",
-);
-const videoPageSource = readFileSync(
-  new URL("../src/features/video/video-page.tsx", import.meta.url),
-  "utf8",
-);
-const audioPageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const hubPageSource = readFileSync(
-  new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-  "utf8",
-);
-const referencePickerSource = readFileSync(
-  new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-  "utf8",
-);
+const script = readText("../public/reload-snapshot.js");
+const indexHtml = readText("../index.html");
+const indexCss = readSrc("index.css");
+const rootRouteSource = readSrc("app/routes/__root.tsx");
+const runtimeProviderSource = readSrc("features/chat/runtime-provider.tsx");
+const chatPageSource = readSrc("features/chat/chat-page.tsx");
+const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
+const imageDropzoneSource = readSrc("components/image-dropzone.tsx");
+const attachmentPreviewSource = readSrc("components/assistant-ui/attachment-preview.tsx");
 
-const unstructuredDropZoneSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const attachmentSource = readSrc("components/assistant-ui/attachment.tsx");
+const imagesPageSource = readSrc("features/images/images-page.tsx");
+const videoPageSource = readSrc("features/video/video-page.tsx");
+const audioPageSource = readAudioWorkspaceSource();
+const hubPageSource = readSrc("features/hub/hub-page.tsx");
+const referencePickerSource = readSrc("features/video/reference-picker.tsx");
 
-const projectsPageSource = readFileSync(
-  new URL("../src/features/chat/projects-page.tsx", import.meta.url),
-  "utf8",
-);
+const unstructuredDropZoneSource = readSrc("features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx");
 
-const seedDialogSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const projectsPageSource = readSrc("features/chat/projects-page.tsx");
 
-const projectSourceDropzoneSource = readFileSync(
-  new URL(
-    "../src/features/rag/components/project-source-dropzone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const dataRecipesPageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/data-recipes-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const editRecipePageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/edit-recipe-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const exportPageSource = readFileSync(
-  new URL("../src/features/export/export-page.tsx", import.meta.url),
-  "utf8",
-);
-const studioPageSource = readFileSync(
-  new URL("../src/features/studio/studio-page.tsx", import.meta.url),
-  "utf8",
-);
-const apiMonitorPageSource = readFileSync(
-  new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url),
-  "utf8",
-);
-const authFormSource = readFileSync(
-  new URL("../src/features/auth/components/auth-form.tsx", import.meta.url),
-  "utf8",
-);
+const seedDialogSource = readSrc("features/recipe-studio/dialogs/seed/seed-dialog.tsx");
+
+const projectSourceDropzoneSource = readSrc("features/rag/components/project-source-dropzone.tsx");
+const dataRecipesPageSource = readSrc("features/data-recipes/pages/data-recipes-page.tsx");
+const editRecipePageSource = readSrc("features/data-recipes/pages/edit-recipe-page.tsx");
+const exportPageSource = readSrc("features/export/export-page.tsx");
+const studioPageSource = readSrc("features/studio/studio-page.tsx");
+const apiMonitorPageSource = readSrc("features/api-monitor/api-monitor-page.tsx");
+const authFormSource = readSrc("features/auth/components/auth-form.tsx");
+
+test("scoped readiness still emits the reload snapshot event", () => {
+  const readinessSource = readSrc("components/app-readiness.ts");
+  assert.match(readinessSource, /function signalReloadSnapshotReady\(\): void \{\s*window\.dispatchEvent\(new Event\("unsloth:app-shell-ready"\)\)/);
+  assert.match(readinessSource, /signalReady: \(\) => \{\s*if \(!active\) return;\s*onReady\(\);\s*signalReloadSnapshotReady\(\)/);
+  assert.match(readinessSource, /value: scope\.signalReady/);
+  assert.match(readinessSource, /return useContext\(AppShellReadyContext\)/);
+  for (const source of [rootRouteSource, runtimeProviderSource, chatPageSource,
+    hubPageSource, projectsPageSource, dataRecipesPageSource, editRecipePageSource,
+    exportPageSource, studioPageSource, apiMonitorPageSource, authFormSource]) {
+    assert.match(source, /useAppShellReadySignal/);
+  }
+});
+
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -403,6 +326,8 @@ function createEnvironment(options: {
   const fontFaces: Array<{ family: string; source: string }> = [];
   const appended: Array<{ innerHTML: string; removed: boolean }> = [];
   let scrollRestoreCalls = 0;
+  let attributeObserver: ((records: { attributeName: string }[]) => void) | null = null;
+  let observingAttributes = false;
   const bodyTree = options.rootTree
     ? createElement({
         tag: "body",
@@ -448,6 +373,9 @@ function createEnvironment(options: {
     },
     removeAttribute: (name: string) => {
       htmlAttributes.delete(name);
+    },
+    get attributes() {
+      return [...htmlAttributes].map(([name, value]) => ({ name, value }));
     },
     appendChild(element: { innerHTML: string; removed: boolean }) {
       appended.push(element);
@@ -519,6 +447,11 @@ function createEnvironment(options: {
         setAttribute(name: string, value: string) {
           element.attributes[name] = value;
         },
+        toggleAttribute(name: string, force: boolean) {
+          if (force) element.attributes[name] = "";
+          else delete element.attributes[name];
+          return force;
+        },
         getAttribute(name: string) {
           return element.attributes[name] ?? null;
         },
@@ -563,6 +496,19 @@ function createEnvironment(options: {
       // Timer bookkeeping is outside this lifecycle test.
     },
     document,
+    MutationObserver: class {
+      constructor(callback: (records: { attributeName: string }[]) => void) {
+        attributeObserver = callback;
+      }
+      observe(target: unknown, options: { attributes: boolean }) {
+        assert.equal(target, documentElement);
+        assert.equal(options.attributes, true);
+        observingAttributes = true;
+      }
+      disconnect() {
+        observingAttributes = false;
+      }
+    },
     getComputedStyle: (element: StubElement) =>
       // <html> resolves to its own declaration block, which is where the
       // design tokens the copy has to carry are read from.
@@ -612,6 +558,14 @@ function createEnvironment(options: {
     appended,
     htmlVariables: documentElement.style,
     htmlAttributes,
+    get observingAttributes() {
+      return observingAttributes;
+    },
+    changeRootAttribute(name: string, value: string | null) {
+      if (value === null) htmlAttributes.delete(name);
+      else htmlAttributes.set(name, value);
+      if (observingAttributes) attributeObserver?.([{ attributeName: name }]);
+    },
     get scrollRestoreCalls() {
       return scrollRestoreCalls;
     },
@@ -820,7 +774,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?signalReady\(\)[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
   );
   assert.match(
     runtimeProviderSource,
@@ -845,7 +799,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?unsloth:app-shell-ready[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
+    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?signalReady\(\)[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
   );
   assert.match(
     runtimeProviderSource,
@@ -864,7 +818,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?unsloth:app-shell-ready/,
+    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -880,7 +834,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -935,11 +889,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     hubPageSource,
-    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
+    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     projectsPageSource,
-    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     rootRouteSource,
@@ -947,32 +901,32 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     dataRecipesPageSource,
-    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     editRecipePageSource,
-    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/export"/);
   assert.match(
     exportPageSource,
-    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/studio"/);
   assert.match(
     studioPageSource,
-    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/api-monitor"/);
   assert.match(
     apiMonitorPageSource,
-    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/login"/);
   assert.match(rootRouteSource, /pathname === "\/change-password"/);
   assert.match(
     authFormSource,
-    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
+    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?signalReady\(\)/,
   );
 });
 
@@ -1119,21 +1073,6 @@ test("carries the appearance customization so the shell paints in its own colors
   );
 });
 
-test("adapts root-scoped palette state to the snapshot shell", () => {
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell:not\(\[data-palette\]\)[\s\S]*?\.palette-card\[data-palette-value="standard"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="classic"\][\s\S]*?\.palette-card\[data-palette-value="classic"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
-  );
-});
-
 test("loads selected imported fonts before revealing the shell", async () => {
   const persistedAppearance = new Map([
     [
@@ -1273,6 +1212,48 @@ test("roots the copy in an html element so html-anchored rules still match", () 
     "data-palette": "classic",
     "data-contrast-adjust": "",
   });
+});
+
+test("gives the copy's root the live root's viewport gates, so width-gated rules match the same", () => {
+  const outgoing = createEnvironment({
+    navigationType: "navigate",
+    rootHtml: "<main>Existing chat</main>",
+    styleSheets: ["/assets/index-abc123.css"],
+    htmlAttributes: { "data-palette": "classic" },
+  });
+  outgoing.dispatch("pageswap", {
+    activation: { navigationType: "reload" },
+  });
+
+  const incoming = createEnvironment({
+    navigationType: "reload",
+    storage: outgoing.storage,
+    htmlAttributes: {
+      lang: "en",
+      "data-mq-min-width-40rem": "",
+      "data-mq-min-width-48rem": "",
+    },
+  });
+  assert.deepEqual(incoming.shell?.rootAttributes, {
+    "data-palette": "classic",
+    "data-mq-min-width-40rem": "",
+    "data-mq-min-width-48rem": "",
+  });
+  incoming.changeRootAttribute("data-mq-min-width-48rem", null);
+  incoming.changeRootAttribute("data-mq-min-width-64rem", "");
+  incoming.changeRootAttribute("data-palette", "changed");
+  assert.deepEqual(incoming.shell?.rootAttributes, {
+    "data-palette": "classic",
+    "data-mq-min-width-40rem": "",
+    "data-mq-min-width-64rem": "",
+  });
+  assert.equal(incoming.observingAttributes, true);
+  incoming.dispatch("unsloth:app-shell-ready");
+  incoming.runAnimationFrame();
+  incoming.runAnimationFrame();
+  assert.equal(incoming.observingAttributes, false);
+  incoming.changeRootAttribute("data-mq-min-width-40rem", null);
+  assert.equal(incoming.shell?.rootAttributes["data-mq-min-width-40rem"], "");
 });
 
 test("freezes the design tokens onto the copy's own root", () => {
@@ -1484,7 +1465,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   );
   assert.match(
     sharedComposerSource,
-    /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
+    /pendingAudio\.map\([\s\S]*?data-reload-snapshot-sensitive[\s\S]*?\{clip\.name\}/,
   );
   // Both carriers: the tooltip on the name, and the accessible name on the
   // remove button, a sibling no ancestor marker would reach.
@@ -1507,18 +1488,28 @@ test("carries live form state, except what sensitive fields hide", () => {
     /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
   );
   for (const dialog of [
-    "AttachmentImageDialog",
+    "ImageGalleryDialog",
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
   ]) {
+    const body = attachmentPreviewSource.slice(
+      attachmentPreviewSource.indexOf(`const ${dialog}: FC`),
+    );
     assert.match(
-      attachmentPreviewSource,
-      new RegExp(
-        `${dialog}[\\s\\S]*?data-reload-snapshot-sensitive=\\{redactFromReload \\? "" : undefined\\}`,
-      ),
+      body,
+      /^[\s\S]*?<AttachmentViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
       `${dialog} must redact its portaled content`,
     );
   }
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(
+    viewer,
+    /export const AttachmentViewer[\s\S]*?<MediaViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
+  );
+  assert.match(
+    readSrc("components/media-viewer.tsx"),
+    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
+  );
 });
 
 test("keeps native select options that paint the closed control label", () => {

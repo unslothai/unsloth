@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -11,11 +10,10 @@ import {
   getAudioSizeError,
 } from "../src/lib/audio-utils.ts";
 
+import { readText } from "./helpers/kit.ts";
+
 test("chat audio uses the backend's raw upload limit", () => {
-  const backendLimits = readFileSync(
-    new URL("../../backend/utils/upload_limits.py", import.meta.url),
-    "utf8",
-  );
+  const backendLimits = readText("../../backend/utils/upload_limits.py");
   const limitMb = Number(
     backendLimits.match(
       /STT_AUDIO_RAW_MAX_BYTES\s*=\s*(\d+)\s*\*\s*_BYTES_PER_MB/,

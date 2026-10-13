@@ -25,28 +25,17 @@
 // path has a seam (resolveCtxPinSeed) and is checked through it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const read = (relative: string) =>
-  readFileSync(path.join(HERE, "..", relative), "utf8");
-
-const APPLIER = read(
-  "src/features/chat/lib/apply-inference-status-to-store.ts",
-);
-const RUNTIME = read("src/features/chat/hooks/use-chat-model-runtime.ts");
-const ADAPTER = read("src/features/chat/api/chat-adapter.ts");
-const COMPOSER = read("src/features/chat/shared-composer.tsx");
-const CONFIG_PAGE = read(
-  "src/features/model-picker/components/model-config-page.tsx",
-);
+const APPLIER = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const COMPOSER = readSrc("features/chat/shared-composer.tsx");
+const CONFIG_PAGE = readSrc("features/model-picker/components/model-config-page.tsx");
 
 const policy = await import("../src/features/chat/presets/preset-policy.ts");
 const { resolveCtxPinSeed } = await import(
@@ -98,7 +87,9 @@ function sentNCtx(
     currentCheckpoint = MODEL,
     // The configuration the bug was reported in.
     presetSource = "builtin-default",
+    loadedPin = null,
   }: {
+    loadedPin?: number | null;
     mode?: Mode;
     gpuLayers?: number;
     residentCtx?: number;
@@ -123,6 +114,7 @@ function sentNCtx(
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: 4096,
       presetSource,
+      loadedContextPin: loadedPin,
     }),
   );
 }
@@ -285,6 +277,29 @@ test("a poll landing mid-load cannot plant the outgoing model's context", () => 
   );
 });
 
+test("choosing Auto after a pinned load asks the server to size itself again", () => {
+  // Resending the resident size for Auto made the resident check read the reload as a no-op,
+  // so a model loaded at a set context could never go back to Auto.
+  for (const presetSource of PRESET_SOURCES) {
+    assert.equal(
+      sentNCtx(null, { presetSource, residentCtx: 8192, loadedPin: 8192 }),
+      0,
+      presetSource,
+    );
+  }
+  // A context the user sets is still sent as is over a pinned resident.
+  assert.equal(sentNCtx(16384, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192 }), 16384);
+  // Another model ignores the resident pin: cross-model Auto is 0 already.
+  assert.equal(
+    sentNCtx(null, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192, currentCheckpoint: OTHER_MODEL }),
+    0,
+  );
+});
+
+test("each same-model resolver call hands over the resident pin", () => {
+  assert.equal(RUNTIME.match(/loadedContextPin: (?:live|stateBeforeUnload)\.loadedCustomContextLength,/g)?.length, 3);
+});
+
 test("Auto stays Auto across a same-model reload, under every preset source", () => {
   // resolveLoadMaxSeqLength's isReloadingCurrentGguf branch: outside
   // builtin-default, a same-model reload on Auto puts the RESOLVED context on the
@@ -340,13 +355,18 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength = fixedLayerContext(");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
     capture < clamp,
     "the clamp now runs before the pin is captured, so the app's substituted length " +
       "would be recorded as the user's choice",
+  );
+  // /validate sizes the context the load will send, clamp included.
+  assert.match(
+    RUNTIME,
+    /const validateCustomContextLength = resetsPerModelSettings\s*\?\s*null\s*:\s*fixedLayerContext\(loadCustomContextLength, loadGpuLayers\);/,
   );
 });
 
@@ -547,6 +567,27 @@ test("a failed switch rolls back on the backend that served the outgoing model",
   // back at the auto-size sentinel, losing the context it was actually serving.
   assert.match(
     RUNTIME,
-    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
+    /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*rollbackState\.loadedIsMlx,\s*\n\s*\);/,
   );
+});
+
+test("an NPU load's pin survives hydration: its status echoes the request, null for Auto", () => {
+  // Structural: the applier cannot be imported under node's test resolver. It must pass an NPU
+  // status through the pin rule the way MLX goes, since both echo what the load asked for.
+  assert.match(APPLIER, /isGguf:[\s\S]{0,120}status\.is_npu \?\? false/);
+  assert.match(APPLIER, /isMlx: \(status\.is_mlx \?\? false\) \|\| \(status\.is_npu \?\? false\)/);
+  const seed = (incoming: number | null) =>
+    resolveCtxPinSeed({
+      incoming,
+      isGguf: true,
+      isMlx: true,
+      seedLoadParams: true,
+      modelChanged: false,
+      remembered: null,
+      gpuMemoryMode: null,
+      gpuLayers: null,
+      loadedPin: null,
+    });
+  assert.equal(seed(16384).customContextLength, 16384);
+  assert.equal(seed(null).customContextLength, null);
 });

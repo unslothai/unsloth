@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   isOllamaLinkPath,
+  isOllamaModelId,
   isStandaloneGgufPath,
   modelDisplayName,
   modelIdsMatch,
@@ -47,6 +48,8 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
@@ -210,6 +213,9 @@ test("Ollama link paths are recognised the way the resolver excludes them", () =
   assert.equal(isOllamaLinkPath("/srv/models/Qwen3-8B-Q4_K_M.gguf"), false);
   assert.equal(isOllamaLinkPath("unsloth/Qwen3-8B-GGUF"), false);
   assert.equal(isOllamaLinkPath(null), false);
+  // A manifest reference is not one: the resolver indexes it and /v1/models advertises its tag.
+  assert.equal(isOllamaLinkPath("ollama-manifest:%2Fh%2Fllama3"), false);
+  assert.equal(isOllamaModelId("ollama-manifest:%2Fh%2Fllama3"), true);
 });
 
 // The backfill matches on the folded identity, unambiguous only because storage holds one record per model.
@@ -263,6 +269,26 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   assert.equal(
     resolveInitialConfig("/models/Foo.gguf", null).config.maxSeqLength,
     4096,
+  );
+});
+
+test("symlink alias paths keep independent remembered settings", () => {
+  store.clear();
+  savePerModelConfig("/models/alias-a", "Q4_K_M", config(4096));
+  savePerModelConfig("/models/alias-b", "Q4_K_M", config(32768, "q8_0"));
+
+  assert.equal(storedKeys().length, 2);
+  assert.equal(
+    resolveInitialConfig("/models/alias-a", "Q4_K_M").config.maxSeqLength,
+    4096,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.maxSeqLength,
+    32768,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.kvCacheDtype,
+    "q8_0",
   );
 });
 
@@ -451,4 +477,31 @@ test("keeps .gguf on Hub repo ids, which are not file paths", () => {
   assert.equal(modelDisplayName("lex-au/Orpheus-3b-FT/Q8_0.gguf"), "Q8_0");
   assert.equal(modelDisplayName("/srv/Qwen3-Q4.gguf"), "Qwen3-Q4");
   assert.equal(modelDisplayName(String.raw`C:\models\Qwen3-Q4.gguf`), "Qwen3-Q4");
+});
+
+test("an audio.cpp umbrella folder id is a Hub id, not a path", () => {
+  // Mirrors the umbrella exemption in model_ids._looks_like_path.
+  const folder = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(publicModelId(folder), folder);
+  assert.equal(modelDisplayName(folder), "Qwen3-TTS-12Hz-0.6B-Base-GGUF");
+  assert.equal(residentModelIdMatches(folder, folder), true);
+  assert.equal(
+    residentModelIdMatches(folder.toUpperCase(), folder),
+    true,
+  );
+  assert.equal(
+    residentModelIdMatches(folder, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"),
+    false,
+  );
+  const snapshot =
+    "/c/hub/models--audio-cpp--audio.cpp-gguf/snapshots/abc123";
+  assert.equal(residentModelIdMatches(folder, snapshot), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", folder), false);
+  assert.equal(residentModelIdMatches("audio-cpp/audio.cpp-gguf", snapshot), true);
+  // Still a path once it names a file or climbs out of the repo.
+  assert.equal(
+    publicModelId("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF/kokoro-Q8_0.gguf"),
+    "kokoro-Q8_0",
+  );
+  assert.equal(publicModelId("audio-cpp/audio.cpp-gguf/../x"), "x");
 });

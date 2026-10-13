@@ -2,15 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   DEFAULT_STT_MODEL,
   RECOMMENDED_STT_MODELS,
-  STT_MODELS,
+  STT_PICKER_MODELS,
   migrateVoiceSettings,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const CUSTOM_ENGINE_BEFORE_TAURI =
   /savedEngine === "custom"\s*\? "custom"\s*:\s*isTauri/;
@@ -27,10 +28,10 @@ test("the default dictation model is a recommended one", () => {
 });
 
 test("recommended models are listed before the rest", () => {
-  const firstOther = STT_MODELS.findIndex(
+  const firstOther = STT_PICKER_MODELS.findIndex(
     (model) => !RECOMMENDED_STT_MODELS.has(model),
   );
-  const lastRecommended = STT_MODELS.reduce(
+  const lastRecommended = STT_PICKER_MODELS.reduce(
     (last, model, index) => (RECOMMENDED_STT_MODELS.has(model) ? index : last),
     -1,
   );
@@ -61,20 +62,8 @@ test("migration keeps the rest of the save intact", () => {
 });
 
 test("custom transcription uses a saved connection without loading local STT", () => {
-  const storeSource = readFileSync(
-    new URL(
-      "../src/features/settings/stores/voice-settings-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const adapterSource = readFileSync(
-    new URL(
-      "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const storeSource = readSrc("features/settings/stores/voice-settings-store.ts");
+  const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
   assert.match(storeSource, CUSTOM_ENGINE_BEFORE_TAURI);
   assert.match(adapterSource, EXTERNAL_PROVIDER_FORM_FIELD);
@@ -84,13 +73,7 @@ test("custom transcription uses a saved connection without loading local STT", (
 });
 
 test("the custom dictation connection picker handles deleted and empty connections", () => {
-  const voiceTabSource = readFileSync(
-    new URL(
-      "../src/features/settings/tabs/voice-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
 
   assert.match(
     voiceTabSource,

@@ -9,24 +9,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 _FUNC_FILE=$(mktemp)
 sed -n '/^_redact_install_output()/,/^}/p' "$INSTALL_SH" > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 # Redact from a file (the actual call site passes a captured-log tempfile).
 redact_str() {

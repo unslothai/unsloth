@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AUDIO_CPP_REPO,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog.ts";
 import { looksLikeLocalPath } from "./local-path.ts";
 
 const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
@@ -85,6 +89,18 @@ const TRAILING_SLASHES_RE = /\/+$/;
 function looksLikeModelPath(identifier: string): boolean {
   if (GGUF_SUFFIX_RE.test(identifier)) {
     return true;
+  }
+  // An audio.cpp umbrella id names a folder of one Hub repo; mirrors model_ids._looks_like_path.
+  if (isAudioCppFolderId(identifier)) {
+    const parts = identifier
+      .trim()
+      .slice(AUDIO_CPP_REPO.length + 1)
+      .replace(BACKSLASHES_RE, "/")
+      .split("/")
+      .filter(Boolean);
+    if (parts.length > 0 && !parts.some((part) => part === "." || part === "..")) {
+      return false;
+    }
   }
   if (PUBLIC_ID_PATH_PREFIX_RE.test(identifier)) {
     return true;
@@ -193,24 +209,27 @@ export function residentModelIdMatches(
   });
 }
 
-// Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py refuses
-// to index, so mirroring their settings would advertise a load that cannot happen. The
-// inventory's opaque `ollama-manifest:` references resolve to those same skipped links, so
-// they carry the same non-promise.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
+/** A `.gguf` link an earlier load materialized. The resolver refuses to index one, so mirroring
+ *  settings onto it would advertise a load that cannot happen; a reference it does index. */
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
   if (!modelId) {
     return false;
-  }
-  if (modelId.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) {
-    return true;
   }
   return modelId
     .replace(BACKSLASHES_RE, "/")
     .split("/")
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
+}
+
+/** Either spelling of an Ollama model: the inventory's reference, or a materialized link. */
+export function isOllamaModelId(modelId: string | null | undefined): boolean {
+  return (
+    Boolean(modelId?.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) ||
+    isOllamaLinkPath(modelId)
+  );
 }
 
 // A dropped or file-picked GGUF is the API's second unreachable identity: /status withholds the

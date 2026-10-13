@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { installAccountTransitionListener } from "@/lib/account-transition";
+import { getLoginMode } from "./login-client";
 
 import {
   AUTH_SESSION_CLEARED_EVENT,
@@ -21,6 +23,10 @@ export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password"
  */
 export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
 
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  installAccountTransitionListener();
+}
 
 let authSessionEpoch = 0;
 
@@ -115,7 +121,16 @@ export function setMustChangePassword(required: boolean): void {
 
 
 export function getPostAuthRoute(): PostAuthRoute {
-  if (isTauri) return "/chat";
+  if (isTauri && getLoginMode() === "single") return "/chat";
   if (mustChangePassword()) return "/change-password";
   return "/chat";
+}
+
+/**
+ * Whether this session may read its account's settings yet. Until a required password change lands,
+ * the backend refuses every other route with a 403, and the bootstrap sign-in on /change-password
+ * stores its tokens a step before that change.
+ */
+export function hasSettledAuthSession(): boolean {
+  return hasAuthToken() && getPostAuthRoute() === "/chat";
 }

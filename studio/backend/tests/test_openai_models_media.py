@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from core.inference import local_model_resolver as resolver  # noqa: E402
 from core.inference import media_model_index as mmi  # noqa: E402
 from core.inference.media_model_index import MediaModelPick  # noqa: E402
 from utils.api_errors import install_api_error_handlers  # noqa: E402
+from core.inference import media_locality
 
 
 class _Info:
@@ -64,8 +66,6 @@ class _FakeUnsloth:
 
 def _media_index(monkeypatch, picks_by_task):
     """Stand in for the media index the generation routes resolve against."""
-    from core.inference import media_locality
-
     inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
     monkeypatch.setattr(media_locality, "missing_download_bytes", lambda owner, pick: 0)
     monkeypatch.setattr(
@@ -266,8 +266,6 @@ def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
     """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
     txt2img workflow: the switch refuses it with a 400 and a resident one is refused by
     /v1/images/generations too."""
-    from core.inference import media_locality
-
     edit = MediaModelPick("org/qwen-image-edit", "/hf/edit")
     plain = MediaModelPick("org/plain-image", "/hf/plain")
     monkeypatch.setattr(
@@ -356,8 +354,6 @@ def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
 
 
 def test_media_model_with_missing_companions_is_not_advertised(monkeypatch):
-    from core.inference import media_locality
-
     image = _PICKS["text-to-image"][0]
     _catalog(monkeypatch, _INFOS, picks = {"text-to-image": [image]})
     monkeypatch.setattr(
@@ -445,6 +441,21 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
         "unsloth/whisper-small": None,
         "qwen3-asr-0.6b": "Q8_0",
         "org/whisper-custom": None,
+    }
+
+
+def test_stt_rows_name_their_workflows(monkeypatch):
+    _stt(
+        monkeypatch,
+        downloaded = ("small", "large-v3-turbo"),
+        mtmd_downloaded = ("qwen3-asr-0.6b",),
+        whisper_loaded = "org/whisper-custom",
+    )
+    assert {o["id"]: o["audio_workflows"] for o in inf._stt_model_objects(7)} == {
+        "unsloth/whisper-small": ["transcribe", "translate"],
+        "unsloth/whisper-large-v3-turbo": ["transcribe"],
+        "qwen3-asr-0.6b": ["transcribe"],
+        "org/whisper-custom": ["transcribe"],
     }
 
 
@@ -656,10 +667,47 @@ def test_loaded_tts_model_is_tagged(monkeypatch):
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     (entry,) = inf._openai_model_objects()
     assert entry["id"] == "orpheus-3b-Q4" and entry["task"] == "text-to-speech"
+    assert entry["audio_workflows"] == ["speak"]
 
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Chat())
     (entry,) = inf._openai_model_objects()
     assert entry["id"] == "qwen3-Q4" and "task" not in entry
+    assert "audio_workflows" not in entry
+
+
+@pytest.mark.parametrize(
+    ("info", "task", "workflows"),
+    [
+        (
+            {"audio_type": "audiocpp_tts", "audio_workflows": ["speak", "clone"]},
+            "text-to-speech",
+            ["speak", "clone"],
+        ),
+        (
+            {"audio_type": "audiocpp_music", "audio_workflows": ["music"]},
+            "text-to-speech",
+            ["music"],
+        ),
+        # Listed with no task, a resident separation model looked like a chat model.
+        (
+            {"audio_type": "audiocpp_sep", "audio_workflows": ["separate"]},
+            "audio-to-audio",
+            ["separate"],
+        ),
+        ({"audio_type": "csm"}, "text-to-speech", ["speak"]),
+    ],
+)
+def test_resident_audio_models_carry_task_and_workflows(monkeypatch, info, task, workflows):
+    unsloth = type(
+        "_Audio",
+        (_FakeUnsloth,),
+        {"active_model_name": "org/audio", "models": {"org/audio": {"is_audio": True, **info}}},
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: unsloth())
+    (entry,) = inf._openai_model_objects()
+    assert entry["task"] == task
+    assert entry["audio_workflows"] == workflows
 
 
 def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
@@ -716,6 +764,35 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry
+
+
+def test_a_dedicated_separation_repo_keeps_its_task_and_workflows(monkeypatch):
+    repo = _Info(
+        "models--someone--htdemucs-GGUF",
+        "htdemucs-GGUF",
+        model_id = "someone/htdemucs-GGUF",
+        task = "audio-to-audio",
+    )
+    _catalog(monkeypatch, [repo], picks = {})
+    monkeypatch.setattr(
+        inf,
+        "_audio_cpp_speech_model_objects",
+        lambda created: [
+            {
+                "id": "someone/htdemucs-GGUF",
+                "object": "model",
+                "created": created,
+                "owned_by": inf._OWNED_BY,
+                "task": "audio-to-audio",
+                "loaded": False,
+                "audio_workflows": ["separate"],
+            }
+        ],
+    )
+
+    ids = {model["id"]: model for model in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["someone/htdemucs-GGUF"]["task"] == "audio-to-audio"
+    assert ids["someone/htdemucs-GGUF"]["audio_workflows"] == ["separate"]
 
 
 def test_downloaded_tts_model_is_not_advertised_without_switch_support(monkeypatch):

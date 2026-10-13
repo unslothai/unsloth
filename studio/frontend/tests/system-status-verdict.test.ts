@@ -11,17 +11,12 @@
 // rendering it told an AMD/ROCm user "No visible GPU detected".
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const tabSrc = await readFile(
-  new URL("../src/features/settings/tabs/resources-tab.tsx", import.meta.url),
-  "utf8",
-);
-const hookSrc = await readFile(
-  new URL("../src/hooks/use-system.ts", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const tabSrc = await readSrcAsync("features/settings/tabs/resources-tab.tsx");
+const hookSrc = await readSrcAsync("hooks/use-system.ts");
 
 function lift(src: string, pattern: RegExp, what: string, where: string): string {
   const found = pattern.exec(src);
@@ -146,7 +141,12 @@ test("no tile fabricates a usage percentage for a host it has not read", () => {
   // percent null draws a dash and an empty bar. An unread host is not an idle one, so no
   // tile may pass 0. Asserted on the source, since percent is a prop, not a derivation.
   const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?\/>/g) ?? [];
-  assert.equal(tiles.length, 4, "the Live monitor's four tiles");
+  // Every tile the tab renders, not a fixed four: the models-disk tile (#12724) is a fifth that
+  // only mounts when the models folder sits on another drive. Counting the opening tags on their
+  // own catches a tile the self-closing match above failed to capture, which the loop would skip.
+  const opened = (tabSrc.match(/<MetricTile\b/g) ?? []).length;
+  assert.ok(tiles.length >= 4, `the Live monitor's tiles: found ${tiles.length}`);
+  assert.equal(tiles.length, opened, "every <MetricTile> is captured whole");
   for (const tile of tiles) {
     const label = /label=\{t\("([^"]+)"\)\}/.exec(tile)?.[1] ?? "?";
     const percent = /percent=\{([^}]*)\}/.exec(tile)?.[1] ?? "";

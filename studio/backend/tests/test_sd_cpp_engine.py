@@ -32,6 +32,22 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
+def _shared_setup_1(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    return candidate
+
+
+def _shared_setup_2(e, out):
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x"),
+        output_path = str(out),
+    )
+
+
 # ── binary discovery ────────────────────────────────────────────────────────
 
 
@@ -187,10 +203,7 @@ def test_identity_probe_is_memoized_per_file_revision(tmp_path, monkeypatch):
     # unrelated `sd` was re-executed several times per load -- once per full 10s timeout when the
     # candidate hangs. The verdict is keyed on the file, not the path, so an in-place replacement
     # is still re-probed rather than answered from a stale entry.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs: list[list[str]] = []
 
     def _run(cmd, **_kwargs):
@@ -262,10 +275,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
     # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
     # against a file that never changed -- and installing the missing library would not get it
     # re-probed until Unsloth restarted.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(
         eng.subprocess,
         "run",
@@ -292,10 +302,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
 def test_identity_probe_memoizes_an_identifying_build_that_exits_nonzero(tmp_path, monkeypatch):
     # The other half: older builds print usage and exit 1. Identifying output settles the question
     # whatever the exit code, so that verdict is decisive and worth keeping.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
     monkeypatch.setattr(
         eng.subprocess,
@@ -320,10 +327,7 @@ def test_identity_verdict_expires(tmp_path, monkeypatch):
     # unchanged. Hashing the binary on every lookup would cost a full read on a path walked for
     # every load; a short life bounds that staleness instead, and bounds whatever else the key
     # cannot see.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
 
     def _reject(cmd, **_kwargs):
@@ -355,10 +359,7 @@ def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypat
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
     # slow --help under disk or memory pressure -- Unsloth would have to be restarted to see it.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
 
     def _timeout(*_args, **_kwargs):
         raise eng.subprocess.TimeoutExpired("sd", 10)
@@ -497,6 +498,92 @@ def test_runtime_env_prepends_binary_dir_to_lib_path():
     first = env[var].split(os.pathsep)[0]
     assert first == "/opt/sdcpp/bin"
     assert "/existing" in env[var]
+
+
+def _bundle(tmp_path, *names):
+    d = tmp_path / "bundle"
+    d.mkdir()
+    for n in names:
+        (d / n).write_bytes(b"x")
+    return str(d / ("sd-cli.exe" if sys.platform == "win32" else "sd-cli"))
+
+
+_CUDA_LIB = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so.0"
+_CUDART = "cudart64_13.dll" if sys.platform == "win32" else "libcudart.so.13"
+
+
+def test_runtime_env_adds_llama_cuda_runtime_dirs_for_a_runtime_less_cuda_bundle(
+    monkeypatch, tmp_path
+):
+    var = eng._lib_path_var()
+    monkeypatch.setattr(eng, "host_cuda_runtime_dirs", lambda: ["/venv/nvidia/cu13/lib"])
+    binary = _bundle(tmp_path, _CUDA_LIB)
+    parts = runtime_env(binary, {var: "/existing"})[var].split(os.pathsep)
+    assert parts == [str(Path(binary).resolve().parent), "/venv/nvidia/cu13/lib", "/existing"]
+
+
+@pytest.mark.parametrize("names", [(), (_CUDA_LIB, _CUDART)])
+def test_runtime_env_leaves_other_bundles_alone(monkeypatch, tmp_path, names):
+    var = eng._lib_path_var()
+    monkeypatch.setattr(
+        eng, "host_cuda_runtime_dirs", lambda: pytest.fail("no host CUDA dirs for this bundle")
+    )
+    binary = _bundle(tmp_path, *names)
+    assert runtime_env(binary, {var: "/existing"})[var].split(os.pathsep) == [
+        str(Path(binary).resolve().parent),
+        "/existing",
+    ]
+
+
+def test_host_cuda_runtime_dirs_reuse_llama_server_env_minus_its_ggml(monkeypatch, tmp_path):
+    import core.inference.llama_cpp as llama
+
+    var = eng._lib_path_var()
+    llama_dir = tmp_path / "llama" / "build" / "bin"
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: str(llama_dir / "llama-server"))
+    monkeypatch.setattr(llama, "_llama_lib_dir", lambda _b: llama_dir)
+    monkeypatch.setenv(var, "/inherited")
+    monkeypatch.setattr(
+        llama.LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(
+            lambda _b, **_k: {
+                var: os.pathsep.join([str(llama_dir), "/venv/nvidia/cu13/lib", "/inherited"])
+            }
+        ),
+    )
+    dirs = eng.host_cuda_runtime_dirs()
+    if sys.platform == "win32":
+        assert dirs == [str(llama_dir), "/venv/nvidia/cu13/lib"]
+    else:
+        # llama.cpp's libggml*.so share sonames with the bundle's.
+        assert dirs == ["/venv/nvidia/cu13/lib"]
+
+
+def test_host_cuda_runtime_dirs_without_llama_cpp(monkeypatch):
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: None)
+    assert eng.host_cuda_runtime_dirs() == []
+
+
+@pytest.mark.parametrize(
+    "marker, torch_cuda, want",
+    [
+        ({"runtime_line": "cuda13"}, "12.8", "13"),
+        ({"runtime_line": "cuda12"}, None, "12"),
+        ({"backend": "vulkan"}, "13.0", "13"),
+        (None, None, None),
+    ],
+)
+def test_host_cuda_runtime_major_follows_llama_cpp_then_torch(
+    monkeypatch, marker, torch_cuda, want
+):
+    import utils.llama_cpp_freshness as fresh
+
+    monkeypatch.setattr(eng, "_llama_server_binary", lambda: "/llama/llama-server")
+    monkeypatch.setattr(fresh, "read_install_marker", lambda _b: marker)
+    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(cuda = torch_cuda))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert eng.host_cuda_runtime_major() == want
 
 
 def test_runtime_env_scrubs_native_path_lease_secret(monkeypatch):
@@ -710,11 +797,24 @@ def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["boom: bad gguf"], returncode = 1, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "exited 1"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
+
+
+@pytest.mark.parametrize("returncode", [-6, 0])
+def test_native_failure_keeps_reason_before_long_backtrace(tmp_path, monkeypatch, returncode):
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    reason = "CUDA error: no kernel image is available for execution on the device"
+    lines = [reason] + [f"#{i} 0x123456 in native_frame_{i}()" for i in range(80)]
+    _patch_popen(monkeypatch, lines = lines, returncode = returncode, out_file = out, write = False)
+
+    with pytest.raises(RuntimeError) as failure:
+        _shared_setup_2(e, out)
+
+    detail = str(failure.value).split("Last output:\n", 1)[1]
+    assert detail.startswith(reason)
+    assert "native_frame_79" in detail
+    assert len(detail) <= 1500
 
 
 def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
@@ -722,11 +822,7 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
 
 
 def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
@@ -736,11 +832,7 @@ def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch
     out.write_bytes(b"stale")
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
     assert not out.exists()
 
 
@@ -1035,3 +1127,20 @@ def test_run_forwards_clean_redraws_to_on_log(tmp_path, monkeypatch):
         "  |=========>          | 2/2 - 21.50s/it",
     ]
     assert not any("\x1b" in s for s in seen)
+
+
+@pytest.mark.parametrize(
+    "accelerator, major, want",
+    [
+        ("cuda", "13", {"accelerator": "cuda", "cuda_major": "13"}),
+        ("cuda", None, {"accelerator": "cuda"}),
+        ("vulkan", "13", {"accelerator": "vulkan"}),
+        ("cpu", "12", {"accelerator": "cpu"}),
+    ],
+)
+def test_a_cuda_install_names_the_host_runtime_major(monkeypatch, accelerator, major, want):
+    import core.inference.sd_cpp_backend as backend
+
+    monkeypatch.setattr(eng, "host_cuda_runtime_major", lambda: major)
+    monkeypatch.setattr(backend, "_accelerator_class_of", lambda a: a)
+    assert backend._install_kwargs(accelerator) == want
