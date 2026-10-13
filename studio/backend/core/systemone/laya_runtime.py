@@ -48,6 +48,13 @@ _unloads = 0
 _last_used = 0.0
 _idle_timer: threading.Timer | None = None
 _fallback_reason: str | None = None
+# A Clef a training run unloaded, reloading once the run ends; an unload cancels it instead of waiting.
+_reloading: Checkpoint | None = None
+# Why the reload's load was stopped ("training" or "gpu"), recorded when it happens: a short run can be over by the join.
+_reload_stopped_by: str | None = None
+# The unload generation the running load started for: an unload during its Hub lookup still stops the worker.
+_load_generation = threading.local()
+TRAINING_POLL_S = 2.0
 # A llama.cpp decision server unloads after this long without a request.
 IDLE_UNLOAD_S = 300.0
 # Binaries (path, mtime) whose server answered without a "decisions" output.
@@ -1024,9 +1031,13 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        agent = ClefAgent(root, cancelled = _training_active)
+        unloads = getattr(_load_generation, "unloads", _unloads)
+        agent = ClefAgent(
+            root,
+            cancelled = lambda: _clef_preempted() or _unloads != unloads,
+        )
         # Training may have started while this loaded, and Clef has no CPU fallback.
-        if _training_active():
+        if _clef_preempted():
             agent.close()
             raise ClefWorkerError(
                 f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
@@ -1352,19 +1363,31 @@ def loading_repo_ids() -> tuple[str, ...]:
     return ()
 
 
-def _load(checkpoint: Checkpoint) -> None:
+def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
     global _agent, _loaded, _device_name, _loading, _failure, _generation, _last_used, _gpu_load
     started = time.monotonic()
-    unloads = _unloads
+    if unloads is None:
+        unloads = _unloads
+    if _unloads != unloads:
+        with _state_lock:
+            _loading = None
+        logger.info("System One dropped %s: it was unloaded before it loaded", checkpoint.name)
+        return
+    _load_generation.unloads = unloads
     try:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
-            _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
+            stale = _unloads != unloads
+            if not stale:
+                _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None
             _gpu_load = False
+        if stale:
+            logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
+        else:
+            logger.warning("System One load failed: %s", message, exc_info = True)
         return
     with _state_lock:
         stale = _unloads != unloads
@@ -1481,7 +1504,7 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     )
 
 
-def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
+def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threading.Thread | None:
     global _loader, _loading
     # Asked before _state_lock: the training backend takes its own lock.
     _clef_blocked_by_training(checkpoint)
@@ -1520,17 +1543,19 @@ def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
         raise Unavailable(503, "model_loading", f"{checkpoint.name} is downloading", retry_after = 5)
     with _state_lock:
         _loader = threading.Thread(
-            target = _load, args = (checkpoint,), name = "systemone-load", daemon = True
+            target = _load, args = (checkpoint, unloads), name = "systemone-load", daemon = True
         )
         _loader.start()
         return _loader
 
 
 def _agent_for(checkpoint: Checkpoint, wait: float):
+    unloads = _unloads
     loader = _ensure_loading(checkpoint)
     if loader is not None:
         loader.join(wait)
-        if loader.is_alive() or _ensure_loading(checkpoint) is not None:
+        # An unload while this waited (a settings change) wins over a load of the old checkpoint.
+        if loader.is_alive() or _unloads != unloads or _ensure_loading(checkpoint) is not None:
             raise Unavailable(
                 503, "model_loading", f"{checkpoint.name} is still loading", retry_after = 5
             )
@@ -2306,25 +2331,110 @@ def status() -> dict[str, Any]:
 
 def ensure_can_unload() -> None:
     with _state_lock:
+        if _reloading is not None and _reloading == _loading:
+            return
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
 
 
-def unload() -> bool:
+def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
     ensure_can_unload()
     with _run_lock:
-        agent, was_loaded = _agent, _agent is not None
+        agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None
         _generation += 1
         _unloads += 1
+        unloads = _unloads
     _close(agent)
     # Dropped first, so an in-process MLX or MPS Laya is collected before the allocator caches are cleared.
     del agent
     _release_memory()
+    if (
+        reload_after_training
+        and getattr(checkpoint, "layout", None) == "clef"
+        and not _arbitrated(checkpoint)
+    ):
+        threading.Thread(
+            target = _reload_after_training,
+            args = (checkpoint, unloads),
+            name = "systemone-reload",
+            daemon = True,
+        ).start()
     return was_loaded
+
+
+def _clef_preempted() -> bool:
+    global _reload_stopped_by
+    from core.inference.gpu_arbiter import current_owner
+
+    if _training_active():
+        reason = "training"
+    elif _reloading is not None and current_owner() is not None:
+        # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
+        reason = "gpu"
+    else:
+        return False
+    if _reloading is not None:
+        _reload_stopped_by = reason
+    return True
+
+
+def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
+    global _reloading, _reload_stopped_by, _failure
+    from core.inference.gpu_arbiter import current_owner
+
+    while True:
+        while _training_active():
+            time.sleep(TRAINING_POLL_S)
+        with _state_lock:
+            if (
+                _unloads != unloads
+                or _agent is not None
+                or _loading is not None
+                or current_owner() is not None
+            ):
+                return
+            _reloading = checkpoint
+            _reload_stopped_by = None
+        try:
+            loader = _ensure_loading(checkpoint, unloads)
+            if loader is not None:
+                loader.join()
+        except Unavailable:
+            pass
+        finally:
+            with _state_lock:
+                _reloading = None
+        training = _reload_stopped_by == "training" or _training_active()
+        if training or _reload_stopped_by == "gpu" or current_owner() is not None:
+            # Another run, or a chat, image or video model, took the GPU while this loaded: not a failure to report.
+            with _state_lock:
+                if _failure is not None and _failure[0] == checkpoint:
+                    _failure = None
+        if not training:
+            break
+    agent = _agent
+    if agent is not None and _loaded == checkpoint:
+        from .clef_runtime import ClefWorkerError
+
+        # The first decision builds the GPU kernels; done now, a request does not wait for it.
+        try:
+            if current_owner() is None:
+                agent.decide("ready", {"ready": {"type": "noul"}})
+        except ClefWorkerError:
+            logger.info(
+                "Retiring %s: its worker failed the warm-up", checkpoint.name, exc_info = True
+            )
+            _evict_agent(agent)
+            return
+        except Exception:
+            logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
+        if current_owner() is not None:
+            logger.info("Retiring %s: another model took the GPU as it reloaded", checkpoint.name)
+            _evict_agent(agent)
 
 
 def shutdown() -> None:

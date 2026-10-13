@@ -367,9 +367,11 @@ def clef(home, monkeypatch):
             cancelled = None,
         ):
             self.folder, self.closed, self.cancelled = folder, False, cancelled
+            self.states = []
             state.agents.append(self)
 
         def decide(self, state_, questions):
+            self.states.append(state_)
             answers = {name: {"type": "noul", "noul": 0.25} for name in questions}
             return {"answers": answers, "input_tokens": 7, "truncated": False}
 
@@ -380,6 +382,8 @@ def clef(home, monkeypatch):
     _spoof_device(monkeypatch, "cuda")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
+    # An owner an earlier test left would stop the reload after training.
+    monkeypatch.setattr("core.inference.gpu_arbiter._owner", None)
     return state
 
 
@@ -445,7 +449,344 @@ def test_a_clef_load_that_training_overtakes_frees_the_gpu(home, clef, monkeypat
     assert clef.agents[0].closed
     assert laya_runtime._agent is None and laya_runtime._device_name is None
     # The loader also stops the worker mid-load, not only once it reports ready.
-    assert clef.agents[0].cancelled is laya_runtime._training_active
+    assert clef.agents[0].cancelled()
+
+
+def _reload_finished():
+    for thread in threading.enumerate():
+        if thread.name == "systemone-reload":
+            thread.join(5)
+
+
+def test_a_clef_that_training_unloaded_is_back_and_warm_when_the_run_ends(
+    home, client, clef, monkeypatch
+):
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    assert clef.agents[0].closed
+    time.sleep(0.2)
+    assert len(clef.agents) == 1
+    clef.training = False
+    _reload_finished()
+    assert client.get("/api/settings/systemone").json()["loaded_model"] == served
+    assert len(clef.agents[1].states) == 1
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 2
+
+
+def test_a_settings_change_cancels_the_reload_after_training(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        agent(folder, cancelled)
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    assert _put(client, enabled = False).status_code == 200
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+
+
+def test_a_request_waiting_on_the_reload_does_not_bring_back_a_disabled_clef(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    answers, waiting = [], threading.Event()
+    ensure = laya_runtime._ensure_loading
+
+    def ensuring(checkpoint, unloads = None):
+        loader = ensure(checkpoint, unloads)
+        # Only the reload passes unloads; a request is handed the reload's loader.
+        if unloads is None and loader is not None:
+            waiting.set()
+        return loader
+
+    monkeypatch.setattr(laya_runtime, "_ensure_loading", ensuring)
+    request = threading.Thread(target = lambda: answers.append(_post(client)))
+    request.start()
+    assert waiting.wait(10)
+    assert _put(client, enabled = False).status_code == 200
+    request.join(10)
+    _reload_finished()
+    assert answers[0].status_code == 503
+    assert len(clef.agents) == 2
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_an_unload_as_the_reload_starts_wins(home, client, clef, monkeypatch):
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    probe = laya_runtime._hub_download_active
+
+    def unloaded_meanwhile(checkpoint):
+        if threading.current_thread().name == "systemone-reload":
+            assert client.post("/api/settings/systemone/unload").status_code == 200
+        return probe(checkpoint)
+
+    monkeypatch.setattr(laya_runtime, "_hub_download_active", unloaded_meanwhile)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert len(clef.agents) == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_run_that_starts_during_the_reload_is_waited_out(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("A training run took the GPU while Clef loaded.")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    clef.training = True
+    time.sleep(0.3)
+    assert client.get("/api/settings/systemone").json()["error"] is None
+    clef.training = False
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] == served and settings["error"] is None
+    assert len(clef.agents) == 3
+
+
+def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        agent(folder, cancelled)
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+    assert len(clef.agents) == 2
+
+
+def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    agent = clef_runtime.ClefAgent
+
+    class Dying(agent):
+        def decide(self, state_, questions):
+            if state_ == "ready":
+                raise clef_runtime.ClefWorkerError("The Clef worker exited (code -9)")
+            return super().decide(state_, questions)
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Dying)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert clef.agents[1].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 3
+
+
+def test_a_run_over_before_the_worker_is_reaped_still_retries_the_reload(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        if len(clef.agents) > 2:
+            return built
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        # A run that failed at once is over before the worker is reaped.
+        clef.training = False
+        raise clef_runtime.ClefWorkerError("A training run took the GPU while Clef loaded.")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    clef.training = True
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] == served and settings["error"] is None
+    assert len(clef.agents) == 3
+
+
+def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    agent = clef_runtime.ClefAgent
+
+    class Warming(agent):
+        def decide(self, state_, questions):
+            if state_ == "ready":
+                monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+            return super().decide(state_, questions)
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Warming)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert clef.agents[1].states == ["ready"] and clef.agents[1].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+    home, client, clef, monkeypatch
+):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    lookup = laya_runtime._checkpoint_dir
+    stopped = []
+
+    def looked_up(checkpoint, *args, **kwargs):
+        if threading.current_thread().name == "systemone-load" and len(clef.agents) == 1:
+            assert _put(client, enabled = False).status_code == 200
+        return lookup(checkpoint, *args, **kwargs)
+
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        built = agent(folder, cancelled)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if cancelled():
+                stopped.append(True)
+                raise clef_runtime.ClefWorkerError("stopped")
+            time.sleep(0.01)
+        return built
+
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", looked_up)
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert stopped == [True]
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+
+
+@pytest.mark.parametrize("meanwhile", ["unloaded", "chat_on_gpu"])
+def test_no_reload_after_training_once_the_user_moved_on(
+    home, client, clef, monkeypatch, meanwhile
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    if meanwhile == "unloaded":
+        assert client.post("/api/settings/systemone/unload").status_code == 200
+    else:
+        monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    clef.training = False
+    _reload_finished()
+    assert len(clef.agents) == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
 def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):

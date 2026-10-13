@@ -705,6 +705,108 @@ def _without_image_parts(messages) -> list[dict]:
     return out
 
 
+_CANVAS_MASK = "\u2591"
+_CANVAS_FRAME_INTERVAL_S = 0.1
+
+
+def _accepts_on_frame(generate_text) -> bool:
+    """An older core would swallow on_frame unused."""
+    import inspect
+
+    candidates = [generate_text]
+    try:
+        from unsloth.models import diffusion_samplers
+        candidates.append(diffusion_samplers.generate_text)
+    except ImportError:
+        pass
+    for fn in candidates:
+        try:
+            if "on_frame" in inspect.signature(fn).parameters:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _render_canvas(tokenizer, tokens, mask_id) -> str:
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    parts, run = [], []
+    for token in tokens:
+        if mask_id is not None and token == mask_id:
+            if run:
+                parts.append(tokenizer.decode(run, skip_special_tokens = True))
+                run = []
+            parts.append(_CANVAS_MASK)
+        else:
+            run.append(token)
+    if run:
+        parts.append(tokenizer.decode(run, skip_special_tokens = True))
+    return "".join(parts)
+
+
+def _diffusion_eos_ids(model, tokenizer, chat) -> tuple:
+    """The ids ``generate_text`` cuts its reply at; empty on an older core."""
+    import importlib
+    try:
+        samplers = importlib.import_module("unsloth.models.diffusion_samplers")
+        base = samplers.unwrap_diffusion_model(model)
+        ids = list(samplers._eos_ids(base, tokenizer))
+        if chat:
+            ids += [i for i in samplers._turn_end_ids(tokenizer) if i not in ids]
+        return tuple(ids)
+    except Exception:
+        return ()
+
+
+def _diffusion_frame_relay(
+    tokenizer,
+    sink,
+    interval_s = None,
+    stop = None,
+    eos_ids = (),
+):
+    """on_frame for the core sampler: one frame per interval to ``sink``, cut where the final reply is.
+    Never raises into the sampler."""
+    import time
+
+    last = [float("-inf")]
+    if interval_s is None:
+        interval_s = _CANVAS_FRAME_INTERVAL_S
+
+    def on_frame(frame):
+        now = time.monotonic()
+        # A block's last step is never throttled: later frames build on it.
+        block_end = int(frame.get("step", 0)) >= int(frame.get("total", 0)) > 0
+        if now - last[0] < interval_s and not block_end:
+            return
+        last[0] = now
+        try:
+            tokens = list(frame.get("tokens") or ())
+            for index, token in enumerate(tokens):
+                if token in eos_ids:
+                    tokens = tokens[:index]
+                    break
+            text = _render_canvas(tokenizer, tokens, frame.get("mask_id"))
+            for sequence in stop or ():
+                if sequence and sequence in text:
+                    text = text[: text.index(sequence)]
+            total = int(frame.get("total", 0))
+            sink(
+                {
+                    "type": "diffusion_frame",
+                    "block": int(frame.get("block", 0)),
+                    # Zero-based for the canvas; the sampler's block-end frame is step == total.
+                    "step": max(min(int(frame.get("step", 0)), total - 1), 0),
+                    "total": total,
+                    "text": text,
+                }
+            )
+        except Exception as exc:
+            logger.debug("Dropped a diffusion canvas frame: %s", exc)
+
+    return on_frame
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -723,6 +825,8 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
         self.last_generation_stats = None
+        # Set by the worker for one request that asked for canvas frames.
+        self.diffusion_frame_sink = None
 
         # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):
         # RLock reentrancy would let concurrent compare-mode requests race on
@@ -2642,6 +2746,17 @@ class InferenceBackend:
             )
         except ImportError:  # an older core: no cancellation error to catch
             cancelled_error = ()
+        frame_kwargs = {}
+        sink = getattr(self, "diffusion_frame_sink", None)
+        if sink is not None and _accepts_on_frame(generate_text):
+            frame_kwargs["on_frame"] = _diffusion_frame_relay(
+                model_info["tokenizer"],
+                sink,
+                stop = stop,
+                eos_ids = _diffusion_eos_ids(
+                    model_info["model"], model_info["tokenizer"], messages is not None
+                ),
+            )
         with self._generation_lock:
             if _adapter_state is not None:
                 self._apply_adapter_state(_adapter_state)
@@ -2654,6 +2769,7 @@ class InferenceBackend:
                     max_new_tokens = int(max_new_tokens or 256),
                     temperature = float(temperature or 0.0),
                     stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+                    **frame_kwargs,
                 )
             except cancelled_error:
                 return

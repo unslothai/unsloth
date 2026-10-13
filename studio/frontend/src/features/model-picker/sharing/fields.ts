@@ -50,6 +50,9 @@ export type SharedConfigKey = Exclude<
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
+  | "engineKvCacheDtype"
+  | "engineSeed"
+  | "engineGpuMemoryUtilization"
   // A named drafter can be a local directory.
   | "specDraftModel"
 >;
