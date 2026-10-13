@@ -367,7 +367,12 @@ def test_end_tag_outside_a_template_keeps_it_skipped(outside):
     "build",
     [
         lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",
-        lambda n: "<body>" + "<div>" * n + "<nav><template>x" + "</div>" * n + "</template>" + "</span>" * n,
+        lambda n: "<body>"
+        + "<div>" * n
+        + "<nav><template>x"
+        + "</div>" * n
+        + "</template>"
+        + "</span>" * n,
     ],
 )
 def test_stray_end_tags_in_a_skipped_menu_stay_linear(build):
