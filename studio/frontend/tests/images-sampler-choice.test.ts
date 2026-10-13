@@ -64,7 +64,9 @@ test("the Images page sends, restores and shows the sampler only where the model
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /\.\.\.samplerRequestFields\(samplerOptions, samplerChoice\)/);
   assert.match(page, /samplerOptions\.length > 1 && \(/);
-  assert.match(page, /setRestoredSampler\(\{\s*sampler: image\.sampler \?\? DEFAULT_SAMPLER,\s*scheduleType: image\.schedule_type \?\? AUTOMATIC_SCHEDULE/);
-  // A restore made before the model loads still drives the request once the options arrive.
+  assert.match(page, /scheduleType: image\.schedule_type \?\? AUTOMATIC_SCHEDULE/);
+  assert.match(page, /if \(samplerOptions\.length > 0\) changeSamplerChoice\(restoredChoice\);\s*else setRestoredSampler\(restoredChoice\);/);
+  // Consumed by the first Generate that has the model's options, then stored for that model only.
+  assert.match(page, /setRestoredSampler\(null\);\s*setSamplerChoices\(\(all\) => withSamplerChoice\(all, samplerModelKey, samplerChoice\)\)/);
   assert.match(page, /restoredSampler \?\? samplerChoices\[samplerModelKey\]/);
 });

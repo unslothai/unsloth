@@ -1503,8 +1503,7 @@ export function ImagesPage({
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   // Per model, like the rest of the recipe: a model switch brings back what was last used with it.
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
-  // A restored recipe's choice, kept until the model's options exist (a restore can run unloaded,
-  // then Generate recalls the model) or the user picks again.
+  // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
   const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
   // selected while the model downloaded is newer than that pick.
@@ -2500,10 +2499,12 @@ export function ImagesPage({
     setSteps(image.steps);
     setGuidance(image.guidance);
     // A recipe without one ran on the shipped scheduler; a choice this model lacks falls back to it.
-    setRestoredSampler({
+    const restoredChoice = {
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
-    });
+    };
+    if (samplerOptions.length > 0) changeSamplerChoice(restoredChoice);
+    else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
@@ -2568,7 +2569,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -4262,6 +4263,10 @@ export function ImagesPage({
       toast.error("Prompt is empty");
       return;
     }
+    if (restoredSampler && samplerOptions.length > 0) {
+      setRestoredSampler(null);
+      setSamplerChoices((all) => withSamplerChoice(all, samplerModelKey, samplerChoice));
+    }
     const isTransform = workflow === "transform";
     const isInpaint = workflow === "inpaint";
     const isExtend = workflow === "extend";
@@ -4570,7 +4575,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
