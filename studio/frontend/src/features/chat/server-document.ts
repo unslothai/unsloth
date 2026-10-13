@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSessionEpoch } from "@/features/auth";
 import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { MAX_SERVER_DOCUMENT_BYTES } from "./open-document-accept";
 import { MAX_TEXT_ATTACHMENT_BYTES } from "./text-attachment-accept";
@@ -17,9 +18,17 @@ async function extract(file: File): Promise<string> {
   if (file.size > MAX_SERVER_DOCUMENT_BYTES) {
     throw new Error(`File is too large: ${file.name}`);
   }
+  // As uploadChatAttachmentOriginal: one account's file must not settle into another's composer.
+  const epoch = getAuthSessionEpoch();
+  const sameAccount = () => {
+    if (getAuthSessionEpoch() !== epoch) {
+      throw new Error("The account changed while reading the file.");
+    }
+  };
   let result: { text: string; truncated: boolean };
   try {
-    result = await extractDocumentText(file);
+    result = await extractDocumentText(file, sameAccount);
+    sameAccount();
   } catch (cause) {
     throw new Error(
       (cause as Error | undefined)?.message ||
