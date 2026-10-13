@@ -756,3 +756,23 @@ def test_a_state_only_size_is_named_even_when_another_size_shares_its_quant(
     assert acm.cached_folder_target(moon, "tiny/Q8_0") == (AUDIO_CPP_REPO, [tiny])
     # One size on disk: a bare quant still names it, not the cancelled one.
     assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [tiny])
+
+
+def test_cached_path_of_a_folder_skips_a_newer_snapshot_with_only_an_adapter(hub):
+    newer = _add_snapshot(hub, "c" * 40, {}, main = True)
+    (newer / "Qwen3-TTS-12Hz-0.6B-Base-GGUF").mkdir(parents = True)
+    (newer / "Qwen3-TTS-12Hz-0.6B-Base-GGUF" / "mmproj-f16.gguf").write_bytes(b"GGUF")
+    acm.forget()
+    assert _path(QWEN, "")["path"] == str(hub / SNAPSHOT / "Qwen3-TTS-12Hz-0.6B-Base-GGUF")
+
+
+def test_a_file_name_two_directories_share_names_neither(hub):
+    variants = [
+        acm.AudioCppVariant(f"{size}/Q8_0", (), f"Moon-GGUF/{size}/model-Q8_0.gguf")
+        for size in ("tiny", "small")
+    ]
+    assert acm._cached_variants_named(variants, "model-Q8_0.gguf", "Moon-GGUF") == []
+    assert acm._cached_variants_named(variants, "tiny/model-Q8_0.gguf", "Moon-GGUF") == [
+        variants[0]
+    ]
+    assert acm._cached_variants_named(variants, "small/Q8_0", "Moon-GGUF") == [variants[1]]

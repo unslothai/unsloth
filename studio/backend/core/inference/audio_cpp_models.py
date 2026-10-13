@@ -2684,15 +2684,16 @@ def _variants_matching(
 ) -> tuple[list[AudioCppVariant], bool]:
     """Every variant ``wanted`` could name, and whether it named a quant (which must be unique)."""
     low = wanted.strip().replace("\\", "/").strip("/").lower()
-    exact = [
-        v
-        for v in variants
-        if v.key.lower() == low
-        or v.main_file.lower() in (low, f"{folder}/{low}".lower())
-        or v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")
-    ]
-    if exact:
-        return exact[:1], False
+    for exact in (
+        [v for v in variants if v.key.lower() == low],
+        [v for v in variants if v.main_file.lower() in (low, f"{folder}/{low}".lower())],
+        [v for v in variants if v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")],
+    ):
+        # A file name two directories share names neither.
+        if len(exact) == 1:
+            return exact, False
+        if exact:
+            return [], False
     parts = [p for p in low.split("/") if p]
     if not parts:
         return [], False
@@ -2721,12 +2722,18 @@ def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     ref = parse_identifier(split_variant_ref(str(identifier or ""))[0])
     if ref is None or not ref.folder or not ref.repo_id or ":" in ref.folder:
         return None
-    folders = [s / ref.folder for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
-    # The snapshot whose folder holds the weights, not a newer one that kept only its metadata.
-    for folder in folders:
-        if any(p.suffix.lower() == ".gguf" for p in folder.rglob("*")):
-            return folder
-    return folders[0] if folders else None
+    snapshots = [s for s in snapshot_dirs(ref.repo_id) if (s / ref.folder).is_dir()]
+    # The snapshot holding a cached variant's weights, not a newer one that kept only metadata,
+    # an adapter or a partial file.
+    model = resolve(ref.id, network = False)
+    primaries = [v.primary for v in (model.variants if model is not None else ()) if v.primary]
+    for snapshot in snapshots:
+        if any((snapshot / primary).is_file() for primary in primaries):
+            return snapshot / ref.folder
+    for snapshot in snapshots:
+        if any(p.suffix.lower() == ".gguf" for p in (snapshot / ref.folder).rglob("*")):
+            return snapshot / ref.folder
+    return snapshots[0] / ref.folder if snapshots else None
 
 
 def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
