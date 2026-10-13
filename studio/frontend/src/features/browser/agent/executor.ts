@@ -114,6 +114,8 @@ function enterScope(next: string | undefined): void {
   pageLinks = new Set();
   trail = [];
   at = -1;
+  // Another chat never saw this chat's screenshots: its x and y are CSS pixels until it takes one.
+  pointScale.clear();
   scope = next;
 }
 
