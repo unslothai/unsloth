@@ -829,7 +829,12 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.equal(audioCppRuntimeProblem("OpenMOSS-Team/MOSS-TTS-Nano-100M", missing), null);
   assert.equal(audioCppRuntimeProblem(null, missing), null);
   const route = readText("../../backend/routes/inference.py");
-  assert.match(route, /"audio_cpp_runtime": _audio_cpp_runtime_status\(\)/);
+  // Read off the event loop: choosing the launch backend can run the binary.
+  assert.match(
+    route,
+    /audio_cpp_runtime = await asyncio\.to_thread\(_audio_cpp_runtime_status\)/,
+  );
+  assert.match(route, /"audio_cpp_runtime": audio_cpp_runtime,/);
   const page = readAudioWorkspaceSource();
   assert.match(page, /audioCppRuntime\.current = stt\.audio_cpp_runtime \?\? null;/);
   assert.match(
