@@ -355,13 +355,18 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength = fixedLayerContext(");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
     capture < clamp,
     "the clamp now runs before the pin is captured, so the app's substituted length " +
       "would be recorded as the user's choice",
+  );
+  // /validate sizes the context the load will send, clamp included.
+  assert.match(
+    RUNTIME,
+    /const validateCustomContextLength = resetsPerModelSettings\s*\?\s*null\s*:\s*fixedLayerContext\(loadCustomContextLength, loadGpuLayers\);/,
   );
 });
 
