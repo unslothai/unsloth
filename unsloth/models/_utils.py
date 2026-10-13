@@ -5496,9 +5496,7 @@ def _loss_head(model):
     return None
 
 
-# Unwrapped forward -> the child attribute it hands the loss count to, or None. The answer depends
-# only on the forward's source, and _get_batch_samples walks the loss-kwargs chain every step, where
-# inspect.getsource + ast.parse cost milliseconds of host time; parse each forward once.
+# Unwrapped forward -> the child it hands the loss count to (or None): parsed once, not every step.
 _PASS_THROUGH_ATTRS = {}
 
 
