@@ -630,7 +630,6 @@ export const he = {
     queueingHintShared: "התור נשמר.",
   },
   rewind: {
-    menuItem: "החזרה לאחור…",
     title: "החזרה לאחור",
     pickDescription: "בחרו הודעה לחזור אליה.",
     pickEmpty: "עדיין אין הודעות לחזור אליהן.",
@@ -2087,6 +2086,8 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
+        chartToggle: "תרשים",
+        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",

@@ -39,17 +39,19 @@ const evaluate = (
   modelId = "m",
 ) => evaluateWithModel(supports, provider, runtime, external, providerModelReplaysReasoning, {modelId});
 
-test("llama.cpp sends the selected value and replays reasoning only when enabled", () => {
-  for (const enabled of [true, false]) {
-    const result = evaluate(providerSupportsPreserveThinking, {providerType: "llama_cpp"}, {preserveThinking: enabled}, true);
-    assert.deepEqual(result, {replay: enabled, fields: {preserve_thinking: enabled}});
+test("llama.cpp and vLLM send the selected value and replay reasoning only when enabled", () => {
+  for (const providerType of ["llama_cpp", "vllm"]) {
+    for (const enabled of [true, false]) {
+      const result = evaluate(providerSupportsPreserveThinking, {providerType}, {preserveThinking: enabled}, true);
+      assert.deepEqual(result, {replay: enabled, fields: {preserve_thinking: enabled}});
+    }
   }
   assert.match(source, /pruneOutboundHistory\(messages, replayReasoning\)/);
   assert.match(source, /toOpenAIMessages\(\s*message,\s*replayReasoning,/);
 });
 
 test("switching providers never leaks a retained enabled preference", () => {
-  for (const providerType of ["custom", "openai", "vllm", "ollama", "anthropic"]) {
+  for (const providerType of ["custom", "openai", "ollama", "anthropic"]) {
     assert.deepEqual(evaluate(providerSupportsPreserveThinking, {providerType}, {preserveThinking: true}, true),
       {replay: false, fields: {}});
   }

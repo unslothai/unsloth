@@ -69,6 +69,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
+    restore_replayed_tool_results,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -669,7 +670,7 @@ def run_safetensors_tool_loop(
         from core.inference.mcp_image import note_attached_image
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
-    conversation = list(messages)
+    conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
@@ -680,7 +681,8 @@ def run_safetensors_tool_loop(
     # switch to safetensors, so search_conversation is advertised here too and needs the
     # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
     # response in them.
-    _live_branch = list(messages)
+    # Restored dicts are new; the branch matches by identity.
+    _live_branch = list(conversation)
     # ...and the replies and tool results the loop adds to it: a fit can evict this request's
     # own earlier tool exchange into the archive, where the client's messages alone would
     # refuse it. Not the loop's user turns: those are its own notices, and recall searches

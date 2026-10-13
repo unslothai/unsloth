@@ -42,11 +42,19 @@ function restoreSettingsWith(negativeCapable: boolean) {
     matchAspect: () => ({ key: "1:1", portrait: false }),
     restoreInputsNote: () => null,
     CONDITIONED_WORKFLOW_INPUTS: {},
+    DEFAULT_SAMPLER: "default",
+    AUTOMATIC_SCHEDULE: "automatic",
+    samplerOptions: [],
+    changeSamplerChoice: () => {},
     toast: { success: () => {} },
   };
+  // Every closure name the callback reads that is not a real global resolves to a recording no-op,
+  // so a new dependency of restoreSettings (#13569 added changeSamplerChoice / samplerOptions) does
+  // not throw a ReferenceError before the negative prompt is reached. Globals (String, Number, Array)
+  // still resolve to the real ones.
   const scope = new Proxy(known, {
     has: (target, key) =>
-      typeof key === "string" && (key in target || /^set[A-Z]/.test(key)),
+      typeof key === "string" && (key in target || !(key in globalThis)),
     get: (target, key) =>
       typeof key === "string" && key in target
         ? target[key]

@@ -97,6 +97,24 @@ def test_a_prompt_becomes_one_user_turn(monkeypatch):
     assert body["cancel_id"].startswith("mcp-") and len(body["cancel_id"]) > 20
 
 
+def test_chat_never_runs_server_side_tools_whatever_the_launcher_says(monkeypatch):
+    from state import tool_policy
+
+    # `unsloth studio run` default on, plus a CLI --enable-tools override on top.
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(tool_policy, "_tool_policy", True)
+    seen = []
+
+    def reply(request, body):
+        seen.append((tool_policy.get_tool_policy(), tool_policy.get_tool_policy_default()))
+        return COMPLETION
+
+    _result, studio = _chat(monkeypatch, {"prompt": "hi"}, reply = reply)
+    assert seen == [(False, False)]
+    assert bodies(studio, "/v1/chat/completions")[0]["enable_tools"] is False
+    assert tool_policy.get_tool_policy() is True
+
+
 def test_a_caller_chosen_cancel_id_is_sent_so_another_call_can_stop_the_reply(monkeypatch):
     result, studio = _chat(monkeypatch, {"prompt": "a", "cancel_id": "agent-run-0001"})
     assert bodies(studio, "/v1/chat/completions")[0]["cancel_id"] == "agent-run-0001"

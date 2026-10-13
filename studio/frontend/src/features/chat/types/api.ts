@@ -207,6 +207,8 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(
@@ -827,6 +829,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
+    // true while the checkpoint in force was started by /compact
+    manual?: boolean;
     // true when the provider summarized earlier turns instead of Unsloth dropping them
     summarized?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt
