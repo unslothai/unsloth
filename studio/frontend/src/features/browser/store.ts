@@ -352,8 +352,7 @@ function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): numbe
   return tab.zoom;
 }
 
-/** Where the page's router moved it on its own site (a filter in its query), for Reload to load, as a
- *  browser reloads the address bar; null when it hasn't moved or a reload must resend a form. */
+/** The same-origin address the page's router moved to, for Reload; null if unmoved or a POST. */
 function routerEntry(tab: BrowserTab): BrowserEntry | null {
   const entry = currentEntry(tab);
   if (nativeWebHistory || entry.kind !== "web" || entry.method === "POST") return null;

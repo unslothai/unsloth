@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Waiting for a page to finish what an action or a load set off, before the agent reads it. */
-
 /** What the page reports (agent/page-agent.ts `status`); null when it didn't answer. */
 export type PageStatus = { requests?: number; quietMs?: number } | null;
 
@@ -14,10 +12,8 @@ export type PageWait = {
   quietMs: number;
   now: () => number;
   sleep: (ms: number) => Promise<unknown>;
-  /** Requests the page has open that it started since the action went out, however long they have
-   *  been open, and how long its DOM has been quiet. */
+  /** Open requests started since the action, and how long the DOM has been quiet. */
   status: () => Promise<PageStatus>;
-  /** The page navigated or closed: the caller handles that. */
   moved: () => boolean;
   aborted?: () => boolean;
 };

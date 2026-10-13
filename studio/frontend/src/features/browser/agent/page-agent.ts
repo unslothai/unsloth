@@ -834,8 +834,7 @@ export function installPageAgent(): PageAgent {
       const ref = typeof command.ref === "string" ? command.ref : "";
       switch (command.op) {
         case "status": {
-          // The proxied shell's count of the page's fetch/XHR open and started at or after `since`
-          // (Date.now(); routes/browser_network.py): content may still be on its way.
+          // Fetch/XHR the proxied shell counts as open since `since` (routes/browser_network.py).
           const pending = host[Symbol.for("unsloth.browser.pending")];
           const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
           return {

@@ -322,8 +322,7 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
   }
 }
 
-/** Waits on the page in `tabId` for what an action sent at `since` set off: every request the page
- *  started since then, and its DOM, given `changingMaxMs` to rest. `left` says when it is another page. */
+/** Requests started since `since` and a quiet DOM; `left` says the tab is on another page. */
 function waitOnPage(tabId: string, left: (tab: BrowserTab) => boolean, since: number, changingMaxMs: number, signal?: AbortSignal) {
   return waitForPage({
     maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, now: Date.now, sleep,
@@ -339,8 +338,7 @@ function waitOnPage(tabId: string, left: (tab: BrowserTab) => boolean, since: nu
   });
 }
 
-/** Until the page stops changing after an action that went out at `since`, following any
- *  navigation it started. */
+/** Until the page settles after an action sent at `since`, following any navigation it started. */
 async function settle(tabId: string, urlBefore: string, since: number, signal?: AbortSignal): Promise<BrowserTab | null> {
   await sleep(120);
   const state = await waitOnPage(tabId, (tab) => tabUrl(tab) !== urlBefore, since, SETTLE_MAX_MS, signal);
@@ -348,11 +346,8 @@ async function settle(tabId: string, urlBefore: string, since: number, signal?: 
   return findTab(tabId) ?? null;
 }
 
-/** After a load that began at `since`, until the page has filled itself in (a list a script fetches
- *  after load reads as empty until then): up to SETTLE_MAX_MS for its requests, but only
- *  FILL_QUIET_MAX_MS for a DOM that never rests (an animation), which a read handles fine. True when
- *  requests were still open at the end. A router rewriting the address is still this page; a page
- *  that moved on is left to observe(), and the next action checks where it went. */
+/** Until a loaded page fills itself in (lists fetched after load); true if requests were still open.
+ *  A DOM that never rests gets only FILL_QUIET_MAX_MS. A router rewriting the address is still this page. */
 async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal): Promise<boolean> {
   const entry = currentEntry(tab);
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal)) === "loading";
@@ -679,7 +674,6 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   return null;
 }
 
-/** `since`: when the navigation went out; the page's requests from then on are its loading. */
 async function observeLoaded(tab: BrowserTab, since: number, note?: string, signal?: AbortSignal): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
