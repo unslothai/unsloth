@@ -86,16 +86,18 @@ def test_lora_with_gradient_checkpointing_trains_under_ddp(tmp_path, arch):
         assert trained > 0
 
 
-def test_mpnet_keeps_reentrant_checkpointing_on_one_gpu(monkeypatch):
+@pytest.mark.parametrize("world_size, reentrant", [(None, True), ("2", False)])
+def test_mpnet_checkpointing_is_reentrant_only_on_one_gpu(monkeypatch, world_size, reentrant):
     import unsloth  # noqa: F401
+    import transformers
+    from packaging.version import Version
     from transformers.models.mpnet import modeling_mpnet
-    from unsloth.models.sentence_transformer import (
-        FastSentenceTransformer,
-        _encoder_gc_use_reentrant,
-    )
+    from unsloth.models.sentence_transformer import FastSentenceTransformer
 
     for name in _DIST_ENV:
         monkeypatch.delenv(name, raising = False)
+    if world_size is not None:
+        monkeypatch.setenv("WORLD_SIZE", world_size)
     for cls, attr in (
         (modeling_mpnet.MPNetModel, "supports_gradient_checkpointing"),
         (modeling_mpnet.MPNetModel, "_set_gradient_checkpointing"),
@@ -103,14 +105,6 @@ def test_mpnet_keeps_reentrant_checkpointing_on_one_gpu(monkeypatch):
     ):
         if attr in vars(cls):
             monkeypatch.setattr(cls, attr, vars(cls)[attr])
-    assert _encoder_gc_use_reentrant() is True
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    assert _encoder_gc_use_reentrant() is False
-    monkeypatch.delenv("WORLD_SIZE")
-
-    import transformers
-    from packaging.version import Version
-
     if Version(transformers.__version__).major < 5:
         FastSentenceTransformer._patch_mpnet_v4()
     else:
@@ -137,4 +131,4 @@ def test_mpnet_keeps_reentrant_checkpointing_on_one_gpu(monkeypatch):
     ids = torch.randint(2, 64, (2, 6))
     model.get_input_embeddings().weight.requires_grad_(True)
     model(input_ids = ids, attention_mask = torch.ones_like(ids)).last_hidden_state.sum().backward()
-    assert seen == [True, True]
+    assert seen == [reentrant, reentrant]
