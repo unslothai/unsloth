@@ -268,6 +268,8 @@ export function createMinimumSizeApplier(
         flush().catch(() => undefined);
       });
       await listening;
+      // A restore that landed while the listener was registering sent no resize here.
+      await flush();
     },
     cancel: () => {
       pending = null;

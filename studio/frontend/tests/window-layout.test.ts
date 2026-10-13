@@ -643,6 +643,23 @@ test("a maximized window keeps maximized until it is restored", async () => {
   assert.equal(state.applied.length, 1);
 });
 
+test("a restore during listener setup still applies the floor", async () => {
+  const applied: { width: number; height: number }[] = [];
+  let restored = false;
+  const applier = createMinimumSizeApplier({
+    isRestored: async () => restored,
+    onResized: async () => {
+      restored = true;
+      return () => undefined;
+    },
+    applyFloor: async (minimum) => {
+      applied.push(minimum);
+    },
+  });
+  await applier.apply({ width: 900, height: 600 });
+  assert.deepEqual(applied, [{ width: 900, height: 600 }]);
+});
+
 test("setup cancels a floor still waiting for the restore", async () => {
   const { state, applier, resize } = fakeMinimumSizeWindow(false);
   await applier.apply({ width: 900, height: 600 });
