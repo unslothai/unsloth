@@ -2969,7 +2969,7 @@ export const zhCN = {
         modelClef: "Clef",
         recommended: "推荐",
         device: "运行于",
-        deviceDescription: "GPU 响应更快，但在重启前会一直占用显存。",
+        deviceDescription: "GPU 响应更快，卸载模型后会释放显存。",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "运行时",
