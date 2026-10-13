@@ -19,12 +19,11 @@ from starlette.requests import Request
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
+from utils.first_token_timeout import FirstTokenWait, track_first_token_wait
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
 from storage import chat_generation_runs_db as db
-
-from utils.first_token_timeout import track_first_token_wait
 
 logger = get_logger(__name__)
 _EVENT_BATCH_SIZE = 16
@@ -693,9 +692,9 @@ class ChatGenerationSupervisor:
 
     async def _produce(
         self,
-        run_id,
-        cancel_event = None,
-        activity = None,
+        run_id: str,
+        cancel_event: threading.Event | None = None,
+        activity: InferenceActivityReservation | None = None,
     ) -> None:
         with track_first_token_wait() as first_token_wait:
             await self._produce_run(run_id, cancel_event, activity, first_token_wait)
@@ -703,9 +702,9 @@ class ChatGenerationSupervisor:
     async def _produce_run(
         self,
         run_id: str,
-        cancel_event: threading.Event | None = None,
-        activity: InferenceActivityReservation | None = None,
-        first_token_wait = None,
+        cancel_event: threading.Event | None,
+        activity: InferenceActivityReservation | None,
+        first_token_wait: FirstTokenWait,
     ) -> None:
         cancel_event = cancel_event or threading.Event()
         if activity is None:
@@ -799,14 +798,12 @@ class ChatGenerationSupervisor:
                     if pending
                     else None
                 )
-                # Poll only to renew a backend-authorized prefill wait. Its own deadline
-                # stays authoritative; decode stalls and abandoned workers still expire.
+                # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
                 renew_interval = _renew_interval_seconds()
                 timeout = renew_interval if timeout is None else min(timeout, renew_interval)
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
                 if (
-                    first_token_wait is not None
-                    and first_token_wait.active()
+                    first_token_wait.active()
                     and time.monotonic() - last_keepalive >= renew_interval
                 ):
                     await self._try_touch_progress(run_id)

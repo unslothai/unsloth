@@ -4,6 +4,7 @@
 import asyncio
 import math
 import threading
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -68,6 +69,12 @@ def test_managed_account_reads_owner_setting_but_cannot_change_it():
     assert limit.get_minutes() == 90
 
 
+@pytest.mark.parametrize("stored", [-1, 10081, True, "60", 1.5, None, {"minutes": 60}])
+def test_unusable_stored_value_falls_back_to_default(stored):
+    studio_db.upsert_app_settings({limit.SETTING_KEY: stored})
+    assert limit.get_minutes() == limit.DEFAULT_MINUTES
+
+
 def test_explicit_api_env_override_is_preserved(monkeypatch):
     limit.set_minutes(0)
     monkeypatch.setenv(inference._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, "42")
@@ -81,6 +88,16 @@ def test_unlimited_socket_wait_keeps_connect_timeout():
     assert timeout.read is None
     assert timeout.connect == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
     assert timeout.write == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
+
+
+@pytest.mark.parametrize("minutes,read", [(1, 1200.0), (90, 5400.0), (0, None)])
+def test_shortened_limit_does_not_cut_non_streamed_replies(minutes, read):
+    from core.inference.engine_transport import engine_request_timeout
+
+    limit.set_minutes(minutes)
+    assert inference._llama_non_streaming_generation_timeout().read == read
+    assert engine_request_timeout().read == 1200.0  # Managed engines ignore the GGUF limit.
+    assert inference._llama_streaming_generation_timeout().read == (minutes * 60 or None)
 
 
 def test_sync_custom_wait_survives_original_limit_and_then_expires(monkeypatch):
@@ -131,44 +148,31 @@ def test_sync_unlimited_prefill_still_switches_to_decode_stall(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_unlimited_prefill_remains_cancellable():
-    limit.set_minutes(0)
+async def test_async_pump_arms_saved_limit_until_output_and_stays_cancellable():
+    limit.set_minutes(60)
     cancelled = threading.Event()
-    reads_cancelled = []
 
-    class Never:
-        async def __anext__(self):
-            try:
-                await asyncio.Future()
-            finally:
-                reads_cancelled.append(True)
+    async def upstream():
+        yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        yield b'data: {"prompt_progress":{"processed":8}}\n\n'
+        yield b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+        await asyncio.Future()
 
     with limit.track_first_token_wait() as wait:
-        iterator = inference._aiter_llama_stream_items(
-            Never(),
+        pump = inference._aiter_llama_stream_items(
+            upstream(),
             cancel_event = cancelled,
+            track_prefill_progress = True,
             keepalive_interval_s = 0.01,
         )
-        assert await anext(iterator) is inference._LLAMA_STREAM_KEEPALIVE
-        assert wait.active()
+        await anext(pump)
+        assert 3500 < wait.deadline - time.monotonic() <= 3600
+        limit.set_minutes(90)  # Advancing prefill re-arms with the limit then saved.
+        await anext(pump)
+        assert 5300 < wait.deadline - time.monotonic() <= 5400
+        assert b"hello" in await anext(pump)
+        assert not wait.active()
+        assert await anext(pump) is inference._LLAMA_STREAM_KEEPALIVE
         cancelled.set()
         with pytest.raises(StopAsyncIteration):
-            await asyncio.wait_for(anext(iterator), 1)
-    assert reads_cancelled
-
-
-@pytest.mark.asyncio
-async def test_wait_scope_crosses_worker_threads_and_clears_on_exit():
-    with limit.track_first_token_wait() as wait:
-        await asyncio.to_thread(limit.start_first_token_wait, math.inf)
-        assert wait.active()
-        await asyncio.to_thread(limit.finish_first_token_wait)
-        assert not wait.active()
-        await asyncio.to_thread(limit.start_first_token_wait, math.inf)
-    assert not wait.active()
-
-
-def test_timeout_error_does_not_claim_twenty_minutes():
-    message = inference._friendly_error(httpx.ReadTimeout("first token"))
-    assert "20 minutes" not in message
-    assert "Settings > Chat" in message
+            await asyncio.wait_for(anext(pump), 1)

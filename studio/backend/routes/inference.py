@@ -81,6 +81,12 @@ from utils.models.checkpoints import is_full_finetune_output
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+    timeout_seconds as configured_first_token_timeout_s,
+)
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
@@ -1863,17 +1869,10 @@ except ImportError:
     )
 
 
-from utils.first_token_timeout import (
-    finish_first_token_wait,
-    socket_timeout,
-    start_first_token_wait,
-    timeout_seconds as configured_first_token_timeout_s,
-)
-
-
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
     return httpx.Timeout(
-        _DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s())
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = socket_timeout(_first_token_timeout_s(whole_reply = True)),
     )
 
 
@@ -3082,9 +3081,15 @@ def _finite_positive_float_env(env_name: str, default):
     return value
 
 
-def _first_token_timeout_s() -> float:
-    """The saved wait limit, retaining the API-specific positive environment override."""
+def _first_token_timeout_s(*, whole_reply: bool = False) -> float:
+    """The saved wait limit; a positive UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT wins.
+
+    ``whole_reply`` is for a read that spans an entire non-streamed generation, which a
+    limit shortened below the default must not cut.
+    """
     default = configured_first_token_timeout_s()
+    if whole_reply:
+        default = max(default, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
     value = _finite_positive_float_env(_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, default)
     return default if value is None else value
 

@@ -499,6 +499,11 @@ from state.tool_approvals import (
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+)
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -1394,12 +1399,6 @@ def _has_answer_artifact(text: str) -> bool:
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
-from utils.first_token_timeout import (
-    finish_first_token_wait,
-    socket_timeout,
-    start_first_token_wait,
-)
-
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 
 
