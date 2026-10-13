@@ -315,15 +315,28 @@ def _sdar_sample(base, tokenizer, input_ids, attention_mask, *, steps, block_len
     """SDAR model card / generate.py defaults: block 4, steps = block length, threshold 0.85."""
     block_length = int(block_length or getattr(base.config, "block_size", None) or 4)
     kwargs.setdefault("confidence_threshold", 0.85)
-    return _block_sample(
+    import os
+
+    if os.environ.get("UNSLOTH_DIFFUSION_KV_CACHE", "1") == "0":
+        return _block_sample(
+            base,
+            tokenizer,
+            input_ids,
+            attention_mask,
+            steps = int(steps or block_length),
+            block_length = block_length,
+            mask_format = "bool",
+            **kwargs,
+        )
+    from .diffusion_infer_block import _CACHED_BLOCK_KWARGS, cached_block_sample
+
+    return cached_block_sample(
         base,
-        tokenizer,
         input_ids,
-        attention_mask,
+        family = "sdar",
         steps = int(steps or block_length),
         block_length = block_length,
-        mask_format = "bool",
-        **kwargs,
+        **{k: v for k, v in kwargs.items() if k in _CACHED_BLOCK_KWARGS},
     )
 
 
@@ -343,15 +356,32 @@ def _llada2_sample(
     """LLaDA2 model card defaults: block 32, steps 32, threshold 0.95. Its own generate builds a bfloat16 mask
     (fails on fp16 / fp32 weights) and samples even at temperature 0, so the shared block sampler runs instead."""
     kwargs.setdefault("confidence_threshold", threshold)
-    return _block_sample(
+    from .remote_moe_shims import prepare_remote_moe_for_inference
+
+    # Eval routing without a per-layer host sync (no-op once patched or for non-LLaDA2 MoE code).
+    prepare_remote_moe_for_inference(base)
+    import os
+
+    if os.environ.get("UNSLOTH_DIFFUSION_KV_CACHE", "1") == "0":
+        return _block_sample(
+            base,
+            tokenizer,
+            input_ids,
+            attention_mask,
+            steps = int(steps or 32),
+            block_length = int(block_length or 32),
+            mask_format = "additive",
+            **kwargs,
+        )
+    from .diffusion_infer_block import _CACHED_BLOCK_KWARGS, cached_block_sample
+
+    return cached_block_sample(
         base,
-        tokenizer,
         input_ids,
-        attention_mask,
+        family = "llada2",
         steps = int(steps or 32),
         block_length = int(block_length or 32),
-        mask_format = "additive",
-        **kwargs,
+        **{k: v for k, v in kwargs.items() if k in _CACHED_BLOCK_KWARGS},
     )
 
 
@@ -375,21 +405,53 @@ def _dream_sample(
     **unused,
 ):
     """Dream's own diffusion_generate (model card: steps = max_new_tokens, alg "entropy", alg_temp 0)."""
+    from .diffusion_infer_block import _Frames
+    from .diffusion_infer_dream import dream_fast_sample, dream_fast_supported
+
     if top_p is None and temperature > 0:
         top_p = 0.95
+    steps = int(steps or max_new_tokens)
+    on_frame, check_stop = unused.get("on_frame"), unused.get("check_stop")
+    prompt_length = input_ids.shape[1]
+    if dream_fast_supported(
+        input_ids, attention_mask, mask_id, temperature, top_p, None, alg, alg_temp
+    ):
+        out = dream_fast_sample(
+            base,
+            input_ids,
+            max_new_tokens = max_new_tokens,
+            steps = steps,
+            mask_id = mask_id,
+            alg = alg,
+            on_frame = on_frame,
+            check_stop = check_stop,
+        )
+        # None: the model proposed its own mask token, which changes the reference's schedule.
+        if out is not None:
+            return out[:, prompt_length:]
+    frames = _Frames(on_frame, check_stop)
+
+    def hook(step, x, logits):
+        if step is not None:
+            frames.step(
+                x, prompt_length, x.shape[1], 0, step + 1, steps, mask_id, step + 1 == steps
+            )
+        return x
+
     out = base.diffusion_generate(
         input_ids,
         attention_mask = None if attention_mask is None else attention_mask.to(input_ids.device),
         max_new_tokens = max_new_tokens,
-        steps = int(steps or max_new_tokens),
+        steps = steps,
         temperature = temperature,
         top_p = top_p,
         alg = alg,
         alg_temp = alg_temp,
         output_history = False,
         return_dict_in_generate = True,
+        generation_tokens_hook_func = hook,
     )
-    return out.sequences[:, input_ids.shape[1] :]
+    return out.sequences[:, prompt_length:]
 
 
 @_register("nemotron_labs_diffusion")
