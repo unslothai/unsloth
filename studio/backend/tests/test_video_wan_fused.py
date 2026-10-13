@@ -437,7 +437,9 @@ def test_loader_installs_before_the_step_cache_and_offload_hooks():
     try:
         wf.install_for_pipe = lambda *a, **k: seen.append(("install", a)) or True
         wf.uninstall = lambda: seen.append(("uninstall",))
-        ctx = ap.PatchContext(pipe = "pipe", dtype = "fp16", device = "cuda", backend = "video", speed_mode = "off")
+        ctx = ap.PatchContext(
+            pipe = "pipe", dtype = "fp16", device = "cuda", backend = "video", speed_mode = "off"
+        )
         assert ap.install_stage(ap.STAGE_LOAD, ctx) == {}
         ctx.speed_mode = "default"
         assert ap.install_stage(ap.STAGE_LOAD, ctx) == {"wan_fused": True}
@@ -448,6 +450,7 @@ def test_loader_installs_before_the_step_cache_and_offload_hooks():
 
 def test_teardown_and_rollback_restore_the_stock_forward():
     from core.inference import video
+
     cls = next(
         c
         for c in vars(video).values()

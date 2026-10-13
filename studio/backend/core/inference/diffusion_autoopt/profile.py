@@ -156,7 +156,11 @@ def profile_model(model: Any) -> Optional[ModelProfile]:
         return None
     cls = type(model)
     forward = getattr(cls, "forward", None)
-    key = (f"{cls.__module__}.{cls.__qualname__}", source_digest(forward) if forward else None, _diffusers_version())
+    key = (
+        f"{cls.__module__}.{cls.__qualname__}",
+        source_digest(forward) if forward else None,
+        _diffusers_version(),
+    )
     with _LOCK:
         cached = _CACHE.get(key)
     if cached is not None:
@@ -164,7 +168,6 @@ def profile_model(model: Any) -> Optional[ModelProfile]:
     declared = tuple(getattr(cls, "_repeated_blocks", None) or ())
     try:
         from ..diffusion_regional_compile import discover_repeated_blocks, verified_repeated_blocks  # noqa: PLC0415
-
         verified = tuple(verified_repeated_blocks(cls.__name__))
         discovered = tuple(discover_repeated_blocks(model))
     except Exception:  # noqa: BLE001

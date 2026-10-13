@@ -99,7 +99,6 @@ DISCOVER_ENV = "UNSLOTH_DIFFUSION_AUTOOPT_DISCOVER"
 
 def discovery_enabled() -> bool:
     import os  # noqa: PLC0415
-
     return (os.environ.get(DISCOVER_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -142,7 +141,9 @@ def build_plan(
     candidates = dits or [m for m in [targets.denoiser_unet(pipe)] if m is not None]
     if generic and not candidates:
         candidates = targets.discovered_only(pipe, family)
-    profiles = [p for p in (profile_model(m) for m in candidates if hasattr(m, "forward")) if p is not None]
+    profiles = [
+        p for p in (profile_model(m) for m in candidates if hasattr(m, "forward")) if p is not None
+    ]
     plan = OptimizationPlan(
         backend = backend,
         family = getattr(family, "name", None),
@@ -151,7 +152,11 @@ def build_plan(
         generic = generic,
     )
 
-    def add(name: str, attempt: bool, reason: Optional[str] = None) -> None:
+    def add(
+        name: str,
+        attempt: bool,
+        reason: Optional[str] = None,
+    ) -> None:
         plan.steps.append(PlannedStep(name, attempt, reason))
 
     if mode == SPEED_OFF:
@@ -164,11 +169,18 @@ def build_plan(
     compile_reason: Optional[str] = None
     if mode == SPEED_EAGER:
         compile_reason = "eager tier does not compile"
-    elif mode == SPEED_DEFAULT and is_gguf and on_cuda and getattr(family, "supports_torch_compile", True):
+    elif (
+        mode == SPEED_DEFAULT
+        and is_gguf
+        and on_cuda
+        and getattr(family, "supports_torch_compile", True)
+    ):
         compile_reason = "GGUF compiles the dequant op chain instead"
     else:
         compile_reason = compile_ineligible_reason(target, family)
-        if compile_reason is None and ds.fp16_unet_offloaded(target, pipe, offload_active = offload_active):
+        if compile_reason is None and ds.fp16_unet_offloaded(
+            target, pipe, offload_active = offload_active
+        ):
             compile_reason = "offloaded fp16 U-Net stays eager (fused QKV costs more transfer than compile saves)"
         if compile_reason is None and not candidates:
             compile_reason = "no denoiser transformer or whole-compile U-Net"
@@ -187,7 +199,9 @@ def build_plan(
         # No measured data: a discovered block whose forward host-syncs would graph-break on every call.
         for p in profiles:
             if not p.declared_blocks and p.graph_break_suspects:
-                suspects = "; ".join(f"{k}: {', '.join(v)}" for k, v in p.graph_break_suspects.items())
+                suspects = "; ".join(
+                    f"{k}: {', '.join(v)}" for k, v in p.graph_break_suspects.items()
+                )
                 step = plan.step("compiled")
                 step.attempt = False
                 step.reason = f"{GRAPH_BREAK_DECLINE} ({p.class_name}: {suspects})"
@@ -198,7 +212,11 @@ def build_plan(
     )
     add("tf32", mode == SPEED_MAX and on_cuda, None if mode == SPEED_MAX else "max tier only")
     if not getattr(family, "cudnn_benchmark", True):
-        add("cudnn_benchmark", False, "family keeps cudnn.benchmark off (per-process conv pick changes pixels)")
+        add(
+            "cudnn_benchmark",
+            False,
+            "family keeps cudnn.benchmark off (per-process conv pick changes pixels)",
+        )
     elif not on_cuda:
         add("cudnn_benchmark", False, "not a CUDA device")
     else:
@@ -224,7 +242,9 @@ def compile_cache_kwargs(
         # A step cache or planned offload graph-breaks, so the bundle keys on the fullgraph the compile uses.
         "fullgraph": bool(fullgraph),
         # max compiles DiTs with automatic dynamic (None), as does the default tier for torchao weights.
-        "dynamic": ds.compile_dynamic(transformer, True if deferred else (None if mode == SPEED_MAX else True)),
+        "dynamic": ds.compile_dynamic(
+            transformer, True if deferred else (None if mode == SPEED_MAX else True)
+        ),
         "mode": "max-autotune-no-cudagraphs" if mode == SPEED_MAX else "default",
         "vae_decode": ds.vae_decode_compile_allowed(pipe, mode),
     }

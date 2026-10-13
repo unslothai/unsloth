@@ -1829,7 +1829,6 @@ def _attention_dits(pipe: Any) -> list:
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). The
     backend must be set on ALL of them, else the second DiT keeps the native default."""
     from .diffusion_autoopt.targets import denoiser_dits
-
     return denoiser_dits(pipe)
 
 

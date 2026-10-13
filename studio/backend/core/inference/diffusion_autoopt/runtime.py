@@ -22,7 +22,6 @@ from ..diffusion_multistage import encode_once, hold_denoiser_between_calls  # n
 
 def runner_opens_cache_context(runner: Any) -> bool:
     from ..diffusion_cache import _pipeline_opens_cache_context  # noqa: PLC0415
-
     return _pipeline_opens_cache_context(runner)
 
 
@@ -34,7 +33,9 @@ def step_cache_runner_reason(base: Any, runner: Any) -> Optional[str]:
         return None
     if runner_opens_cache_context(runner):
         return None
-    return f"{type(runner).__name__} opens no cache_context, so the step cache stays off for this call"
+    return (
+        f"{type(runner).__name__} opens no cache_context, so the step cache stays off for this call"
+    )
 
 
 def auto_cache_steps(base: Any, runner: Any, steps: int) -> tuple[int, Optional[str]]:
