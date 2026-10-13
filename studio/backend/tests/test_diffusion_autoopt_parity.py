@@ -158,8 +158,13 @@ def _engaged(result: Any) -> bool:
 
 def _teardown() -> None:
     """Restore every process-global patch a case may have installed (old and new teardown entry points)."""
-    from core.inference import diffusion_arch_patches, diffusion_eager_patches
+    from core.inference import (
+        diffusion_arch_patches,
+        diffusion_eager_patches,
+        diffusion_gguf_compile,
+    )
 
+    diffusion_gguf_compile.uninstall_all()
     diffusion_eager_patches.uninstall_patches()
     diffusion_arch_patches.uninstall_arch_patches()
     for mod_name in (

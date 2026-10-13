@@ -259,6 +259,9 @@ def test_both_weights_at_root_call_sites_go_through_the_check():
                     sites.append((p.name, n.lineno, callee))
     assert {s[0] for s in sites} == {"llama.py", "vision.py"}, sites
     assert all(s[2] in routed for s in sites), sites
+    # Each loader's normal and vLLM paths, so losing the keyword on either one fails too.
+    expected = {(f, callee) for f in ("llama.py", "vision.py") for callee in routed}
+    assert expected <= {(s[0], s[2]) for s in sites}, sites
 
     tree = ast.parse(Path(U.__file__).read_text(encoding = "utf-8"))
     resolver = next(
@@ -266,10 +269,13 @@ def test_both_weights_at_root_call_sites_go_through_the_check():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "resolve_vllm_model_path"
     )
+    # `**kwargs` forwarded, or the resolver could drop weights_at_root on the way.
     assert any(
-        isinstance(c, ast.Call) and getattr(c.func, "id", None) == "maybe_prefetch_hf_snapshot"
+        isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "maybe_prefetch_hf_snapshot"
+        and any(k.arg is None for k in c.keywords)
         for c in ast.walk(resolver)
-    ), "resolve_vllm_model_path no longer goes through maybe_prefetch_hf_snapshot"
+    ), "resolve_vllm_model_path no longer forwards its kwargs to maybe_prefetch_hf_snapshot"
 
     loads = [
         n
