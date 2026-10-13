@@ -7563,6 +7563,18 @@ export function createOpenAIStreamAdapter(
                         suffix,
                       ),
                     } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
                   }
                   continue;
                 }

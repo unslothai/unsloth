@@ -10,6 +10,8 @@ import {
   withToolModelSuffix,
 } from "../src/features/chat/tool-model-suffix.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 test("a model note targets the latest card for a reused backend id", () => {
   const parts = [
     { toolCallId: "call_0:a", backendToolCallId: "call_0" },
@@ -46,4 +48,13 @@ test("only a noted card replays extra_content", () => {
       extra_content: { studio_model_suffix: "\n\nUse what you have." },
     },
   );
+});
+
+test("the adapter publishes a model note as soon as it lands", () => {
+  const src = readSrc("features/chat/api/chat-adapter.ts");
+  const start = src.indexOf('toolEvent.type === "tool_model_note"');
+  assert.notEqual(start, -1);
+  const branch = src.slice(start, src.indexOf("continue;", start));
+  // A stop before the next chunk saves only the last yield, so the note must reach one.
+  assert.match(branch, /yield \{\s*content: liveAssistantContent\(\)/);
 });

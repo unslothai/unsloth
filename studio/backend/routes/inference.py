@@ -41607,6 +41607,17 @@ async def anthropic_count_tokens(
     # rendered prompt, so counting the load-time default would under- or
     # over-count the request the client is about to send.
     _reasoning_args = _anthropic_reasoning_args(payload)
+    _count_preserve = _reasoning_args["preserve_thinking"]
+    _resolve_preserve = getattr(llama_backend, "_replay_preserve_thinking", None)
+    if _resolve_preserve is not None and not _count_client_tools:
+        # As generation resolves it; off the loop since the first use probes the template.
+        _count_preserve = await asyncio.to_thread(
+            _resolve_preserve,
+            _count_preserve,
+            openai_messages,
+            _reasoning_args["enable_thinking"],
+            _reasoning_args["reasoning_effort"],
+        )
     try:
         count = await asyncio.to_thread(
             lambda: llama_backend.count_chat_tokens(
@@ -41618,7 +41629,7 @@ async def anthropic_count_tokens(
                     llama_backend,
                     _reasoning_args["enable_thinking"],
                     _reasoning_args["reasoning_effort"],
-                    _reasoning_args["preserve_thinking"],
+                    _count_preserve,
                 ),
             )
         )
