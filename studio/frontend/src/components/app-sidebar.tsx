@@ -1474,7 +1474,6 @@ export function AppSidebar() {
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
   const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
-  // a drag in a partly loaded list shows here until its full order is saved (see writeManualOrder)
   const [pendingManualOrder, setPendingManualOrder] = useState<Record<string, string[]>>({});
   const displayManualOrder = useMemo(
     () =>
@@ -1522,7 +1521,6 @@ export function AppSidebar() {
   const [openedChatIds, setOpenedChatIds] = useState<readonly string[]>([]);
   const chatRowSlots = useMemo(() => {
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
-    // sorted, so reopening a chat already in the set asks the server nothing
     const lookupIds = [
       ...new Set(
         [slotActiveId, ...openedChatIds, ...runningThreadKey.split("\n")].filter(
@@ -1539,7 +1537,6 @@ export function AppSidebar() {
           manualOrder: manualOrder[RECENTS_ORDER_SCOPE],
         }),
       },
-      // the full pin order, so unranked pins keep their pin order
       pinned: pinnedIds.length
         ? {
             query: sidebarRowQuery({
@@ -1588,7 +1585,6 @@ export function AppSidebar() {
     }
     for (const projectId of openFolderIds) {
       slots[`folder:${projectId}`] = {
-        // one past the preview, so the folder knows whether to offer Show more
         initialLimit: PROJECT_CHAT_LIMIT + 1,
         query: sidebarRowQuery({
           projectId,
@@ -1623,8 +1619,6 @@ export function AppSidebar() {
     chatRowSlots,
     !isStudioRoute,
   );
-  // a Compare row is opened by its pair id while its panes run by thread id, so a running pane
-  // keeps its row as well
   const runningRowKey = useMemo(() => {
     if (!runningThreadKey) return "";
     const running = new Set(runningThreadKey.split("\n"));
@@ -1651,17 +1645,13 @@ export function AppSidebar() {
   const [hasUnlistedChats, setHasUnlistedChats] = useState<boolean | null>(null);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
-    // cleared while the sidebar has rows, so an empty spell starts unknown from its first paint: an
-    // answer from an earlier spell says nothing about this one (a chat made, then archived)
     if (!sidebarLooksEmpty) {
       setHasUnlistedChats(null);
       return;
     }
     let cancelled = false;
     let latest = 0;
-    // re-asked on every history change: archiving or deleting can flip it while the list stays empty
     const probe = () => {
-      // only the newest probe answers: an older one landing late describes an older history
       const mine = ++latest;
       void Promise.all(
         [sidebarRowQuery({}), sidebarRowQuery({ archived: true })].map((query) =>
@@ -1673,7 +1663,6 @@ export function AppSidebar() {
             setHasUnlistedChats(pages.some((page) => page.rows.length > 0));
           }
         })
-        // a failed probe knows nothing, so an older answer stops speaking for this history
         .catch(() => {
           if (!cancelled && mine === latest) setHasUnlistedChats(null);
         });
@@ -1685,7 +1674,6 @@ export function AppSidebar() {
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, probe);
     };
   }, [sidebarLooksEmpty]);
-  // thread -> row for every loaded row, so an unread Compare pair behind a collapsed section counts once
   const rowIdByThreadId = useMemo(() => {
     const map: Record<string, string> = {};
     for (const item of allChatItems) {
@@ -2055,7 +2043,6 @@ export function AppSidebar() {
   // until a drop says otherwise; a chat sort other than Manual keeps the chats after them.
   // Pinning is its own grouping: a pinned folder stays here whichever way the sidebar organizes,
   // and "In one list" only takes the Projects section away.
-  // which manual lists still page their chats: their later folders and pages wait (see holdRowsPastLoadedChats)
   const pinnedHasMore = chatRowLists.pinned?.hasMore;
   const sectionHasMoreKey = customSections
     .filter((section) => chatRowLists[`section:${section.id}`]?.hasMore)
@@ -2217,9 +2204,7 @@ export function AppSidebar() {
   // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
-  // folder rows on screen: a long Pinned or section list mounts its folders a page at a time
   const [mountedFolderIds, setMountedFolderIds] = useState<ReadonlySet<string>>(() => new Set());
-  // counted: one project can be drawn in two places (Pinned and Projects) at once
   const folderMountCountsRef = useRef(new Map<string, number>());
   const setFolderMounted = useCallback((id: string, mounted: boolean) => {
     const counts = folderMountCountsRef.current;
@@ -2428,8 +2413,6 @@ export function AppSidebar() {
     attentionItemIds,
     activeThreadId,
   ]);
-  // the row a chord last stepped to: only a chord landing on a list's last loaded row reads the next
-  // page, so a click there leaves the list as it was, as on main
   const chordTargetRef = useRef<string | null>(null);
   const lastRecentId = visibleRecentItems[visibleRecentItems.length - 1]?.id;
   const loadMoreRecents = recentsPages?.hasMore ? recentsPages.loadMore : undefined;
@@ -2437,7 +2420,6 @@ export function AppSidebar() {
     if (!activeThreadId || chordTargetRef.current !== activeThreadId) return;
     if (activeThreadId === lastRecentId) void loadMoreRecents?.();
   }, [activeThreadId, lastRecentId, loadMoreRecents]);
-  // the same for Pinned, sections and folders, so a chord can walk past their first page too
   useEffect(() => {
     if (!activeThreadId || chordTargetRef.current !== activeThreadId) return;
     for (const [name, list] of Object.entries(chatRowLists)) {
@@ -2591,7 +2573,6 @@ export function AppSidebar() {
   const manualOrderWritesRef = useRef(new Map<string, number>());
   const writeManualOrder = useCallback(
     (scope: string, ids: string[]) => {
-      // every write supersedes an older one still reading its list's ids
       const writes = manualOrderWritesRef.current;
       const generation = (writes.get(scope) ?? 0) + 1;
       writes.set(scope, generation);
@@ -2611,7 +2592,6 @@ export function AppSidebar() {
         setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
         return;
       }
-      // the loaded ids alone leave unloaded rows unranked (sorted first): show now, save once all are known
       const saved = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
       const shown = mergeManualOrderTail(ids, saved);
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));

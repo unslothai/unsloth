@@ -49,7 +49,6 @@ function toSidebarItem(row: SidebarRowRecord): SidebarItem | null {
 
 let serverPages: boolean | null = null;
 
-// Without the paged route: one full read per history change, shared by every list.
 let fullList: {
   epoch: number;
   session: number;
@@ -122,8 +121,6 @@ export async function fetchSidebarRowPage(
     const page = await fetchSidebarRows({ ...query, limit, cursor });
     if (page) {
       serverPages = true;
-      // pre-cut legacy titles are repaired as their rows load, as the full listing did for all
-      // each thread with its own title: a Compare row's title is only its newest pane's
       const shown = page.rows.flatMap((row) =>
         (row.threadIds?.length ? row.threadIds : [row.id]).map((id, index) => ({
           id,
@@ -364,7 +361,6 @@ export function useSidebarRowPages(
       if (!slot.lookupOnly) listedParts.push(state.rows);
       lists[name] = {
         ...state,
-        // nothing renders `error`, so the next scroll is the retry
         loadMore: () => (state.error ? pager.retry() : pager.loadMore()),
         // rejects when a page failed, so a caller never takes the partial list for the whole
         loadAll: async () => {

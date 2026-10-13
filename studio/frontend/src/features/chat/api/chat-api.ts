@@ -991,7 +991,6 @@ export async function fetchSidebarRows(
   if (request.includeIds && request.includeIds.length === 0) {
     return { rows: [], nextCursor: null, hasMore: false, total: 0 };
   }
-  // the route rejects unknown fields
   const body: SidebarRowsRequest = {
     archived: request.archived,
     projectId: request.projectId,

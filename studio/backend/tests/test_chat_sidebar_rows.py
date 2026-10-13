@@ -178,7 +178,6 @@ def test_equal_timestamps_page_exactly_once(client):
     rows = _page_all(client, {"limit": 7})
     ids = [row["id"] for row in rows]
     assert len(ids) == len(set(ids)) == 45
-    # groupThreads sorts stably, so a full tie keeps list order, which is insertion order here.
     assert ids == [f"t{i:03d}" for i in range(45)]
 
 
@@ -225,7 +224,6 @@ def test_full_traversal_matches_get_threads_and_group_threads(client):
     for archived in (False, True):
         expected = _group_threads(listed, archived = archived)
         rows = _page_all(client, {"archived": archived, "limit": 6})
-        # compare rows also carry each pane's own title, by threadIds position
         title_of = {t["id"]: t["title"] for t in listed}
         for row in rows:
             titles = row.pop("threadTitles", None)
@@ -353,7 +351,6 @@ def test_malformed_cursor_is_400(client, cursor):
 
 
 def test_id_lists_past_ten_thousand_are_accepted(client):
-    # a manual order spanning a long history, or that many filed chats, still pages
     _insert_threads(_singles(30))
     order = [f"t{i:04d}" for i in reversed(range(30))] + [f"gone{i}" for i in range(20_000)]
     exclude = ["t0000"] + [f"gone{i}" for i in range(20_000)]
@@ -390,7 +387,6 @@ def test_projects_last_activity(client, db):
 
 
 def test_projects_last_activity_follows_the_pair_grouping(client, db):
-    # a pair split across two projects belongs to its newest pane's project, as the sidebar row does
     _insert_project("old", created_at = 1, updated_at = 1)
     _insert_project("new", created_at = 1, updated_at = 1)
     _insert_threads(

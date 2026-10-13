@@ -41,10 +41,8 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
       const wanted = Math.max(SIDEBAR_LIMIT, loadedCountRef.current);
       let runs: TrainingRunSummary[] = [];
       let runTotal = 0;
-      // offsets shift if a run is added or removed between requests: read again from the top
       for (let attempt = 0; attempt < 3; attempt++) {
         runs = [];
-        // the server rows read so far, the next offset; a repeated run means the list moved
         let offset = 0;
         let firstTotal: number | null = null;
         let shifted = false;

@@ -376,7 +376,6 @@ class ChatSidebarRowsRequest(BaseModel):
     archived: bool = False
     projectId: Optional[str] = None
     unfiledOnly: bool = False
-    # uncapped: a long history's pins, filed chats or saved order are all sent, as main kept them all
     includeIds: Optional[list[str]] = None
     excludeIds: list[str] = Field(default_factory = list)
     sort: Literal["updated", "manual"] = "updated"
@@ -720,7 +719,6 @@ def list_threads(
     return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
 
 
-# Unset optional fields stay absent, as groupThreads leaves them off a SidebarItem.
 @router.post(
     "/sidebar/rows",
     response_model = ChatSidebarRowsResponse,

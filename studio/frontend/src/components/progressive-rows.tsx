@@ -71,10 +71,8 @@ export function ProgressiveRows<T extends { id: string }>({
       fetchingRef.current = true;
       fetchFromRef.current = items.length;
       setLimit((count) => Math.max(count, items.length) + pageSize);
-      // busy until the page's rows are drawn (see below); this only frees a fetch that added none
       void Promise.resolve(onReachEnd?.()).finally(() => {
         setTimeout(() => {
-          // no growth, including a list that shrank meanwhile (a row deleted during the read)
           if (itemCountRef.current <= fetchFromRef.current) fetchingRef.current = false;
         }, FETCH_SETTLE_MS);
       });
@@ -127,7 +125,6 @@ export function ProgressiveRows<T extends { id: string }>({
         if (y !== undefined) touchY = y;
         if (!down) return;
       }
-      // a scroll during a fetch, or the wheel's own scroll just after it, arms nothing
       if (fetchingRef.current || performance.now() - drawnAtRef.current < GESTURE_TAIL_MS) return;
       armedRef.current = true;
       if (intersectingRef.current) advance(root);

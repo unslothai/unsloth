@@ -59,7 +59,6 @@ test("with more than 20 running chats the list passes the cap rather than evict 
   const running = new Set(all);
   const opened = open(all, running);
   assert.equal(opened.length, 23);
-  // once one stops, the next open brings the list back toward the cap
   const after = open(["x"], new Set(all.slice(1)), opened);
   assert.ok(!after.includes("c0"), "the stopped chat is the first evicted");
   assert.equal(after[0], "x", "the chat just opened is never the one evicted");

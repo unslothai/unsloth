@@ -55,11 +55,9 @@ export class RowPager<Q, T extends { id: string }> {
   private cursor: string | null = null;
   private generation = 0;
   private pending: Promise<void> | null = null;
-  // `pending` re-reads the window; a page asked for meanwhile follows it instead of joining it
   private refreshing = false;
   // the rows on screen are not this query's top window (a refresh failed), so retry re-reads
   private stale = false;
-  // the depth a page in flight was asked to reach, which a refresh replacing it reads instead
   private wantedDepth = 0;
   private readonly listeners = new Set<() => void>();
   private readonly maxRequestLimit: number;
@@ -146,7 +144,6 @@ export class RowPager<Q, T extends { id: string }> {
     const generation = ++this.generation;
     // a page asked for and not yet drawn is read too, or the refresh would drop the scroll's page
     const window = Math.max(this.options.initialLimit, this.state.rows.length, this.wantedDepth);
-    // a loaded list keeps showing its rows while it re-reads them
     this.patch({ loading: true }, this.state.loaded);
     this.refreshing = true;
     const run = (async () => {
@@ -158,7 +155,6 @@ export class RowPager<Q, T extends { id: string }> {
         this.cursor = result.cursor;
         this.stale = false;
         const prev = this.state;
-        // a history change elsewhere re-reads every list; one that reads the same rows renders nothing
         const same =
           prev.loaded &&
           prev.error === null &&
@@ -189,7 +185,6 @@ export class RowPager<Q, T extends { id: string }> {
 
   private extend(count: number): Promise<void> {
     if (this.state.loading) {
-      // a history refresh (one per streamed reply) would otherwise swallow the scroll's page
       if (this.refreshing && this.pending) return this.pending.then(() => this.extend(count));
       return this.pending ?? Promise.resolve();
     }
@@ -214,7 +209,6 @@ export class RowPager<Q, T extends { id: string }> {
       } catch (error) {
         if (generation !== this.generation) return;
         if ((error as { cursorRejected?: boolean } | null)?.cursorRejected) {
-          // stale cursor: re-read the same depth from the top
           this.patch({ loading: false });
           await this.refresh();
           return;

@@ -25,7 +25,6 @@ let projectsRequest: Promise<ProjectRecord[]> | null = null;
 let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
-// lastActivityAt moves with chat activity; trailing, so a streamed reply costs one re-read
 const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
 let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -47,15 +46,12 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
-  // a chat-activity re-read usually finds nothing new, and every sidebar memo keys on this array
   if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
   for (const onStoreChange of projectSubscribers) onStoreChange();
 }
 
-// An older server leaves out `lastActivityAt`, and the sidebar only loads some chats, so a folder's
-// newest chat comes from the full listing that server's lists read anyway.
 async function withChatActivity(projects: ProjectRecord[]): Promise<ProjectRecord[]> {
   if (projects.every((project) => "lastActivityAt" in project)) return projects;
   const activity = await readFullListProjectActivity().catch(() => null);

@@ -69,7 +69,6 @@ test("a read replaced by a refresh stops asking the server", async () => {
   await tick();
   void pager.refresh();
   await selectAll;
-  // one walk of 2,000 rows is 10 requests of 200, plus the refresh
   assert.ok(calls.length <= 12, `the list was walked twice: ${calls.length} requests`);
 });
 

@@ -182,7 +182,6 @@ _SELF_READ_PATHS = {
 }
 
 
-# POST only because the id lists outgrow a query string; refreshed like GET /api/chat/threads, so quiet alike.
 _CHAT_LIST_POST_READ_PATHS = frozenset({"/api/chat/sidebar/rows"})
 
 

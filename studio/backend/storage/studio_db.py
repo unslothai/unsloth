@@ -2698,7 +2698,6 @@ def list_chat_sidebar_rows(
         if not row["is_pair"]:
             item["isFork"] = bool(row["is_fork"])
         else:
-            # each pane's own title, by threadIds position: the row's title is the newest pane's
             item["threadTitles"] = [member["title"] or "" for member in members]
         rows.append(item)
 
