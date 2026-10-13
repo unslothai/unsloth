@@ -41777,8 +41777,6 @@ async def anthropic_count_tokens(
     # over-count the request the client is about to send.
     if _count_server_tools:
         from core.inference.tool_loop_controller import restore_replayed_tool_results
-
-        # As the server-tool loop restores them before it renders.
         openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
     # Off the loop: first use probes the template.
     _reasoning_args = await _resolved_anthropic_reasoning_args_async(
@@ -42442,7 +42440,6 @@ async def anthropic_messages(
             else:
                 reservation.cancel()
 
-    # Passthrough sends it and every count prices it.
     _reasoning_args = await _resolved_anthropic_reasoning_args_async(
         llama_backend, payload, openai_messages
     )
@@ -42516,7 +42513,7 @@ async def anthropic_messages(
     if server_tools:
         from core.inference.tool_loop_controller import restore_replayed_tool_results
 
-        # As the tool loop restores them, so the opening usage count prices what it sends.
+        # As the tool loop does, so the opening usage count prices what it sends.
         openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
         # Bypass Permissions suppresses confirm, so both flags together is fine.
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
@@ -42641,7 +42638,6 @@ async def anthropic_messages(
                     monitor_id,
                     llama_backend.context_length,
                 ),
-                # Conversion dropped the replayed thinking; the generator must not read that as none.
                 replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
                 **_reasoning_args,
             )

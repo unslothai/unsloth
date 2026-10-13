@@ -9231,7 +9231,6 @@ class LlamaCppBackend:
         cached = getattr(self, "_empty_think_preserve_probe", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Concurrent first turns share one probe.
         with _EMPTY_THINK_PROBE_LOCK:
             cached = getattr(self, "_empty_think_preserve_probe", None)
             if cached is not None and cached[0] == key:
