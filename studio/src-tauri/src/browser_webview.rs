@@ -1704,12 +1704,8 @@ pub async fn browser_view_agent<R: Runtime>(
     eval_json(&page, script).await
 }
 
-// browser_evaluate: the model's script, which the user approved word for word in the panel, as the
-// body of an async function the installed agent runs and keeps the outcome of for the panel to
-// poll. Spliced in like the agent code so a CSP without 'unsafe-eval' can't block it; a syntax
-// error fails the whole script, so the page never sees half of it. Spliced source can close any
-// wrapper around it, so the document check is a statement of its own ahead of it, in the same
-// evaluation: a throw at the top level ends the script before any of the approved text runs.
+// Spliced like the agent code so a CSP without 'unsafe-eval' can't block it. Spliced source can close
+// any wrapper, so the document check is its own statement ahead of it: its throw stops the script.
 const EVAL_SCRIPT: &str = r#"(() => {
   const agent = window[Symbol.for("unsloth.agent")];
   if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
@@ -1721,7 +1717,6 @@ __CODE__
 const MAX_EVAL_CODE: usize = 32_000;
 
 fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
-    // The agent's ref for the approved document, as `r` and digits.
     if doc.len() < 2
         || doc.len() > 16
         || !doc.starts_with('r')
@@ -1758,7 +1753,6 @@ fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Starts a browser_evaluate script in a tab's page; the agent's `evaluated` command reads how it ended.
 #[tauri::command]
 pub async fn browser_view_eval<R: Runtime>(
     webview: Webview<R>,
@@ -1773,7 +1767,6 @@ pub async fn browser_view_eval<R: Runtime>(
     eval_json(&page, script).await
 }
 
-/// Runs a script that returns a JSON string, and parses it.
 async fn eval_json<R: Runtime>(
     page: &Webview<R>,
     script: String,
@@ -2409,7 +2402,6 @@ mod tests {
     #[test]
     fn eval_code_is_spliced_once_and_ids_are_plain() {
         let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
-        // The check comes first, as its own statement.
         let check = script
             .find(r#"agent.owns("r100001") !== true) throw"#)
             .unwrap();

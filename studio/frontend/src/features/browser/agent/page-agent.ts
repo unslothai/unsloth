@@ -49,32 +49,23 @@ export type AgentAnswer = {
   info?: ElementInfo;
   quietMs?: number;
   title?: string;
-  /** `locate`: the ref's centre, absent when it is off screen. */
   x?: number;
   y?: number;
-  /** `status`, `mask`: the visible page's size in CSS pixels, and how far it is scrolled. */
   width?: number;
   height?: number;
   scrollX?: number;
   scrollY?: number;
-  /** How many scrolls the page has seen, any element's. */
   scrolls?: number;
-  /** `evaluate`, `evaluated`: the script hasn't finished yet. */
   pending?: boolean;
-  /** `describe` at a point: the element there, for a click or drag's `expect`. */
   hit?: string;
-  /** `describe` at a point: all it reported, for `sig`, checked again in the call that acts. */
   sig?: string;
-  /** `status`: this document, for `evaluate` to refuse any other. */
   doc?: string;
 };
 
-/** `evaluate`: the desktop app's native views splice the model's script into source, past the
- *  page's CSP, and hand it here as `run`; the proxied frame compiles it (`evaluate` op). */
+/** `evaluate`: native views splice the script in past the CSP as `run`; the proxied frame compiles it. */
 export type PageAgent = {
   run: (command: Record<string, unknown>) => Record<string, unknown>;
   evaluate: (id: string, doc: unknown, run: () => unknown) => Record<string, unknown>;
-  /** Whether this is the document `doc` names, for the native path's check before the script is sent. */
   owns: (doc: unknown) => boolean;
 };
 
@@ -127,7 +118,6 @@ export function installPageAgent(): PageAgent {
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
   let lastMutation = performance.now();
-  // Any scroll, a table's or a carousel's as much as the page's, moves what a screenshot's points show.
   let scrolls = 0;
   addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
@@ -310,7 +300,6 @@ export function installPageAgent(): PageAgent {
       el.style.setProperty("-webkit-text-fill-color", "transparent", "important");
       el.style.setProperty("text-shadow", "none", "important");
     }
-    // The page's size, so the panel can scale the screenshot to it.
     return { ok: true, ...view() };
   };
 
@@ -549,14 +538,12 @@ export function installPageAgent(): PageAgent {
       el = inner;
     }
     if (!el) throw new AgentError(outside);
-    // Another document, often another site's: its events and refs are out of reach from here.
     if (el instanceof HTMLIFrameElement || el.tagName.toLowerCase() === "frame") {
       throw new AgentError("that point is inside an embedded frame, which the browser tools can't reach.");
     }
     return el;
   };
 
-  /** No ref: the element at the point, else the focused one, which a key press would act on. */
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
     const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
     // A click on text inside a button or label reaches that control (a label's being its field or
@@ -597,11 +584,9 @@ export function installPageAgent(): PageAgent {
         : {}),
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
-    // A point's element, so the action after the panel's question hits what was asked about.
     return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info) } : { ok: true, info };
   };
 
-  /** The element at the point, if it is still the one `expect` (a describe's `hit`) named. */
   const stillAt = (at: Point, expect: unknown, sig?: unknown): Element => {
     const el = elementAt(at);
     if (typeof expect === "string" && expect && refOf(el) !== expect) {
@@ -628,7 +613,6 @@ export function installPageAgent(): PageAgent {
     return null;
   };
 
-  /** Returns false when the page cancelled it. `buttons` is 1 while the mouse is held down. */
   const mouse = (el: Element, type: string, at?: Point, buttons = 0, relatedTarget: Element | null = null): boolean => {
     const rect = el.getBoundingClientRect();
     const init = {
@@ -648,9 +632,7 @@ export function installPageAgent(): PageAgent {
     return el.dispatchEvent(event);
   };
 
-  /** A link the panel opens itself rather than let the page follow it (`directLinks`, new tabs). */
   const linkOut = (el: Element, directLinks: boolean): string | null => {
-    // Through shadow roots too: a click inside one nested in a link still follows the link.
     const anchor = lineage(el).find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && node.hasAttribute("href"));
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
@@ -670,7 +652,6 @@ export function installPageAgent(): PageAgent {
     return chain;
   };
 
-  // Under the agent's pointer, so a move leaves the last element before it enters the next.
   let hovered: Element | null = null;
   const hoverTo = (el: Element, at: Point, buttons = 0) => {
     if (hovered !== el) {
@@ -705,11 +686,9 @@ export function installPageAgent(): PageAgent {
       throw new AgentError("the page changed under that point; take a screenshot to see it again.");
     }
     mouse(el, "pointerdown", at, 1);
-    // As a browser does, unless the page cancelled the press.
     if (mouse(el, "mousedown", at, 1)) (el.closest(FOCUSABLE) as HTMLElement | null)?.focus?.({ preventScroll: true });
   };
 
-  /** No overlay check: a point gets whatever is drawn on top there, as a real click would. */
   const clickAt = (at: Point, directLinks: boolean, expect: unknown, sig: unknown): Record<string, unknown> => {
     const el = stillAt(at, expect, sig);
     // As a real click: a disabled control takes none, and a dispatched one would still reach its listeners.
@@ -719,7 +698,6 @@ export function installPageAgent(): PageAgent {
     pressAt(el, at, expect, sig);
     mouse(el, "pointerup", at);
     mouse(el, "mouseup", at);
-    // A dispatched click still runs a link's, button's or checkbox's default action.
     mouse(el, "click", at);
     return { ok: true };
   };
@@ -734,15 +712,13 @@ export function installPageAgent(): PageAgent {
     if (scroll && !inView(centre())) el.scrollIntoView({ block: "nearest", inline: "nearest" });
     const at = centre();
     if (!inView(at)) return { ok: true };
-    // As for a ref click: an overlay over the ref would take the pointer instead.
     if (!lineage(elementAt(at)).includes(el)) {
       return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
     return { ok: true, ...at };
   };
 
-  // A drag between the panel's down, move and up calls. `html`: the source is draggable, so a
-  // browser would send drag events, not mouse moves.
+  // `html`: the source is draggable, so a browser would send drag events, not mouse moves.
   let drag: { html: { source: Element; data: DataTransfer; over: Element | null; accepted: boolean } | null } | null = null;
   const dragEvent = (el: Element, type: string, at: Point, data: DataTransfer): boolean =>
     el.dispatchEvent(
@@ -755,7 +731,6 @@ export function installPageAgent(): PageAgent {
     if (phase === "down") {
       pressAt(el, at, expect, sig);
       drag = { html: null };
-      // Through shadow roots: a web component's draggable host is still the drag's source.
       const source = lineage(el).find((node) => node.getAttribute("draggable") === "true");
       if (source && typeof DataTransfer === "function" && typeof DragEvent === "function") {
         const data = new DataTransfer();
@@ -775,14 +750,12 @@ export function installPageAgent(): PageAgent {
         dragEvent(el, "dragenter", at, html.data);
         html.over = el;
       }
-      // A target takes the drop by cancelling dragover.
       html.accepted = !dragEvent(el, "dragover", at, html.data);
       return { ok: true };
     }
     const html = drag?.html;
     drag = null;
     if (phase === "cancel") {
-      // Called off, as a user would with Escape, and let go where it started: nothing is dropped.
       key(document.activeElement ?? document.body, "Escape");
       if (html) dragEvent(html.source, "dragend", at, html.data);
       else {
@@ -793,7 +766,6 @@ export function installPageAgent(): PageAgent {
       return { ok: true };
     }
     if (html) {
-      // What is under the end now decides, as a browser's last dragover would.
       if (html.over !== el) {
         if (html.over) dragEvent(html.over, "dragleave", at, html.data);
         dragEvent(el, "dragenter", at, html.data);
@@ -810,7 +782,6 @@ export function installPageAgent(): PageAgent {
     return { ok: true };
   };
 
-  // Scripts the model ran (browser_evaluate), by id, until the panel reads how each ended.
   const SCRIPT_CHARS = 20000;
   const scripts = new Map<string, { done: boolean; text: string }>();
   const thrown = (error: unknown): string => {
@@ -828,7 +799,6 @@ export function installPageAgent(): PageAgent {
       );
       if (json !== undefined) return json;
     } catch {
-      // Circular, or a getter that throws: its plain string instead.
     }
     try {
       return String(value);
@@ -865,7 +835,6 @@ export function installPageAgent(): PageAgent {
       const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (body: string) => () => unknown;
       start = new AsyncFunction(script);
     } catch (error) {
-      // A syntax error, or a page policy that forbids compiling scripts.
       start = () => Promise.reject(error);
     }
     return evaluate(id, doc, start);
@@ -1178,7 +1147,6 @@ export function installPageAgent(): PageAgent {
 
   // For native views, which look it up on every call. A page that defines KEY first still wins
   // there: the agent shares the page's world, so its answers are untrusted.
-  /** What a screenshot's x and y are relative to: this document, its size and scroll. */
   function view() {
     return {
       width: window.innerWidth,

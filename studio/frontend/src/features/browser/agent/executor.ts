@@ -29,7 +29,6 @@ export type BrowserAction = {
   value?: string;
   direction?: "up" | "down";
   key?: string;
-  /** Pixels of the agent's last screenshot of the tab (`pointScale`). */
   x?: number;
   y?: number;
   toRef?: string;
@@ -101,7 +100,6 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
 // links on the page the agent last read. All per chat.
 const knownHosts = new Set<string>();
 const reachedHosts = new Set<string>();
-// Sites where the user let the agent click or drag where the page says nothing about what is there.
 const opaqueHosts = new Set<string>();
 let pageLinks = new Set<string>();
 let scope: string | undefined;
@@ -528,7 +526,6 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
   if (!ready) return { ok: false, error: "the browser tab closed." };
-  // The page the tab shows once loaded: a load that was under way may have landed elsewhere.
   const here = tabUrl(ready);
   const moved = await stillAllowed(ready, action, context);
   if (moved) return { ok: false, error: moved };
@@ -682,9 +679,7 @@ async function afterward(tab: BrowserTab, before: string, action: BrowserAction,
   return observe(after, note);
 }
 
-// CSS pixels per pixel of the agent's last screenshot of each tab: the model reads x and y off that
-// picture (browser_agent.py _POINT_NOTE). 1 until it takes one. Kept with the page and viewport it
-// was taken of: on another, the picture's x and y point at nothing it showed.
+// CSS px per screenshot px, per tab; only valid for the page and viewport it was taken of.
 type ShotView = {
   url: string;
   width?: number;
@@ -703,7 +698,6 @@ async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: 
   if (!shot) return { x, y };
   if (tabUrl(tab) !== shot.url) return STALE_SHOT;
   const status = await pageCall(tab, { op: "status" });
-  // A scroll, resize or reload moves what sits at each of the picture's points.
   const keys = ["width", "height", "scrollX", "scrollY", "scrolls", "doc"] as const;
   if (keys.some((key) => status[key] !== shot[key])) return STALE_SHOT;
   return { x: x * shot.scale, y: y * shot.scale };
@@ -711,7 +705,6 @@ async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: 
 
 const STALE_SHOT = "the page changed since the screenshot those x and y come from; take a new one.";
 
-/** A ref's centre or the model's point, in CSS pixels of the visible page; else why not. */
 async function onScreen(
   tab: BrowserTab,
   ref: string | undefined,
@@ -727,7 +720,6 @@ async function onScreen(
   return { x: found.x, y: found.y };
 }
 
-/** browser_move_mouse: hover only, so nothing to ask; a page acting on hover is its own doing. */
 async function moveTo(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
   const at = await onScreen(tab, action.ref, action.x, action.y);
   if (typeof at === "string") return { ok: false, error: at };
@@ -742,13 +734,11 @@ const DRAG_FRAME_MS = 16;
 /** browser_drag: both ends are asked about as clicks, since a drop can delete, send or buy too. */
 async function dragBetween(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
   const { signal } = context;
-  // A point is read off the screen as it is: a ref is scrolled to only when both ends are refs.
   const scroll = Boolean(action.ref && action.toRef);
   const start = await onScreen(tab, action.ref, action.x, action.y, scroll);
   if (typeof start === "string") return { ok: false, error: start };
   const end = await onScreen(tab, action.toRef, action.toX, action.toY, scroll);
   if (typeof end === "string") return { ok: false, error: end };
-  // Bringing the end ref into view can scroll the start away.
   const from = scroll ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
   if (typeof from === "string") {
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
@@ -772,7 +762,6 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     infos.push(JSON.stringify(described.info));
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  // While the user decided, either end could have been relabelled or rewired around the same spot.
   if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
   const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] });
   if (!down.ok) return { ok: false, error: down.error };
@@ -781,7 +770,6 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   let at = from;
   let sent = performance.now();
   for (let step = 1; step <= steps && !signal?.aborted; step++) {
-    // A frame per move, the round trip counting toward it.
     await sleep(Math.max(0, DRAG_FRAME_MS - (performance.now() - sent)));
     sent = performance.now();
     const next = { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
@@ -789,15 +777,13 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     if (!moved?.ok) break;
     at = next;
   }
-  // Called off rather than dropped anywhere nobody checked, so the page is never left mid-drag.
   const cancel = async (error: string): Promise<Result> => {
     await pageCall(tab, { op: "pointer", phase: "cancel", ...from }).catch(() => null);
     return { ok: false, error };
   };
   if (signal?.aborted) return cancel(STOPPED);
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
-  // Many apps show their drop zones (Trash, Send to) only once a drag starts, or relabel one: what
-  // is at the end now takes the drop, so it is asked about unless it is exactly what was asked about.
+  // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged.
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
@@ -815,8 +801,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   return afterward(tab, before, action, context, up.note);
 }
 
-/** A point on something the page gives no role or words for, a canvas say: its pixels may be a
- *  Buy button nothing here can read, so the user is asked once per site in this chat. */
+/** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
 function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
   const host = hostOfUrl(pageUrl);
@@ -826,7 +811,6 @@ function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }
 
 const CHANGED_UNDER_POINT = "the page changed under that point; take a screenshot to see it again.";
 
-/** Whether the point still holds the element and description the user was asked about. */
 async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: string, info: string): Promise<boolean> {
   const again = await pageCall(tab, { op: "describe", ref: "", ...point }).catch(() => null);
   return Boolean(again?.ok && again.hit === hit && JSON.stringify(again.info) === info);
@@ -834,9 +818,7 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 
 const SCRIPT_WAIT_MS = 15_000;
 
-/** browser_evaluate. A script can do anything the page can, past every rule above: read a password
- *  field, press Buy, send what it read anywhere. So the user sees it word for word and is asked
- *  each time, whatever their site permissions say. */
+/** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
@@ -847,7 +829,6 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
   const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  // The user approved it for the page they saw, which may have moved on while they read it.
   const current = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
   if (!current || current.loading || tabUrl(current) !== before) {
     return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
@@ -860,7 +841,6 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
           () => null,
         )
       : null;
-    // No agent: a new document since the user was asked.
     if (reply && !reply.installed) {
       return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
     }
@@ -980,8 +960,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   return { ok: true, url: tabUrl(tab), title: tab.title, image };
 }
 
-/** The picture at the page's own CSS size (device pixels otherwise), within the server's
- *  1024px edge (mcp_images.MAX_IMAGE_EDGE), so x and y read off it map back exactly. */
+/** At CSS size within mcp_images.MAX_IMAGE_EDGE, so x and y read off it map back exactly. */
 async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Promise<Blob> {
   let bitmap: ImageBitmap;
   try {

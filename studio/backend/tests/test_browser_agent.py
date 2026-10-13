@@ -116,7 +116,6 @@ def test_pointer_tools_take_a_ref_or_a_point():
         "x": 120.0,
         "y": 48.2,
     }
-    # A ref wins over a point, as the snapshot's refs are exact.
     assert _request("browser_click", {"ref": "r3", "x": 1, "y": 2}) == {"op": "click", "ref": "r3"}
     assert _request("browser_click", {"ref": "r3", "x": -1}) == {"op": "click", "ref": "r3"}
     assert _request("browser_move_mouse", {"ref": "r9"}) == {"op": "move", "ref": "r9"}
@@ -144,7 +143,6 @@ def test_evaluate_takes_a_bounded_script():
     for bad in ("", "   ", None, 5, "x" * 8001):
         with pytest.raises(ValueError, match = "script"):
             _request("browser_evaluate", {"script": bad})
-    # What the user reads must be what runs: no bidi overrides, invisible marks or hidden tails.
     for hidden in (
         "return 1; // ‮;)(lave‬",
         "return '​';",

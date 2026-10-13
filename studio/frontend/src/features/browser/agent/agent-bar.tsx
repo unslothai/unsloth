@@ -14,7 +14,6 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   // The whole run, not just each action: Stop between calls stops the next one before it starts.
   const running = useBrowserAgentStore((state) => state.working || (!!state.runKey && state.stoppedRun !== state.runKey));
   const question = useBrowserAgentStore((state) => state.question);
-  // Which script question has been read to its end; Allow waits for it.
   const [readId, setReadId] = useState<number | null>(null);
   const script = question?.ask === "script";
   if (!question && !(running && tabId === activeTabId)) return null;
@@ -59,8 +58,7 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   );
 }
 
-/** The whole script the user is approving. `onRead` once its end has been on screen, so code
- *  past the fold can't be approved unseen. */
+/** `onRead` once the script's end has been on screen: code past the fold can't be approved unseen. */
 function ScriptPreview({ code, onRead }: { code: string; onRead: () => void }) {
   const check = useCallback(
     (el: HTMLElement | null) => {

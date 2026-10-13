@@ -320,7 +320,6 @@ _ACTION_TIMEOUT_S = 600.0
 _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
 _MAX_TEXT_CHARS = 8000
-# Short enough to read before approving it.
 _MAX_SCRIPT_CHARS = 8000
 _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 # Past any real screen: a point there is a mistake, not a far corner.
@@ -364,7 +363,6 @@ def _coordinate(arguments: dict, key: str) -> Optional[float]:
 def _target(arguments: dict, prefix: str = "") -> dict:
     """A ref or an x/y point, as `{"ref": ...}` or `{"x": ..., "y": ...}`, keyed with `prefix`."""
     ref = _ref({"ref": arguments.get(f"{prefix}ref")})
-    # The exact ref wins, whatever else came with it.
     if ref:
         return {f"{prefix}ref": ref}
     x = _coordinate(arguments, f"{prefix}x")
@@ -451,8 +449,7 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             raise ValueError("script must be the JavaScript to run.")
         if len(script) > _MAX_SCRIPT_CHARS:
             raise ValueError(f"script is longer than {_MAX_SCRIPT_CHARS} characters.")
-        # The user approves the script as the panel shows it: no characters that draw differently
-        # from how they run (bidi overrides, invisible marks), and no blank run hiding a tail.
+        # Approved as shown: no bidi overrides, invisible marks, or blank runs hiding a tail.
         if any(unicodedata.category(char) == "Cf" for char in script):
             raise ValueError(
                 "script has invisible or direction-changing characters; write them as \\u escapes."
@@ -594,7 +591,6 @@ def _png_size(url: str) -> Optional[tuple[int, int]]:
     import base64
     import struct
 
-    # Width and height sit at bytes 16-24 of the IHDR chunk, first in every PNG.
     head = base64.b64decode(url.split(",", 1)[1][:44])
     if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
         return None
