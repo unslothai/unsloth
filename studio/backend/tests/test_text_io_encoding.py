@@ -314,7 +314,10 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
-            if _has_keyword(node, "encoding"):
+            # Path.read_text(encoding, errors) and Path.write_text(data, encoding, ...) also take
+            # it positionally: read_text("utf-8") names its encoding as much as the keyword does.
+            positional = 0 if name == "read_text" else 1
+            if _has_keyword(node, "encoding") or len(node.args) > positional:
                 continue
             # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
@@ -709,6 +712,26 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
         if any("fdopen" in line for line in _offenders(path)):
             flagged.add(name)
     assert flagged == {"text.py", "default_mode.py"}, flagged
+
+
+def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None:
+    """Path.read_text(encoding, errors) and Path.write_text(data, encoding, ...) take the
+    encoding positionally too. #13565's read_text("utf-8") is not a locale-default read."""
+    cases = {
+        "read_none.py": "p.read_text()\n",
+        "read_kw.py": 'p.read_text(encoding = "utf-8")\n',
+        "read_pos.py": 'p.read_text("utf-8")\n',
+        "write_none.py": 'p.write_text("x")\n',
+        "write_kw.py": 'p.write_text("x", encoding = "utf-8")\n',
+        "write_pos.py": 'p.write_text("x", "utf-8")\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if _offenders(path):
+            flagged.add(name)
+    assert flagged == {"read_none.py", "write_none.py"}, flagged
 
 
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
