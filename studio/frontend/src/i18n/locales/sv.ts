@@ -2801,7 +2801,7 @@ export const sv = {
       autoCompactKeywords:
         "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
       toolResultLimit: "Längd på verktygsutdata",
-      toolResultLimitDescription: "Tecken i ett Python- eller Terminal-resultat som modellen läser. Standard är {count}.",
+      toolResultLimitDescription: "Tecken i ett Python-, Terminal- eller MCP-resultat som modellen läser. Standard är {count}.",
       toolResultLimitHint: "Längre utdata sparas i en fil som modellen kan läsa i delar. En högre gräns gäller modeller som körs i Unsloth, och små kontextfönster får fortfarande mindre. API-modeller behåller standardvärdet om du inte sänker det.",
       toolResultLimitDefault: "{count} (standard)",
       toolResultLimitLocked: "Anges av UNSLOTH_TOOL_RESULT_MAX_CHARS",

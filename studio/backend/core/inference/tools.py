@@ -16756,9 +16756,11 @@ def _tool_result_char_budget() -> int:
     return _result_char_budget(cap)
 
 
-def _other_tool_result_char_budget() -> int:
-    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
-    page back through."""
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -21323,7 +21325,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body, _other_tool_result_char_budget())
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 

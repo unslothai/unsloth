@@ -190,10 +190,43 @@ def test_route_refuses_a_save_the_environment_decides(monkeypatch):
 
 
 @pytest.mark.parametrize("saved", [4000, 64000])
-def test_non_code_tools_keep_the_install_cap(monkeypatch, saved):
-    """MCP, web and edit results have no spill file, and the row names Python and Terminal only."""
+def test_built_in_non_code_tools_keep_the_install_cap(monkeypatch, saved):
+    """Web and edit results are bounded by their own caps; only the install cap applies to them."""
     limit.set_max_chars(saved)
     tools._REQUEST_CONTEXT_TOKENS.set(131072)
     monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
-    out = tools._fit_result_to_room(FILE_50K, "mcp__server__tool")
+    out = tools._fit_result_to_room(FILE_50K, "edit_file")
     assert "truncated to 16000 chars for the model" in out
+
+
+# The reporter's case (#13576): Settings at 32,000, a third-party MCP tool returning 23,098 characters.
+MCP_23K = ("y" * 99 + "\n") * 230 + "z" * 98
+
+
+@pytest.mark.parametrize("saved, cut", [(32000, None), (64000, None), (4000, 4000)])
+def test_mcp_results_follow_the_setting(monkeypatch, saved, cut):
+    limit.set_max_chars(saved)
+    tools._REQUEST_CONTEXT_TOKENS.set(131072)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    if cut is None:
+        assert out == MCP_23K
+    else:
+        assert f"truncated to {cut} chars for the model; 23098 chars total" in out
+
+
+def test_mcp_results_keep_the_default_where_the_window_is_unknown(monkeypatch):
+    limit.set_max_chars(32000)
+    tools._REQUEST_CONTEXT_TOKENS.set(None)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    assert "truncated to 16000 chars for the model" in out
+
+
+def test_a_small_window_still_lowers_a_raised_mcp_cap(monkeypatch):
+    limit.set_max_chars(32000)
+    tools._REQUEST_CONTEXT_TOKENS.set(8192)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    # 8192 tokens * 4 chars * 0.35 share = 11,468 before the notice is priced in.
+    assert "chars for the model; 23098 chars total" in out and len(out) < 11468 + 200

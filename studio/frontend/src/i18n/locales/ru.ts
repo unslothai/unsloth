@@ -2628,7 +2628,7 @@ export const ru = {
       autoCompactKeywords:
         "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас архив поиск извлечение compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "Длина вывода инструментов",
-      toolResultLimitDescription: "Сколько символов одного результата Python или Терминала читает модель. По умолчанию {count}.",
+      toolResultLimitDescription: "Сколько символов одного результата Python, Терминала или инструмента MCP читает модель. По умолчанию {count}.",
       toolResultLimitHint: "Более длинный вывод сохраняется в файл, который модель может читать по частям. Более высокий лимит действует для моделей, запущенных в Unsloth, а маленькие окна контекста по-прежнему получают меньше. API-модели сохраняют значение по умолчанию, если вы его не уменьшите.",
       toolResultLimitDefault: "{count} (по умолчанию)",
       toolResultLimitLocked: "Задано через UNSLOTH_TOOL_RESULT_MAX_CHARS",
