@@ -343,7 +343,7 @@ def clef(home, monkeypatch):
     _spoof_device(monkeypatch, "cuda")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
-    # The reload after training skips while anything holds the GPU, so an owner an earlier test left would stop it.
+    # An owner an earlier test left would stop the reload after training.
     monkeypatch.setattr("core.inference.gpu_arbiter._owner", None)
     return state
 
@@ -506,7 +506,6 @@ def test_a_request_waiting_on_the_reload_does_not_bring_back_a_disabled_clef(
     monkeypatch.setattr(laya_runtime, "_ensure_loading", ensuring)
     request = threading.Thread(target = lambda: answers.append(_post(client)))
     request.start()
-    # The request holds the reload's loader before the disable, not a sleep that a slow runner outlasts.
     assert waiting.wait(10)
     assert _put(client, enabled = False).status_code == 200
     request.join(10)

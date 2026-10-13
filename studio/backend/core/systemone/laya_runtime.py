@@ -2331,7 +2331,6 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
         while _training_active():
             time.sleep(TRAINING_POLL_S)
         with _state_lock:
-            # Anything since the run took the GPU (an unload, a settings change, another load or GPU owner) wins.
             if (
                 _unloads != unloads
                 or _agent is not None
