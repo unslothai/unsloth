@@ -419,14 +419,26 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
-        # Dismissing into the composer must preserve its caret.
+        # Dismissing into the composer must preserve its caret. The click has to land on the
+        # composer itself: since #13615 the shorter More menu can open over the composer's middle,
+        # and a click there is a click IN the menu, which rightly does not dismiss it. So the spot
+        # is the first point across the composer's midline that hit-tests to the composer.
         spot = await page.evaluate(
-            "() => { const c = window.__heavyThread.composer(); if (!c) return null;"
-            "const r = c.getBoundingClientRect();"
-            "return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }"
+            """() => {
+              const c = window.__heavyThread.composer();
+              if (!c) return { error: "no composer" };
+              const r = c.getBoundingClientRect();
+              const y = r.y + r.height / 2;
+              for (let i = 1; i < 20; i += 1) {
+                const x = r.x + (r.width * i) / 20;
+                const el = document.elementFromPoint(x, y);
+                if (el && (el === c || c.contains(el))) return { x, y };
+              }
+              return { error: "the open menu covers the whole composer" };
+            }"""
         )
-        if not spot:
-            return {"case": case, "error": "no composer"}
+        if spot.get("error"):
+            return {"case": case, "error": spot["error"]}
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(300)
         await page.keyboard.type("zz")
