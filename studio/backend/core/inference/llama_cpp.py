@@ -681,8 +681,7 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
-    # The caller left the slot count at the server default, so Auto speculation may
-    # lower it to keep a drafter that does not fit (#8872). A chosen count is kept.
+    # Slots left at the default: Auto speculation may lower them to keep a drafter (#8872).
     n_parallel_from_default: bool = False
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
@@ -4534,8 +4533,7 @@ def _auto_mode_drops_mtp(
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
 # Smallest context Auto shrinks to so a fast MLA head still launches.
 _FAST_MTP_MIN_CTX = 65536
-# Share of the target-only Auto context a drafter may take once slots are down to one.
-# Qwen3.6-27B on a 46 GB card needs 7% at one slot (18% at four).
+# Max share of the target-only Auto context a drafter may take at one slot.
 _MTP_SLOT_CTX_TRIM = 0.10
 
 
@@ -8179,7 +8177,6 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
-        # Auto lowered that default count to keep the drafter (#8872).
         self._slots_cut_for_drafter: bool = False
         # Budget the running child was sized against; None before any load, so the
         # settings route reports a stale budget instead of nagging on every save.
@@ -25841,7 +25838,6 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
-                # The slot count Auto gave up to keep the drafter, for the drafterless retry.
                 _mtp_slots_asked: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
@@ -26484,7 +26480,6 @@ class LlamaCppBackend:
                             - _cc_bytes(ctx, 1, slots, cache_type),
                         )
 
-                    # The lump below at a candidate slot count and its micro-batch.
                     def _layer_compute_buffer(slots: int) -> int:
                         cb = self._estimate_compute_buffer_bytes(
                             n_ubatch = _ubatch_for_slots(slots),
@@ -26992,9 +26987,7 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
-                        # (GPU count, target-only context, budget with the drafter) for
-                        # every subset of the drafter's ranking the walk priced the target
-                        # on: the order the final placement sorts by once the drafter stays.
+                        # (GPU count, target-only ctx, budget with drafter) per drafter-ranked subset.
                         _target_placements: list[tuple[int, int, float]] = []
                         _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
@@ -27141,14 +27134,9 @@ class LlamaCppBackend:
                                             _budget_w / 1024,
                                         )
                                     break
-                        # Fewer serving slots before no drafter: the KV, the compute buffer
-                        # and the drafter's per-slot rollback state all shrink with the slot
-                        # count. Each count is priced the way the Auto walk will place it:
-                        # the first subset that holds the drafter at any context is the one
-                        # it takes, so that context must keep the subset's target-only one,
-                        # less at most _MTP_SLOT_CTX_TRIM at one slot (the draft KV grows
-                        # with the context the target alone already filled). A count set in
-                        # the extras or the environment wins at launch, so it is kept.
+                        # Fewer slots before no drafter. The walk takes the first subset holding the
+                        # drafter, so it must keep its target-only ctx (less the trim at one slot).
+                        # An extras / env --parallel wins at launch, so it is kept.
                         if (
                             _target_fits_somewhere
                             and not _both_fit_somewhere
@@ -33017,9 +33005,7 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
-                    # Those slots bought a drafter this retry no longer runs, and the
-                    # target alone fit them at a context at least this large. If they
-                    # are what fails (a model refusing unified KV), retry as launched.
+                    # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
                         (fallback_cmd, n_parallel, _auto_ctx_checkpoints, _auto_ckpt_emitted)
                         if _mtp_slots_asked is not None
