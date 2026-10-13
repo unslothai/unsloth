@@ -15,6 +15,7 @@ asserts `not self.training` and whose block only computes under no-grad `moe_inf
 structure, never repo name; no-op for transformers' own models."""
 
 import functools
+import os
 
 import torch
 
@@ -340,26 +341,77 @@ def _plain_expert(expert, dtype):
     ) and hasattr(expert, "act_fn")
 
 
-def _grouped_mm_ready(weight):
-    """torch._grouped_mm runs on this weight's device / dtype / layout: 2.6 / 2.7 lack it, 2.8 raises off sm90,
-    float16 needs 2.10+, and odd strides are refused. One tiny call decides, so a refusal keeps the original
-    path instead of failing generation."""
-    if not (
-        weight.is_cuda
-        and weight.dtype in (torch.bfloat16, torch.float16)
-        and hasattr(torch, "_grouped_mm")
-    ):
-        return False
-    try:
-        offsets = torch.ones(1, dtype = torch.int32, device = weight.device)
-        torch._grouped_mm(
-            weight.new_zeros((1, weight.shape[1])),
-            weight.detach()[None].transpose(-2, -1),
-            offs = offsets,
+def _torch_grouped_mm(inputs, weight, offsets):
+    return torch._grouped_mm(inputs, weight, offs = offsets)
+
+
+def _triton_grouped_mm(inputs, weight, offsets):
+    from unsloth_zoo.temporary_patches.moe_grouped_fp16 import generic_grouped_mm
+    return generic_grouped_mm(inputs, weight, offsets)
+
+
+_FALLBACK_LOGGED = set()
+
+
+def _log_fallback(reason):
+    if reason not in _FALLBACK_LOGGED:
+        _FALLBACK_LOGGED.add(reason)
+        print(
+            f"Unsloth: MoE eval routing keeps the per-expert loop ({reason}); generation is slower."
         )
-        return True
-    except Exception:
-        return False
+
+
+def _grouped_mm_candidates(weight):
+    """Grouped GEMMs that keep the offsets on the device, best first. torch._grouped_mm only has a real kernel on
+    sm90 / sm100 (and ROCm): elsewhere torch 2.9+ loops over host-copied offsets (a sync per layer that also
+    breaks CUDA Graph capture) and 2.8 raises, so sm80 / sm89 / sm120 use unsloth_zoo's Triton grouped GEMM.
+    UNSLOTH_MOE_INFER_GROUPED=torch|triton|0 forces one or turns the grouped path off."""
+    choice = os.environ.get("UNSLOTH_MOE_INFER_GROUPED", "auto").strip().lower()
+    if choice in ("0", "false", "off"):
+        return []
+    candidates = []
+    if hasattr(torch, "_grouped_mm") and choice in ("auto", "torch"):
+        native = torch.version.hip is not None or torch.cuda.get_device_capability(weight.device)[
+            0
+        ] in (9, 10)
+        if native or choice == "torch":
+            candidates.append(_torch_grouped_mm)
+    if choice in ("auto", "triton") and torch.version.hip is None:
+        if torch.cuda.get_device_capability(weight.device) >= (8, 0):
+            candidates.append(_triton_grouped_mm)
+    return candidates
+
+
+def _grouped_mm_for(weights):
+    """The first grouped GEMM that reproduces a plain matmul on these weights' device / dtype / layout (a tiny
+    call each), or None, logged once, so a refusal keeps the original loop instead of failing generation."""
+    first = weights[0]
+    if not first.is_cuda:
+        return None
+    if first.dtype not in (torch.bfloat16, torch.float16):
+        _log_fallback(f"expert weights are {first.dtype}, not bfloat16 / float16")
+        return None
+    errors = []
+    for grouped_mm in _grouped_mm_candidates(first):
+        try:
+            offsets = torch.tensor([1, 2], dtype = torch.int32, device = first.device)
+            for weight in weights:
+                weight = weight.detach()
+                # Deterministic inputs: the global RNG stream a seeded sample relies on stays untouched.
+                inputs = torch.arange(2 * weight.shape[1], device = weight.device).view(2, -1)
+                inputs = inputs.float().sin().div(weight.shape[1] ** 0.5).to(weight.dtype)
+                stacked = torch.stack([weight, weight.flip(0)])
+                out = grouped_mm(inputs, stacked.transpose(-2, -1), offsets)
+                reference = torch.cat([inputs[:1] @ weight.T, inputs[1:] @ weight.flip(0).T])
+                if not torch.allclose(out.float(), reference.float(), rtol = 2e-2, atol = 2e-2):
+                    raise RuntimeError("mismatch against a plain matmul")
+            return grouped_mm
+        except Exception as error:
+            errors.append(
+                f"{grouped_mm.__name__.strip('_')}: {type(error).__name__}: {error}"[:200]
+            )
+    _log_fallback("; ".join(errors) or "no grouped GEMM for this GPU")
+    return None
 
 
 def _grouped_experts_live(
@@ -393,22 +445,24 @@ def _grouped_experts(block):
         if cached is None or _grouped_experts_live(block, cached, every = False):
             return cached
     experts = block.experts
-    stacked = None
+    stacked = grouped_mm = None
     first = experts[0] if isinstance(experts, torch.nn.ModuleList) and len(experts) else None
     if (
         first is not None
         and isinstance(getattr(first, "gate_proj", None), torch.nn.Linear)
         and all(_plain_expert(expert, first.gate_proj.weight.dtype) for expert in experts)
-        and _grouped_mm_ready(first.gate_proj.weight)
-        and _grouped_mm_ready(first.down_proj.weight)
     ):
+        grouped_mm = _grouped_mm_for((first.gate_proj.weight, first.down_proj.weight))
+    elif first is not None and any(p.is_cuda for p in first.parameters()):
+        _log_fallback("experts are not plain bias-free nn.Linear layers (quantized or adapters)")
+    if grouped_mm is not None:
         stacked = []
         for name in _EXPERT_PROJECTIONS:
             buffer = torch.stack([getattr(expert, name).weight.detach() for expert in experts])
             for index, expert in enumerate(experts):
                 getattr(expert, name).weight.data = buffer[index]
             stacked.append(buffer)
-        stacked = tuple(stacked)
+        stacked = (*stacked, grouped_mm)
     block.__dict__["_unsloth_grouped_experts"] = stacked
     return stacked
 
@@ -421,7 +475,7 @@ def _grouped_moe_infer(original):
             stacked = _grouped_experts(self)
         if stacked is None or x.dtype != stacked[0].dtype:
             return original(self, x, topk_ids, topk_weight)
-        gate, up, down = stacked
+        gate, up, down, grouped_mm = stacked
         num_experts = gate.shape[0]
         counts = topk_ids.new_zeros((topk_ids.shape[0], num_experts))
         counts.scatter_(1, topk_ids, 1)
@@ -429,9 +483,9 @@ def _grouped_moe_infer(original):
         order = topk_ids.view(-1).argsort()
         sorted_tokens = x[order // topk_ids.shape[1]]
         act = self.experts[0].act_fn
-        hidden = act(torch._grouped_mm(sorted_tokens, gate.transpose(-2, -1), offs = offsets))
-        hidden = hidden * torch._grouped_mm(sorted_tokens, up.transpose(-2, -1), offs = offsets)
-        outs = torch._grouped_mm(hidden, down.transpose(-2, -1), offs = offsets)
+        hidden = act(grouped_mm(sorted_tokens, gate.transpose(-2, -1), offsets))
+        hidden = hidden * grouped_mm(sorted_tokens, up.transpose(-2, -1), offsets)
+        outs = grouped_mm(hidden, down.transpose(-2, -1), offsets)
         new_x = torch.empty_like(outs)
         new_x[order] = outs
         return (

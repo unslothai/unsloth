@@ -538,7 +538,7 @@ _RemoteMoE.__module__ = "transformers_modules.toy.modeling"
 def _stack(monkeypatch, block):
     from unsloth.models import remote_moe_shims
 
-    monkeypatch.setattr(remote_moe_shims, "_grouped_mm_ready", lambda weight: True)
+    monkeypatch.setattr(remote_moe_shims, "_grouped_mm_for", lambda weights: "grouped_mm")
     return remote_moe_shims._grouped_experts(block)
 
 
@@ -546,7 +546,7 @@ def test_grouped_experts_keep_parameters_and_alias_the_stack(monkeypatch):
     block = _RemoteMoE()
     params = [p for p in block.parameters()]
     values = [p.detach().clone() for p in params]
-    gate, up, down = _stack(monkeypatch, block)
+    gate, up, down, _ = _stack(monkeypatch, block)
     # Same Parameter objects (an optimizer made before generate keeps training them), now views of the stack.
     assert [p for p in block.parameters()] == params
     assert all(torch.equal(p, v) for p, v in zip(params, values))
@@ -582,8 +582,57 @@ def test_prepare_drops_stale_grouped_experts(monkeypatch):
     assert remote_moe_shims._grouped_experts(block) is None
 
 
-def test_grouped_mm_ready_refuses_cpu_weights():
+def test_grouped_mm_for_refuses_cpu_weights():
     from unsloth.models import remote_moe_shims
 
-    weight = torch.zeros(4, 8, dtype=torch.bfloat16)
-    assert not remote_moe_shims._grouped_mm_ready(weight)
+    assert remote_moe_shims._grouped_mm_for((torch.zeros(4, 8, dtype=torch.bfloat16),)) is None
+
+
+@pytest.mark.parametrize(
+    "capability, hip, choice, expected",
+    [
+        ((9, 0), None, "auto", ["torch", "triton"]),
+        ((10, 0), None, "auto", ["torch", "triton"]),
+        # A100 / L4 / RTX: torch._grouped_mm loops over host-copied offsets there (or raises on 2.8).
+        ((8, 0), None, "auto", ["triton"]),
+        ((8, 9), None, "auto", ["triton"]),
+        ((12, 0), None, "auto", ["triton"]),
+        ((7, 5), None, "auto", []),
+        ((8, 0), None, "torch", ["torch"]),
+        ((9, 0), None, "0", []),
+        ((9, 4), "6.4", "auto", ["torch"]),
+    ],
+)
+def test_grouped_mm_candidates_by_gpu(monkeypatch, capability, hip, choice, expected):
+    from unsloth.models import remote_moe_shims
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setenv("UNSLOTH_MOE_INFER_GROUPED", choice)
+    names = {
+        remote_moe_shims._torch_grouped_mm: "torch",
+        remote_moe_shims._triton_grouped_mm: "triton",
+    }
+    found = remote_moe_shims._grouped_mm_candidates(torch.zeros(1))
+    assert [names[f] for f in found] == expected
+
+
+def test_grouped_mm_for_logs_once_and_falls_back(monkeypatch, capsys):
+    from unsloth.models import remote_moe_shims
+
+    def broken(inputs, weight, offsets):
+        raise RuntimeError("grouped gemm is only supported on SM90")
+
+    weight = torch.ones(4, 8, dtype=torch.bfloat16)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(remote_moe_shims, "_grouped_mm_candidates", lambda weight: [broken])
+    monkeypatch.setattr(remote_moe_shims, "_FALLBACK_LOGGED", set())
+    assert remote_moe_shims._grouped_mm_for((weight,)) is None
+    assert remote_moe_shims._grouped_mm_for((weight,)) is None
+    assert capsys.readouterr().out.count("keeps the per-expert loop") == 1
+
+    def matmul(inputs, weight, offsets):
+        return torch.cat([inputs[:1] @ weight[0], inputs[1:] @ weight[1]])
+
+    monkeypatch.setattr(remote_moe_shims, "_grouped_mm_candidates", lambda weight: [broken, matmul])
+    assert remote_moe_shims._grouped_mm_for((weight,)) is matmul
