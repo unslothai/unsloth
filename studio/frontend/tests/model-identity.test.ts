@@ -493,7 +493,6 @@ test("an audio.cpp umbrella folder id is a Hub id, not a path", () => {
     residentModelIdMatches(folder, "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"),
     false,
   );
-  // A folder never stands in for the umbrella snapshot, or the reverse.
   const snapshot =
     "/c/hub/models--audio-cpp--audio.cpp-gguf/snapshots/abc123";
   assert.equal(residentModelIdMatches(folder, snapshot), false);

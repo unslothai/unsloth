@@ -1801,7 +1801,6 @@ class DownloadRegistry:
         """Whether a DIFFERENT quantization of *repo_id* is downloading while *variant* is being deleted. When one is, the delete reclaims only this variant's files and leaves the shared companion (mmproj) for the live sibling. Point-in-time, but safe: the finalized companion is held by deletion's reference-count walk and a sibling starting mid-delete re-fetches it, so protection never depends on the sibling having resolved its blob hashes."""
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
-        # *prefix* narrows peers to variant keys under one path (one audio.cpp umbrella folder).
         scope = (prefix or "").strip().lower()
 
         def is_peer(key: str) -> bool:

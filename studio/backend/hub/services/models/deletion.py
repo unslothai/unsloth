@@ -945,15 +945,13 @@ async def delete_cached_model_response(
     account_access.require_installation_owner()
     from core.inference.audio_cpp_models import cached_folder_target, folder_row_for_download
 
-    # An umbrella folder row is one subfolder of audio-cpp/audio.cpp-gguf: delete its own variant
-    # keys one at a time, never the repo, which holds every other folder too.
+    # Delete an umbrella folder's own variant keys, never the repo, which holds every other folder.
     folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
     if folder is not None:
         umbrella, keys = folder
         if not keys:
             raise HTTPException(status_code = 404, detail = "Model not found in cache")
-        # Every key is reserved before the first goes, so a download of a later one cannot start
-        # midway and leave the folder half deleted.
+        # Reserve every key first, so a later key's download cannot start midway.
         repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, umbrella, repo_type = "model")
         reserved: list[str] = []
         try:
@@ -985,7 +983,6 @@ async def delete_cached_model_response(
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
-    # One umbrella folder's variant is blocked only by that folder being loaded.
     guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
 
     # Fail closed with 503 rather than unlink weights under a running process.
@@ -1085,8 +1082,7 @@ def _audio_cpp_blocks_delete(repo_id: str) -> bool:
         ref = parse_identifier(base) if not base.lower().endswith(".gguf") else None
         if ref is None or not ref.repo_id:
             return False
-        # The whole repo is held by any of its folders; one folder by itself or by a model that loads
-        # it as a companion (MioTTS opens MioCodec).
+        # A folder is also held by a model loading it as a companion (MioTTS opens MioCodec).
         if wanted in (ref.repo_id.lower(), ref.id.lower()):
             return True
         if not is_umbrella_id(wanted):

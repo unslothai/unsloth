@@ -139,7 +139,6 @@ def test_cached_folder_target_scopes_keys_to_the_folder(hub):
     assert acm.cached_folder_target(f"{QWEN}:Q8_0") == (AUDIO_CPP_REPO, [QWEN_KEY])
     assert acm.cached_folder_target(QWEN, "Q4_K_M") == (AUDIO_CPP_REPO, [])
     assert acm.cached_folder_target(f"{AUDIO_CPP_REPO}/Missing-GGUF", None) == (AUDIO_CPP_REPO, [])
-    # The repo itself and ordinary repos keep their own handling.
     assert acm.cached_folder_target(AUDIO_CPP_REPO, "Q8_0") is None
     assert acm.cached_folder_target("unsloth/Qwen3-0.6B-GGUF", "Q8_0") is None
 
@@ -254,7 +253,6 @@ def test_cached_path_and_reveal_of_a_folder_row(hub, monkeypatch):
     with pytest.raises(HTTPException) as err:
         _path(QWEN, "Q4_K_M")
     assert err.value.status_code == 404
-    # Ordinary malformed ids are still refused.
     with pytest.raises(HTTPException) as err:
         _path("a/b/c", "")
     assert err.value.status_code == 400
@@ -349,7 +347,6 @@ def test_a_finished_download_lists_its_folder_on_the_next_scan(hub):
     assert moon not in {row["repo_id"] for row in cache_inventory._scan_cached_gguf()}
     key = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
     _add_snapshot(hub, "a" * 40, {f"{key}.gguf": "moonshine_asr"}, main = True)
-    # What a completed download calls; the audio.cpp memo must not keep the old listing.
     cache_inventory.invalidate_hf_cache_scans()
     assert moon in {row["repo_id"] for row in cache_inventory._scan_cached_gguf()}
 
@@ -413,7 +410,6 @@ def test_a_folder_delete_preview_counts_extras_its_variants_share(hub, monkeypat
     [
         # english BF16 is downloading: its voices landed first, its GGUF is not listed yet.
         ("PocketTTS-GGUF/english/pocket-tts-english-bf16", True),
-        # Every umbrella folder downloads on the same repo; another folder needs nothing here.
         ("Kokoro-82M-GGUF/kokoro-82m-q4_0", False),
     ],
 )
@@ -666,7 +662,6 @@ def test_a_listing_read_before_a_download_finished_is_not_memoized(hub, monkeypa
         found = real(task)
         calls.append(task)
         if len(calls) == 1:
-            # A download completes while this scan is still reading the old cache.
             acm.forget()
         return found
 
