@@ -506,6 +506,97 @@ def test_a_slot_matching_no_amdgpu_card_falls_back_to_the_tightest_card(monkeypa
     assert "GTT" in h3_native_live_fit(inputs, "auto").refusal
 
 
+class _FakeServer:
+    started: list = []
+
+    def __init__(self, binary):
+        self.alive = False
+
+    def start(self, files, *, offload, env = None, extra_args = None):
+        self.started.append(tuple(offload))
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive
+
+    def stop(self):
+        self.alive = False
+
+
+@pytest.fixture
+def fake_server(monkeypatch):
+    from core.inference import sd_cpp_server
+
+    _FakeServer.started = []
+    monkeypatch.setattr(sd_cpp_server, "SdCppServer", _FakeServer)
+    return _FakeServer
+
+
+def test_a_server_start_is_fitted_and_started_with_the_fitted_flags(fake_server):
+    from core.inference.video_minimax_h3 import H3NativeServerSlot
+
+    slot = H3NativeServerSlot("/x/sd-server", object())
+    calls = []
+
+    def fit():
+        calls.append(1)
+        return ("--offload-to-cpu", "--clip-on-cpu")
+
+    slot.get(("--offload-to-cpu",), (), pre_spawn = fit)
+    assert calls == [1] and fake_server.started == [("--offload-to-cpu", "--clip-on-cpu")]
+    # The live server is reused with no new fit.
+    slot.get(("--offload-to-cpu", "--clip-on-cpu"), (), pre_spawn = fit)
+    assert calls == [1] and len(fake_server.started) == 1
+
+
+def test_a_server_that_stopped_after_the_snapshot_is_fitted_again_and_can_be_refused(fake_server):
+    """alive_signature() said reuse, but the server exited before get(): the start is fitted, and refused."""
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal, H3NativeServerSlot
+
+    slot = H3NativeServerSlot("/x/sd-server", object())
+    slot.get(("--offload-to-cpu",), ())
+    slot._server.alive = False
+
+    def refuse():
+        raise H3NativeMemoryRefusal("no longer fits")
+
+    with pytest.raises(H3NativeMemoryRefusal):
+        slot.get(("--offload-to-cpu",), (), pre_spawn = refuse)
+    assert len(fake_server.started) == 1 and slot._server is None
+
+
+def test_a_refused_server_start_is_not_turned_into_a_disabled_slot():
+    import inspect
+
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod.VideoBackend._h3_native_server_render)
+    assert "pre_spawn = functools.partial(" in source
+    assert "except (SdCppCancelled, H3NativeMemoryRefusal):" in source
+
+
+def test_cgroup_v1_usage_leaves_out_the_inactive_file_cache(tmp_path):
+    """https://docs.kernel.org/admin-guide/cgroup-v1/memory.html: usage counts page cache the kernel reclaims
+    first; total_inactive_file is subtracted, as for RAM."""
+    from utils.host_memory import cgroup_v1_memsw_headroom_bytes
+
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/x/memory.limit_in_bytes": str(32 * GIB),
+            "memory/x/memory.usage_in_bytes": str(30 * GIB),
+            "memory/x/memory.memsw.limit_in_bytes": str(40 * GIB),
+            "memory/x/memory.memsw.usage_in_bytes": str(38 * GIB),
+            "memory/x/memory.stat": f"cache {20 * GIB}\ntotal_inactive_file {20 * GIB}\n",
+        },
+        proc = "4:memory:/x\n",
+    )
+    assert cgroup_v1_memsw_headroom_bytes(**paths) == 22 * GIB
+    # RAM room 22 GiB (32 - (30 - 20)), RAM+swap room 22 GiB: no swap beyond the RAM.
+    assert cgroup_swap_allowance_bytes(100 * GIB, **paths) == 0
+    assert cgroup_swap_allowance_bytes(100 * GIB, **paths, ram_budget = 10 * GIB) == 12 * GIB
+
+
 def _fit_unknown_use(flags, mode, *, gtt):
     return h3_native_memory_fit(
         flags,

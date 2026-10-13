@@ -1423,16 +1423,12 @@ def _h3_offloaded_render_flags(
     is caught and memory freed since lifts a refusal; Auto may move the encoder, an explicit mode is only refused. ``reuse_live_server``: a live offloaded sd-server the render will reuse already
     holds its weights and keeps its own flags; pass False before launching any new process (the one-shot sd-cli),
     which releases that server and fits afresh."""
-    from .sd_cpp_args import device_backend_flags
     from .video_minimax_h3 import (
         H3_NATIVE_RENDER_RUNNING_HINT,
-        H3NativeMemoryRefusal,
-        h3_native_live_fit,
         h3_native_offloaded_render_flags,
     )
 
     inputs = getattr(runtime, "fit_inputs", None)
-    mode = memory_mode or "auto"
     if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
         return h3_native_offloaded_render_flags(
             render_flags,
@@ -1450,15 +1446,33 @@ def _h3_offloaded_render_flags(
         # A resident server (slot.get() replaces it on the signature change anyway), or any server before a new
         # one-shot process: free it before the reading.
         released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
+    return _h3_launch_flags(
+        runtime,
+        render_flags,
+        memory_mode,
+        hint = H3_NATIVE_RENDER_RUNNING_HINT if released == "pending" else "",
+    )
+
+
+def _h3_launch_flags(
+    runtime: Any, render_flags: "list[str]", memory_mode: Optional[str], *, hint: str = ""
+) -> list[str]:
+    """The live fit for one process launch, with no server-slot calls (it also runs under the slot's lock, from
+    ``H3NativeServerSlot.get``'s ``pre_spawn``). Auto may move the encoder; an explicit mode runs exactly its flags
+    or is refused. A resident render or a runtime without fit inputs passes through."""
+    from .sd_cpp_args import device_backend_flags
+    from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_live_fit
+
+    inputs = getattr(runtime, "fit_inputs", None)
+    if inputs is None or "--offload-to-cpu" not in render_flags:
+        return list(render_flags)
+    mode = memory_mode or "auto"
     fit = h3_native_live_fit(inputs, mode)
     if fit.refusal:
-        if released == "pending":
-            raise H3NativeMemoryRefusal(fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
-        raise H3NativeMemoryRefusal(fit.refusal)
+        raise H3NativeMemoryRefusal(fit.refusal + hint)
     if fit.note:
-        logger.info("video.h3_native_memory_fit (render): %s", fit.note)
+        logger.info("video.h3_native_memory_fit (launch): %s", fit.note)
     if mode != "auto":
-        # An explicit mode runs exactly the flags the user chose, or not at all.
         return list(render_flags)
     flags = tuple(fit.flags)
     return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
@@ -10877,9 +10891,10 @@ class VideoBackend:
         cancel: threading.Event,
         flags: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        memory_mode: Optional[str] = None,
     ) -> Optional[Path]:
         """Render one MiniMax-H3 clip on the runtime's resident sd-server, spawned with this render's sd-cli ``flags`` /
-        ``env``.
+        ``env``; a server that has to be started is fitted on live readings first (``memory_mode``).
 
         Returns the written container, or None for the one-shot sd-cli: no slot, kill switch, reference video / audio,
         or a server that cannot start, lacks vid_gen, or died (the runtime then stays one-shot). Every fallback first
@@ -10890,6 +10905,7 @@ class VideoBackend:
         from .sd_cpp_args import build_vid_gen_request, h3_server_eligible
         from .sd_cpp_engine import SdCppCancelled
         from .sd_cpp_server import SdCppServerUnsupported
+        from .video_minimax_h3 import H3NativeMemoryRefusal
         from .video_minimax_h3 import h3_native_server_enabled
 
         slot = getattr(runtime, "server_slot", None)
@@ -10921,8 +10937,15 @@ class VideoBackend:
         slot.begin_render()
         try:
             try:
-                server = slot.get(render_flags, render_env, cancel_event = cancel)
-            except SdCppCancelled:
+                server = slot.get(
+                    render_flags,
+                    render_env,
+                    cancel_event = cancel,
+                    pre_spawn = functools.partial(
+                        _h3_launch_flags, runtime, render_flags, memory_mode
+                    ),
+                )
+            except (SdCppCancelled, H3NativeMemoryRefusal):
                 raise
             except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
                 if cancel.is_set():
@@ -11155,6 +11178,7 @@ class VideoBackend:
                             cancel = cancel,
                             flags = render_flags,
                             env = dict(runtime.env),
+                            memory_mode = state.memory_mode,
                         )
                         if generated is None:
                             # A new process (reference video / audio, no server, or a server that could not serve):

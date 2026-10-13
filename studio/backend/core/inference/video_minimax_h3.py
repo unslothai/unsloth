@@ -1871,9 +1871,12 @@ class H3NativeServerSlot:
         env: "Optional[dict[str, str] | tuple[tuple[str, str], ...]]" = None,
         *,
         cancel_event: Any = None,
+        pre_spawn: "Optional[Callable[[], Any]]" = None,
     ) -> Any:
         """The live server for this (flags, env), (re)spawning one if needed. ``cancel_event`` aborts a start: the
-        render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out."""
+        render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out.
+        ``pre_spawn`` runs only when a process is about to start, under the slot lock and after any old server has
+        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start."""
         import threading
 
         from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
@@ -1893,6 +1896,10 @@ class H3NativeServerSlot:
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise SdCppCancelled("sd-server start was cancelled before launch.")
+            if pre_spawn is not None:
+                # Reuse was decided above, under this lock: from here a process starts, so it is fitted now.
+                flag_tuple = tuple(pre_spawn())
+                wanted = self._signature_for(flag_tuple, env_pairs)
             server = SdCppServer(self.server_binary)
             managed = is_managed_binary(self.server_binary)
             self._server = server

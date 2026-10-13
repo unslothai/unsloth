@@ -122,6 +122,17 @@ def cgroup_memory_budgets(
     return budgets
 
 
+def _v1_reclaimable_usage(directory: str, raw: Optional[int]) -> Optional[int]:
+    """A v1 ``*.usage_in_bytes`` reading less the level's inactive file cache (``total_inactive_file``, which the
+    kernel reclaims before it charges against the limit), as ``cgroup_memory_budgets`` reads RAM usage."""
+    if raw is None:
+        return None
+    inactive = _stat_integer(
+        os.path.join(directory, "memory.stat"), "total_inactive_file", "inactive_file"
+    )
+    return max(raw - inactive, 0)
+
+
 def cgroup_swap_allowance_bytes(
     free_swap: int,
     cgroup_root: Optional[str] = None,
@@ -185,7 +196,9 @@ def cgroup_swap_allowance_bytes(
             )
             if mem_limit is None:
                 continue
-            mem_used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            mem_used = _v1_reclaimable_usage(
+                directory, _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            )
             raw_memsw = _first_line(os.path.join(directory, "memory.memsw.limit_in_bytes"))
             if raw_memsw is None or mem_used is None:
                 return 0  # a RAM limit without swap accounting (or usage): the swap it leaves is unknown
@@ -194,8 +207,9 @@ def cgroup_swap_allowance_bytes(
             memsw_limit = _integer(raw_memsw, limit = True)
             if memsw_limit is None:
                 continue  # RAM+swap unlimited at this level: it bounds RAM only
-            memsw_used = _integer(
-                _first_line(os.path.join(directory, "memory.memsw.usage_in_bytes"))
+            memsw_used = _v1_reclaimable_usage(
+                directory,
+                _integer(_first_line(os.path.join(directory, "memory.memsw.usage_in_bytes"))),
             )
             if memsw_used is None:
                 return 0
@@ -235,7 +249,9 @@ def cgroup_v1_memsw_headroom_bytes(
         )
         if limit is None:
             continue
-        used = _integer(_first_line(os.path.join(directory, "memory.memsw.usage_in_bytes")))
+        used = _v1_reclaimable_usage(
+            directory, _integer(_first_line(os.path.join(directory, "memory.memsw.usage_in_bytes")))
+        )
         room = 0 if used is None else max(limit - used, 0)
         best = room if best is None else min(best, room)
     return best
