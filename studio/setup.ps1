@@ -5153,12 +5153,24 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
-        $nodeExit = $LASTEXITCODE
-        # Exit 3 (lock held) and 4 (unwritable dir) are not network failures; no mirror retry.
-        if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
-            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
+        # PS 5.1 turns redirected native stderr (even Python warnings) into errors; the exit code decides.
+        $prevEAPNode = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
             $nodeExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEAPNode
+        }
+        # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
+        if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
+            try {
+                $ErrorActionPreference = "Continue"
+                $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
+                $nodeExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $prevEAPNode
+            }
         }
         if ($nodeExit -eq 3) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray

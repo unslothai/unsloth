@@ -203,6 +203,26 @@ def _untrainable_model_format_error(config: dict) -> str | None:
     return None
 
 
+def _lora_uses_loftq(config: dict) -> bool:
+    """A resume rebuilds its adapter before loading the checkpoint, so it reruns LoftQ only when the checkpoint was
+    trained with it: runs saved while Studio never applied LoftQ kept the original base weights."""
+    if not config.get("use_loftq"):
+        return False
+    resume = config.get("resume_from_checkpoint")
+    if not resume:
+        return True
+    import json
+
+    from core.training.resume import get_resume_checkpoint_path
+
+    checkpoint = Path(get_resume_checkpoint_path(resume) or resume)
+    try:
+        saved = json.loads((checkpoint / "adapter_config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get("init_lora_weights") == "loftq"
+
+
 def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
@@ -4804,7 +4824,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         elif use_lora:
@@ -4821,7 +4841,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         else:
@@ -5410,6 +5430,18 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
+            from core.training.trainer import (
+                LOFTQ_SKIPPED_ON_QUANTIZED,
+                _has_quantized_weights,
+                _loftq_peft_kwargs,
+            )
+
+            use_loftq = _lora_uses_loftq(config)
+            # The fast encoder prepares an intrinsically quantized repo for k-bit training, and LoftQ fails on it.
+            if use_loftq and _has_quantized_weights(model):
+                _send_status(event_queue, LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
+
             model = FastSentenceTransformer.get_peft_model(
                 model,
                 r = config.get("lora_r", 32),
@@ -5422,9 +5454,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
-                if config.get("use_loftq")
-                else None,
+                **_loftq_peft_kwargs(use_loftq),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

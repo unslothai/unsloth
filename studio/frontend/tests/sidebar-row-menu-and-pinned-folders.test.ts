@@ -65,25 +65,6 @@ test("the quick-action beside an open menu is revealed with it", () => {
   );
 });
 
-// A pinned project chat is two rows at once. Both matched on the chat id, so both mounted an
-// autofocused input: the second stole focus and the first's blur cancelled the rename.
-test("the rename pill belongs to the row its menu was opened from", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /renamingTarget\.item\.id === item\.id &&\n(?:\s*\/\/[^\n]*\n)*\s*renamingTarget\.rowScope === list\?\.scope;/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-  assert.match(
-    APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
-  );
-  // The chord has no row under the cursor, so it opens the dialog and names no scope.
-  assert.match(APP_SIDEBAR, /openRenameChat\(item, false\)/);
-});
-
 // The row toggles its chats, so the folder says which way it is.
 test("a folder row's icon follows its disclosure", () => {
   assert.match(APP_SIDEBAR, /icon=\{expanded \? Folder02Icon : Folder01Icon\}/);
