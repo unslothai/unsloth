@@ -7213,35 +7213,21 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
-# "auto" moves every routed expert to host RAM and turns the VRAM left over into an LRU
-# cache, so it only pays where the --fit split would keep a middling share r of the
-# routed expert bytes on the GPU. Measured, decode / prompt t/s vs the split:
-#   L4, gemma-4-26B-A4B UD-Q4_K_XL (r at micro-batch 512 / 2048): r 0.23 / 0.20 cache
-#   23.5 / 384 vs split 24.5 / 448 (loses both), r 0.53 / 0.49 44.9 / 556 vs 31.2 / 593
-#   (+44% decode), r 0.82 / 0.79 48.5 / 592 vs 42.0 / 897 (prompt -34%). With a busy
-#   host link (2.9 GiB/s), cache over split at r 0.23 / 0.53 / 0.82: decode 0.60x /
-#   1.54x / 1.21x, prompt 0.52x / 0.39x / 0.20x.
-#   RTX PRO 6000, Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
-# Bounds sit between the losing and winning points; an unknown share keeps the split.
+# --moe-cache-mib auto only beats the --fit split at a middling resident expert share r
+# (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
+# r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
+# RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
 _MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
 _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
-# Whether a launch with a drafter (MTP head, separate drafter) may get the cache. Its
-# verify batches (n_max + 1 tokens) stay on the small-batch cache path. L4 gemma-4,
-# cache vs split decode: MTP drafter 1.76x at r 0.53, 1.25x at r 0.82, 0.96x at r 0.23;
-# ngram-mod 1.19x / 0.87x / 1.11x. The band covers the losses; False keeps drafted
-# launches on the split.
+# Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
+# MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
 _MOE_CACHE_WITH_DRAFTER = True
-# The expert-spill micro-batch raise is skipped when its larger compute buffer would push
-# more than this fraction of the resident expert bytes off the GPU. L4 gemma-4: at r 0.23
-# the raise cost 14% of them and decode fell 3% (13% with the cache, which it shrank by
-# 16%); at r 0.53 and 0.82 it cost 4-6%.
+# Skip the spill micro-batch raise if it pushes more than this share of resident experts
+# off the GPU. L4 gemma-4: r 0.23 lost 14% (decode -3%), r 0.53/0.82 lost 4-6%.
 _MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
-# With the cache the raise shrinks the cache itself. Measured with the cache, ub 512 vs
-# 2048: r 0.20 decode 26.9 vs 23.5 (hit rate 75% vs 68%), r 0.49 46.0 / 591 vs 44.9 / 556,
-# r 0.79 equal. So the cache keeps the default micro-batch below this raised share.
+# With the cache, ub 512 vs 2048 decode: r 0.20 26.9 vs 23.5, r 0.49 46.0 vs 44.9, r 0.79 equal.
 _MOE_CACHE_RAISE_MIN_SHARE = 0.50
-# Overrides, "auto" by default: "on" restores the ungated v0.1.906 choice, "off" never
-# emits the cache / never raises the micro-batch (v0.1.905). Anything else reads as auto.
+# "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
 _MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
 _MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
@@ -7261,9 +7247,7 @@ def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
 def _moe_resident_expert_share(
     shortfall_bytes: Optional[float], expert_bytes: Optional[int]
 ) -> Optional[float]:
-    """Share of the routed expert bytes the fitter can keep on the GPU: one minus the
-    footprint's VRAM shortfall over the expert bytes, or None when either is unknown.
-    llama.cpp's fitter moves expert tensors off first, so the shortfall is theirs."""
+    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown."""
     if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
         return None
     return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
@@ -7293,11 +7277,7 @@ def _moe_spill_raise_keeps_experts(
     switch: str = "auto",
     cache_follows: bool = False,
 ) -> bool:
-    """Whether to keep the expert-spill micro-batch raise, from the resident expert share
-    priced at the old and the raised micro-batch. Nothing spilling before the raise means
-    nothing to stream, and the raise would only push experts off. Unpriceable keeps it.
-    ``cache_follows``: the cache would launch at the raised share, which then also has to
-    reach ``_MOE_CACHE_RAISE_MIN_SHARE``."""
+    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
     if switch != "auto":
         return switch == "on"
     if share_before is None:
@@ -28391,9 +28371,7 @@ class LlamaCppBackend:
                                 max_available_ctx = _ceiling[0]
                                 _vram_fit_ctx = _ceiling[0]
 
-                    # Bytes the single-GPU footprint exceeds free VRAM less --fit-target by,
-                    # at the current micro-batch (None = unpriceable). model_size_fit holds
-                    # the compute buffer it was built with; the raise below swaps it.
+                    # Single-GPU VRAM shortfall vs free less --fit-target (None = unpriceable).
                     _model_size_fit_cb = _compute_buffer_pipeline
 
                     def _fitter_vram_shortfall() -> Optional[float]:
@@ -28574,8 +28552,6 @@ class LlamaCppBackend:
                     _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
                     _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
                     if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
-                        # Re-price the residency at the raised micro-batch: its compute
-                        # buffer comes out of the experts the GPU keeps (or the cache).
                         _share_before = (
                             _moe_resident_share_now() if _moe_ub_switch == "auto" else None
                         )
@@ -28608,7 +28584,6 @@ class LlamaCppBackend:
                             _share_before,
                             _share_after,
                             switch = _moe_ub_switch,
-                            # Whether the cache would follow at the raised micro-batch.
                             cache_follows = bool(
                                 _moe_cache_candidate
                                 and _moe_cache_share_admits(
@@ -29025,8 +29000,6 @@ class LlamaCppBackend:
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
-                        # The cache only pays at a middling resident share (see
-                        # _MOE_CACHE_MAX_RESIDENT_SHARE); priced at the launched micro-batch.
                         _moe_share = (
                             _moe_resident_share_now() if _moe_cache_switch == "auto" else None
                         )

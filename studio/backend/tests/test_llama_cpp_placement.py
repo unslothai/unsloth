@@ -4570,10 +4570,6 @@ def test_an_inherited_placement_keeps_the_moe_cache_off(
     assert not _has_moe_cache(cmd), cmd
 
 
-# Resident expert share: the cache only inside the measured band, the micro-batch raise
-# only when it does not push a large part of the resident experts off the GPU.
-
-
 def test_the_resident_expert_share():
     share = llama_cpp_module._moe_resident_expert_share
 
@@ -4765,8 +4761,7 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
 @pytest.mark.parametrize(
     "free_mib, raised, cached",
     [
-        # ~25% resident, and the 1 GiB larger buffer would cost ~27% of those experts:
-        # keep the default micro-batch and the split (the 8 GB tier: v0.1.905's launch).
+        # ~25% resident, raise costs ~27%: default micro-batch, split.
         (11_000, False, False),
         # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
         (14_000, False, True),
@@ -4790,8 +4785,7 @@ def test_the_spill_raise_is_priced_against_the_resident_experts(
 
 @pytest.mark.parametrize(
     "cache_switch, raised, cached",
-    # ~51% resident, and a 0.4 GiB larger buffer costs ~5% of those experts (under the
-    # 10% rule) but leaves 48%: with the cache following, keep the default micro-batch.
+    # ~51% resident, raise costs ~5% but leaves 48% < 50% with the cache: no raise.
     [("auto", False, True), ("off", True, False)],
     ids = ["cache_keeps_default_ubatch", "split_takes_the_raise"],
 )
