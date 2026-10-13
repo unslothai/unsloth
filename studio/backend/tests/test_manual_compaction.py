@@ -98,7 +98,8 @@ def test_an_overflow_reset_after_a_manual_epoch_is_an_ordinary_one():
     )
 
     assert truncation["checkpoint_started"] is True
-    assert "manual" not in truncation
+    # False rather than absent, so it replaces the reply's earlier manual fit when merged.
+    assert truncation["manual"] is False
 
 
 def test_the_rolling_fit_ignores_compact_now(monkeypatch):

@@ -644,5 +644,6 @@ def fit_checkpoint_context(
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),
-        **({"manual": True} if (force_reset if is_new_epoch else sticky_manual) else {}),
+        # Explicit on a new epoch: the client merges a reply's fits, and a stale True would outlive it.
+        **({"manual": force_reset} if is_new_epoch else {"manual": True} if sticky_manual else {}),
     }

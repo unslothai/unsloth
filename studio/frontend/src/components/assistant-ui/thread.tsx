@@ -102,6 +102,7 @@ import {
   attachmentsPastedText,
   hasPendingPromptQueueStart,
   isCompactCommand,
+  isThreadIncognito,
   requestThreadCompaction,
   useCompactRequestStore,
   isPastedTextFile,
@@ -5396,6 +5397,10 @@ const Composer: FC<{
         const runtime = useChatRuntimeStore.getState();
         if (!referenceThreadId || aui.thread().getState().messages.length === 0) {
           toast.info("Nothing to compact yet");
+          return;
+        }
+        if (runtime.incognito || isThreadIncognito(referenceThreadId)) {
+          toast.info("Temporary chats are not saved, so they cannot be compacted");
           return;
         }
         // The compacted turns stay reachable only through search_conversation, so no tools, no reset.

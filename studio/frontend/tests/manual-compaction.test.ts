@@ -168,6 +168,8 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.match(submit, /requestThreadCompaction\(referenceThreadId\)/);
   assert.match(submit, /resumesThought\(\{/);
   assert.match(submit, /!runtime\.supportsTools \|\|/);
+  // A temporary chat is never saved, so its turns have no archive to go to.
+  assert.match(submit, /runtime\.incognito \|\| isThreadIncognito\(referenceThreadId\)/);
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
   // Taken whatever model sends next, so a switch to an API model cannot leave it armed for later.
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
