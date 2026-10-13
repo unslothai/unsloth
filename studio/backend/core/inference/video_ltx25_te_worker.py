@@ -224,7 +224,11 @@ def _release_mapped_pages(tensor: Any) -> bool:
         return False
 
 
-def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = False) -> int:
+def quantize_int8_convrot_(
+    model: Any,
+    device: Any = "cpu",
+    resident: bool = False,
+) -> int:
     """Swap every decoder-layer projection for the ConvRot INT8 linear in place; the number swapped. ``resident``
     quantizes layer by layer on the card. Otherwise mapped bf16 pages are released per projection; if any cannot be,
     host tensors are copied out of the map so it can close."""
@@ -253,10 +257,14 @@ def quantize_int8_convrot_(model: Any, device: Any = "cpu", resident: bool = Fal
                 if not isinstance(linear, nn.Linear):
                     continue
                 home = linear.weight.device
-                codes, scale = quantize_convrot_int8_weight(linear.weight.detach().to(work), CONVROT_GROUP)
+                codes, scale = quantize_convrot_int8_weight(
+                    linear.weight.detach().to(work), CONVROT_GROUP
+                )
                 if not on_card:
                     released_all = _release_mapped_pages(linear.weight) and released_all
-                new = cls(linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP)
+                new = cls(
+                    linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP
+                )
                 new.weight = codes.to(home)
                 new.weight_scale = scale.to(home)
                 if linear.bias is not None:

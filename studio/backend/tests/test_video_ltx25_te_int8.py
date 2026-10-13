@@ -109,7 +109,9 @@ def test_release_mapped_pages_only_drops_file_backed_pages():
     assert worker._release_mapped_pages(torch.empty(0)) is False
 
 
-@pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason = "MADV_DONTNEED is Linux only")
+@pytest.mark.skipif(
+    not __import__("sys").platform.startswith("linux"), reason = "MADV_DONTNEED is Linux only"
+)
 def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp_path):
     """A host build quantizes from the memory map and releases pages; codes match an in-memory quantize."""
     from safetensors.torch import load_file, save_file
@@ -134,7 +136,9 @@ def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp
     for a, b in zip(mapped.model.language_model.layers, dense.model.language_model.layers):
         for name in ("q_proj", "k_proj", "o_proj"):
             assert torch.equal(getattr(a.self_attn, name).weight, getattr(b.self_attn, name).weight)
-            assert torch.equal(getattr(a.self_attn, name).weight_scale, getattr(b.self_attn, name).weight_scale)
+            assert torch.equal(
+                getattr(a.self_attn, name).weight_scale, getattr(b.self_attn, name).weight_scale
+            )
 
 
 def test_host_quantize_copies_out_of_the_map_when_pages_cannot_be_released(monkeypatch):

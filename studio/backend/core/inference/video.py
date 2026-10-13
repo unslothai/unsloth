@@ -3342,7 +3342,6 @@ class VideoBackend:
         # regardless of whether this family has a hosted quantized encoder for it.
         if fam.name == "ltx-2.5":
             from .video_ltx25 import ltx25_te_quant_scheme
-
             ltx25_te_quant_scheme(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
@@ -7714,7 +7713,6 @@ class VideoBackend:
         # place before placement, for every kind. Best-effort.
         if ltx25_client is not None:
             from .video_ltx25 import ltx25_te_outcome
-
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
             text_encoder_outcome = quantize_text_encoders(

@@ -372,7 +372,9 @@ def test_fast_upload_stages_torchao_int8_weights_byte_for_byte(monkeypatch):
 
     def _build():
         torch.manual_seed(0)
-        m = torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.Linear(512, 256)).to(torch.bfloat16)
+        m = torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.Linear(512, 256)).to(
+            torch.bfloat16
+        )
         for lin in m:
             lin.weight = torch.nn.Parameter(
                 int8.Int8Tensor.from_hp(lin.weight.detach(), PerRow()), requires_grad = False

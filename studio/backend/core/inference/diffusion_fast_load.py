@@ -392,18 +392,29 @@ def _wrapper_subclass_parts(tensor: Any) -> Optional[tuple[list[str], Any, list[
     except Exception:  # noqa: BLE001
         return None
     # A context that records a device (torchao's ``device`` attribute) would come back still naming the host.
-    values = ctx.values() if isinstance(ctx, dict) else ctx if isinstance(ctx, (list, tuple)) else (ctx,)
-    if (isinstance(ctx, dict) and "device" in ctx) or any(isinstance(v, torch.device) for v in values):
+    values = (
+        ctx.values() if isinstance(ctx, dict) else ctx if isinstance(ctx, (list, tuple)) else (ctx,)
+    )
+    if (isinstance(ctx, dict) and "device" in ctx) or any(
+        isinstance(v, torch.device) for v in values
+    ):
         return None
     for part in inner:
         if type(part) is not torch.Tensor or part.device.type != "cpu":
             return None
-        if part.is_sparse or part.is_quantized or not part.is_contiguous() or part.storage_offset() < 0:
+        if (
+            part.is_sparse
+            or part.is_quantized
+            or not part.is_contiguous()
+            or part.storage_offset() < 0
+        ):
             return None
     return list(names), ctx, inner
 
 
-def _subclass_candidates(modules: Sequence[Any], plain_seen: set[int]) -> list[tuple[Any, list[str], Any, list[Any]]]:
+def _subclass_candidates(
+    modules: Sequence[Any], plain_seen: set[int]
+) -> list[tuple[Any, list[str], Any, list[Any]]]:
     out: list[tuple[Any, list[str], Any, list[Any]]] = []
     seen: set[int] = set()
     for module in modules:
@@ -581,7 +592,9 @@ def _staged_to_class():
             hit = self.wrapped.get(id(tensor))
             if hit is None or hit[0] is not tensor:
                 return None
-            if not _same_device(device, self.device) or (dtype is not None and dtype != tensor.dtype):
+            if not _same_device(device, self.device) or (
+                dtype is not None and dtype != tensor.dtype
+            ):
                 return None
             _tensor, names, ctx, inner = hit
             parts = {}
@@ -631,7 +644,11 @@ def _staged_to_class():
                             *args[1:], **kwargs
                         )
                         out = None
-                        if device is not None and memory_format is None and not kwargs.get("copy", False):
+                        if (
+                            device is not None
+                            and memory_format is None
+                            and not kwargs.get("copy", False)
+                        ):
                             out = self._wrapped_copy(args[0], device, dtype)
                     except Exception:  # noqa: BLE001 - the subclass's own .to below
                         out = None
