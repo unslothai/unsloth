@@ -2887,6 +2887,23 @@ class TestSandboxEnvIsolation:
             f"{_SANDBOX_TEMP_DIRNAME}/report.csv"
         ]
 
+    def test_dependency_trees_do_not_spend_the_walk(self, tmp_path):
+        """node_modules, __pycache__ and a virtualenv are not walked: a big one used up the file budget and a file the
+        call wrote beside it got no download row."""
+        from core.inference.tools import _MAX_SNAPSHOT_FILES, _snapshot_workdir_files
+
+        deps = tmp_path / "node_modules" / "pkg"
+        deps.mkdir(parents = True)
+        for i in range(_MAX_SNAPSHOT_FILES + 10):
+            (deps / f"f{i}.js").write_bytes(b"x")
+        (tmp_path / "env" / "lib").mkdir(parents = True)
+        (tmp_path / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (tmp_path / "env" / "lib" / "site.py").write_bytes(b"x")
+        (tmp_path / "src" / "__pycache__").mkdir(parents = True)
+        (tmp_path / "src" / "__pycache__" / "app.cpython-313.pyc").write_bytes(b"x")
+        (tmp_path / "src" / "app.py").write_bytes(b"x")
+        assert sorted(_snapshot_workdir_files(str(tmp_path))) == ["src/app.py"]
+
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
         # PATH resolves bare `git` by appending the dir of the git the HOST

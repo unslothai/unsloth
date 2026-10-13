@@ -893,11 +893,13 @@ def test_status_passthrough(client, monkeypatch):
         **resolved["transformer_quant"],
         "artifact": None,
         "replaced": None,
+        "steps": None,
     }
     assert body["resolved"]["text_encoder_quant"] == {
         **resolved["text_encoder_quant"],
         "artifact": None,
         "replaced": None,
+        "steps": None,
     }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
