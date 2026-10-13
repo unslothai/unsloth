@@ -10,6 +10,28 @@ _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
 _SETUP_ARGV=("$@")
 _SETUP_START_PWD=$PWD
+# Bash caches PATH entries across cd, so anchor relative entries before the first directory change.
+_setup_anchor_path() {
+    local remaining=${PATH-} entry anchored="" last=false
+    while :; do
+        case "$remaining" in
+            *:*) entry=${remaining%%:*}; remaining=${remaining#*:} ;;
+            *) entry=$remaining; last=true ;;
+        esac
+        case "$entry" in
+            /*) ;;
+            ""|.) entry=$_SETUP_START_PWD ;;
+            *) entry="$_SETUP_START_PWD/${entry#./}" ;;
+        esac
+        anchored="${anchored:+$anchored:}$entry"
+        [ "$last" = true ] && break
+    done
+    PATH=$anchored
+    export PATH
+    hash -r 2>/dev/null || true
+}
+_setup_anchor_path
+unset -f _setup_anchor_path
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
