@@ -18,10 +18,11 @@ _setup_anchor_path() {
             *:*) entry=${remaining%%:*}; remaining=${remaining#*:} ;;
             *) entry=$remaining; last=true ;;
         esac
+        # Bash expands a leading ~ in PATH itself, so a literal ~/bin is not relative.
         case "$entry" in
-            /*) ;;
+            /*|\~*) ;;
             ""|.) entry=$_SETUP_START_PWD ;;
-            *) entry="$_SETUP_START_PWD/${entry#./}" ;;
+            *) entry="${_SETUP_START_PWD%/}/${entry#./}" ;;
         esac
         anchored="${anchored:+$anchored:}$entry"
         [ "$last" = true ] && break

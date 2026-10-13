@@ -23,21 +23,27 @@ fi
 # shellcheck disable=SC1090,SC1091
 . "$WORK/anchor_path.sh"
 
-mkdir -p "$WORK/start/bin" "$WORK/start/relative/bin" "$WORK/other"
+mkdir -p "$WORK/start/bin" "$WORK/start/relative/bin" "$WORK/other" "$WORK/home/bin"
 cat > "$WORK/start/bin/rm" <<'EOF'
 #!/bin/sh
 printf '%s\n' 'fake rm'
 EOF
-chmod +x "$WORK/start/bin/rm"
+cat > "$WORK/home/bin/home-tool" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'home tool'
+EOF
+chmod +x "$WORK/start/bin/rm" "$WORK/home/bin/home-tool"
 
 (
     cd "$WORK/start"
     _SETUP_START_PWD=$PWD
-    PATH='./bin::relative/bin:/usr/bin'
+    HOME="$WORK/home"
+    # shellcheck disable=SC2147
+    PATH='./bin::relative/bin:~/bin:/usr/bin'
     hash -p ./bin/rm rm
     _setup_anchor_path
 
-    expected="$WORK/start/bin:$WORK/start:$WORK/start/relative/bin:/usr/bin"
+    expected="$WORK/start/bin:$WORK/start:$WORK/start/relative/bin:~/bin:/usr/bin"
     if [ "$PATH" != "$expected" ]; then
         printf 'FAIL: PATH after anchoring\nexpected: %s\nactual:   %s\n' "$expected" "$PATH" >&2
         exit 1
@@ -47,6 +53,22 @@ chmod +x "$WORK/start/bin/rm"
     actual=$(rm)
     if [ "$actual" != 'fake rm' ]; then
         printf 'FAIL: rm after cd returned %s\n' "$actual" >&2
+        exit 1
+    fi
+    actual=$(home-tool)
+    if [ "$actual" != 'home tool' ]; then
+        printf 'FAIL: ~/bin tool after cd returned %s\n' "$actual" >&2
+        exit 1
+    fi
+)
+
+(
+    cd /
+    _SETUP_START_PWD=$PWD
+    PATH='./bin:/usr/bin'
+    _setup_anchor_path
+    if [ "$PATH" != '/bin:/usr/bin' ]; then
+        printf 'FAIL: PATH anchored at / is %s\n' "$PATH" >&2
         exit 1
     fi
 )
