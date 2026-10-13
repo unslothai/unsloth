@@ -8261,8 +8261,9 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
-          // Same surface as a prompt's EditComposer, at the reply's full width.
-          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted">
+          // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
+          // index.css zeroes the margin-bottom of the reply's last descendants.
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted pb-3">
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent ?? [])}
@@ -8279,7 +8280,7 @@ const AssistantMessage: FC = () => {
                 }
               }}
             />
-            <div className="mx-3 mb-3 flex items-center gap-2 self-end">
+            <div className="mx-3 flex items-center gap-2 self-end">
               <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
               <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>

@@ -597,7 +597,6 @@ export const en = {
   },
   // /rewind and the prompt More menu's Rewind item.
   rewind: {
-    menuItem: "Rewind…",
     title: "Rewind",
     pickDescription: "Choose a message to rewind to.",
     pickEmpty: "There are no messages to rewind to yet.",

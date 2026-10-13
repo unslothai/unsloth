@@ -3114,7 +3114,6 @@ export const it = {
     },
   },
   rewind: {
-    menuItem: "Riavvolgi…",
     title: "Riavvolgi",
     pickDescription: "Scegli un messaggio a cui tornare.",
     pickEmpty: "Non ci sono ancora messaggi a cui tornare.",
