@@ -335,12 +335,14 @@ def _friendly_error(exc: Exception) -> str:
                 "The model stopped producing tokens before the response "
                 "completed. Try stopping and retrying, or reduce max tokens."
             )
-        raise_limit = "Increase the first-token waiting limit in Settings > Chat"
+        raise_limit = (
+            "For a local GGUF model, increase the first-token waiting limit in Settings > Chat"
+        )
         if _finite_positive_float_env(_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, None) is not None:
             raise_limit += f" (API requests use {_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV} instead while it is set)"
         return (
             "The model did not produce a first token within the waiting limit. "
-            f"{raise_limit}, reduce context length, use more GPU offload, or load a smaller model."
+            f"{raise_limit}. Otherwise reduce context length, use more GPU offload, or load a smaller model."
         )
     if isinstance(exc, httpx.TimeoutException):
         return "Timed out communicating with the model server. Try again shortly."
