@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -670,3 +671,33 @@ def test_a_kept_audio_cpp_slot_is_dropped(slots):
     model_slots.slots[:] = [music, chat]
     assert aupd._unload_audio_cpp_models() is True
     assert slots.dropped == [music]
+
+
+# --- installed version (Settings > About) ---
+
+
+def test_the_installed_version_is_the_records_release_tag(managed):
+    assert aupd.get_installed_audio_cpp_version() == "v0.9.0-unsloth.1"
+
+
+def test_no_runtime_has_no_installed_version(managed, monkeypatch):
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
+    assert aupd.get_installed_audio_cpp_version() is None
+
+
+def test_a_build_without_a_record_has_no_installed_version(managed):
+    (managed.tree / audio_cpp_server.INSTALL_RECORD).unlink()
+    assert aupd.get_installed_audio_cpp_version() is None
+
+
+def test_a_probe_that_raises_has_no_installed_version(managed, monkeypatch):
+    def unreadable():
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", unreadable)
+    assert aupd.get_installed_audio_cpp_version() is None
+
+
+def test_the_hardware_details_report_the_installed_version():
+    main = (Path(aupd.__file__).resolve().parents[1] / "main.py").read_text(encoding = "utf-8")
+    assert 'body["audio_cpp"] = get_installed_audio_cpp_version()' in main

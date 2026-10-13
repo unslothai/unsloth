@@ -74,6 +74,17 @@ def _tag(record: dict) -> Optional[str]:
     return tag if isinstance(tag, str) and tag else None
 
 
+def get_installed_audio_cpp_version() -> Optional[str]:
+    """Display string for the active audio.cpp runtime: the release tag its install record names (e.g. 'v0.9.1-unsloth.1'), or None for no runtime or a custom build without a record. Reads only that record, no network and no exec, so it is safe on the About panel's path."""
+    from core.inference import audio_cpp_server
+    try:
+        binary = audio_cpp_server.find_audio_cpp_server_binary()
+        return _tag(audio_cpp_server.read_install_record(binary)) if binary else None
+    except Exception as exc:  # noqa: BLE001 - the About panel omits the row rather than failing
+        logger.debug("audio.cpp version probe failed: %s", exc)
+        return None
+
+
 def release_status(binary: str, record: dict) -> dict:
     """``expected_tag`` and ``outdated`` for an installed runtime: the release an update would install, and whether the record is behind it or from another repo. Reads only the cached newest release, never the network, since the async Audio page status calls this. Raises when the installer cannot be read; callers treat that as current."""
     status = {"expected_tag": None, "outdated": False}

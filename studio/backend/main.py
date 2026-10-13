@@ -2993,6 +2993,7 @@ def get_hardware_info(
         **video_capability(),
     }
     if include_details:
+        from utils.audio_cpp_update import get_installed_audio_cpp_version
         from utils.llama_cpp_update import get_installed_llama_version
 
         # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES); get_gpu_summary reports only the primary. Sort by
@@ -3004,6 +3005,7 @@ def get_hardware_info(
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
+        body["audio_cpp"] = get_installed_audio_cpp_version()
     return body
 
 

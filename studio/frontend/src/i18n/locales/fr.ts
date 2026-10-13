@@ -3108,6 +3108,7 @@ export const fr = {
       desktopAppVersion: "Version de l’application de bureau",
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
+      audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
       cuda: "CUDA",
