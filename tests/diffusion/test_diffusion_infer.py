@@ -190,3 +190,38 @@ def test_graphed_forward_remembers_a_failed_capture_on_the_model():
     assert graphed.failed is not None
     assert torch.equal(graphed(torch.zeros(2)), torch.ones(2)) and len(calls) == 1
     assert graphed.graphs == {}
+
+
+def test_block_head_graphs_are_freed_without_a_gc_pass():
+    import gc
+    import weakref
+
+    from unsloth.models.diffusion_infer import BlockHead
+
+    gc.disable()
+    try:
+        head = BlockHead(_Bidirectional(), graphs = True)
+        graphed = weakref.ref(head.graphed)
+        del head
+        assert (
+            graphed() is None
+        )  # the CUDA Graphs and their pool go with the call, not at the next gc
+    finally:
+        gc.enable()
+
+
+def test_graphed_forward_cancel_during_capture_does_not_disable_graphs(monkeypatch):
+    from unsloth.models.diffusion_infer import DiffusionGenerationCancelled, GraphedForward
+
+    model = torch.nn.Module()
+    graphed = GraphedForward(lambda x: x, owner = model)
+
+    def cancelled(x):
+        raise DiffusionGenerationCancelled("stop")
+
+    monkeypatch.setattr(graphed, "_capture", cancelled)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    with pytest.raises(DiffusionGenerationCancelled):
+        graphed(torch.zeros(2))
+    assert graphed.failed is None
+    assert "_unsloth_graph_capture_failed" not in model.__dict__

@@ -161,6 +161,10 @@ class GraphedForward:
         if entry is None:
             try:
                 entry = self._capture(x)
+            except DiffusionGenerationCancelled:
+                # stop_callback's forward hook fired during warm-up / capture: not a capture failure.
+                self.graphs.clear()
+                raise
             except Exception as error:  # capture-unsafe forward: eager from here on
                 self.failed = f"{type(error).__name__}: {error}"[:300]
                 if self.owner is not None:
@@ -192,15 +196,19 @@ class BlockHead:
         graphs = False,
     ):
         self.base = base
-        self.head = fusable_head(base, base)
+        self.head = head = fusable_head(base, base)
         self.cuda_graphs = cuda_graphs
-        self.graphed = GraphedForward(self._forward, owner = base) if graphs else None
 
-    def _forward(self, x):
-        if self.head is None:
-            return self.base(x).logits
-        with head_returns_hidden(self.head):
-            return self.base(x).logits
+        def forward(x):
+            if head is None:
+                return base(x).logits
+            with head_returns_hidden(head):
+                return base(x).logits
+
+        # Not a bound method: a BlockHead -> GraphedForward -> BlockHead cycle would keep the graphs and their
+        # memory pool alive after the call until a full gc pass.
+        self._forward = forward
+        self.graphed = GraphedForward(forward, owner = base) if graphs else None
 
     def logits(self, x, start, end):
         if self.cuda_graphs:
