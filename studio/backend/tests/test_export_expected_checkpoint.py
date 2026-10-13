@@ -152,3 +152,29 @@ def test_a_cancel_landing_while_the_old_worker_is_torn_down_stops_the_new_one(
     assert len(spawned) == 1 and shut[-1] is spawned[0]
     assert orch.current_checkpoint is None
     assert orch.get_last_op()["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("op", ["load", "export"])
+def test_a_cancel_landing_right_after_the_op_starts_is_never_erased(orchestrator, monkeypatch, op):
+    orch, sent, _loaded, module = orchestrator
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: False)
+    monkeypatch.setattr("utils.hardware.gpu_ids_with_torch_kernels", lambda: [])
+    orch._proc = _Worker()
+    cancelled = []
+    # The op id is published before clear_logs runs, so a matching cancel can land there.
+    monkeypatch.setattr(
+        orch, "clear_logs", lambda: cancelled.append(orch.cancel_export(expected_op_id = "op-1"))
+    )
+    monkeypatch.setattr(orch, "_shutdown_subprocess", lambda timeout = 10.0: True)
+    monkeypatch.setattr(orch, "_spawn_subprocess", lambda config: setattr(orch, "_proc", _Worker()))
+    if op == "load":
+        monkeypatch.setattr(
+            orch, "_wait_response", lambda *a, **k: pytest.fail("a cancelled load must not wait")
+        )
+        assert orch.load_checkpoint("/ckpt", op_id = "op-1") == (False, module.OP_CANCELLED)
+    else:
+        orch.export_gguf(save_directory = "out", op_id = "op-1")
+    assert cancelled == [True]
+    assert orch.get_last_op()["status"] == "cancelled"

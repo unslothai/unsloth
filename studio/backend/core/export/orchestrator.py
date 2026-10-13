@@ -186,6 +186,8 @@ class ExportOrchestrator:
             if op_id is not None and op_id in self._cancelled_op_ids:
                 self._cancelled_op_ids.discard(op_id)
                 return False
+            # Reset here, before the id is cancellable, so a matching cancel that lands next is never erased.
+            self._cancel_requested = False
             self._active_op_id = op_id
             return True
 
@@ -562,7 +564,6 @@ class ExportOrchestrator:
                 return False, OP_CANCELLED
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
-            self._cancel_requested = False
             self._active_op_kind = "load_checkpoint"
             self._export_active = True
             op_success, op_message = False, ""
@@ -787,7 +788,6 @@ class ExportOrchestrator:
                 return False, OP_CANCELLED, None
 
             self.clear_logs()
-            self._cancel_requested = False
             self._active_op_kind = f"export_{export_type}"
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
