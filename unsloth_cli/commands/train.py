@@ -124,14 +124,13 @@ def _torch_launch_store(rank: int):
     except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
         return None
     if host:
-        # Hold the server until init_process_group takes it over; the other ranks read from it.
+        # Keep the server alive for the other ranks until init_process_group takes it over.
         _RUN_DIR_STORE = store
     return store
 
 
 def _launcher_start_time() -> int:
-    # Ranks reach this after their own model load, seconds apart, so their clocks disagree; the
-    # launcher that spawned every rank on this node does not.
+    # Ranks reach this seconds apart after their own model load; their shared launcher started once.
     try:
         import psutil
         return int(psutil.Process(os.getppid()).create_time())
@@ -160,7 +159,6 @@ def _default_output_dir(model_name: str) -> str:
     rank = _launch_rank()
     if rank is None:
         return _reserve_run_dir(name)
-    # Ranks of one launch must agree on the folder: rank 0 reserves it and hands it to the rest.
     store = _torch_launch_store(rank)
     if store is None:
         # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one alone.
