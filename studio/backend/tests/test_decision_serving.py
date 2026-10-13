@@ -520,6 +520,7 @@ def test_an_unload_as_the_reload_starts_wins(home, client, clef, monkeypatch):
     laya_runtime.unload(reload_after_training = True)
     clef.training = False
     _reload_finished()
+    assert len(clef.agents) == 1
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
