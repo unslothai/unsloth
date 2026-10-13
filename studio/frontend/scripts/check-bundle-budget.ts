@@ -80,12 +80,15 @@ export const BUDGET = {
   // no single import doing it. The largest step is the audio model selector fix (#13517, +2.9 KB raw /
   // +0.9 KB transfer); thinking traces (#13545), MLX precision folders (#13565) and vLLM thinking
   // effort (#13571) add the rest. Raised by that growth so main's margin stays where it was.
+  // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
+  // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
+  // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
   // raised by that.
-  transferBytes: 2_026_100,
-  rawBytes: 6_739_400,
+  transferBytes: 2_027_600,
+  rawBytes: 6_745_400,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

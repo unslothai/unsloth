@@ -492,6 +492,10 @@ export async function validateModel(
       engine: payload.engine ?? "auto",
       engine_precision: payload.engine_precision ?? "auto",
       engine_parallelism: payload.engine_parallelism ?? "tensor",
+      engine_kv_cache_dtype: payload.engine_kv_cache_dtype ?? "auto",
+      engine_seed: payload.engine_seed ?? null,
+      engine_gpu_memory_utilization:
+        payload.engine_gpu_memory_utilization ?? null,
       // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,

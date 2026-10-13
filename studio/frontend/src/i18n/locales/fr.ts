@@ -3055,7 +3055,7 @@ export const fr = {
         modelClef: "Clef",
         recommended: "Recommandé",
         device: "Exécuter sur",
-        deviceDescription: "Le GPU répond plus vite, mais garde sa mémoire réservée jusqu'au redémarrage.",
+        deviceDescription: "Le GPU répond plus vite et libère sa mémoire quand le modèle est déchargé.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Moteur d'exécution",

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 
 import pytest
 
@@ -25,6 +26,48 @@ def _write_config(tmp_path, *, bypass_permissions = False):
         )
     )
     return path
+
+
+@pytest.mark.parametrize("auto_route", [None, True])
+def test_main_describes_the_tool_for_auto_route(tmp_path, monkeypatch, auto_route):
+    path = _write_config(tmp_path)
+    if auto_route:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "auto_route": True}))
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(bridge.sys, "argv", ["bridge", str(path)])
+    monkeypatch.delenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, raising = False)
+    bridge.main()
+    expected = (
+        bridge._CODEX_AUTO_ROUTE_TOOL_DESCRIPTION
+        if auto_route
+        else bridge._CODEX_SUBAGENT_TOOL_DESCRIPTION
+    )
+    assert captured["tool_description"] == expected
+
+
+@pytest.mark.parametrize("auto_route", [None, True])
+def test_auto_route_failure_says_the_step_was_not_done(tmp_path, monkeypatch, auto_route):
+    path = _write_config(tmp_path)
+    if auto_route:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "auto_route": True}))
+    captured = {}
+    monkeypatch.setattr(bridge, "serve", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(bridge.sys, "argv", ["bridge", str(path)])
+
+    def fail(
+        task,
+        cancel_event = None,
+        **kwargs,
+    ):
+        raise RuntimeError("Connection refused")
+
+    monkeypatch.setattr(bridge, "run_local_agent", fail)
+    bridge.main()
+    with pytest.raises(RuntimeError) as failure:
+        captured["run_agent"]("task", threading.Event())
+    assert "Connection refused" in str(failure.value)
+    assert ("was not done" in str(failure.value)) is bool(auto_route)
 
 
 def test_protocol_uses_codex_specific_tool_name():
@@ -128,10 +171,12 @@ def test_local_child_uses_explicit_unsloth_profile(
     assert bridge.run_local_agent("reply exactly LOCAL_OK") == "LOCAL_OK"
     command = captured["command"]
     assert command[:4] == ["/usr/local/bin/codex", "--oss", "--profile", "unsloth_api"]
+    # A refused connection to the local server must fail the run, not wait for the network forever.
+    assert command[4:6] == ["-c", "features.unbounded_connection_retries=false"]
     if bypass_permissions:
         assert "--dangerously-bypass-approvals-and-sandbox" in command
     else:
-        assert command[4:8] == ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+        assert command[6:10] == ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
     assert command[command.index("exec") + 1 : command.index("exec") + 4] == [
         "--ephemeral",
         "--json",
@@ -195,6 +240,58 @@ def test_local_child_prioritizes_failed_turn_over_progress():
     )
     with pytest.raises(RuntimeError, match = "local failure"):
         bridge._result_text(output)
+
+
+def test_auto_route_result_shows_the_last_command_the_child_ran():
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "sed -i 's/\\d{3}/555/' about.txt && cat about.txt",
+                "aggregated_output": "Office phone: 555-0147\n",
+                "exit_code": 0,
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "Updated to 555-0199."},
+        },
+    ]
+    output = "\n".join(json.dumps(event) for event in events)
+    assert bridge._result_text(output) == "Updated to 555-0199."
+    shown = bridge._result_text(output, show_last_command = True)
+    assert shown.startswith("Updated to 555-0199.")
+    assert "Office phone: 555-0147" in shown
+    assert "cat about.txt" in shown
+
+
+def test_failed_child_reports_its_last_error_not_its_banner(monkeypatch, tmp_path):
+    config = _write_config(tmp_path)
+    monkeypatch.setenv(bridge._CODEX_SUBAGENT_CONFIG_ENV, str(config))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/codex")
+    reason = "stream disconnected before completion: error sending request"
+
+    class Process:
+        pid = 1234
+        returncode = 1
+
+        def communicate(self, timeout):
+            events = [
+                {"type": "turn.started"},
+                {"type": "turn.failed", "error": {"message": reason}},
+            ]
+            return "\n".join(
+                json.dumps(event) for event in events
+            ), "Reading additional input from stdin...\n"
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", lambda *args, **kwargs: Process())
+    with pytest.raises(RuntimeError) as failure:
+        bridge.run_local_agent("hello")
+    assert str(failure.value) == reason
 
 
 def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):

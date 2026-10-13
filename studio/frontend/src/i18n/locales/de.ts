@@ -3054,7 +3054,7 @@ export const de = {
         modelClef: "Clef",
         recommended: "Empfohlen",
         device: "Ausführen auf",
-        deviceDescription: "Die GPU antwortet schneller, hält ihren Speicher aber bis zum Neustart reserviert.",
+        deviceDescription: "Die GPU antwortet schneller und gibt ihren Speicher frei, wenn das Modell entladen wird.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         backend: "Laufzeit",
