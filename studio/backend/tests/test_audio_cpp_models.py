@@ -1112,6 +1112,10 @@ def test_miotts_rows_are_partial_only_for_the_variant_whose_codec_is_missing(hub
     assert not rows["BF16"].partial
     # No download state: priced from the missing codec, not the whole checkpoint.
     assert rows["Q8_0"].download_remaining_bytes == 7
+    # Offline the codec cannot be resolved: its size is unknown, so no remainder rather than 0.
+    offline = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF", offline = True)
+    assert offline["Q8_0"].partial
+    assert offline["Q8_0"].download_remaining_bytes != 0
     _put(snap, MIOCODEC_Q8, b"x" * 7)
     rows = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF")
     assert rows["Q8_0"].downloaded and not rows["Q8_0"].partial

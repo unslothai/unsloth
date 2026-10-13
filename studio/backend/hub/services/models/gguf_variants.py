@@ -488,8 +488,8 @@ def variant_remaining_bytes_from_state(
 
 
 def _audio_cpp_remaining_bytes(
-    repo_id: str, key: str, missing_files: list, missing_companion_bytes: int
-) -> int:
+    repo_id: str, key: str, missing_files: list, missing_companion_bytes: Optional[int]
+) -> Optional[int]:
     """What resuming an audio.cpp row still fetches. Its whole manifest, not the generic plan, which keeps
     one GGUF per quant and so drops a package's other components; without a manifest, the missing files."""
     try:
@@ -502,6 +502,8 @@ def _audio_cpp_remaining_bytes(
             return max(0, sum(max(0, int(f.size or 0)) for f in files) - have)
     except Exception as e:
         logger.warning(f"Manifest pricing failed for {repo_id} [{key}]: {e}")
+    if missing_companion_bytes is None:
+        return None
     return sum(size for _path, size in missing_files) + missing_companion_bytes
 
 
@@ -1121,10 +1123,13 @@ async def _audio_cpp_variants_answer(
             c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
         )
         companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
-        missing_companion_bytes = sum(
-            c.variant.size_bytes
-            for c in companions
-            if c is not None and audio_cpp_files.cached_files(c) is None
+        # An unresolved companion (offline, nothing cached) has an unknown size: no remainder then.
+        missing_companion_bytes = (
+            None
+            if any(c is None for c in companions)
+            else sum(
+                c.variant.size_bytes for c in companions if audio_cpp_files.cached_files(c) is None
+            )
         )
         try:
             incomplete = download_registry.incomplete_blob_hashes(
