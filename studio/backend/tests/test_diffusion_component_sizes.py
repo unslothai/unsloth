@@ -238,11 +238,16 @@ def _stub_for_table(root: Path, fam) -> None:
     experts = ("transformer", "transformer_2") if fam.is_moe else ("transformer",)
     for name in experts:
         _component(root, name, denoiser / len(experts))
-    _component(root, "text_encoder", text, stem = "model")
-    audio = 0.1 if fam.has_audio else 0.0
-    if fam.has_audio:
-        _component(root, "audio_vae", audio)
-    _component(root, "vae", vae - audio, "F32" if fam.vae_force_fp32 else "BF16")
+    # every optional folder the family loads (connectors / vocoder / upsampler / a second text encoder) is present,
+    # so the stub is a COMPLETE snapshot; their small sizes come out of the same table term
+    extra_text = [n for n in dcs.video_loaded_roles(fam) if n.startswith("text_encoder_")]
+    for n in extra_text:
+        _component(root, n, 0.1, stem = "model")
+    _component(root, "text_encoder", text - 0.1 * len(extra_text), stem = "model")
+    companions = [n for n in dcs.video_loaded_roles(fam) if n not in ("vae", "text_encoder") and n not in extra_text and not n.startswith("transformer")]
+    for n in companions:
+        _component(root, n, 0.1)
+    _component(root, "vae", vae - 0.1 * len(companions), "F32" if fam.vae_force_fp32 else "BF16")
 
 
 _TABLE_FAMILIES = [f for f in VIDEO_FAMILIES if f.bf16_components_gb and not f.modular_workflow]
@@ -528,7 +533,7 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: root)
     monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: root.name)
     got = dcs.video_components_gb(ltx, "someone/ltx-finetune", allow_hub = True)
-    assert got[2] == pytest.approx(round(ltx.bf16_components_gb[2] + 1.0, 1))
+    assert got[2] == pytest.approx(round(ltx.bf16_components_gb[2] - 0.1 + 1.0, 1))  # stub connectors 0.1 -> 1.0
     # a missing required folder still asks the Hub (with the load's token)
     (root / "vae" / "diffusion_pytorch_model.safetensors").unlink()
     calls = []
@@ -1037,7 +1042,8 @@ def test_companion_folders_follow_the_family_or_manifest(tmp_path):
     before = dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2]
     _component(ltx_root, "connectors", 1.0)
     _component(ltx_root, "vocoder", 0.5)
-    assert dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2] == pytest.approx(before + 1.5)
+    # the stub already holds 0.1 GB of each; they grew to 1.0 and 0.5
+    assert dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2] == pytest.approx(before + 0.9 + 0.4)
 
 
 def test_sub_byte_floats_count_parameters_by_bit_width(tmp_path):
@@ -1103,7 +1109,7 @@ def test_extra_text_encoders_need_the_family_or_manifest(tmp_path):
     _stub_for_table(root, hv)
     before = dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1]
     _component(root, "text_encoder_2", 0.44, stem = "model")
-    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] == pytest.approx(before + 0.44)
+    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] == pytest.approx(before - 0.1 + 0.44)
 
 
 def test_same_stem_order_follows_the_loader(tmp_path):
@@ -1152,6 +1158,9 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
     ltx = _fam("ltx-2")  # loads connectors and vocoder
     _stub_for_table(tmp_path, ltx)
     _component(tmp_path, "connectors", 1.0)
+    import shutil
+
+    shutil.rmtree(tmp_path / "vocoder")  # the stub's safetensors vocoder becomes a .bin one
     (tmp_path / "vocoder").mkdir()
     (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 8)
     sizes = dcs.local_component_sizes(tmp_path)
@@ -1161,6 +1170,7 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
     hv = _fam("hunyuanvideo-1.5")
     root = tmp_path / "hv"
     _stub_for_table(root, hv)
+    shutil.rmtree(root / "text_encoder_2")
     (root / "text_encoder_2").mkdir()
     (root / "text_encoder_2" / "pytorch_model.bin").write_bytes(b"\0" * 8)
     assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] is None
@@ -1198,3 +1208,57 @@ def test_local_index_read_is_capped(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: reads.append(self.name) or real(self, *a, **k))
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes is None and "diffusion_pytorch_model.safetensors.index.json" not in reads
+
+
+# ---- review round 7 ----
+
+
+def test_snapshot_missing_a_loaded_role_is_incomplete(tmp_path, monkeypatch):
+    import shutil
+
+    for name, folder, term in (
+        ("ltx-2.5", "latent_upsampler", 2),  # Studio-attached, never in model_index.json
+        ("ltx-2", "vocoder", 2),  # family rule
+        ("hunyuanvideo-1.5", "text_encoder_2", 1),  # family rule
+    ):
+        fam = _fam(name)
+        root = tmp_path / name
+        _stub_for_table(root, fam)
+        assert folder in dcs.video_loaded_roles(fam)
+        shutil.rmtree(root / folder)
+        # the absent loaded role makes its term unknown (table), never the rest summed
+        assert dcs.video_header_terms(fam, dcs.local_component_sizes(root))[term] is None
+        monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None, root = root: root)
+        monkeypatch.setattr(dcs, "resolve_ref", lambda *a, root = root, **k: root.name)
+        calls = []
+        monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: calls.append(repo))
+        assert dcs.video_components_gb(fam, "o/variant", allow_hub = True) == fam.bf16_components_gb
+        assert calls == ["o/variant"], name  # incomplete local snapshot: the Hub is probed
+    # a manifest-loaded extra counts too
+    wan = _fam("wan2.2-ti2v-5b")
+    w = tmp_path / "wan"
+    _stub_for_table(w, wan)
+    (w / "model_index.json").write_text(json.dumps({"vae": ["d", "V"], "connectors": ["l", "C"]}))
+    assert "connectors" in dcs.video_loaded_roles(wan, dcs.local_component_sizes(w))
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(w))[2] is None
+
+
+def test_index_fetch_is_bounded_by_the_deadline_while_a_peer_trickles():
+    import threading as _threading
+    import time as _time
+
+    release = _threading.Event()
+
+    class _Trickle(_Resp):
+        def iter_content(self, chunk_size = 1):
+            yield b"{"
+            release.wait(30)  # a peer that never completes the chunk
+            yield b"}"
+
+    resp = _Trickle([])
+    start = _time.monotonic()
+    with pytest.raises(TimeoutError):
+        dcs._fetch_capped_text(_Session(resp), "u", {}, 30.0, _time.monotonic() + 0.5)
+    assert _time.monotonic() - start < 5  # the whole fetch, not one 30 s read
+    assert resp.closed  # interrupted (no urllib3 raw here, so closed)
+    release.set()

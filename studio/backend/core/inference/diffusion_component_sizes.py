@@ -431,32 +431,60 @@ def _fetch_capped_text(
 ) -> str:
     """Refuses past ``cap`` while streaming, so an oversized (or lying) index is never buffered whole. Works on
     both clients huggingface_hub ships: httpx (1.x, ``Client.stream``, redirects followed to the CDN) and requests
-    (0.x, ``stream=True``); see ``diffusion_compat._ranged_stream``."""
+    (0.x, ``stream=True``); see ``diffusion_compat._ranged_stream``.
+
+    The whole fetch (connect, headers, body) runs on a worker behind the same watchdog as the ranged-header reader
+    (``prequant_header_probe._hub_range_reader``): past ``deadline`` the read is interrupted with
+    ``diffusion_compat._interrupt_read`` and abandoned, so a peer trickling bytes cannot outlive the deadline."""
     import time
 
-    from .diffusion_compat import _iter_body
+    from .diffusion_compat import _interrupt_read, _iter_body
 
-    if callable(getattr(session, "stream", None)):
-        opened = session.stream(
-            "GET", url, headers=headers, timeout=timeout, follow_redirects=True
-        )
-    else:
-        opened = session.get(url, headers=headers, timeout=timeout, stream=True)
-    with opened as response:
-        response.raise_for_status()
-        declared = (
-            response.headers.get("Content-Length") if getattr(response, "headers", None) else None
-        )
-        if declared is not None and int(declared) > cap:
-            raise ValueError("index too large")
-        body = bytearray()
-        for chunk in _iter_body(response, 65536):
-            body.extend(chunk)
-            if len(body) > cap:
-                raise ValueError("index too large")
-            if time.monotonic() > deadline:
-                raise TimeoutError("index read deadline")
-        return body.decode("utf-8")
+    holder: list = [None]
+    result: list = []
+    failure: list = []
+
+    def _fetch() -> None:
+        try:
+            if callable(getattr(session, "stream", None)):
+                opened = session.stream(
+                    "GET", url, headers=headers, timeout=timeout, follow_redirects=True
+                )
+            else:
+                opened = session.get(url, headers=headers, timeout=timeout, stream=True)
+            with opened as response:
+                holder[0] = response
+                response.raise_for_status()
+                declared = (
+                    response.headers.get("Content-Length")
+                    if getattr(response, "headers", None)
+                    else None
+                )
+                if declared is not None and int(declared) > cap:
+                    raise ValueError("index too large")
+                body = bytearray()
+                for chunk in _iter_body(response, 65536):
+                    body.extend(chunk)
+                    if len(body) > cap:
+                        raise ValueError("index too large")
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("index read deadline")
+                result.append(body.decode("utf-8"))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            failure.append(exc)
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("index read deadline")
+    worker = threading.Thread(target=_fetch, name="component-sizes-index-read", daemon=True)
+    worker.start()
+    worker.join(min(remaining, threading.TIMEOUT_MAX))
+    if worker.is_alive():
+        _interrupt_read(holder[0])
+        raise TimeoutError("index read deadline")
+    if failure:
+        raise failure[0]
+    return result[0]
 
 
 _REF_CACHE: dict = {}
@@ -669,10 +697,12 @@ def component_sizes(
     components: Optional[Iterable[str]] = None,
     allow_hub: bool = False,
     cache_dir: Any = None,
-    required: Optional[Iterable[str]] = None,
+    required: Any = None,
     token: Any = None,
 ) -> Optional[ComponentSizes]:
-    """Local headers, then Hub; optional folders (not in ``required``) never send a cached model to the Hub."""
+    """Local headers, then Hub. ``required``: the folders a complete local answer must hold, or a callable of the
+    local sizes returning them (so the snapshot's own manifest can add loaded roles); others never send a cached
+    model to the Hub."""
     if repo_or_dir is None:
         return None
     path = Path(str(repo_or_dir)).expanduser()
@@ -680,6 +710,8 @@ def component_sizes(
         return local_component_sizes(path, components)
     snap = local_snapshot_dir(str(repo_or_dir), cache_dir)
     local = local_component_sizes(snap, components) if snap is not None else None
+    if callable(required):
+        required = required(local) if local is not None else ()
     need = (
         tuple(required)
         if required is not None
@@ -738,6 +770,27 @@ def table_mismatches() -> dict:
     return dict(_MISMATCHES)
 
 
+def _role_loaded(fam: Any, manifest: Optional[frozenset], name: str) -> bool:
+    """Whether a load of ``fam`` uses folder ``name``: a Studio-attached extra (LTX-2.5's latent_upsampler), a
+    family rule, or model_index.json naming it."""
+    if name in VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "") or ""), ()):
+        return True
+    rule = VIDEO_COMPANION_RULES.get(name)
+    if rule is not None and rule(fam):
+        return True
+    return manifest is not None and name in manifest
+
+
+def video_loaded_roles(fam: Any, sizes: Optional[ComponentSizes] = None) -> tuple[str, ...]:
+    """Every folder this load reads: the required roles plus each optional one the family, Studio or the snapshot's
+    manifest loads. A cached snapshot missing any of them is incomplete."""
+    manifest = sizes.manifest if sizes is not None else None
+    optional = (*VIDEO_ROLE_TEXT[1:], *VIDEO_ROLE_VAE, *VIDEO_EXTRA_VAE_ROLE.get(str(getattr(fam, "name", "") or ""), ()))
+    roles = list(video_required_roles(fam))
+    roles += [n for n in optional if _role_loaded(fam, manifest, n)]
+    return tuple(dict.fromkeys(roles))
+
+
 def video_required_roles(fam: Any) -> tuple[str, ...]:
     """Connectors, vocoder, upsampler, a second text encoder are optional: never a reason to go to the Hub."""
     denoiser = getattr(fam, "denoiser_attr", None) or "transformer"
@@ -765,9 +818,16 @@ def video_header_terms(
         if all(sizes.get(n) is not None for n in denoiser_names)
         else None
     )
+    loaded = set(video_loaded_roles(fam, sizes))
+
     def _loaded_unknown(names: Iterable[str]) -> bool:
-        # a folder the family / manifest loads whose size did not read: the term is unknown, never the rest summed
-        return any(n in sizes.unknown and _companion_loaded(fam, sizes, n) for n in names)
+        # a folder this load reads whose size is not known (unreadable, or absent from the snapshot): the term is
+        # unknown, never the rest summed
+        return any(
+            (n in sizes.unknown and _companion_loaded(fam, sizes, n))
+            or (n in loaded and sizes.get(n) is None)
+            for n in names
+        )
 
     text = (
         sizes.resident_gb(
@@ -892,7 +952,7 @@ def video_components_gb(
         sizes = component_sizes(
             target,
             components=wanted,
-            required=video_required_roles(fam),
+            required=lambda local: video_loaded_roles(fam, local),
             allow_hub=allow_hub and (table is None or not is_base),
             token=token,
         )
