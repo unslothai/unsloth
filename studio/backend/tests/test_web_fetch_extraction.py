@@ -364,6 +364,46 @@ def test_end_tag_outside_a_template_keeps_it_skipped(outside):
 
 
 @pytest.mark.parametrize(
+    "html",
+    [
+        "<form><nav>Hidden</form>Menu text</nav><p>After</p>",
+        "<span><nav>Hidden</span>Menu text</nav><p>After</p>",
+        "<a><nav>Hidden</a>Menu text</nav><p>After</p>",
+        "<b><nav>Hidden</b>Menu text</nav><p>After</p>",
+        "<div><select><option>Hidden</div>Menu text</select></div><p>After</p>",
+        (
+            "<div><table><tr><td><nav>Hidden</div>Menu text</nav></td></tr></table>"
+            "</div><p>After</p>"
+        ),
+        "<nav><table><tr><td>Hidden</nav>Menu text</td></tr></table></nav><p>After</p>",
+        "<nav><select><option>Hidden</nav>Menu text</select></nav><p>After</p>",
+        "<body><nav>Hidden</body>Menu text</nav><p>After</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_does_not_pop_a_skipped_element_keeps_it_skipped(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<section><nav>Hidden</section><p>Visible text</p>",
+        "<ul><li><nav>Hidden</li><li>Visible text</li></ul>",
+        "<table><tr><td><nav>Hidden</td><td>Visible text</td></tr></table>",
+        "<h1><nav>Hidden</h2><p>Visible text</p>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_ancestor_end_tag_that_pops_a_skipped_element_ends_suppression(html, main_content):
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible text" in out
+
+
+@pytest.mark.parametrize(
     "build",
     [
         lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",

@@ -202,6 +202,66 @@ _BLOCK_TAGS = frozenset(
     }
 )
 _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+# end tags in these groups pop through descendants when their target is in the matching HTML parser scope
+_SKIP_RECOVERY_END_TAGS = (
+    frozenset(
+        {
+            "address",
+            "applet",
+            "article",
+            "aside",
+            "blockquote",
+            "button",
+            "caption",
+            "center",
+            "dd",
+            "details",
+            "dialog",
+            "dir",
+            "div",
+            "dl",
+            "dt",
+            "fieldset",
+            "figcaption",
+            "figure",
+            "footer",
+            "header",
+            "hgroup",
+            "li",
+            "listing",
+            "main",
+            "marquee",
+            "menu",
+            "nav",
+            "object",
+            "ol",
+            "p",
+            "pre",
+            "search",
+            "section",
+            "select",
+            "summary",
+            "table",
+            "tbody",
+            "td",
+            "tfoot",
+            "th",
+            "thead",
+            "tr",
+            "ul",
+        }
+    )
+    | _HEADING_TAGS
+)
+_SCOPE_BARRIERS = frozenset(
+    {"applet", "caption", "html", "marquee", "object", "select", "table", "td", "template", "th"}
+)
+_LIST_ITEM_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"ol", "ul"}
+_BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
+_TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
+_TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"})
+_INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
 # half the 16K fetch result: repeated span cells must leave room for the source text after the table
 _MAX_SPAN_CHARS = 8_000
 # a long rowspan cell is usually page layout, so only its first row keeps the text
@@ -657,7 +717,8 @@ class _MarkdownRenderer(HTMLParser):
 
         # open non-void tags plus hidden-start indices, so an omitted </p>/</li> cannot leave the renderer stuck hidden
         self._open_tags: list[str] = []
-        self._open_counts: dict[str, int] = {}
+        # tag -> its indices in _open_tags, so scoped end-tag recovery stays constant time
+        self._open_at: dict[str, list[int]] = {}
         # Open tags that can be closed implicitly; zero lets _close_implicit skip the scan.
         self._closable_open: int = 0
         self._hidden_marks: list[int] = []
@@ -1090,7 +1151,8 @@ class _MarkdownRenderer(HTMLParser):
     def _truncate_open_tags(self, index: int) -> None:
         """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
-            self._open_counts[name] -= 1
+            if positions := self._open_at.get(name):
+                positions.pop()
             if name in _IMPLICIT_CLOSERS:
                 self._closable_open -= 1
         del self._open_tags[index:]
@@ -1211,8 +1273,9 @@ class _MarkdownRenderer(HTMLParser):
         should be rendered (False = suppressed). Caller runs ``_close_implicit``
         first so recovery also fires for skipped tags."""
         if tag not in _VOID_TAGS:
+            if tag in _INDEXED_OPEN_TAGS:
+                self._open_at.setdefault(tag, []).append(len(self._open_tags))
             self._open_tags.append(tag)
-            self._open_counts[tag] = self._open_counts.get(tag, 0) + 1
             if tag in _IMPLICIT_CLOSERS:
                 self._closable_open += 1
             if _is_hidden_element(attr_dict):
@@ -1451,12 +1514,24 @@ class _MarkdownRenderer(HTMLParser):
             # a <template> is a scope boundary: end tags of elements outside it are ignored
             if at and (not templates or at[-1] >= templates[-1]):
                 i = at[-1]
+                if tag in _SKIP_RECOVERY_END_TAGS and not self._skip_target_in_scope(tag, i):
+                    return
                 for name in self._skip_tags[i:]:
                     self._skip_at[name].pop()
                 del self._skip_tags[i:]
                 return
-            # an ancestor's end tag also closes the skipped element, as browsers do
-            if templates or not self._open_counts.get(tag):
+            # only scoped structural end tags pop through a skipped element; form and inline end tags do not
+            if tag not in _SKIP_RECOVERY_END_TAGS:
+                return
+            if tag in _HEADING_TAGS:
+                target = max(
+                    (self._open_at[name][-1] for name in _HEADING_TAGS if self._open_at.get(name)),
+                    default = -1,
+                )
+            else:
+                positions = self._open_at.get(tag)
+                target = positions[-1] if positions else -1
+            if target < 0 or not self._open_target_in_scope(tag, target):
                 return
             self._skip_tags.clear()
             self._skip_at.clear()
@@ -1536,6 +1611,34 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "table":
             self._finish_table()
+
+    @staticmethod
+    def _scope_barriers(tag: str) -> frozenset[str]:
+        if tag == "li":
+            return _LIST_ITEM_SCOPE_BARRIERS
+        if tag == "p":
+            return _BUTTON_SCOPE_BARRIERS
+        if tag in _TABLE_END_TAGS:
+            return _TABLE_SCOPE_BARRIERS
+        return _SCOPE_BARRIERS
+
+    def _skip_target_in_scope(self, tag: str, target: int) -> bool:
+        barriers = self._scope_barriers(tag)
+        return not any(
+            positions and positions[-1] > target
+            for name in barriers
+            if (positions := self._skip_at.get(name))
+        )
+
+    def _open_target_in_scope(self, tag: str, target: int) -> bool:
+        barriers = self._scope_barriers(tag)
+        if any(self._skip_at.get(name) for name in barriers):
+            return False
+        return not any(
+            positions and positions[-1] > target
+            for name in barriers
+            if (positions := self._open_at.get(name))
+        )
 
     def _text_suppressed(self) -> bool:
         if self._skip_tags or self._hidden_marks:
