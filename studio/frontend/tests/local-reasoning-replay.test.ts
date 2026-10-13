@@ -78,3 +78,10 @@ test("a forced retrieval card stays its own exchange before a numbered round", (
   // Without provenance the two merge into one assistant message, which Llama 3 templates reject.
   assert.deepEqual(exchanges([{ result: "recall" }, realRound]), [0, 0]);
 });
+
+test("the JSONL export also starts a new exchange before a forced recall card", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const src = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
+  // Same rule as the chat adapter: flush what is pending before a round-less local pair.
+  assert.match(src, /toolCalls\.length > 0 && \(ownPair \|\| startsNewCodexToolRound\(roundId, callRoundId\)\)\) flush\(\)/);
+});

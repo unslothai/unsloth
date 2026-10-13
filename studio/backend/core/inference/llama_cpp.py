@@ -496,6 +496,7 @@ from core.inference.tool_loop_controller import (
     deferred_nudge_text,
     provisional_tool_provenance,
     restore_replayed_tool_results,
+    with_appended_text,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -790,12 +791,7 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _with_appended_text(content, text: str):
-    """``content`` with ``text`` at the end. A part list (an image a tool returned may have joined
-    the turn) gets a text part; formatting it as a string ships the image as base64 prose."""
-    if isinstance(content, list):
-        return [*content, {"type": "text", "text": text}]
-    return f"{content}{text}"
+_EMPTY_THINK_PROBE_LOCK = threading.Lock()
 
 
 def _apply_seeded_llama_request(
@@ -9161,6 +9157,14 @@ class LlamaCppBackend:
         cached = getattr(self, "_empty_think_preserve_probe", None)
         if cached is not None and cached[0] == key:
             return cached[1]
+        # Concurrent first turns (agents open several) wait for one probe instead of each sending three.
+        with _EMPTY_THINK_PROBE_LOCK:
+            cached = getattr(self, "_empty_think_preserve_probe", None)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            return self._probe_empty_think_replay(key)
+
+    def _probe_empty_think_replay(self, key: tuple) -> bool:
         result = False
         try:
             off = dict(self._request_reasoning_kwargs(False, None, None) or {})
@@ -9186,7 +9190,8 @@ class LlamaCppBackend:
                             "chat_template_kwargs": {**off, "preserve_thinking": preserve},
                         },
                     )
-                    if 400 <= r.status_code < 500:
+                    # The template's own answer; 408 / 429 are the server being busy, asked again.
+                    if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
                         refused.append(r.status_code)
                     prompt = r.json().get("prompt") if r.status_code == 200 else None
                     return prompt if isinstance(prompt, str) else None
@@ -37924,6 +37929,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
@@ -37948,9 +37954,10 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
-        preserve_thinking = self._replay_preserve_thinking(
-            preserve_thinking, messages, enable_thinking, reasoning_effort
-        )
+        if replay_preserve_thinking:
+            preserve_thinking = self._replay_preserve_thinking(
+                preserve_thinking, messages, enable_thinking, reasoning_effort
+            )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -38370,6 +38377,8 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        # False when the caller knows the history held reasoning its conversion dropped.
+        replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
@@ -38419,9 +38428,10 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        preserve_thinking = self._replay_preserve_thinking(
-            preserve_thinking, messages, enable_thinking, reasoning_effort
-        )
+        if replay_preserve_thinking:
+            preserve_thinking = self._replay_preserve_thinking(
+                preserve_thinking, messages, enable_thinking, reasoning_effort
+            )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -38765,7 +38775,6 @@ class LlamaCppBackend:
         # Hold a leading ``{`` well past the 32-char XML cap until it balances (mirrors safetensors).
         _MAX_BARE_JSON_BUFFER = 16384
         _append_budget_exhausted_nudge = True
-        _limit_notice_in_user_turn = False
         # RAG: cap knowledge-base searches per assistant turn. The controller is
         # tool-agnostic, so this gate stays in the loop.
         _kb_search_count = 0
@@ -40617,7 +40626,6 @@ class LlamaCppBackend:
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 _over_cap: list = []
-                _limit_notice_in_user_turn = False
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
@@ -41751,7 +41759,6 @@ class LlamaCppBackend:
                             }
                         else:
                             conversation.append({"role": "user", "content": _limit_text})
-                        _limit_notice_in_user_turn = True
 
                 if batch_mcp_images and self.is_vision:
                     # One block after the whole batch. With a single result "the tool
@@ -41845,11 +41852,12 @@ class LlamaCppBackend:
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
-                # Two user turns in a row break strict templates (Gemma), so ride the notice's turn.
-                if _limit_notice_in_user_turn and conversation[-1].get("role") == "user":
+                # Two user turns in a row break strict templates (Gemma), so ride the trailing user
+                # turn: the over-cap notice, or the image turn a tool's result was promoted into.
+                if conversation[-1].get("role") == "user":
                     conversation[-1] = {
                         **conversation[-1],
-                        "content": _with_appended_text(
+                        "content": with_appended_text(
                             conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
                         ),
                     }

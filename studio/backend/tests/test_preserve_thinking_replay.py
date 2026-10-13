@@ -277,3 +277,18 @@ def test_a_template_the_server_refuses_to_render_is_probed_once(monkeypatch):
     assert backend._empty_think_replays_with_preserve() is False
     assert backend._empty_think_replays_with_preserve() is False
     assert len(calls) == 3
+
+
+def test_a_busy_server_is_asked_again(monkeypatch):
+    calls: list = []
+
+    class _Busy(_FakeClient):
+        def post(self, url, json):
+            self._calls.append(json)
+            return type("R", (), {"status_code": 429, "json": lambda self: {"error": "busy"}})()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", lambda **kw: _Busy(None, calls))
+    backend = _backend()
+    assert backend._empty_think_replays_with_preserve() is False
+    assert backend._empty_think_replays_with_preserve() is False
+    assert len(calls) == 6

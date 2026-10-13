@@ -2583,7 +2583,8 @@ def _preserve_probe_pending(llama_backend) -> bool:
 def _replay_preserve_thinking(llama_backend, payload, messages):
     """The preserve_thinking generation will render with, so counts price the same prompt."""
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if resolver is None:
+    # An Anthropic recount: its conversion dropped replayed thinking the resolver must not miss.
+    if resolver is None or _anthropic_history_has_thinking(payload):
         return payload.preserve_thinking
     return resolver(
         payload.preserve_thinking, messages, payload.enable_thinking, payload.reasoning_effort
@@ -42611,7 +42612,9 @@ async def anthropic_messages(
                     monitor_id,
                     llama_backend.context_length,
                 ),
-                **_anthropic_reasoning_args(payload),
+                # Conversion dropped the replayed thinking; the generator must not read that as none.
+                replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+                **_reasoning_args,
             )
 
         if payload.stream:
@@ -42670,7 +42673,8 @@ async def anthropic_messages(
                 monitor_id,
                 llama_backend.context_length,
             ),
-            **_anthropic_reasoning_args(payload),
+            replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+            **_reasoning_args,
         )
 
     if payload.stream:

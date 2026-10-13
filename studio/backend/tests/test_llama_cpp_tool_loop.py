@@ -7553,7 +7553,7 @@ def test_budget_notice_folded_into_a_denied_result_is_reported_for_replay(monkey
 
 
 def test_appended_notice_keeps_an_image_part_an_image():
-    from core.inference.llama_cpp import _with_appended_text
+    from core.inference.tool_loop_controller import with_appended_text as _with_appended_text
 
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     out = _with_appended_text([{"type": "text", "text": "Over the cap."}, image], "\n\nStop.")

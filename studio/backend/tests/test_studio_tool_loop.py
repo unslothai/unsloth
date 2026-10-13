@@ -1786,3 +1786,21 @@ def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
     assert assistant.get("reasoning_content") == ("First thought." if preserve else None)
     assert assistant["tool_calls"][0]["function"]["name"] == "web_search"
     assert transport.requests[1]["messages"][-1]["role"] == "tool"
+
+
+def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
+    from core.inference.studio_tool_loop import _append_user_turn
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    conversation = [{"role": "user", "content": [{"type": "text", "text": "Screenshot:"}, image]}]
+    _append_user_turn(conversation, "Stop now.")
+    assert conversation == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Screenshot:"},
+                image,
+                {"type": "text", "text": "\n\nStop now."},
+            ],
+        }
+    ]

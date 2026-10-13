@@ -3667,6 +3667,59 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured["preserve_thinking"] is not True
 
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [({}, "plain"), ({"enable_tools": True, "permission_mode": "off"}, "tools")],
+        ids = ["plain", "server-tools"],
+    )
+    @pytest.mark.parametrize("replays_thinking", [True, False])
+    def test_generation_skips_the_replay_resolver_only_when_thinking_was_dropped(
+        self, monkeypatch, extra, expected_path, replays_thinking
+    ):
+        # The generator resolves from the converted history, where dropped thinking reads as none.
+        backend = _mock_backend(monkeypatch)
+        answer = [{"type": "text", "text": "hello"}]
+        if replays_thinking:
+            answer.insert(0, {"type": "thinking", "thinking": "Greet back.", "signature": "s"})
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            **extra,
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs["replay_preserve_thinking"] is (not replays_thinking)
+
+    def test_the_admission_recount_keeps_the_callers_preserve_when_thinking_was_dropped(self):
+        from routes.inference import _replay_preserve_thinking
+
+        class _Backend:
+            def _replay_preserve_thinking(self, preserve, messages, enable, effort):
+                return True
+
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Greet back.", "signature": "s"},
+                        {"type": "text", "text": "hello"},
+                    ],
+                },
+                {"role": "user", "content": "again"},
+            ],
+            preserve_thinking = False,
+        )
+        assert _replay_preserve_thinking(_Backend(), payload, []) is False
+
     def test_server_tool_count_prices_the_restored_failed_result(self, monkeypatch):
         # The server-tool loop renders a replayed failure with the nudge the model saw, so the
         # count has to price the same bytes.
