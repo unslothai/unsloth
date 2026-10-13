@@ -9,6 +9,8 @@
 export interface EmbeddedRecipe {
   recipe?: string;
   parameters?: string;
+  // ComfyUI's API-format graph (its `prompt` PNG chunk), read on import only.
+  comfyPrompt?: string;
 }
 
 type Bytes = Uint8Array<ArrayBuffer>;
@@ -113,7 +115,14 @@ export function copyPngTextChunks(source: Uint8Array, target: Bytes): Bytes {
 
 export function pngRecipe(bytes: Uint8Array): EmbeddedRecipe {
   const text = pngTextChunks(bytes);
-  return { recipe: text[RECIPE_KEY], parameters: text[PARAMETERS_KEY] };
+  const out: EmbeddedRecipe = {
+    recipe: text[RECIPE_KEY],
+    parameters: text[PARAMETERS_KEY],
+  };
+  if (text.prompt?.trimStart().startsWith("{")) {
+    out.comfyPrompt = text.prompt;
+  }
+  return out;
 }
 
 // EXIF is big-endian TIFF, the layout piexif writes, so AUTOMATIC1111 reads it back.
@@ -521,7 +530,8 @@ export function importedRecipe(
 ): ImportedRecipe | null {
   return (
     recipeJson(embedded.recipe) ??
-    (embedded.parameters ? parseA1111Parameters(embedded.parameters) : null)
+    (embedded.parameters ? parseA1111Parameters(embedded.parameters) : null) ??
+    (embedded.comfyPrompt ? parseComfyPrompt(embedded.comfyPrompt) : null)
   );
 }
 
@@ -590,4 +600,93 @@ export function recipeSettings(
     reference_resolution: int(r.reference_resolution),
     localized_edit: str(r.localized_edit) ?? null,
   };
+}
+
+type ComfyGraph = Record<
+  string,
+  { class_type?: unknown; inputs?: Record<string, unknown> }
+>;
+
+const COMFY_SAMPLERS = new Set(["KSampler", "KSamplerAdvanced"]);
+const COMFY_MODEL_INPUTS = ["ckpt_name", "unet_name", "model_name"];
+
+/** Prompt, seed, steps, CFG, size and model from a ComfyUI graph with a KSampler. Inputs wired to
+ *  another node (`[id, slot]`) are followed a few hops to the value; anything else is skipped. */
+export function parseComfyPrompt(text: string): ImportedRecipe | null {
+  let graph: ComfyGraph;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null;
+    }
+    graph = parsed as ComfyGraph;
+  } catch {
+    return null;
+  }
+  const node = (link: unknown) =>
+    Array.isArray(link) &&
+    (typeof link[0] === "string" || typeof link[0] === "number")
+      ? graph[String(link[0])]
+      : undefined;
+  const value = (v: unknown, keys: string[], depth = 0): unknown => {
+    const linked = node(v);
+    if (!linked) {
+      return v;
+    }
+    if (depth > 4) {
+      return undefined;
+    }
+    for (const key of keys) {
+      if (linked.inputs && key in linked.inputs) {
+        return value(linked.inputs[key], keys, depth + 1);
+      }
+    }
+    return undefined;
+  };
+  const textOf = (link: unknown): string | undefined => {
+    const v = value(node(link)?.inputs?.text, ["text", "value", "string"]);
+    return typeof v === "string" ? v : undefined;
+  };
+  const sampler = Object.values(graph).find(
+    (n) =>
+      typeof n?.class_type === "string" && COMFY_SAMPLERS.has(n.class_type),
+  );
+  if (!sampler?.inputs) {
+    return null;
+  }
+  const inputs = sampler.inputs;
+  const out: ImportedRecipe = { prompt: textOf(inputs.positive) ?? "" };
+  const negative = textOf(inputs.negative);
+  if (negative !== undefined) out.negative_prompt = negative;
+  const seed = value(inputs.seed ?? inputs.noise_seed, [
+    "seed",
+    "noise_seed",
+    "value",
+  ]);
+  if (typeof seed === "number") out.seed = seed;
+  const steps = value(inputs.steps, ["steps", "value"]);
+  if (typeof steps === "number") out.steps = steps;
+  const cfg = value(inputs.cfg, ["cfg", "value"]);
+  if (typeof cfg === "number") out.guidance = cfg;
+  const latent = node(inputs.latent_image)?.inputs;
+  const width = value(latent?.width, ["width", "value"]);
+  const height = value(latent?.height, ["height", "value"]);
+  if (typeof width === "number" && typeof height === "number") {
+    out.width = width;
+    out.height = height;
+  }
+  for (const n of Object.values(graph)) {
+    const name = COMFY_MODEL_INPUTS.map((k) => n?.inputs?.[k]).find(
+      (v) => typeof v === "string",
+    );
+    if (typeof name === "string") {
+      out.model = name;
+      break;
+    }
+  }
+  return out;
 }

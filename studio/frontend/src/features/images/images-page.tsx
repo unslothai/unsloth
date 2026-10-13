@@ -2557,7 +2557,7 @@ export function ImagesPage({
       }
       if (!recipe) {
         toast.error("No generation settings found in this image", {
-          description: "Images saved by Unsloth, or by tools that write a parameters block, can be loaded.",
+          description: "Images saved by Unsloth, ComfyUI, or tools that write a parameters block can be loaded.",
         });
         return;
       }

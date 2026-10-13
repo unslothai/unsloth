@@ -9,6 +9,7 @@ import {
   copyPngTextChunks,
   importedRecipe,
   parseA1111Parameters,
+  parseComfyPrompt,
   pngTextChunks,
   readEmbeddedRecipe,
   recipeSettings,
@@ -287,4 +288,80 @@ test("the Images page wires downloads, the stamp setting and import", () => {
   assert.match(page, /onDrop=\{onImportDrop\}/);
   const store = readSrc("features/library/settings-store.ts");
   assert.match(store, /imageInfoStamp: true,/);
+});
+
+// ComfyUI's default text-to-image graph, as its SaveImage writes it into the `prompt` chunk, with
+// the seed wired through a primitive node.
+const COMFY_PROMPT = JSON.stringify({
+  "3": {
+    class_type: "KSampler",
+    inputs: {
+      seed: ["10", 0],
+      steps: 20,
+      cfg: 8,
+      sampler_name: "euler",
+      scheduler: "normal",
+      denoise: 1,
+      model: ["4", 0],
+      positive: ["6", 0],
+      negative: ["7", 0],
+      latent_image: ["5", 0],
+    },
+  },
+  "4": {
+    class_type: "CheckpointLoaderSimple",
+    inputs: { ckpt_name: "v1-5-pruned-emaonly.safetensors" },
+  },
+  "5": {
+    class_type: "EmptyLatentImage",
+    inputs: { width: 512, height: 768, batch_size: 1 },
+  },
+  "6": {
+    class_type: "CLIPTextEncode",
+    inputs: { text: "beautiful scenery nature glass bottle", clip: ["4", 1] },
+  },
+  "7": {
+    class_type: "CLIPTextEncode",
+    inputs: { text: "text, watermark", clip: ["4", 1] },
+  },
+  "8": {
+    class_type: "VAEDecode",
+    inputs: { samples: ["3", 0], vae: ["4", 2] },
+  },
+  "9": {
+    class_type: "SaveImage",
+    inputs: { filename_prefix: "ComfyUI", images: ["8", 0] },
+  },
+  "10": { class_type: "PrimitiveInt", inputs: { value: 156680208700286 } },
+});
+
+test("a ComfyUI PNG imports its prompt, seed, steps, CFG, size and checkpoint", () => {
+  const comfyPng = png(
+    chunk("IHDR"),
+    chunk("tEXt", latin1(`prompt\0${COMFY_PROMPT}`)),
+    chunk("tEXt", latin1('workflow\0{"nodes":[]}')),
+    chunk("IEND"),
+  );
+  const embedded = readEmbeddedRecipe(comfyPng);
+  assert.equal(embedded.comfyPrompt, COMFY_PROMPT);
+  assert.deepEqual(importedRecipe(embedded), {
+    prompt: "beautiful scenery nature glass bottle",
+    negative_prompt: "text, watermark",
+    seed: 156680208700286,
+    steps: 20,
+    guidance: 8,
+    width: 512,
+    height: 768,
+    model: "v1-5-pruned-emaonly.safetensors",
+  });
+  assert.equal(
+    parseComfyPrompt('{"1":{"class_type":"SaveImage","inputs":{}}}'),
+    null,
+  );
+  assert.equal(parseComfyPrompt("not json"), null);
+  // Unsloth's recipe still wins when a file somehow carries both.
+  assert.equal(
+    importedRecipe({ recipe: RECIPE, comfyPrompt: COMFY_PROMPT })?.steps,
+    4,
+  );
 });
