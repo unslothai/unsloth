@@ -66,7 +66,7 @@ export function ManagedEngineOfferDialog() {
         if (!next) resolve(null);
       }}
     >
-      <AlertDialogContent size="sm" className="data-[size=sm]:max-w-sm">
+      <AlertDialogContent size="sm" className="data-[size=sm]:max-w-md">
         <AlertDialogHeader className="min-w-0">
           <AlertDialogMedia className="size-12">
             <HugeiconsIcon
@@ -121,7 +121,7 @@ export function ManagedEngineOfferDialog() {
           </div>
         )}
         <AlertDialogFooter className="group-data-[size=sm]/alert-dialog-content:flex sm:justify-center">
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel variant="ghost">Cancel</AlertDialogCancel>
           {ready.map((engine) => (
             <AlertDialogAction
               key={engine.engine}

@@ -195,7 +195,9 @@ export function EngineInstall({
           aria-label={t("managedEngines.installTitle", {
             engine: names[engine.engine],
           })}
-          className={cn("space-y-3", !centered && "rounded-lg border p-3")}
+          className={cn(
+            centered ? "space-y-1 text-muted-foreground" : "space-y-3 rounded-lg border p-3",
+          )}
         >
           <p>
             {engine.download_bytes
@@ -213,9 +215,9 @@ export function EngineInstall({
             <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
           )}
           <p>{t("managedEngines.background")}</p>
-          <div className={cn("flex gap-2", centered && "justify-center")}>
+          <div className={cn("flex gap-2", centered && "justify-center pt-3")}>
             <Button
-              size="sm"
+              size={centered ? "default" : "sm"}
               disabled={busy}
               onClick={() => void action("install")}
             >
