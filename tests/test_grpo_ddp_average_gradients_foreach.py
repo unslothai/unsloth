@@ -85,3 +85,23 @@ def test_oversized_gradient_still_reduced_in_place(two_identical_ranks):
     average(ddp, bucket_bytes = 1)
     for p, g in zip(ddp.module.params, before):
         assert torch.equal(p.grad, g)
+
+
+@pytest.mark.parametrize("mode", ["missing", "raises"])
+def test_per_tensor_fallback_when_foreach_copy_unavailable(two_identical_ranks, monkeypatch, mode):
+    average = _load()
+    ddp = _model([(4, 16), (16, 4), (8,)])
+    ddp.module.params[1].grad = torch.randn(4, 16).t()
+    before = [p.grad.clone() for p in ddp.module.params]
+    if mode == "missing":
+        monkeypatch.delattr(torch, "_foreach_copy_")
+    else:
+
+        def broken(dst, src, *args, **kwargs):
+            dst[0].zero_()  # a partial write before failing must not leak through
+            raise RuntimeError("unsupported")
+
+        monkeypatch.setattr(torch, "_foreach_copy_", broken)
+    average(ddp)
+    for p, g in zip(ddp.module.params, before):
+        assert torch.equal(p.grad, g)
