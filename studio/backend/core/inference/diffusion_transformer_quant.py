@@ -148,6 +148,7 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
     "ltx-2": _LTX2_INT8_EXCLUDES,
     "ltx-2.3": _LTX2_INT8_EXCLUDES,  # same audiovisual DiT
+    "ltx-2.5": _LTX2_INT8_EXCLUDES,  # the 2.3 DiT less the video FFN bias
 }
 
 
@@ -252,10 +253,16 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
 # Variant repos that also host a rotated build (``<Model>-INT8-ConvRot.safetensors``), listed for the same reason.
 _INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
     "qwen-image-2.1": ("unsloth/Qwen-Image-2.1-Turbo-FP8",),
+    # Rotation baked into the file (every quantized Linear, group 256) and read back from its metadata. LTX-2.5 has no
+    # runtime ConvRot spec above, so quantizing at load stays plain int8.
+    "ltx-2.5": ("unsloth/LTX-2.5-FP8",),
 }
 
-# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
-_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
+# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``). For ltx-2.5 this only
+# picks the hosted rotated file (the env's ``0`` picks the plain one).
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
+    {"qwen-image-2.1", "z-image", "ltx-2.5"}
+)
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
