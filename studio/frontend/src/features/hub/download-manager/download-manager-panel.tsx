@@ -24,7 +24,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type ManagedDownload,
   downloadManager,
@@ -264,7 +264,10 @@ export function DownloadManagerPanel({
   const activeCount = useDownloadManagerStore(selectActiveJobCount) + queued.length;
   // Opened from the icon: the user asked to watch it, so it stays open until they fold it.
   const [userOpened, setUserOpened] = useState(false);
-  const [engaged, setEngaged] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  // Bumped when focus leaves, to restart the countdown; focus itself is read when it ends.
+  const [focusLeft, setFocusLeft] = useState(0);
+  const panelRef = useRef<HTMLDivElement>(null);
   const snapshot = foldSnapshot(jobKeys, jobs, queued.length);
   const empty = jobKeys.length === 0 && queued.length === 0;
   const steady = !empty && snapshot.attention.length === 0;
@@ -276,21 +279,25 @@ export function DownloadManagerPanel({
     if (empty) {
       setUserOpened(false);
       setCollapsed(false);
-      setEngaged(false);
+      setHovered(false);
     } else if (shouldPopOpen(seen.snapshot, snapshot)) {
       setCollapsed(false);
     }
   }
 
-  const foldPending = !collapsed && steady && !engaged && !userOpened;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: changeKey restarts the countdown when a download is added.
+  const foldPending = !collapsed && steady && !hovered && !userOpened;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changeKey and focusLeft restart the countdown.
   useEffect(() => {
     if (!foldPending) {
       return;
     }
-    const timer = window.setTimeout(() => setCollapsed(true), AUTO_FOLD_MS);
+    const timer = window.setTimeout(() => {
+      if (!panelRef.current?.contains(document.activeElement)) {
+        setCollapsed(true);
+      }
+    }, AUTO_FOLD_MS);
     return () => window.clearTimeout(timer);
-  }, [foldPending, changeKey]);
+  }, [foldPending, changeKey, focusLeft]);
 
   if (!enabled || (jobKeys.length === 0 && queued.length === 0)) return null;
 
@@ -356,12 +363,12 @@ export function DownloadManagerPanel({
       ) : (
         <div
           className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden"
-          onPointerEnter={() => setEngaged(true)}
-          onPointerLeave={() => setEngaged(false)}
-          onFocus={() => setEngaged(true)}
+          ref={panelRef}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setEngaged(false);
+              setFocusLeft((n) => n + 1);
             }
           }}
         >
@@ -374,7 +381,7 @@ export function DownloadManagerPanel({
               aria-label="Collapse downloads"
               onClick={() => {
                 setUserOpened(false);
-                setEngaged(false);
+                setHovered(false);
                 setCollapsed(true);
               }}
               className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"

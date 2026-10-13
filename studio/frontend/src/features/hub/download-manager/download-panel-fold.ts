@@ -15,7 +15,7 @@ export function needsAttention(job: ManagedDownload | undefined): boolean {
 export type FoldSnapshot = {
   jobKeys: readonly string[];
   queued: number;
-  /** Job keys whose row needs attention. */
+  /** One token per row needing attention, carrying its state, so a warning that turns into a failure counts again. */
   attention: readonly string[];
 };
 
@@ -27,7 +27,12 @@ export function foldSnapshot(
   return {
     jobKeys,
     queued,
-    attention: jobKeys.filter((key) => needsAttention(jobs[key])),
+    attention: jobKeys
+      .filter((key) => needsAttention(jobs[key]))
+      .map(
+        (key) =>
+          `${key}\u0001${jobs[key]?.state}\u0001${jobs[key]?.error ? 1 : 0}`,
+      ),
   };
 }
 

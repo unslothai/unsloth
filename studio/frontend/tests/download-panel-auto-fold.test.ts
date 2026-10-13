@@ -81,6 +81,27 @@ test("a finish, failure or cancel pops it open once", () => {
   }
 });
 
+test("a warning that turns into a failure pops it open again", () => {
+  const warned = foldSnapshot(["a"], jobsOf(job("a", { error: "stalled" })), 0);
+  const failed = foldSnapshot(
+    ["a"],
+    jobsOf(job("a", { state: "error", error: "stalled" })),
+    0,
+  );
+  assert.equal(shouldPopOpen(warned, failed), true);
+  const cancelling = foldSnapshot(
+    ["a"],
+    jobsOf(job("a", { state: "cancelling" })),
+    0,
+  );
+  const cancelled = foldSnapshot(
+    ["a"],
+    jobsOf(job("a", { state: "cancelled" })),
+    0,
+  );
+  assert.equal(shouldPopOpen(cancelling, cancelled), true);
+});
+
 test("a finished row leaving does not pop it open", () => {
   const before = foldSnapshot(
     ["a", "b"],
