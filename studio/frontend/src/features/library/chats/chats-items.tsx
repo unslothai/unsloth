@@ -75,7 +75,7 @@ import {
 import { FILE_LIST_COLUMNS } from "../components/library-list";
 import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
-import { CARD_HOVER, CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
 // No overflow-hidden, so a two-line name grows its row instead of clipping; the row stretches to match.
 const CARD = cn(
@@ -1786,7 +1786,6 @@ function FavoriteTile({
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           FILE_CARD_SURFACE,
-          CARD_HOVER,
         )}
       >
         {/* Same layout as the file cards. */}

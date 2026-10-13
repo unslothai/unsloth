@@ -22,7 +22,6 @@ import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
 import {
-  CARD_HOVER,
   CARD_SHADOW,
   GLASS_CONTROL,
   GLASS_SURFACE,
@@ -153,9 +152,8 @@ function CardFrame({
         }
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          selected && "ring-2 ring-foreground",
           className,
-          CARD_HOVER,
-          selected && "ring-2 ring-foreground group-hover/library-card:ring-foreground",
         )}
       >
         {children}
