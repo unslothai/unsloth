@@ -246,8 +246,8 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* Hellix's line box puts the caps ~1.9px above the trigger's centre, which shows in the hover box. */}
-        <span className="relative top-[0.11em] flex min-w-0 flex-1 items-baseline">
+        {/* No vertical offset, so the caps line up with the project switcher. */}
+        <span className="flex min-w-0 flex-1 items-baseline">
           {/* The name gives way last: the suffix (format and quant), then the description, shrink
               away first. Their far larger shrink factor makes that order effectively strict. */}
           <span className="flex min-w-0 items-baseline">
