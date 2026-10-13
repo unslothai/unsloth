@@ -758,6 +758,57 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
+def _sharded_data_parallel_launch():
+    """ "FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
+    except Exception:
+        distributed_type = ""
+    if "FSDP" in distributed_type:
+        return "FSDP"
+    if "DEEPSPEED" in distributed_type:
+        return "DeepSpeed"
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY or str(
+        os.environ.get("FSDP_VERSION", "")
+    ).strip() not in ("", "0"):
+        return "FSDP"
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in _TRUTHY:
+        return "DeepSpeed"
+    return None
+
+
+def _single_card_device_map(device_map):
+    if isinstance(device_map, dict):
+        if set(device_map) != {""}:
+            return False
+        device_map = device_map[""]
+    if isinstance(device_map, int) and not isinstance(device_map, bool):
+        return True
+    if isinstance(device_map, torch.device):
+        return device_map.type == "cuda"
+    return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
+
+
+def ddp_auto_block_swap_launch(device_map):
+    return (
+        is_distributed()
+        and _sharded_data_parallel_launch() is None
+        and _single_card_device_map(device_map)
+    )
+
+
+def auto_offload_for_launch(offload_layers):
+    """No "auto" swap on a launch that already shows FSDP / DeepSpeed."""
+    if (
+        offload_layers == "auto"
+        and is_distributed()
+        and _sharded_data_parallel_launch() is not None
+    ):
+        return 0
+    return offload_layers
+
+
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",
@@ -798,8 +849,15 @@ def resolve_auto_block_swap(
         return _none(skip_reason)
     if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
         return _none("block swap needs a CUDA or ROCm GPU")
-    if is_distributed():
-        return _none("each rank of a distributed launch owns its own device")
+    distributed = is_distributed()
+    if distributed:
+        sharded = _sharded_data_parallel_launch()
+        if sharded is not None:
+            return _none(f"{sharded} shards the weights across the ranks itself")
+        if not _single_card_device_map(device_map):
+            return _none("each rank of a distributed launch owns its own device")
+        # DDP refuses a CPU parameter.
+        offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
     except ImportError:
@@ -825,6 +883,11 @@ def resolve_auto_block_swap(
             if target.type != "cuda":
                 return _none(f"the load places the model on {target}")
             target = target.index if target.index is not None else torch.cuda.current_device()
+        elif (
+            isinstance(device_map, (int, torch.device))
+            and _single_device_index(device_map) is not None
+        ):
+            target = _single_device_index(device_map)
         elif device_map is None or (
             isinstance(device_map, str)
             and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
@@ -873,6 +936,11 @@ def resolve_auto_block_swap(
         + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
+    if distributed:
+        # No collective: a loader only some ranks run would hang. Plans may differ per rank.
+        layers = int(plan.layers or 0)
+        print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
+        return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
@@ -1597,6 +1665,7 @@ def _offline_quantize_to_fp8(
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1608,7 +1677,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1661,9 +1730,14 @@ def _offline_quantize_to_fp8(
                 model_name,
                 config = config,
                 revision = revision,
+                token = token,
                 **load_kwargs,
             )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
+        tokenizer = auto_processor.from_pretrained(
+            model_name,
+            revision = revision,
+            token = token,
+        )
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):

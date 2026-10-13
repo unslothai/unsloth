@@ -397,6 +397,28 @@ class TestMaxBodyMiddleware:
         ):
             assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
 
+    def test_llama_passthrough_posts_are_capped(self, main_module):
+        from fastapi import Request
+        from fastapi.testclient import TestClient
+
+        for path in ("/tokenize", "/tokenize/", "/detokenize", "/detokenize/"):
+            assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
+
+        app = FastAPI()
+        app.add_middleware(
+            main_module.MaxBodyMiddleware,
+            max_bytes_getter = lambda: 64,
+            protected_prefixes = main_module._BODY_PROTECTED_PREFIXES,
+        )
+
+        @app.post("/tokenize")
+        async def _tokenize(request: Request):
+            return {"n": len(await request.body())}
+
+        with TestClient(app) as c:
+            assert c.post("/tokenize", content = b"x" * 64).status_code == 200
+            assert c.post("/tokenize", content = b"x" * 65).status_code == 413
+
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,
@@ -1643,6 +1665,7 @@ def test_rag_document_uploads_pass_through_on_their_own_cap(main_module, monkeyp
         "/api/rag/knowledge-bases/kb1/documents",
         "/api/rag/threads/t1/documents",
         "/api/rag/projects/p1/documents/",
+        "/api/rag/extract-text",
     ):
         assert pattern.match(path), path
         assert main_module._get_upload_passthrough_request_max_bytes(

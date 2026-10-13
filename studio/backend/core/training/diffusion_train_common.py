@@ -28,6 +28,7 @@ from core._torchao_stub import (
     is_stubbed,
     torch_is_rocm,
 )
+from core.inference.diffusion_families import _FAMILIES as _IMAGE_REGISTRY
 from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
@@ -35,8 +36,11 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
+from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata
+
+from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
@@ -70,9 +74,9 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
 )
 
-# The video registry has no trainable flag, so the trainable set lives here and every name in it MUST resolve through
-# get_trainer; a video base outside it is refused by name.
-TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
+# ``VideoFamily.trainable``; every name in it MUST resolve through get_trainer, and a video base outside it is refused
+# by name.
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGISTRY if f.trainable)
 
 # Families whose flow_shift default is "auto" (reproduce the family's INFERENCE sigma distribution) rather than the
 # identity 1.0. Both schedulers set use_dynamic_shifting, so scheduler.sigmas is the unshifted uniform table and
@@ -280,6 +284,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    family = _resolve_trainable_family(base_model, model_family)
+    from core.inference.video_families import assert_ltx_pick_supported
+
+    assert_ltx_pick_supported(family, base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
     Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
     base; an explicit ``model_family`` must name a registry family, and that family must be
@@ -313,6 +325,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
+
+    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -524,18 +540,10 @@ def train_defaults(family: str) -> dict[str, Any]:
     return dict(FAMILY_TRAIN_DEFAULTS.get((family or "").strip().lower(), {}))
 
 
-# Display labels + a short VRAM/access note per trainable family, surfaced by the Train UI so users pick a base with
-# realistic expectations.
+# Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
+# so users pick a base with realistic expectations.
 _FAMILY_LABELS = {
-    "sdxl": "SDXL",
-    "flux.1": "FLUX.1-dev",
-    "qwen-image": "Qwen-Image",
-    "z-image": "Z-Image",
-    "krea-2": "Krea 2",
-    "flux.2-klein": "FLUX.2 Klein",
-    "flux.2-dev": "FLUX.2-dev",
-    "ltx-2": "LTX-2",
-    "minimax-h3": "MiniMax-H3",
+    fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label
 }
 # params is the transformer size (SDXL is not quoted that way); note is the rest.
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
@@ -758,12 +766,12 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
 
 def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     """Reason a DiT family cannot train on this host at all, else None. Never raises. nf4 is not a
-    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, whose
-    validate_environment raises "No GPU found. A GPU is needed for quantization." unless CUDA,
-    XPU or MPS is present. Without this gate a GPU-less host accepts the default nf4 start,
-    evicts the resident Images pipeline, downloads the text encoders, and only then dies in the
-    child. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too, since it loads its
-    denoiser through the same quantizer."""
+    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, which needs
+    the model on CUDA or XPU. Without this gate such a host accepts the default nf4 start, evicts
+    the resident Images pipeline, downloads the text encoders, and only then dies in the child.
+    Apple MPS is not enough: resolve_train_device trains there on the CPU, and the quantizer
+    refuses a CPU device_map. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too,
+    since it loads its denoiser through the same quantizer."""
     if (resolved_family or "").strip().lower() not in _FLOW_TRAIN_FAMILIES:
         return None
     try:
@@ -777,18 +785,14 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
             except Exception:  # noqa: BLE001
                 return False
 
-        if (
-            probe(torch.cuda)
-            # torch.backends.mps has carried is_available() since torch 1.12.
-            or probe(getattr(torch, "xpu", None))
-            or probe(getattr(torch.backends, "mps", None))
-        ):
+        if probe(torch.cuda) or probe(getattr(torch, "xpu", None)):
             return None
     except Exception:  # noqa: BLE001 -- probe failure must not block a start
         return None
     return (
-        "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
-        "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
+        "Training the DiT families needs an NVIDIA, AMD or Intel GPU: even the 4-bit (nf4) base "
+        "load requires CUDA, ROCm or XPU, and this host has none (Apple Silicon included). Train "
+        "SDXL here, or use a GPU machine."
     )
 
 
@@ -954,6 +958,9 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # save_steps is REFUSED for a checkpointless family, not ignored, so a panel that keeps offering
                 # "Checkpoint every" turns a nonzero value into a rejected Start with no way to see why.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
+                # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
+                "supports_samples": name in SAMPLE_FAMILIES,
+                "supports_bucketing": name not in UNBUCKETED_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -1000,7 +1007,9 @@ class DiffusionLoraConfig:
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0
     center_crop: bool = False
-    random_flip: bool = True
+    # Off by default: flipping mirrors text, logos and one-sided features in half the samples.
+    random_flip: bool = False
+    bucketing: Optional[bool] = None
     caption_column: str = "text"
     adapter_name: str = "default"
     hf_token: Optional[str] = None
@@ -1025,8 +1034,7 @@ class DiffusionLoraConfig:
     # eager), "int8" (torchao weight-only), "fp8" (Ada/Hopper/Blackwell + compile) or "auto". Non-nf4 needs a dense
     # base.
     base_precision: str = "nf4"
-    # None resolves per family in normalized(); a number applies s*u/(1+(s-1)*u), and "auto" without dynamic shifting
-    # falls back to identity.
+    # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample probability of replacing the caption with the empty prompt (classifier-free-guidance dropout). 0.0
     # disables.
@@ -1041,6 +1049,10 @@ class DiffusionLoraConfig:
     save_steps: int = 0
     # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
     save_total_limit: int = 2
+    # 0 disables. Not part of the resume identity: previews never touch the training math.
+    sample_every: int = 0
+    # Empty uses the instance prompt, else the first caption.
+    sample_prompts: tuple[str, ...] = ()
     # The run's output_dir, or one of its checkpoint-<N> directories; the start route resolves and validates it before
     # the trainer spawns.
     resume_from_checkpoint: Optional[str] = None
@@ -1152,6 +1164,9 @@ class DiffusionLoraConfig:
         # so valid decays live in [0, 1).
         if not 0.0 <= ema_decay < 1.0:
             raise ValueError("ema_decay must be in [0, 1); 0 disables the EMA adapter")
+        sample_every, sample_prompts = validate_sample_settings(
+            self.sample_every, self.sample_prompts, resolved_family
+        )
         # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
@@ -1196,11 +1211,9 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} is not validated for training "
                     f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
-        # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its
-        # static shift under use_dynamic_shifting); an explicit value is validated and kept.
         flow_shift = self.flow_shift
-        if flow_shift is None:
-            flow_shift = "auto" if resolved_family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
+        if flow_shift is None and resolved_family in AUTO_FLOW_SHIFT_FAMILIES:
+            flow_shift = "auto"
         if isinstance(flow_shift, str):
             flow_shift = flow_shift.strip().lower()
             if flow_shift != "auto":
@@ -1210,7 +1223,7 @@ class DiffusionLoraConfig:
                     raise ValueError(
                         f"flow_shift must be a positive number or 'auto', got {self.flow_shift!r}"
                     ) from exc
-        if not isinstance(flow_shift, str):
+        if flow_shift is not None and not isinstance(flow_shift, str):
             flow_shift = float(flow_shift)
             # isfinite as well as positive: JSON accepts 1e309, which floats to inf and would poison every sampled
             # sigma while progress looks normal.
@@ -1241,6 +1254,10 @@ class DiffusionLoraConfig:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
+        # Resume with unset targets keeps the recorded ones, so changing a family default never strands old runs.
+        if resume_from_checkpoint and resolved_family != "sdxl" and targets == DEFAULT_LORA_TARGETS:
+            from core.training.diffusion_checkpoint import recorded_resume_targets
+            targets = recorded_resume_targets(resume_from_checkpoint) or targets
         # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
         # empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
@@ -1272,6 +1289,11 @@ class DiffusionLoraConfig:
         # trainer resolve different captions from a metadata.jsonl and their fingerprints disagree, so an accepted
         # resume is refused in the child.
         caption_column = str(self.caption_column or "").strip() or "text"
+        bucketing = None if self.bucketing is None else _coerce_bool(self.bucketing)
+        if resolved_family in UNBUCKETED_FAMILIES:
+            bucketing = False
+        elif bucketing is None and not resume_from_checkpoint:
+            bucketing = True
         return replace(
             self,
             learning_rate = learning_rate,
@@ -1284,8 +1306,11 @@ class DiffusionLoraConfig:
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,
+            sample_every = sample_every,
+            sample_prompts = sample_prompts,
             resume_from_checkpoint = resume_from_checkpoint,
             cond_cache_dir = cond_cache_dir,
             ema_decay = ema_decay,
@@ -1298,14 +1323,22 @@ class DiffusionLoraConfig:
         )
 
 
-def resolve_train_steps(cfg: "DiffusionLoraConfig", n_images: int) -> int:
+def resolve_train_steps(
+    cfg: "DiffusionLoraConfig",
+    n_images: int,
+    image_paths: Optional[list[str]] = None,
+) -> int:
     """The effective optimizer-step count for a run. When ``cfg.num_epochs`` is set (> 0), one epoch
-    is one full pass over the dataset in optimizer steps -- ceil(N / (batch x grad_accum)) -- so
-    the run is ``num_epochs`` such passes, capped at 100000. With ``num_epochs == 0`` the
-    explicit ``cfg.train_steps`` is used unchanged."""
+    is one full pass over the dataset in optimizer steps -- ceil(ceil(N / batch) / grad_accum) --
+    so the run is ``num_epochs`` such passes, capped at 100000. Bucketed runs (``image_paths``)
+    count batches per bucket: a bucket pads its last batch within itself. With ``num_epochs == 0`` the explicit ``cfg.train_steps`` is used unchanged."""
     if cfg.num_epochs > 0:
-        per_step = max(1, cfg.train_batch_size * cfg.gradient_accumulation_steps)
-        steps_per_epoch = max(1, math.ceil(n_images / per_step))
+        batch = max(1, cfg.train_batch_size)
+        batches = math.ceil(n_images / batch)
+        canvases = plan_image_canvases(cfg, image_paths)[0] if image_paths is not None else None
+        if canvases is not None:
+            batches = sum(math.ceil(len(g) / batch) for g in bucket_groups(canvases).values())
+        steps_per_epoch = max(1, math.ceil(batches / max(1, cfg.gradient_accumulation_steps)))
         return min(100000, cfg.num_epochs * steps_per_epoch)
     return cfg.train_steps
 
@@ -1497,6 +1530,7 @@ def discover_image_caption_pairs(
 # The shared DiffusionLoraConfig carries save_steps / resume_from_checkpoint for every family, so a loop that
 # implements neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # The batch axis is a pure replication axis for these: the layout, the rotary grid and the row timesteps are set by
 # one clip's geometry and its caption's length.
@@ -1570,14 +1604,14 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
-# These have a DEFAULT the H3 loop disagrees with, so they are normalised rather than refused (which would 422 every
-# untouched request): one centre cover-crop, nothing flipped, a plain unweighted MSE, and exactly one cached tuple.
+# Normalised, not refused: several are request defaults, refusing would 422 every untouched request.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
     "random_flip": False,
     "snr_gamma": None,
     "cache_latents": True,
     "cache_variants": 1,
+    "bucketing": False,
 }
 
 
@@ -1586,11 +1620,15 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     for the same reason ``h3_train_unsupported_reason`` is: the trainer applies these in the
     CHILD, while the run record is written by the PARENT from the config handed to
     ``service.start``. Normalising in the trainer alone therefore fixed what ran and left
-    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. Empty
-    for every other family: their loops honour all three."""
-    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
-        return {}
-    return dict(_H3_FIXED_RECIPE)
+    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. The
+    other flow-matching families drop only min-SNR; SDXL honours all of them."""
+    family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family == "minimax-h3":
+        return dict(_H3_FIXED_RECIPE)
+    # Min-SNR is an SDXL (epsilon-prediction) weighting; the flow-matching loops never read it.
+    if family and family != "sdxl":
+        return {"snr_gamma": None}
+    return {}
 
 
 # LTX-2 is deliberately not here: it trains a style LoRA FROM still images, so it keeps the image discovery.
@@ -1631,20 +1669,29 @@ def _emit(on_event: Optional[EventCb], type_: str, **kw: Any) -> None:
 
 
 def _plan_cache_variants(
-    num_images: int, cache_variants: int, center_crop: bool, random_flip: bool, seed: int
+    num_images: int,
+    cache_variants: int,
+    center_crop: bool,
+    random_flip: bool,
+    seed: int,
+    crop_room: Optional[list[tuple[int, int]]] = None,
 ) -> list[list[tuple[float, float, bool]]]:
     """Seed-deterministic crop/flip plan for the latent cache: per image, up to ``cache_variants``
     draws of (u_left, u_top, flip) with the crop as unit fractions the loader maps onto its
     integer crop range. Uses its own rng stream so the training loop's draws are untouched.
     Center-crop / no-flip collapse duplicate variants, so callers encode each distinct variant
-    exactly once. Pure (no torch) for CPU unit tests."""
+    exactly once. ``crop_room``: per-image (x, y) crop slack; an axis with none pins its fraction.
+    Pure (no torch) for CPU unit tests."""
     crop_rng = random.Random(seed)
     plan: list[list[tuple[float, float, bool]]] = []
-    for _ in range(max(0, num_images)):
+    for i in range(max(0, num_images)):
         variants: list[tuple[float, float, bool]] = []
         for _ in range(max(1, cache_variants)):
             u_left, u_top = crop_rng.random(), crop_rng.random()
             flip = bool(random_flip and crop_rng.random() < 0.5)
+            if crop_room is not None:
+                u_left = u_left if crop_room[i][0] > 0 else 0.5
+                u_top = u_top if crop_room[i][1] > 0 else 0.5
             if center_crop:
                 u_left = u_top = 0.5  # loader ignores the fractions for a center crop
             key = (u_left, u_top, flip)
@@ -1652,6 +1699,51 @@ def _plan_cache_variants(
                 variants.append(key)
         plan.append(variants)
     return plan
+
+
+def resolve_bucketing(cfg: "DiffusionLoraConfig") -> "DiffusionLoraConfig":
+    """Settle an unset ``bucketing``: the bundle's recorded value on a resume (pre-field runs stay square)."""
+    if cfg.bucketing is not None:
+        return cfg
+    if not cfg.resume_from_checkpoint:
+        return replace(cfg, bucketing = cfg.resolved_family not in UNBUCKETED_FAMILIES)
+    from core.training.diffusion_checkpoint import recorded_bucketing
+
+    return replace(cfg, bucketing = recorded_bucketing(cfg.resume_from_checkpoint))
+
+
+def plan_image_canvases(
+    cfg: "DiffusionLoraConfig", image_paths: list[str]
+) -> tuple[Optional[list[tuple[int, int]]], Optional[list[tuple[int, int]]]]:
+    """Per-image (w, h) canvas and (x, y) crop slack, or (None, None) when unbucketed. Headers only."""
+    if not cfg.bucketing:
+        return None, None
+    from core.training.diffusion_train_extras import (
+        bucket_resolutions,
+        cover_resize_dims,
+        nearest_bucket,
+        oriented_image_size,
+    )
+
+    choices = bucket_resolutions(cfg.resolution)
+    canvases, room = [], []
+    for path in image_paths:
+        w0, h0 = oriented_image_size(path)
+        bw, bh = nearest_bucket(w0, h0, choices)
+        rw, rh = cover_resize_dims(w0, h0, bw, bh)
+        canvases.append((bw, bh))
+        room.append((rw - bw, rh - bh))
+    # All-square datasets keep the unbucketed sampler and cache keys, so existing caches stay warm.
+    if all(c == (cfg.resolution, cfg.resolution) for c in canvases):
+        return None, None
+    return canvases, room
+
+
+def bucket_groups(canvases: list[tuple[int, int]]) -> dict[tuple[int, int], list[int]]:
+    groups: dict[tuple[int, int], list[int]] = {}
+    for i, shape in enumerate(canvases):
+        groups.setdefault(shape, []).append(i)
+    return groups
 
 
 # Two fp32 posterior tensors per crop/flip variant per image, so a few thousand images can exhaust pinned RAM; over
@@ -2230,10 +2322,14 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
+    if isinstance(kwargs.get("sample_prompts"), (list, tuple)):
+        kwargs["sample_prompts"] = tuple(kwargs["sample_prompts"])
     if "gradient_checkpointing" in kwargs:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]
         )
+    if kwargs.get("bucketing") is not None:
+        kwargs["bucketing"] = _coerce_bool(kwargs["bucketing"])
     for flag in ("cache_latents", "enable_tf32"):
         if flag in kwargs:
             kwargs[flag] = _coerce_bool(kwargs[flag])

@@ -2507,14 +2507,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
 
     if "model" in call_args:
-        logits_check = (
-            "_output_logits = False\n"
-            "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"
-            "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"
-            "if _output_logits:\n"
-            "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
-        )
-        extra_args += logits_check
+        # No UNSLOTH_RETURN_LOGITS=1 for compute_metrics here: prediction_step forces it per eval call; here it leaked into training (#3071).
         warnings_issued_check = (
             "if model is not None:\n"
             "    _warnings_issued = getattr(model, 'warnings_issued', None)\n"
