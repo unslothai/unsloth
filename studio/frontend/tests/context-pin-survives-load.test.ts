@@ -278,8 +278,6 @@ test("a poll landing mid-load cannot plant the outgoing model's context", () => 
 });
 
 test("choosing Auto after a pinned load asks the server to size itself again", () => {
-  // Resending the resident size for Auto made the resident check read the reload as a no-op,
-  // so a model loaded at a set context could never go back to Auto.
   for (const presetSource of PRESET_SOURCES) {
     assert.equal(
       sentNCtx(null, { presetSource, residentCtx: 8192, loadedPin: 8192 }),

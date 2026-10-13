@@ -358,8 +358,7 @@ export function resolveLoadMaxSeqLength({
   pinnedMaxSeqLength: number | null;
   defaultMaxSeqLength: number;
   presetSource: ChatPresetSource;
-  /** `loadedCustomContextLength`: the context the resident server was pinned to, or null when
-   *  it was loaded on Auto. */
+  /** `loadedCustomContextLength`: the resident pin, null when it loaded on Auto. */
   loadedContextPin?: number | null;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
@@ -375,8 +374,7 @@ export function resolveLoadMaxSeqLength({
   if (isGgufLoad && presetSource === "builtin-default") {
     return 0;
   }
-  // Keeping the resident size only holds an Auto window steady. When that size was a pin, Auto is
-  // a request to drop it, and resending it made the reload a no-op that kept the old context.
+  // Auto over a pinned resident drops the pin: resending its size made the reload a no-op.
   if (isReloadingCurrentGguf) {
     return loadedContextPin != null ? 0 : (loadedContextLength ?? 0);
   }
