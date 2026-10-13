@@ -489,6 +489,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # transformer 42.0 bf16 (both DiT files are 42,018,190,584 bytes); Gemma 4 12B 23.9 (text_encoder/ shards),
         # held by the encoder worker; VAE 1.45 + connectors 6.34 + latent upsampler 1.0 + audio VAE / vocoder 0.37.
         bf16_components_gb = (42.0, 23.9, 9.2),
+        # Hosted DiTs baked from the pack's distilled transformer/ (tensor-identical to the single-file distilled DiT).
+        # Keyed on the pack: only a pipeline load seeds a hosted denoiser, and the pack never loads its dev DiT. int8
+        # resolves LTX-2.5-INT8-ConvRot.safetensors (rotation in its metadata), LTX-2.5-INT8 with
+        # UNSLOTH_DIFFUSION_INT8_CONVROT=0; fp8 resolves LTX-2.5-FP8.safetensors.
+        prequant_variant_repos = (
+            ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
+            ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
+        ),
+        # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
+        prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.

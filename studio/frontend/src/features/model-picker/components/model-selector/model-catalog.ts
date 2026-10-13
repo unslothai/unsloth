@@ -25,6 +25,7 @@ import {
   ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
+  videoDensePerfSuffix,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -530,6 +531,25 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           "references",
         ],
         totalParams: 20_111_438_744,
+      }),
+    ],
+  },
+  {
+    // The Diffusers pack (distilled DiT, Gemma 4 encoder in Studio's sidecar worker). Its fp8 / int8 loads seed the
+    // hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos), so the row is the bf16 pipeline; the alias keeps
+    // a pasted prequant repo id finding it. Video rows carry no prequantRepo (image-only field).
+    canonicalId: "Lightricks/LTX-2.5-Diffusers",
+    displayName: "LTX-2.5",
+    description: "Text and image to video with audio",
+    scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
+    capabilities: { audio: true },
+    artifacts: [
+      // Card peak 79.2 GB at 1280x704x121 with the bf16 DiT and the encoder resident.
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 80, {
+        gated: true,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
       }),
     ],
   },
@@ -1076,7 +1096,10 @@ function curatedPerfSuffix(
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
-  return h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes);
+  return (
+    h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes) ??
+    videoDensePerfSuffix(hit.artifact.repoId, host, denseQuantSchemes)
+  );
 }
 
 /** A curated row as name plus chips. The name used to carry the artifact in brackets ("MiniMax H3
