@@ -647,7 +647,7 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     block = re.search(r"interface InferenceParams \{(.*?)\n\}", source, re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
     omitted = re.search(
-        r"PersistedInferenceParams = Partial<\s*Omit<InferenceParams,([^>]*)>", source
+        r"PersistedInferenceParams = Partial<\s*Omit<\s*InferenceParams,([^>]*)>", source
     )
     assert omitted, "PersistedInferenceParams Omit<> not found in runtime.ts"
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - set(

@@ -5491,6 +5491,20 @@ def estimate_required_model_memory_gb(
                     vram_config.optimizer,
                 )
                 breakdown.gradients += compute_gradient_bytes(extra_params)
+        # Text-diffusion objectives that run [noisy ; clean] or a second self-conditioning pass hold
+        # about twice an autoregressive model's activations.
+        from utils.models.diffusion_lm import ACTIVATION_FACTOR, diffusion_lm_profile
+
+        diffusion_profile = diffusion_lm_profile(
+            {
+                "model_type": getattr(config, "model_type", None),
+                "architectures": getattr(config, "architectures", None),
+            }
+        )
+        activation_factor = ACTIVATION_FACTOR.get(diffusion_profile, 1.0)
+        if activation_factor != 1.0:
+            breakdown.activations = int(breakdown.activations * activation_factor)
+            metadata["diffusion_lm_profile"] = diffusion_profile
         required_gb = breakdown.total / (1024**3)
         metadata["required_gb"] = round(required_gb, 3)
         metadata["estimation_mode"] = "detailed"

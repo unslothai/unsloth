@@ -60,6 +60,20 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Inference engine to use. 'auto' selects Studio's default backend; "
@@ -588,6 +602,20 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
@@ -1420,6 +1448,9 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_seed: Optional[int] = None
+    engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
@@ -3611,6 +3642,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -3810,8 +3842,16 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_namespace(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class ResponsesOutputCustomToolCall(BaseModel):

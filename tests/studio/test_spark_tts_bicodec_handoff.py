@@ -81,6 +81,9 @@ def _run(
         _spark_tts_repo_dir = repo_dir,
         _spark_tts_repo_source = None,
         _update_progress = lambda **kwargs: None,
+        # pre_detect also classifies text-diffusion LMs; a Spark-TTS repo is never one.
+        _detect_diffusion_lm = lambda *args: None,
+        diffusion_lm_profile = None,
         _resolve_audio_columns = lambda *args: {
             "audio_col": "audio",
             "text_col": "text",

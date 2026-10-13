@@ -1071,6 +1071,12 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """cancel_event is polled between tokens, never during prefill; its meaning depends on the caller."""
     request_id = cmd.get("request_id", "")
+    # Scoped to this request: cleared when it ends.
+    frames = bool(cmd.get("diffusion_frames")) and hasattr(backend, "diffusion_frame_sink")
+    if frames:
+        backend.diffusion_frame_sink = lambda frame: _send_response(
+            resp_queue, {**frame, "request_id": request_id}
+        )
 
     try:
         gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
@@ -1118,6 +1124,9 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info = True)
         _send_response(resp_queue, _generation_error_payload(request_id, exc))
+    finally:
+        if frames:
+            backend.diffusion_frame_sink = None
 
 
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1927,7 +1936,11 @@ def run_inference_process(
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
+            from utils.models.diffusion_lm import mlx_refusal
 
+            refusal = mlx_refusal(model_name, _config_hf_token(config))
+            if refusal:
+                raise RuntimeError(refusal)
             backend = MLXInferenceBackend()
             if config.get("mlx_distributed"):
                 group, rank, size = _init_mlx_distributed()

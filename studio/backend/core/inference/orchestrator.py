@@ -1311,6 +1311,7 @@ class InferenceOrchestrator:
         video_b64: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
+        diffusion_frames: bool = False,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1357,6 +1358,8 @@ class InferenceOrchestrator:
             cmd["rows"] = rows
         if tool_protocol_active is not None:
             cmd["tool_protocol_active"] = tool_protocol_active
+        if diffusion_frames and not rows:
+            cmd["diffusion_frames"] = True
         return cmd
 
     def _consume_token_stream(
@@ -1371,9 +1374,11 @@ class InferenceOrchestrator:
         read_timeout: float = 30.0,
         mark_started: bool = True,
         rows: Optional[int] = None,
+        frames: bool = False,
     ) -> Generator[Any, None, None]:
-        """Yield tokens from a response stream until gen_done/gen_error."""
-        # Latch the subprocess: if a fresh worker replaces it, bail instead of deadlocking under _gen_lock.
+        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts."""
+        # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
+        # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
         reading_on_until = None
@@ -1454,6 +1459,11 @@ class InferenceOrchestrator:
                     yield int(resp.get("row", 0)), resp.get("text", "")
                 else:
                     yield resp.get("text", "")
+            elif rtype == "diffusion_frame":
+                if frames and rows is None and not stop_sent:
+                    yield {
+                        key: value for key, value in resp.items() if key not in ("request_id", "ts")
+                    }
             elif rtype == "gen_done":
                 if stats_holder is not None and rows is None:
                     stats_holder["stats"] = resp.get("stats")
@@ -1587,6 +1597,7 @@ class InferenceOrchestrator:
         video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
+        diffusion_frames: bool = False,
     ) -> Generator[Any, None, None]:
         """Skips _gen_lock so compare-mode requests can queue; the subprocess still serializes GPU work."""
         if not self._ensure_subprocess_alive():
@@ -1637,6 +1648,7 @@ class InferenceOrchestrator:
             seed = seed,
             rows = rows,
             video_b64 = video,
+            diffusion_frames = diffusion_frames,
         )
 
         mailbox = _WorkerMailbox(self._proc)
@@ -1709,6 +1721,7 @@ class InferenceOrchestrator:
                     read_timeout = _DISPATCH_READ_TIMEOUT,
                     mark_started = False,
                     rows = len(rows) if rows else None,
+                    frames = diffusion_frames,
                 )
         finally:
             self._release_worker(cancel_event)
@@ -2306,6 +2319,9 @@ class InferenceOrchestrator:
                     "engine": engine,
                     "engine_parallelism": (options or {}).get("parallelism", "tensor"),
                     "engine_precision": (options or {}).get("precision", "auto"),
+                    "engine_kv_cache_dtype": (options or {}).get("kv_cache_dtype", "auto"),
+                    "engine_seed": (options or {}).get("seed"),
+                    "engine_gpu_memory_utilization": (options or {}).get("gpu_memory_utilization"),
                     "is_vision": (options or {}).get("is_vision", config.is_vision),
                     "chat_template_info": {
                         "accepts_multiple_images": bool(
@@ -2777,6 +2793,7 @@ class InferenceOrchestrator:
         video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
+        diffusion_frames: bool = False,
     ) -> Generator[str, None, None]:
         """``stats_holder`` is per request so concurrent streams do not read each other's stats."""
         yield from self._generate_inner(
@@ -2808,6 +2825,7 @@ class InferenceOrchestrator:
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
             video = video,
+            diffusion_frames = diffusion_frames,
         )
 
     def generate_chat_batch(
@@ -3159,6 +3177,7 @@ class InferenceOrchestrator:
         video: Optional[str] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
+        diffusion_frames: bool = False,
     ) -> Generator[Any, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -3166,7 +3185,7 @@ class InferenceOrchestrator:
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             kwargs = dict(locals())
-            for key in ("self", "managed", "kwargs"):
+            for key in ("self", "managed", "kwargs", "diffusion_frames"):
                 kwargs.pop(key, None)
             from .engine_transport import EngineHTTPError
 
@@ -3221,6 +3240,7 @@ class InferenceOrchestrator:
                 video = video,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
+                diffusion_frames = diffusion_frames,
             )
             return
 
@@ -3262,6 +3282,7 @@ class InferenceOrchestrator:
                 seed = seed,
                 rows = rows,
                 video_b64 = video,
+                diffusion_frames = diffusion_frames,
             )
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3282,6 +3303,7 @@ class InferenceOrchestrator:
                     cancel_event = cancel_event,
                     stats_holder = stats_holder,
                     rows = len(rows) if rows else None,
+                    frames = diffusion_frames,
                 )
             finally:
                 self._release_worker(cancel_event)

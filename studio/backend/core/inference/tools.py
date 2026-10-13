@@ -15572,9 +15572,9 @@ def _check_signal_escape_patterns(code: str):
             "warnings": [],
         }
 
-    # Every route to a recognised egress call spells the module's name, so one text pass decides
-    # whether the alias machinery can matter.
-    network_possible = _network_candidates_possible(_tree_nodes(tree))
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
+    tree_nodes = _tree_nodes(tree)
+    network_possible = _network_candidates_possible(tree_nodes)
 
     signal_tampering = []
     exception_catching = []
@@ -16677,11 +16677,72 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
+    def _is_local_database_target(target: str) -> bool:
+        if target.startswith(("md:", "motherduck:", "file:")):
+            return False
+        if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
+            return False
+        if (
+            len(target) >= 3
+            and target[0].isascii()
+            and target[0].isalpha()
+            and target[1] == ":"
+            and target[2] in "/\\"
+        ):
+            return True
+        return "://" not in target
+
+    def _local_database_names(nodes) -> frozenset:
+        """names that can only ever hold `sqlite3` / `duckdb`, judged over the whole source.
+
+        Deliberately scope-blind: any other binding of the name anywhere (parameter, assignment,
+        loop target, class attribute, `nonlocal` rebinding, ...) or any star import fails closed
+        to the host check, so no scope resolution can be fooled. `db = sqlite3` copies are kept,
+        resolved with a worklist so long copy chains stay linear.
+        """
+        imported: set[str] = set()
+        other: set[str] = set()
+        copies: dict[str, set[str]] = {}
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+                return frozenset()
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                copies.setdefault(node.targets[0].id, set()).add(node.value.id)
+            else:
+                other.update(_binding_names(node))
+        trusted = {name for name in imported - other if name not in copies}
+        remaining = {
+            name: set(sources) - trusted for name, sources in copies.items() if name not in other
+        }
+        waiting: dict[str, list[str]] = {}
+        for name, sources in remaining.items():
+            for source in sources:
+                waiting.setdefault(source, []).append(name)
+        queue = [name for name, sources in remaining.items() if not sources]
+        while queue:
+            name = queue.pop()
+            trusted.add(name)
+            for dependent in waiting.pop(name, ()):
+                remaining[dependent].discard(name)
+                if not remaining[dependent]:
+                    queue.append(dependent)
+        return frozenset(trusted)
+
+    # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
 
     def _scope_bodies(nodes, tree):
-        """Yields the module and every function or class body as (scope id, statements); lambdas add
-        none."""
+        """yield statement scopes; module id is 0, while lambdas contribute only parameters."""
         yield 0, getattr(tree, "body", [])
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -16878,13 +16939,15 @@ def _check_signal_escape_patterns(code: str):
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
-            # Accumulated, not overwritten: the map is not scope aware, so resolution must be monotone.
+            # accumulate module aliases so nested imports cannot hide outer network calls
             self.module_aliases: dict[str, set[str]] = {}
-            # Accumulated, not overwritten: a later binding must not hide an earlier network function.
+            # accumulate function aliases for the same scope-insensitive rebinding case
             self.func_aliases: dict[str, set[str]] = {}
-            # Built only when the source can name a network module; ordinary code skips these walks.
+            self.local_databases: "frozenset | None" = None
+            # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
             self.literal_names = _collect_literal_names(nodes) if network_possible else {}
+            # track names rebound away from `urllib.request.Request` for URL unwrapping
             self.rebound_anywhere = (
                 _names_bound_to_something_else(nodes) if network_possible else frozenset()
             )
@@ -17213,11 +17276,17 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(value)
 
         def _register_alias(self, name: str, node) -> None:
-            """Note where a network alias was bound to `name`, so a shadow older than this one no
-            longer applies. See `_is_shadowed`."""
+            """record network alias positions so newer imports supersede older shadows."""
             self.alias_lines.setdefault(name, []).append(
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
+
+        def _names_local_database(self, owner) -> bool:
+            if not isinstance(owner, ast.Name):
+                return False
+            if self.local_databases is None:
+                self.local_databases = _local_database_names(tree_nodes)
+            return owner.id in self.local_databases
 
         def _is_shadowed(
             self,
@@ -17225,8 +17294,7 @@ def _check_signal_escape_patterns(code: str):
             at,
             after_star: bool = False,
         ) -> bool:
-            """Calls in functions are never shadowed; at module level only a rebinding before the
-            call counts."""
+            """whether a module binding shadows an alias until a later registration."""
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
             return any(
@@ -17889,7 +17957,11 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    if not (
+                        self._names_local_database(node.func.value)
+                        and _is_local_database_target(a0.value.lower())
+                    ):
+                        host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(

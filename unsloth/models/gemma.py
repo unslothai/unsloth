@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from .llama import *
-from .llama import _get_rope_theta
+from .llama import _get_rope_theta, _LazyDeviceScratch
 from ._utils import __version__
 from ._utils import move_to_device, per_layer_device, embedding_applies_scale
 from unsloth_zoo.utils import _get_dtype, Version
@@ -157,13 +157,10 @@ def GemmaModel_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    out_weights = tuple(
-        torch.empty_like(
-            self.model.layers[0].input_layernorm.weight,
-            dtype = torch.float32,
-            device = torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
+    norm_weight = self.model.layers[0].input_layernorm.weight
+    out_weights = _LazyDeviceScratch(
+        DEVICE_COUNT,
+        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

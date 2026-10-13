@@ -247,11 +247,58 @@ def _splatted_kwargs_offenders(tree: ast.AST) -> list[ast.Dict]:
     return found
 
 
+def _is_locale_default(value: ast.expr) -> bool:
+    """None and "locale" are the locale default spelled out, not a chosen encoding."""
+    return isinstance(value, ast.Constant) and value.value in (None, "locale")
+
+
+_PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+
+
+def _path_class_names(tree: ast.AST) -> set[str]:
+    """The pathlib classes and every name they are imported under in this module.
+
+    `from pathlib import Path as P` still puts the path in front of an unbound `P.read_text(p)`,
+    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for. Names bound by
+    assignment, defaults or subclassing are not followed: those need the binding visible at each
+    call site, and a module-wide guess flags valid calls on an instance that happens to share the
+    name in another scope."""
+    names = set(_PATH_CLASSES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            for alias in node.names:
+                if alias.name in _PATH_CLASSES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str]) -> bool:
+    """Path.read_text(encoding, errors) / Path.write_text(data, encoding, ...) name an encoding
+    by keyword or positionally. The unbound form, Path.read_text(p), has the path in front, so the
+    position shifts by one."""
+    for kw in node.keywords:
+        if kw.arg == "encoding":
+            return not _is_locale_default(kw.value)
+    receiver = node.func.value
+    unbound = (isinstance(receiver, ast.Name) and receiver.id in path_classes) or (
+        isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
+    )
+    position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
+    # A starred argument at or before the slot makes the runtime position unknowable statically,
+    # so only a keyword encoding counts there: conservative, and nothing in the tree spells it so.
+    if any(isinstance(arg, ast.Starred) for arg in node.args[: position + 1]):
+        return False
+    if len(node.args) <= position:
+        return False
+    return not _is_locale_default(node.args[position])
+
+
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     subprocess_aliases = _subprocess_aliases(tree, subprocess_names)
+    path_classes = _path_class_names(tree)
     found: list[str] = []
     for node in _splatted_kwargs_offenders(tree):
         found.append(
@@ -289,7 +336,7 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
-            if _has_keyword(node, "encoding"):
+            if _path_text_names_encoding(node, name, path_classes):
                 continue
             # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
@@ -666,6 +713,59 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
         if any("fdopen" in line for line in _offenders(path)):
             flagged.add(name)
     assert flagged == {"text.py", "default_mode.py"}, flagged
+
+
+def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None:
+    """Path.read_text(encoding, errors) and Path.write_text(data, encoding, ...) take the
+    encoding positionally too. #13565's read_text("utf-8") is not a locale-default read."""
+    cases = {
+        "read_none.py": "p.read_text()\n",
+        "read_kw.py": 'p.read_text(encoding = "utf-8")\n',
+        "read_pos.py": 'p.read_text("utf-8")\n',
+        "write_none.py": 'p.write_text("x")\n',
+        "write_kw.py": 'p.write_text("x", encoding = "utf-8")\n',
+        "write_pos.py": 'p.write_text("x", "utf-8")\n',
+        # The locale default spelled out is still the locale default.
+        "read_none_pos.py": "p.read_text(None)\n",
+        "read_locale_pos.py": 'p.read_text("locale")\n',
+        "read_locale_kw.py": 'p.read_text(encoding = "locale")\n',
+        "write_none_pos.py": 'p.write_text("x", None)\n',
+        # Unbound calls carry the path first, so the encoding sits one slot later.
+        "unbound_read.py": "Path.read_text(p)\n",
+        "unbound_read_pos.py": 'Path.read_text(p, "utf-8")\n',
+        "unbound_write.py": 'pathlib.Path.write_text(p, "x")\n',
+        "unbound_write_pos.py": 'pathlib.Path.write_text(p, "x", "utf-8")\n',
+        # Under an alias, or a concrete pathlib class.
+        "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
+        "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
+        "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
+        # A same-named instance elsewhere is not an alias: no module-wide assignment guessing.
+        "instance_named_p.py": 'def a():\n    P = Path\n\ndef b(P):\n    P.read_text("utf-8")\n',
+        # A starred argument hides the runtime position: only a keyword encoding counts.
+        "starred_empty.py": "p.read_text(*())\n",
+        "unbound_starred.py": "Path.read_text(p, *())\n",
+        "starred_kw.py": 'p.read_text(*args, encoding = "utf-8")\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if _offenders(path):
+            flagged.add(name)
+    assert flagged == {
+        "read_none.py",
+        "write_none.py",
+        "read_none_pos.py",
+        "read_locale_pos.py",
+        "read_locale_kw.py",
+        "write_none_pos.py",
+        "unbound_read.py",
+        "unbound_write.py",
+        "unbound_alias.py",
+        "unbound_posix.py",
+        "starred_empty.py",
+        "unbound_starred.py",
+    }, flagged
 
 
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(

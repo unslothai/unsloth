@@ -123,6 +123,68 @@ def _codex_apply_patch_tool():
     }
 
 
+def _codex_namespace_tools():
+    forecast_params = {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    }
+    return [
+        {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+        {
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": [
+                {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}},
+                {"type": "function", "name": "wait_agent", "parameters": {"type": "object"}},
+            ],
+        },
+        {
+            "type": "namespace",
+            "name": "mcp__weather",
+            "description": "Tools in the mcp__weather namespace.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_forecast",
+                    "description": "Get the weather forecast for a city.",
+                    "strict": False,
+                    "parameters": forecast_params,
+                }
+            ],
+        },
+        {"type": "web_search"},
+    ]
+
+
+def _namespaced_forecast_call_chunk():
+    return {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_wx",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__weather__get_forecast",
+                                "arguments": '{"city":"Paris"}',
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+
+# =====================================================================
+# Request model — tools / tool_choice / parallel_tool_calls
+# =====================================================================
+
+
 class TestResponsesRequestTools:
     def test_flat_function_tool_accepted(self):
         req = ResponsesRequest(
@@ -283,6 +345,26 @@ class TestToolsTranslation:
         )
         assert len(out) == 1
         assert out[0]["function"]["name"] == "search"
+
+    def test_codex_namespace_tools_reach_the_model(self):
+        out = _translate_responses_tools_to_chat(_codex_namespace_tools())
+
+        assert [tool["function"]["name"] for tool in out] == [
+            "exec_command",
+            "multi_agent_v1__spawn_agent",
+            "multi_agent_v1__wait_agent",
+            "mcp__weather__get_forecast",
+        ]
+        assert out[3]["function"] == {
+            "name": "mcp__weather__get_forecast",
+            "description": "Get the weather forecast for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+            "strict": False,
+        }
 
     def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
         grammar = (
@@ -597,6 +679,27 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].role == "tool"
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
+
+    def test_replayed_namespaced_call_keeps_the_name_the_model_called(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_wx",
+                    "namespace": "mcp__weather",
+                    "name": "get_forecast",
+                    "arguments": '{"city":"Paris"}',
+                },
+                {"type": "function_call_output", "call_id": "call_wx", "output": "17C"},
+            ],
+            tools = _codex_namespace_tools(),
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert msgs[1].tool_calls[0]["function"]["name"] == "mcp__weather__get_forecast"
+        assert msgs[2].tool_call_id == "call_wx"
 
     def test_custom_tool_call_round_trip_maps_to_local_function(self):
         patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
@@ -1580,6 +1683,34 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
+
+    def test_namespaced_call_returns_to_its_namespace(self, monkeypatch):
+        payload = ResponsesRequest(input = "Weather in Paris?", tools = _codex_namespace_tools())
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": None,
+                "tool_calls": [
+                    _namespaced_forecast_call_chunk()["choices"][0]["delta"]["tool_calls"][0],
+                    {
+                        "id": "call_ls",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{}"},
+                    },
+                ],
+            },
+            payload = payload,
+        )
+
+        wx, ls = body["output"]
+        assert (wx["type"], wx["namespace"], wx["name"]) == (
+            "function_call",
+            "mcp__weather",
+            "get_forecast",
+        )
+        assert wx["call_id"] == "call_wx"
+        assert ls["name"] == "exec_command"
+        assert "namespace" not in ls
 
     def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
@@ -2596,6 +2727,29 @@ class TestResponsesStreamAdapter:
             "function_call",
             "message",
         ]
+
+    def test_streamed_namespaced_call_returns_to_its_namespace(self, monkeypatch):
+        self._install_stream_mock(monkeypatch, [_namespaced_forecast_call_chunk()])
+        payload = ResponsesRequest(
+            input = "Weather in Paris?", stream = True, tools = _codex_namespace_tools()
+        )
+        messages = [ChatMessage(role = "user", content = "Weather in Paris?")]
+
+        lines = self._stream_lines(payload, messages)
+
+        added = self._payloads(lines, "response.output_item.added")[0]["item"]
+        args_done = self._payloads(lines, "response.function_call_arguments.done")[0]
+        done = self._payloads(lines, "response.output_item.done")[0]["item"]
+        completed = self._payloads(lines, "response.completed")[0]["response"]["output"]
+        assert (args_done["namespace"], args_done["name"]) == ("mcp__weather", "get_forecast")
+        for item in (added, done, completed[0]):
+            assert (item["type"], item["namespace"], item["name"]) == (
+                "function_call",
+                "mcp__weather",
+                "get_forecast",
+            )
+        assert done["call_id"] == "call_wx"
+        assert done["arguments"] == '{"city":"Paris"}'
 
     def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
