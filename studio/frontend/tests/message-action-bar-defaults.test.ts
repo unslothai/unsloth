@@ -53,20 +53,18 @@ test("an off choice saved after the migration is kept", async () => {
   );
 });
 
-test("a reply's bar carries Delete; its More menu does not", () => {
+test("a reply's bar ends in Delete then More; its More menu has no Delete", () => {
   const bar = component("AssistantActionBar");
   const menuAt = bar.indexOf("<ActionBarMorePrimitive.Root");
   assert.ok(bar.slice(0, menuAt).includes("<DeleteMessageButton />"));
   assert.ok(!bar.slice(menuAt).includes("Delete"));
 });
 
-test("a prompt's bar carries Fork and Delete; its More menu keeps Rewind only", () => {
+test("a prompt's bar is Copy, Edit, Rewind, Fork and Delete, with no More menu", () => {
   const bar = component("UserActionBar");
   assert.match(
     bar,
-    /<ForkMessageButton \/>\s*<DeleteMessageButton \/>\s*<UserMoreMenu \/>/,
+    /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>\s*<DeleteMessageButton \/>\s*<\/UserMessageActionBar>/,
   );
-  const menu = component("UserMoreMenu");
-  assert.ok(menu.includes("<RewindMessageMenuItem />"));
-  assert.ok(!/Fork|Delete/.test(menu));
+  assert.ok(!THREAD.includes("UserMoreMenu"));
 });

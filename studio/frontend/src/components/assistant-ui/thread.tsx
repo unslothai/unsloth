@@ -8261,29 +8261,27 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
-          <div className="flex flex-col gap-2 w-full">
-            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
-            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
-              <textarea
-                ref={textareaRef}
-                defaultValue={extractTaggedText(messageContent ?? [])}
-                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-                autoFocus
-                onInput={adjustHeight}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                    handleSave();
-                  }
-                  if (e.key === 'Escape') {
-                    setEditingId(null); // UX: Close editor on Escape
-                  }
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
-              <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+          // Same surface as a prompt's EditComposer, at the reply's full width.
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted">
+            <textarea
+              ref={textareaRef}
+              defaultValue={extractTaggedText(messageContent ?? [])}
+              className="block min-h-14 w-full max-h-[70dvh] resize-none overflow-y-auto bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+              autoFocus
+              onInput={adjustHeight}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
+              }}
+            />
+            <div className="mx-3 mb-3 flex items-center gap-2 self-end">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>
           </div>
         ) : (
@@ -8670,52 +8668,24 @@ const RewindDialogMount: FC = () => {
   ) : null;
 };
 
-const RewindMessageMenuItem: FC = () => {
+const RewindMessageButton: FC = () => {
   const aui = useAui();
   const t = useT();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   return (
-    <ActionBarMorePrimitive.Item
+    <TooltipIconButton
+      tooltip={t("rewind.title")}
       disabled={isRunning}
-      onSelect={() =>
+      onClick={() =>
         useRewindDialogStore.getState().openRewind({
           threadKey: aui.threadListItem().getState().id,
           messageId,
         })
       }
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
-      {t("rewind.menuItem")}
-    </ActionBarMorePrimitive.Item>
-  );
-};
-
-// A prompt's More menu: Rewind (Fork and Delete sit in the bar).
-const UserMoreMenu: FC = () => {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const collisionPadding = useWindowChromeCollisionPadding(undefined);
-  return (
-    <ActionBarMorePrimitive.Root modal={false}>
-      <ActionBarMorePrimitive.Trigger asChild={true}>
-        <TooltipIconButton ref={triggerRef} tooltip="More" className="data-[state=open]:bg-accent">
-          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
-        </TooltipIconButton>
-      </ActionBarMorePrimitive.Trigger>
-      <ActionBarMorePrimitive.Content
-        side="bottom"
-        align="end"
-        collisionPadding={collisionPadding}
-        onCloseAutoFocus={(e) => e.preventDefault()}
-        className={MORE_MENU_CONTENT_CLASS}
-      >
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          <MenuDismissGuard triggerRef={triggerRef} />
-          <RewindMessageMenuItem />
-        </div>
-      </ActionBarMorePrimitive.Content>
-    </ActionBarMorePrimitive.Root>
+    </TooltipIconButton>
   );
 };
 
@@ -8891,8 +8861,13 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
-        <ForkCountBadge />
-        <ForkMessageButton />
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
@@ -8915,13 +8890,8 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
-        )}
+        <ForkCountBadge />
+        <ForkMessageButton />
         <DeleteMessageButton />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
@@ -9080,7 +9050,7 @@ const UserMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters More
+          mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
       <span
         className="aui-user-reveal-sentinel"
@@ -9108,10 +9078,10 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <RewindMessageButton />
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
-      <UserMoreMenu />
     </UserMessageActionBar>
   );
 };
