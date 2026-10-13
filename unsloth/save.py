@@ -6079,10 +6079,13 @@ def _untie_merged_checkpoint(save_directory, embed_key, lm_head_key):
     config_path = os.path.join(save_directory, "config.json")
     with open(config_path, encoding = "utf-8") as f:
         config = json.load(f)
-    text_config = config.get("text_config")
-    tied = [
-        c for c in (config, text_config) if isinstance(c, dict) and c.get("tie_word_embeddings")
-    ]
+    # Composite configs nest the flag (text_config, thinker_config.text_config, ...).
+    tied, stack = [], [config]
+    while stack:
+        c = stack.pop()
+        if c.get("tie_word_embeddings"):
+            tied.append(c)
+        stack.extend(v for v in c.values() if isinstance(v, dict))
     if not tied:
         return
 

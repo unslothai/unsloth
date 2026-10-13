@@ -235,16 +235,17 @@ def test_untie_merged_checkpoint(tmp_path, sharded):
         )
     else:
         save_file(tensors, tmp_path / "model.safetensors")
-    (tmp_path / "config.json").write_text(
-        json.dumps({"tie_word_embeddings": True}), encoding = "utf-8"
-    )
+    config = {
+        "tie_word_embeddings": True,
+        "thinker_config": {"text_config": {"tie_word_embeddings": True}},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
 
     save_mod._untie_merged_checkpoint(str(tmp_path), "model.embed_tokens.weight", "lm_head.weight")
 
-    assert (
-        json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))["tie_word_embeddings"]
-        is False
-    )
+    config = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
+    assert config["tie_word_embeddings"] is False
+    assert config["thinker_config"]["text_config"]["tie_word_embeddings"] is False
     if sharded:
         index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding = "utf-8"))
         shard = tmp_path / index["weight_map"]["lm_head.weight"]
