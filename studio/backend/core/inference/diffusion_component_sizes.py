@@ -18,10 +18,7 @@ from typing import Any, Callable, Iterable, Optional
 logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 256 * 1024 * 1024
-# Bits per element of every floating dtype safetensors names. Float8 / float6 / float4 / MX scales count as float:
-# loaded at bf16 they occupy 2 bytes per parameter. Sub-byte types are packed: the header ``shape`` is the logical
-# element count and the byte span is numel * bits / 8 (an F4 [4, 16] tensor spans 32 bytes), so parameters are
-# counted as bytes * 8 / bits.
+# Float bits per element; sub-byte types are packed, so parameters = bytes * 8 / bits (loaded at 2 bytes each).
 FLOAT_BITS = {
     "F64": 64,
     "F32": 32,
@@ -96,8 +93,7 @@ class ComponentSize:
     nonfloat_bytes: int
     bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     files: tuple[str, ...] = field(default_factory = tuple)
-    # Of the totals above: tensors under the LTX loader's connector key prefixes bundled into a denoiser folder. The
-    # loader splits them off (video_ltx2._checkpoint_group) and the pack prices them as its own connectors/ folder.
+    # LTX connector tensors bundled in a denoiser folder; the loader splits them off (video_ltx2._checkpoint_group).
     bundled_connector_float_params: int = 0
     bundled_connector_nonfloat_bytes: int = 0
 
@@ -124,12 +120,9 @@ class ComponentSizes:
     components: dict
     source: str = "local"
     revision: Optional[str] = None
-    # Component names model_index.json declares (None when it was not read).
     manifest: Optional[frozenset] = None
-    # Folders holding weights whose size could not be read (a .bin checkpoint, an unreadable header or index).
     unknown: frozenset = frozenset()
-    # Stored bytes of the weight files in each ``unknown`` folder (an upper bound of its bf16-resident size for any
-    # checkpoint stored at >= 2 bytes per parameter), when known.
+    # Stored bytes per ``unknown`` folder: an upper bound of its bf16 size when stored at >= 2 bytes/param.
     unknown_bytes: tuple = ()
 
     def get(self, name: str) -> Optional[ComponentSize]:
@@ -224,8 +217,7 @@ _TRANSFORMERS_FOLDER_RE = re.compile(r"^(?:text_encoder|image_encoder|prompt_enh
 def _stem_order(folder: str) -> tuple[str, ...]:
     """LTX-2's text_encoder/ ships both stems; only the preferred one loads. ``pytorch_model`` is the legacy stem."""
     if _TRANSFORMERS_FOLDER_RE.match(folder or ""):
-        # transformers' PreTrainedModel.from_pretrained reads model.safetensors / its index, else pytorch_model.bin
-        # (not sized here, so the folder is unknown); never diffusion_pytorch_model.* or pytorch_model.safetensors
+        # transformers reads model.safetensors / its index, else pytorch_model.bin (unknown here)
         return ("model",)
     return ("diffusion_pytorch_model", "model", "pytorch_model")
 
@@ -248,8 +240,7 @@ def select_weight_files(
             return [f"{stem}.safetensors"]
         if any(_SHARD_RE.match(n) and n.startswith(stem + "-") for n in names):
             return []
-    # Nothing else is selected: from_pretrained reads only these stems (Studio passes no variant, so a
-    # diffusion_pytorch_model.fp16.safetensors twin is not read either), never e.g. adapter_model.safetensors.
+    # Only these stems load (Studio passes no variant, so .fp16 twins are not read either).
     return []
 
 
@@ -295,9 +286,7 @@ def _pick_files(
     """Only the loader's PREFERRED index counts (it never falls back to a stale second one); unreadable or
     naming a missing shard makes the component unknown, never a smaller subset."""
     names = list(names)
-    # Same-stem order follows the loader: transformers (5.5 modeling_utils._get_resolved_checkpoint_files) takes an
-    # unsharded model.safetensors before the index; diffusers (ModelMixin.from_pretrained, _fetch_index_file) takes
-    # the index first.
+    # Loader order: transformers takes unsharded model.safetensors before the index; diffusers the index first.
     unsharded_first = bool(_TRANSFORMERS_FOLDER_RE.match(folder or ""))
     for stem in _stem_order(folder):
         index = f"{stem}.safetensors.index.json"
@@ -710,7 +699,6 @@ def _read_hub_sizes(
     unknown_bytes: dict = {}
     try:
         for folder, files in sorted(by_folder.items()):
-            # Studio-attached extras are never in the manifest; the caller only asks for them when attached
             if (
                 manifest is not None
                 and folder not in manifest
@@ -799,8 +787,7 @@ def component_sizes(
     if local is not None and all(c in local.components for c in need):
         if not allow_hub or snap is None or hub_disabled():
             return local
-        # online: the cached snapshot answers only while the ref still points at it (TTL-cached resolve)
-        # an unresolved ref (head None) is not a match: probe the Hub, and keep the local sizes only if that fails too
+        # online: the snapshot answers only while the ref still points at it; unresolved -> probe the Hub first
         head = resolve_ref(str(repo_or_dir), token = token)
         if head is not None and head == snap.name:
             return local
@@ -818,8 +805,7 @@ VIDEO_ROLE_VAE = ("vae", "audio_vae", "vocoder", "connectors")
 VIDEO_EXTRA_VAE_ROLE: dict[str, tuple[str, ...]] = {"ltx-2.5": ("latent_upsampler",)}
 # Studio attaches these itself, so model_index.json never names them (LTX-2.5's latent_upsampler/).
 _LOADED_OUTSIDE_MANIFEST = frozenset(f for roles in VIDEO_EXTRA_VAE_ROLE.values() for f in roles)
-# Companion folders and when a family loads them; one that is present is counted only when its family rule says so
-# or model_index.json names it (a leftover folder in a repo is not a loaded component).
+# A present companion counts only by family rule or model_index.json (leftover folders are not loaded).
 VIDEO_COMPANION_RULES: dict[str, Callable[[Any], bool]] = {
     "audio_vae": lambda fam: bool(getattr(fam, "has_audio", False)),
     "vocoder": lambda fam: bool(getattr(fam, "has_audio", False)),
@@ -900,7 +886,6 @@ def video_loaded_roles(
 def video_required_roles(fam: Any) -> tuple[str, ...]:
     """Connectors, vocoder, upsampler, a second text encoder are optional: never a reason to go to the Hub."""
     denoiser = getattr(fam, "denoiser_attr", None) or "transformer"
-    # an MoE's second expert is not required: see _second_expert_loaded
     roles = [denoiser]
     roles += ["text_encoder", "vae"]
     if bool(getattr(fam, "has_audio", False)):
@@ -1122,7 +1107,6 @@ def video_components_gb(
             ),
             *VIDEO_ROLE_TEXT,
             *VIDEO_ROLE_VAE,
-            # only the extras this load attaches: a dev / single-stage load never probes the latent upsampler
             *attached_extras(fam, dev),
         )
         sizes = component_sizes(
