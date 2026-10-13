@@ -498,6 +498,7 @@ export function useAudioModelSlot({
         pending.isGguf,
       );
     },
+    onCancelled: invalidatePendingStagedTts,
   });
 
   useEffect(() => {

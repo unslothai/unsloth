@@ -144,3 +144,10 @@ test("Mac sibling inspection reserves the lifecycle slot before awaiting invento
     /ttsInspectionGeneration\.current = selectionGeneration;[\s\S]*busyRef\.current = "loading";[\s\S]*setBusy\("loading"\);[\s\S]*await listGgufVariants/,
   );
 });
+
+test("a cancelled or failed staged TTS download clears the pending load", () => {
+  assert.match(
+    source,
+    /useStagedDownload\(\{\s*scopeId: "audio",[\s\S]*?onCancelled: invalidatePendingStagedTts,\s*\}\);/,
+  );
+});

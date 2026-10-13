@@ -1103,12 +1103,45 @@ async def _audio_cpp_variants_answer(
             c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
         )
         companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
+        try:
+            incomplete = download_registry.incomplete_blob_hashes(
+                "model", model.repo_id, active_only = True
+            )
+        except Exception as e:
+            logger.warning(f"Partial check failed for {model.id}: {e}")
+            incomplete = set()
+        # A file every row lists (a package's configs, a voice folder) says nothing about one row.
+        counts: dict[str, int] = {}
+        for variant in model.variants:
+            for path in {f.path for f in variant.files}:
+                counts[path] = counts.get(path, 0) + 1
         rows = []
         for variant in model.variants:
-            downloaded = (
-                companions_cached
-                and audio_cpp_files.cached_files(model.with_variant(variant)) is not None
-            )
+            row_model = model.with_variant(variant)
+            downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
+            partial = False
+            key = variant.key if model.is_package else gguf_variant_key(variant.primary)
+            if not downloaded:
+                missing = {path for path, _size in audio_cpp_files.missing_files(row_model)}
+                own_cached = any(
+                    f.path not in missing and counts.get(f.path, 0) == 1 for f in variant.files
+                )
+                try:
+                    partial = own_cached or hf_cache_scan.is_variant_partial(
+                        model.repo_id,
+                        key,
+                        incomplete_blob_hashes = incomplete,
+                        variant_blob_hashes = gguf_variant_blob_hashes(
+                            model.repo_id,
+                            key,
+                            hf_token,
+                            include_companions = False,
+                            allow_remote = False,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"Partial check failed for {model.id} [{variant.key}]: {e}")
+                    partial = own_cached
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
@@ -1116,7 +1149,18 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    download_remaining_bytes = (
+                        variant_remaining_bytes_from_state(model.repo_id, key, None)
+                        if partial
+                        else None
+                    ),
                     downloaded = downloaded,
+                    partial = partial,
+                    partial_transport = (
+                        _partial_transport_for_variant(model.repo_id, key) if partial else None
+                    ),
+                    partial_resumable = partial
+                    and _partial_resumable_for_variant(model.repo_id, key),
                 )
             )
         return rows

@@ -2538,20 +2538,37 @@ def download_target(
     """
     if not is_umbrella_id(identifier):
         return None
-    model = resolve(identifier, variant, hf_token, network = not hub_offline())
+    network = not hub_offline()
+    model = resolve(identifier, variant, hf_token, network = network)
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     from hub.utils.gguf import gguf_variant_key
 
-    return model.repo_id, gguf_variant_key(model.variant.primary)
+    key = gguf_variant_key(model.variant.primary)
+    # A cache-only listing can name a crowded folder's file by its bare quant; only the Hub's is kept.
+    if network:
+        with _job_rows_lock:
+            _job_rows[(model.repo_id.lower(), key.lower())] = (model.id, model.variant.key)
+    return model.repo_id, key
+
+
+# (umbrella repo, planner key) -> the row and quant a download was started for. A file in flight has
+# no cache entry yet, and a folder with several sizes per quant needs its whole listing to name it.
+_job_rows: dict[tuple[str, str], tuple[str, str]] = {}
+_job_rows_lock = threading.Lock()
 
 
 def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tuple[str, str]]:
     """``(folder row id, variant key)`` for an umbrella download job, the inverse of
-    ``download_target``: jobs run on the umbrella repo, but Studio names them by row. None for
-    any other job. Answered from the cache, falling back to reading the planner key's path."""
+    ``download_target``: jobs run on the umbrella repo, but Unsloth Studio names them by row. None
+    for any other job. Answered from what ``download_target`` recorded when the job started, then
+    from the cache, falling back to reading the planner key's path."""
     if str(repo_id or "").lower() != AUDIO_CPP_REPO.lower() or not variant or "/" not in variant:
         return None
+    with _job_rows_lock:
+        started = _job_rows.get((repo_id.lower(), variant.replace("\\", "/").lower()))
+    if started is not None:
+        return started
     parts = variant.replace("\\", "/").split("/")
     row_id = f"{AUDIO_CPP_REPO}/{parts[0]}"
     try:

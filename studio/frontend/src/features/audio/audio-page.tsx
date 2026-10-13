@@ -42,7 +42,7 @@ import {
   type AudioGenerationPhase,
   audioGenerationPresentation,
 } from "./audio-page-policy";
-import { clipReference } from "./audio-run-request";
+import { type AudioSourceSelection, clipReference } from "./audio-run-request";
 import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
@@ -104,6 +104,7 @@ import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
+import { useAlignerDownload } from "./hooks/use-aligner-download";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
 import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
@@ -1297,8 +1298,13 @@ export function AudioPage({
     label: `use ${model.name}`,
     onClick: () => void pickRecommendedModel(model.id),
   }));
-  const transcribeBlocker: GenerateBlocker | null =
-    busy === "loading"
+  const alignerDownload = useAlignerDownload(
+    transcribeCaps.caps,
+    transcribeCaps.refresh,
+  );
+  const transcribeBlocker: GenerateBlocker | null = alignerDownload.staging
+    ? { reason: "Downloading the timing aligner…" }
+    : busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
       : busy !== null
         ? null
@@ -1340,9 +1346,7 @@ export function AudioPage({
                 : null;
   const canTranscribe =
     mode === "transcribe" && busy === null && transcribeBlocker === null;
-  const handleTranscribe = () => {
-    const source = useAudioTranscribeStore.getState().source;
-    if (!source) return;
+  const startTranscription = (source: AudioSourceSelection) => {
     const { request } = transcribeOptions;
     void runTranscription(
       source,
@@ -1354,6 +1358,25 @@ export function AudioPage({
     ).then(() => {
       // A timestamped run may have downloaded the aligner.
       if (request.timestamps) transcribeCaps.refresh();
+    });
+  };
+  const startTranscriptionRef = useRef(startTranscription);
+  useEffect(() => {
+    startTranscriptionRef.current = startTranscription;
+  });
+  const handleTranscribe = () => {
+    const source = useAudioTranscribeStore.getState().source;
+    if (!source) return;
+    alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
+      // The aligner download can outlast the click: run with the page as it is now, and only while
+      // Transcribe is still showing the same audio.
+      if (
+        !activeRef.current ||
+        modeRef.current !== "transcribe" ||
+        useAudioTranscribeStore.getState().source?.id !== source.id
+      )
+        return;
+      startTranscriptionRef.current(source);
     });
   };
   const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
