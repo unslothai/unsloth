@@ -256,8 +256,7 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "distilled", steps: 8, guidance: 1 },
   // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
   { match: "fusionx", steps: 8, guidance: 1 },
-  // LTX-2.5: the dev DiT runs 30 steps at guidance 3; the distilled default (pack or file) 8 at guidance 1.
-  { match: "ltx-2-5-22b-dev-", steps: 30, guidance: 3 },
+  // LTX-2.5: the distilled default (pack or file) runs 8 steps at guidance 1; defaultsFor routes a dev pick to 30 / 3.
   { match: "ltx-2-5-", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   // T2V-A14B before the generic Wan key.
@@ -280,6 +279,11 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   const id = fold(repoId);
   // The Wan and FusionX rows count only in the model / file name, as on the backend.
   const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  // LTX-2.5 dev, as the backend's ltx25_is_dev reads the last path segment: "distill" wins, then a dev / full / sft
+  // token (transformer_full folds to "transformer-full-", which the full token covers).
+  if (id.includes("ltx-2-5-") && !/(^|-)distill/.test(name) && /(^|-)(dev|full|sft)-/.test(name)) {
+    return { steps: 30, guidance: 3 };
+  }
   return (
     MODEL_DEFAULTS.find((d) =>
       (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),

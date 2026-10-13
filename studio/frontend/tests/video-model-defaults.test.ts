@@ -71,6 +71,15 @@ test("the other families keep their recipes", () => {
     ["Lightricks/LTX-2.5-Diffusers", 8, 1],
     ["Lightricks/LTX-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors", 8, 1],
     ["Lightricks/LTX-2.5/diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors", 30, 3],
+    // Every variant name the backend's ltx25_is_dev accepts, with or without the size tag.
+    ["someone/LTX-2.5-GGUF/ltx-2.5-dev.safetensors", 30, 3],
+    ["/models/ltx_2.5_full_bf16.safetensors", 30, 3],
+    ["someone/LTX-2.5-sft", 30, 3],
+    ["someone/LTX-2.5/ltx-2.5-transformer_full.safetensors", 30, 3],
+    // The file decides over the repo, and "distilled" wins inside one name.
+    ["someone/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
+    ["someone/LTX-2.5/ltx-2.5-dev-distilled.safetensors", 8, 1],
+    ["someone/LTX-2.5/ltx-2.5-developer.safetensors", 8, 1],
     ["hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["someone/unknown-model", 8, 1],
     ["wan21-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
