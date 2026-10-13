@@ -6624,7 +6624,7 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr|m4b|weba|mka)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
   const enabledAccept =

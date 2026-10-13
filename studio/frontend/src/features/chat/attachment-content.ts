@@ -6,6 +6,7 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
   decodeTextAttachmentBytes,
+  isBinaryOfficeTemplate,
   isTextAttachmentName,
 } from "./text-attachment-accept";
 
@@ -45,9 +46,11 @@ export type AttachmentText = {
 };
 
 const AUDIO_ATTACHMENT_RE =
-  /\.(wav|mp3|mp2|m4a|ogg|oga|opus|flac|webm|mp4|aac|aiff|aif|aifc|caf|wma|amr)$/i;
+  /\.(wav|mp3|mp2|m4a|ogg|oga|opus|flac|webm|mp4|aac|aiff|aif|aifc|caf|wma|amr|m4b|weba|mka)$/i;
 const AUDIO_MIME_RE = /^audio\//i;
 const PDF_ATTACHMENT_RE = /\.pdf$/i;
+// Tested first so every other file starts its read without waiting on a sniff.
+const OFFICE_TEMPLATE_NAME_RE = /\.(?:dot|pot)$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
@@ -123,6 +126,9 @@ const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   caf: "audio/x-caf",
   wma: "audio/x-ms-wma",
   amr: "audio/amr",
+  m4b: "audio/mp4",
+  weba: "audio/webm",
+  mka: "audio/x-matroska",
   webm: "audio/webm",
 };
 // Node.TEXT_NODE and Node.ELEMENT_NODE, spelled out so the extractor runs where the DOM globals do not.
@@ -2059,7 +2065,8 @@ export async function readAttachmentText(
   // Before text, which claims a .mht sent as message/rfc822; a large .odt/.ods reuses its server read.
   if (
     isServerDocumentAttachmentName(name) ||
-    (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES && isOpenDocumentAttachment(name, contentType))
+    (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES && isOpenDocumentAttachment(name, contentType)) ||
+    (OFFICE_TEMPLATE_NAME_RE.test(name) && (await isBinaryOfficeTemplate(file)))
   ) {
     const { extractServerDocumentText } = await import("./server-document");
     return { label: null, text: await extractServerDocumentText(file), truncated: false };

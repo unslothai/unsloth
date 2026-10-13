@@ -222,7 +222,7 @@ for (const [format, extensions, adapter, rustList] of [
 
 test("native chat drops every Office, Outlook and saved-page type into the composer", () => {
   const office =
-    ".doc .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
+    ".doc .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
       " ",
     );
   for (const extension of office) {
@@ -1040,21 +1040,30 @@ test("both attachment stages go through the decode-once path", () => {
 });
 
 test("every basename the picker claims is one the drop paths accept", () => {
-  // assistant-ui derives the extension as `.${name.split(".").pop()}`, so an
-  // extensionless "Dockerfile" matches the ".dockerfile" token and the picker
-  // takes it. A drop of the same file has to agree, or the two disagree on one
-  // conventional build file.
-  for (const name of ["Dockerfile", "Makefile", "Containerfile"]) {
+  // assistant-ui derives the extension as `.${name.split(".").pop()}`, so "README" matches
+  // ".readme" and ".gitignore" matches ".gitignore". A drop of the same file has to agree.
+  const accept = TEXT_ATTACHMENT_ACCEPT.split(",");
+  for (const name of [
+    "Dockerfile",
+    "GNUmakefile",
+    "README",
+    "LICENSE",
+    "Jenkinsfile",
+    "CODEOWNERS",
+    ".gitignore",
+    ".editorconfig",
+    ".zshrc",
+  ]) {
     const derived = `.${name.split(".").pop()!.toLowerCase()}`;
-    assert.ok(
-      TEXT_ATTACHMENT_EXTENSIONS.includes(derived),
-      `${name} is claimed through ${derived}`,
-    );
+    assert.ok(accept.includes(derived), `${name} is claimed through ${derived}`);
     assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
+    assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "docs", name);
   }
-  // A name with no matching token stays out of both, rather than being widened.
-  assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".gnumakefile"), false);
-  assert.equal(isTextAttachmentName("GNUmakefile"), false);
+  // Unlisted names stay out of both, rather than being widened; .env usually holds secrets.
+  for (const name of ["notes", ".env", ".DS_Store"]) {
+    assert.equal(isTextAttachmentName(name), false, name);
+    assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "unsupported", name);
+  }
 });
 
 test("a container declaring two charsets is refused, not part-decoded", async () => {
@@ -2632,4 +2641,15 @@ test("formats the backends cannot take are converted, the rest sent as is", () =
   }
   assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));
   assert.ok(!isChatImageFile({ name: "x.constructor", type: "" }));
+});
+
+test("audiobooks, WebM and Matroska audio, 3GPP2 video and map files attach", () => {
+  for (const name of ["book.m4b", "voice.weba", "song.mka"]) {
+    assert.equal(classifyDropPaths([`/media/${name}`]).kind, "audio", name);
+  }
+  assert.equal(classifyDropPaths(["/media/clip.3g2"]).kind, "video");
+  for (const name of ["route.gpx", "places.kml"]) {
+    assert.equal(isTextAttachmentName(name), true, name);
+    assert.equal(classifyDropPaths([`/maps/${name}`]).kind, "docs", name);
+  }
 });

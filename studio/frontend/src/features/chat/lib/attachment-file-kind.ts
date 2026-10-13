@@ -39,7 +39,7 @@ register("image", "png jpg jpeg gif webp avif bmp svg heic heif tif tiff ico");
 register("pdf", "pdf");
 register(
   "audio",
-  "mp3 mp2 wav m4a ogg oga opus flac aac aiff aif aifc caf wma amr",
+  "mp3 mp2 wav m4a m4b ogg oga opus flac aac aiff aif aifc caf wma amr weba mka",
 );
 register("video", "mp4 m4v mov mkv avi webm 3gp 3g2 mpg mpeg wmv");
 register("word", "doc docx docm dot dotx dotm odt ott rtf gdoc");

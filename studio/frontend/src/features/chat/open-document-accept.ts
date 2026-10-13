@@ -32,7 +32,7 @@ export function isRtfAttachmentName(filename: string): boolean {
 
 // RAG_DOCUMENT_UPLOAD_ACCEPT minus browser-read types; spelled out so this module stays a chat-barrel leaf.
 export const SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS = [
-  ".doc,.docm,.dotx,.dotm,.xls,.xltx,.xltm,.ppt,.pptm,.potx,.potm,.ppsx,.ppsm",
+  ".doc,.docm,.dotx,.dotm,.xls,.xlt,.xltx,.xltm,.ppt,.pps,.pptm,.potx,.potm,.ppsx,.ppsm",
   ".odp,.ott,.ots,.otp,.msg,.mht,.mhtml,.epub,.xhtml,.xht",
 ].join(",");
 // RAG's MAX_UPLOAD_BYTES.

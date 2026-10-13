@@ -1026,6 +1026,38 @@ class LargeDocumentFallbackAdapter implements AttachmentAdapter {
   }
 }
 
+/** .dot/.pot are Graphviz and gettext text unless their bytes are a Word or PowerPoint template. */
+class OfficeTemplateAdapter implements AttachmentAdapter {
+  accept = ".dot,.pot";
+  private readonly text: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(text: AttachmentAdapter, server: ServerDocumentAttachmentAdapter) {
+    this.text = text;
+    this.server = server;
+  }
+
+  async *add(state: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    if (await isBinaryOfficeTemplate(state.file)) {
+      yield* this.server.add(state);
+      return;
+    }
+    yield await (this.text.add(state) as Promise<PendingAttachment>);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.text.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.text.remove(attachment);
+  }
+}
+
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -3039,6 +3071,7 @@ function useStudioRuntimeAdapters(
   );
   const attachments = useMemo(() => {
     const server = new ServerDocumentAttachmentAdapter();
+    const text = new TextAttachmentAdapter();
     const largeFallback = (browser: AttachmentAdapter) =>
       new LargeDocumentFallbackAdapter(browser, server);
     return new PreStreamAwareAttachmentAdapter(
@@ -3050,7 +3083,8 @@ function useStudioRuntimeAdapters(
           new VideoAttachmentAdapter(),
           // Before text, which claims message/rfc822 (.mht), and tool-only, which lists .epub/.docm/.odp.
           server,
-          new TextAttachmentAdapter(),
+          new OfficeTemplateAdapter(text, server),
+          text,
           new HtmlAttachmentAdapter(),
           largeFallback(new PDFAttachmentAdapter()),
           largeFallback(new DocxAttachmentAdapter()),
