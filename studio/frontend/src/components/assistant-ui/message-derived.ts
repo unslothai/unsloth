@@ -127,3 +127,34 @@ export const compactionNoticeMessageIds = memoOnArray(
     return ids;
   },
 );
+
+const NO_COMPACTION_DIVIDERS: ReadonlyMap<string, ContextTruncation> =
+  new Map();
+
+/** maps each compaction to its triggering prompt row or, if absent, its reply row at the kept-context boundary so visible dividers match the context meter. */
+export const compactionDividerRows = memoOnArray(
+  (
+    messages: readonly MessageLike[],
+  ): ReadonlyMap<string, ContextTruncation> => {
+    const notices = compactionNoticeMessageIds(messages);
+    // streamed tokens create new arrays, so reuse this map until a thread compacts.
+    if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
+    const rows = new Map<string, ContextTruncation>();
+    let previous: MessageLike | undefined;
+    for (const message of messages) {
+      if (notices.has(message.id)) {
+        const row = previous?.role === "user" ? previous.id : message.id;
+        rows.set(
+          row,
+          (
+            message.metadata as {
+              custom: { contextTruncation: ContextTruncation };
+            }
+          ).custom.contextTruncation,
+        );
+      }
+      previous = message;
+    }
+    return rows;
+  },
+);
