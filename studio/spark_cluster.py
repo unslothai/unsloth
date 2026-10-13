@@ -4498,6 +4498,10 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         else:
             print(f"  note: could not clear {target} on the peer; a stale stage there would")
             print("        be collected as if this run had written it")
+    # The copy an earlier run collected here, which would otherwise merge beside this run's stage0.
+    local_save = _save_dir_of(plan["node0"])
+    if local_save:
+        shutil.rmtree(osp.join(osp.expanduser(local_save), "stage1"), ignore_errors = True)
     # Not `exec`: the status has to be recorded after the stage exits, and a group leader is already
     # what `setsid` gives us, so the negative kill still takes the children.
     inner = f"[ -f {activate} ] && . {activate}; {env}; {node1}; " f"echo $? > {_PEER_STAGE_RC}"
@@ -4622,22 +4626,27 @@ def _print_launch(plan: Dict[str, Any]) -> None:
         # --run stages these itself; a hand-run peer command would exit on the missing path.
         print("  Copy this Spark's inputs to the same path on the peer first:")
         for path in local_inputs:
-            print(
-                f"    rsync -a --mkpath {shlex.quote(path)} {plan['peer_ip']}:{shlex.quote(path)}"
-            )
+            # A trailing slash copies a directory's contents, not the directory into itself.
+            src = path.rstrip("/") + "/" if osp.isdir(path) else path
+            print(f"    rsync -a --mkpath {shlex.quote(src)} {plan['peer_ip']}:{shlex.quote(src)}")
     print(f"  On the peer ({plan['peer_ip']}):")
     print(f"    {node1}")
     print("")
 
 
 def _absolute_local_inputs(command: str) -> Tuple[str, List[str]]:
-    """``command`` with each --data/--model that exists here made absolute, and those paths."""
+    """``command`` with each --data/--model (and a `train` script) that exists here made absolute,
+    and those paths."""
     tokens = shlex.split(command)
     found: List[str] = []
     for i, token in enumerate(tokens[:-1]):
         if token in ("--data", "--model") and osp.exists(osp.expanduser(tokens[i + 1])):
             tokens[i + 1] = osp.abspath(osp.expanduser(tokens[i + 1]))
             found.append(tokens[i + 1])
+    # `unsloth spark train` ends in the user's own script, which provisioning never copies.
+    if tokens and tokens[0] == "torchrun" and osp.isfile(osp.expanduser(tokens[-1])):
+        tokens[-1] = osp.abspath(osp.expanduser(tokens[-1]))
+        found.append(tokens[-1])
     return (shlex.join(tokens) if found else command), found
 
 

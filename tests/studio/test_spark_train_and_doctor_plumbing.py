@@ -352,8 +352,13 @@ def test_the_peer_stages_are_collected_after_a_successful_run(
         "node1": "torchrun x",
         "peer_ip": "192.0.2.7",
     }
+    stale = tmp_path / "out" / "stage1"
+    stale.mkdir(parents = True)
+    (stale / "adapter_model.safetensors").write_bytes(b"earlier run")
     assert cluster.run_pipeline(plan) == 0
     assert collected == [(str(tmp_path / "out"), "/home/peer")]
+    # The copy an earlier run collected must not survive to merge beside this run's stage0.
+    assert not stale.exists()
 
 
 def test_a_run_without_save_collects_nothing(cluster, monkeypatch) -> None:

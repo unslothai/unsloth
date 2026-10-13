@@ -635,6 +635,34 @@ def test_merge_layer_key_parsing() -> None:
     assert sm.layer_of("base_model.model.lm_head.weight") is None
 
 
+def test_merge_recognises_gptj_layer_keys() -> None:
+    """find_layers accepts GPT-J's `transformer.h`, so the merge must count its layers too."""
+    sm = _load("studio/spark_merge.py")
+    assert sm.layer_of("base_model.model.transformer.h.5.attn.q_proj.lora_A.weight") == 5
+    assert sm.layer_of("base_model.model.transformer.wte.weight") is None
+
+
+def test_merge_leaves_no_half_written_pair(tmp_path, monkeypatch) -> None:
+    """A config write that fails must not leave the new weights beside the old config."""
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    sm = _load("studio/spark_merge.py")
+    _mk_stage(tmp_path, 0, range(0, 12))
+    _mk_stage(tmp_path, 1, range(12, 24))
+    out = tmp_path / "merged"
+    sm.merge(str(tmp_path), str(out))
+    before = b"the previous run's weights"
+    (out / "adapter_model.safetensors").write_bytes(before)
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sm.json, "dump", broken)
+    with pytest.raises(OSError):
+        sm.merge(str(tmp_path), str(out), force = True)
+    assert (out / "adapter_model.safetensors").read_bytes() == before
+
+
 def test_merge_unions_disjoint_stages(tmp_path) -> None:
     pytest.importorskip("torch")
     pytest.importorskip("safetensors")
@@ -1957,6 +1985,34 @@ def test_a_printed_peer_command_names_where_to_copy_a_local_dataset(
     assert f"rsync -a --mkpath {want} 192.168.200.13:{want}" in out
     assert f"--data {want}" in out.split("On the peer")[1]
     assert "org/m" in out
+
+
+@_POSIX_ONLY
+def test_a_printed_copy_puts_a_model_directory_and_a_train_script_where_the_peer_reads_them(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """`rsync -a dir peer:dir` nests the directory inside itself; a `train` script is never
+    provisioned, so the peer would exit on it while rank 0 waits at the rendezvous."""
+    sc = _load("studio/spark_cluster.py")
+    model = tmp_path / "models" / "foo"
+    model.mkdir(parents = True)
+    script = tmp_path / "train.py"
+    script.write_text("print(1)\n", encoding = "utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sc, "venv_activate_sh", lambda: "/venv/bin/activate")
+    sc._print_launch(
+        {
+            "env": {},
+            "local_ip": "192.168.200.12",
+            "peer_ip": "192.168.200.13",
+            "node0": f"torchrun x --model {model} --node_rank=0 train.py",
+            "node1": f"torchrun x --model {model} --node_rank=1 train.py",
+        }
+    )
+    out = capsys.readouterr().out
+    assert f"rsync -a --mkpath {model}/ 192.168.200.13:{model}/" in out
+    assert f"rsync -a --mkpath {script} 192.168.200.13:{script}" in out
+    assert str(script) in out.split("On the peer")[1]
 
 
 def test_one_spark_does_not_claim_a_fit_its_kv_overflows() -> None:
