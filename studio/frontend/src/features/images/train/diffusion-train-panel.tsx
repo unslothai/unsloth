@@ -35,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
   Tooltip,
@@ -97,6 +98,8 @@ import {
 } from "./dataset-files";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
+import { MAX_SAMPLE_PROMPTS, parseSamplePrompts } from "./diffusion-samples";
+import { DiffusionSamples } from "./diffusion-samples-view";
 import {
   ExampleDatasetCards,
   runExampleImport,
@@ -455,6 +458,8 @@ export function DiffusionTrainPanel({
   // Same for checkpoints: MiniMax-H3's loop writes no resume bundle and its validation REFUSES a
   // nonzero save_steps, so offering the field meant a rejected Start with nothing saying why.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // Video families render no previews and REFUSE a nonzero sample_every; an older backend has none at all.
+  const supportsSamples = reportedFamily?.supports_samples ?? false;
   // Same for buckets: MiniMax-H3 always trains one packed canvas, and an older backend drops the field.
   const supportsBucketing = reportedFamily?.supports_bucketing ?? false;
   // Same for the batch axis: MiniMax-H3's forward covers ONE packed sequence and its validation REFUSES a batch
@@ -504,6 +509,8 @@ export function DiffusionTrainPanel({
   // Periodic resume points. 0 (off) keeps the default: only a stop-and-save writes one, so nothing
   // is spent on disk unless asked.
   const [saveSteps, setSaveSteps] = useState(0);
+  const [sampleEvery, setSampleEvery] = useState(0);
+  const [samplePromptsText, setSamplePromptsText] = useState("");
   // 0 keeps every checkpoint; backend default 2.
   const [saveTotalLimit, setSaveTotalLimit] = useState(2);
   // LR schedule. Warmup applies only to non-constant schedules. Seeded from the family, which is
@@ -1206,6 +1213,9 @@ export function DiffusionTrainPanel({
         // Zero rather than the field's value when the family has none: the field is only hidden, not
         // reset, so a value typed for one family would otherwise still be sent and refused.
         save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
+        sample_every: supportsSamples ? Math.max(0, Math.floor(sampleEvery)) : 0,
+        sample_prompts:
+          supportsSamples && sampleEvery > 0 ? parseSamplePrompts(samplePromptsText) : [],
         save_total_limit: supportsCheckpoints ? Math.max(0, Math.floor(saveTotalLimit)) : undefined,
         cfg_dropout: supportsCfgDropout ? cfgDropout : undefined,
         lora_dropout: loraDropout,
@@ -1242,6 +1252,9 @@ export function DiffusionTrainPanel({
     gradAccum,
     seed,
     saveSteps,
+    sampleEvery,
+    samplePromptsText,
+    supportsSamples,
     saveTotalLimit,
     gradCheckpoint,
     supportsBucketing,
@@ -1480,6 +1493,11 @@ export function DiffusionTrainPanel({
             min: 0,
             hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
           })}
+        {supportsSamples &&
+          numberField("Sample every", sampleEvery, setSampleEvery, 0, {
+            min: 0,
+            hint: "Renders preview images with the same prompts and seeds every this many steps, so you can see when the LoRA has learned the subject and when it starts to overfit. 0 turns it off; each round adds a few seconds.",
+          })}
         {supportsCheckpoints &&
           saveSteps > 0 &&
           numberField("Keep checkpoints", saveTotalLimit, setSaveTotalLimit, 2, {
@@ -1488,6 +1506,23 @@ export function DiffusionTrainPanel({
             hint: "How many of those checkpoints stay on disk; older ones are deleted as new ones are saved. Raise it to compare earlier steps. 0 keeps every one.",
           })}
       </div>
+
+      {supportsSamples && sampleEvery > 0 && (
+        <div className={fieldClass}>
+          <FieldLabel
+            hint={`One prompt per line, up to ${MAX_SAMPLE_PROMPTS}; each renders one image. Leave empty to use the trigger prompt or the first caption.`}
+          >
+            Sample prompts
+          </FieldLabel>
+          <Textarea
+            value={samplePromptsText}
+            placeholder={instancePrompt.trim() || "a photo in mystyle"}
+            onChange={(e) => setSamplePromptsText(e.target.value)}
+            rows={2}
+            className="min-h-0 text-xs"
+          />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
         {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
@@ -2226,6 +2261,7 @@ export function DiffusionTrainPanel({
               lossHistory={viewLossHistory}
               gradNormHistory={viewGradNormHistory}
             />
+            <DiffusionSamples jobId={viewRun.job_id} samples={viewRun.samples} />
           </>
         ) : !hasRun ? (
           <>
@@ -2465,6 +2501,9 @@ export function DiffusionTrainPanel({
             )}
 
             <DiffusionCharts lossHistory={lossHistory} gradNormHistory={gradNormHistory} />
+            {status?.job_id ? (
+              <DiffusionSamples jobId={status.job_id} samples={status.samples} />
+            ) : null}
           </>
         )}
       </div>
