@@ -159,6 +159,29 @@ def calibration_key(
     )
 
 
+def with_extra(key: Any, name: str, value: Any) -> Any:
+    """``key`` with one keyword entry replaced (e.g. the step-cache mode a request actually ran with)."""
+    if not isinstance(key, tuple) or len(key) != 5:
+        return key
+    extras = dict(key[4])
+    extras[name] = str(value)
+    return (*key[:4], tuple(sorted(extras.items())))
+
+
+def retag(pipe: Any, name: str, value: Any) -> Any:
+    """Rewrite one entry of the denoiser's calibration key in place (the peak recorded later lands there)."""
+    module = getattr(pipe, "transformer", None)
+    key = getattr(module, "_unsloth_video_calibration_key", None)
+    if key is None:
+        return None
+    new = with_extra(key, name, value)
+    try:
+        module._unsloth_video_calibration_key = new
+    except Exception:  # noqa: BLE001
+        return key
+    return new
+
+
 def _covering(peaks: dict, work: int) -> Optional[int]:
     covering = [extra for w, extra in (peaks or {}).items() if w >= work]
     return max(covering) if covering else None

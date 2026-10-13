@@ -621,13 +621,14 @@ def test_generate_keys_calibration_on_the_load_configuration():
         "dtype",
         "attention_backend",
         "speed_mode",
-        "transformer_cache",
         "transformer_quant",
         "text_encoder_quant",
         "kind",
         "variant_id",
     ):
         assert f'"{field}"' in call, field
+    # the cache mode is the one this request runs (see test_auto_cache_decision_is_shared_and_retags_the_calibration)
+    assert "transformer_cache = request_cache_mode" in call
 
 
 
@@ -1433,3 +1434,69 @@ def test_calibration_key_carries_the_revision():
     assert "revision = _calibration_revision(state)" in call
     a = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", revision = "a" * 40)
     assert a != vsr.calibration_key("ltx-2", "r", "group", "cuda:0", revision = "b" * 40)
+
+
+# ---- review round 10 ----
+
+
+def test_manifest_predicate_matches_the_loader(tmp_path):
+    import inspect
+
+    from core.inference import diffusion
+
+    assert dcs.manifest_entry_loaded("vae", ["diffusers", "AutoencoderKL"])
+    for spec in (["diffusers"], ["diffusers", None], [None, "X"], [None, None], "diffusers", None, []):
+        assert not dcs.manifest_entry_loaded("vae", spec), spec
+    assert not dcs.manifest_entry_loaded("_class_name", ["a", "b"])
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "P", "vae": ["d", "V"], "vocoder": ["d", None], "connectors": ["l"], "text_encoder": [None, "T"]})
+    )
+    assert dcs._manifest_names(tmp_path) == frozenset({"vae"})
+    # the loader's staging selection uses the same predicate (no second copy to drift)
+    src = inspect.getsource(diffusion)
+    assert "manifest_entry_loaded(name, spec)" in src
+    assert "len(spec) >= 2" not in src
+
+
+def test_auto_cache_decision_is_shared_and_retags_the_calibration():
+    import inspect
+
+    from core.inference import diffusion_cache, video
+
+    assert diffusion_cache.auto_step_cache_mode(diffusion_cache.FBCACHE_MIN_STEPS) == diffusion_cache.TC_FBCACHE
+    assert diffusion_cache.auto_step_cache_mode(diffusion_cache.FBCACHE_MIN_STEPS - 1) is None
+    assert "auto_step_cache_mode(steps)" in inspect.getsource(diffusion_cache.maybe_toggle_step_cache)
+    src = inspect.getsource(video)
+    key_at = src.index("video_stream_residency.calibration_key(")
+    call = src[key_at : src.index("\n                    )", key_at)]
+    assert "transformer_cache = request_cache_mode" in call
+    assert src.index("request_cache_mode = auto_step_cache_mode(steps)") < key_at
+    toggle_at = src.index("toggled = maybe_toggle_step_cache(")
+    assert src.index('video_stream_residency.retag(state.pipe, "transformer_cache", toggled)') > toggle_at
+    # the retag rewrites only that entry, so the recorded peak lands under the mode that ran
+    pipe = _Pipe()
+    key = vsr.calibration_key("wan", "r", "group", "cuda:0", transformer_cache = "fbcache", dtype = "bf16")
+    pipe.transformer._unsloth_video_calibration_key = key
+    new = vsr.retag(pipe, "transformer_cache", None)
+    assert new == vsr.calibration_key("wan", "r", "group", "cuda:0", transformer_cache = None, dtype = "bf16")
+    assert pipe.transformer._unsloth_video_calibration_key == new
+    assert vsr.retag(_Pipe(), "transformer_cache", None) is None
+
+
+def test_retagged_peak_is_recorded_under_the_mode_that_ran(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    alloc = {"now": 0, "peak": 0}
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: None)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev = None: alloc["now"])
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda dev = None: alloc["peak"])
+    predicted = vsr.calibration_key("wan", "r", "group", "cuda:0", transformer_cache = "fbcache")
+    pipe = _Pipe()
+    vsr.arm_request(pipe, key = predicted, width = 8, height = 8, frames = 1, device = "cuda:0")
+    vsr.retag(pipe, "transformer_cache", None)  # the runner-aware toggle ran uncached
+    alloc["peak"] = 500 << 20
+    vsr.record_request_peak(pipe)
+    ran = vsr.with_extra(predicted, "transformer_cache", None)
+    assert vsr.measured_extra_mib(ran, 64) == 500
+    assert vsr.measured_extra_mib(predicted, 64) is None

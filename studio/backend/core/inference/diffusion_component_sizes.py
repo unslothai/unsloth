@@ -332,16 +332,25 @@ def local_component_sizes(
         return None
 
 
+def manifest_entry_loaded(name: Any, spec: Any) -> bool:
+    """Whether a ``model_index.json`` entry is a component the pipeline loads: a public name whose spec is a
+    ``[library, class]`` list with both set. The ONE predicate, shared with the loader's staging selection
+    (DiffusionBackend download plan), so sizing and loading cannot disagree about what is loaded."""
+    return (
+        not str(name).startswith("_")
+        and isinstance(spec, (list, tuple))
+        and len(spec) >= 2
+        and spec[0] is not None
+        and spec[1] is not None
+    )
+
+
 def _manifest_from_text(text: str) -> Optional[frozenset]:
     try:
         data = json.loads(text)
         if not isinstance(data, dict):
             return None
-        return frozenset(
-            k
-            for k, v in data.items()
-            if not k.startswith("_") and isinstance(v, (list, tuple)) and v and v[0] is not None
-        )
+        return frozenset(k for k, v in data.items() if manifest_entry_loaded(k, v))
     except Exception:  # noqa: BLE001
         return None
 

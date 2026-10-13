@@ -9888,6 +9888,15 @@ class VideoBackend:
                         offload_policy = state.offload_policy,
                         device = state.device,
                     )
+                    # The step-cache mode THIS request runs: an AUTO decision is re-taken per request below
+                    # (maybe_toggle_step_cache), so the key uses the same rule now and is corrected after the
+                    # runner-aware toggle if that disagrees.
+                    if state.cache_auto:
+                        from .diffusion_cache import auto_step_cache_mode
+
+                        request_cache_mode = auto_step_cache_mode(steps)
+                    else:
+                        request_cache_mode = getattr(state, "transformer_cache", None)
                     # This request's peak sizes the next request of its size (refusal below, Wan residency fit).
                     calibration = video_stream_residency.calibration_key(
                         fam.name,
@@ -9904,7 +9913,7 @@ class VideoBackend:
                         attention_backend = getattr(state, "attention_backend", None),
                         speed_mode = getattr(state, "speed_mode", None),
                         speed_optims = tuple(getattr(state, "speed_optims", ()) or ()),
-                        transformer_cache = getattr(state, "transformer_cache", None),
+                        transformer_cache = request_cache_mode,
                         vae_tiling = getattr(state, "vae_tiling", None),
                         memory_mode = getattr(state, "memory_mode", None),
                         transformer_quant = getattr(state, "transformer_quant", None),
@@ -10310,6 +10319,10 @@ class VideoBackend:
                             threshold = state.cache_threshold,
                             logger = logger,
                         )
+                    from . import video_stream_residency
+
+                    # the peak this request records belongs to the cache mode that actually runs
+                    video_stream_residency.retag(state.pipe, "transformer_cache", toggled)
                     if toggled != state.transformer_cache:
                         # _VideoLoadState is frozen; record the pipe-level toggle so status() is truthful.
                         object.__setattr__(state, "transformer_cache", toggled)

@@ -11921,15 +11921,10 @@ def _pipeline_components_from_index(
         if not isinstance(payload, dict):
             raise ValueError(f"{repo_id}/model_index.json is not an object")
         if explicit_components is None:
-            selected = {
-                str(name)
-                for name, spec in payload.items()
-                if not str(name).startswith("_")
-                and isinstance(spec, (list, tuple))
-                and len(spec) >= 2
-                and spec[0] is not None
-                and spec[1] is not None
-            }
+            from .diffusion_component_sizes import manifest_entry_loaded
+
+            # the same predicate the size planner reads the manifest with
+            selected = {str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)}
         else:
             selected = {str(name) for name in explicit_components}
         ignored = payload.get("_ignore_files", ())
