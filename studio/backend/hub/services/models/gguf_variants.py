@@ -1120,9 +1120,11 @@ async def _audio_cpp_variants_answer(
             row_model = model.with_variant(variant)
             downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
             partial = False
+            remaining = None
             key = variant.key if model.is_package else gguf_variant_key(variant.primary)
             if not downloaded:
-                missing = {path for path, _size in audio_cpp_files.missing_files(row_model)}
+                missing_files = audio_cpp_files.missing_files(row_model)
+                missing = {path for path, _size in missing_files}
                 own_cached = any(
                     f.path not in missing and counts.get(f.path, 0) == 1 for f in variant.files
                 )
@@ -1142,6 +1144,15 @@ async def _audio_cpp_variants_answer(
                 except Exception as e:
                     logger.warning(f"Partial check failed for {model.id} [{variant.key}]: {e}")
                     partial = own_cached
+                if partial and model.is_package:
+                    # The generic manifest plan keeps one GGUF per quant, so it drops a package's other components.
+                    remaining = sum(size for _path, size in missing_files) + sum(
+                        c.variant.size_bytes
+                        for c in companions
+                        if c is not None and audio_cpp_files.cached_files(c) is None
+                    )
+                elif partial:
+                    remaining = variant_remaining_bytes_from_state(model.repo_id, key, None)
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
@@ -1149,11 +1160,7 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
-                    download_remaining_bytes = (
-                        variant_remaining_bytes_from_state(model.repo_id, key, None)
-                        if partial
-                        else None
-                    ),
+                    download_remaining_bytes = remaining,
                     downloaded = downloaded,
                     partial = partial,
                     partial_transport = (

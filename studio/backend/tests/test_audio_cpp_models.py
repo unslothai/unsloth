@@ -1136,6 +1136,20 @@ def test_a_package_mix_with_some_of_its_files_lists_as_partial(hub, monkeypatch)
     assert rows["Q4_0"].downloaded and not rows["Q4_0"].partial
 
 
+def test_a_partial_package_mix_prices_every_missing_component(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    repo = "audio-cpp/MiniMax-Music3-GGUF"
+    bf16 = ("language_model_bf16.gguf", "rvq_depth_decoder_bf16.gguf", "transformer_bf16.gguf")
+    _online(monkeypatch, *bf16)
+    snap = _minimax(hub)
+    _cancelled(hub, repo, "BF16", list(bf16))
+    _put(snap, bf16[0], b"x" * 7)
+    row = _rows(repo)["BF16"]
+    assert row.partial and not row.downloaded
+    # The other two BF16 components are still missing, not just one GGUF of the quant.
+    assert row.download_remaining_bytes == 14
+
+
 def test_download_target_maps_a_folder_row_onto_the_planner_key(hub):
     _kokoro(hub)
     assert acm.download_target(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "Q8_0") == (
