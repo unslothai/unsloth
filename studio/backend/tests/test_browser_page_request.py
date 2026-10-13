@@ -107,6 +107,7 @@ def test_a_same_origin_request_comes_back_as_the_site_sent_it(monkeypatch):
         url = "https://site.test/models-json?search=q", headers = [["X-Requested-With", "page"]]
     )
     assert answer["status"] == 200
+    assert answer["redirected"] is False and answer["cors"] is False
     assert answer["url"] == "https://site.test/models-json?search=q"
     assert base64.b64decode(answer["body"]) == b'{"models": []}'
     headers = dict(answer["headers"])
@@ -247,6 +248,31 @@ def test_a_redirect_to_a_site_that_allows_any_origin_is_read(monkeypatch):
     answer = _request(url = "https://site.test/go")
     assert answer["url"] == "https://other.test/data"
     assert base64.b64decode(answer["body"]) == b"public"
+    assert answer["redirected"] is True and answer["cors"] is True
+
+
+@pytest.mark.parametrize("allow", [None, "null"])
+def test_a_chain_back_to_the_pages_origin_stays_cors(monkeypatch, allow):
+    # Back on the page's origin after another site, the request is tainted: Origin is "null".
+    _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": "https://sso.test/bounce"}),
+            "sso.test/bounce": (302, b"", {"Location": "https://site.test/home"}),
+            "site.test/home": (
+                200,
+                b"home",
+                {"Access-Control-Allow-Origin": allow} if allow else {},
+            ),
+        },
+    )
+    if allow is None:
+        with pytest.raises(HTTPException):
+            _request(url = "https://site.test/go")
+        return
+    answer = _request(url = "https://site.test/go")
+    assert answer["url"] == "https://site.test/home"
+    assert answer["redirected"] is True and answer["cors"] is True
 
 
 @pytest.mark.parametrize(
@@ -319,7 +345,9 @@ def test_a_same_origin_redirect_still_shows_every_header(monkeypatch):
             "site.test/new": (200, b"", {"X-Internal-Token": "mine"}),
         },
     )
-    assert ["X-Internal-Token", "mine"] in _request(url = "https://site.test/old")["headers"]
+    answer = _request(url = "https://site.test/old")
+    assert ["X-Internal-Token", "mine"] in answer["headers"]
+    assert answer["redirected"] is True and answer["cors"] is False
 
 
 def test_redirect_error_fails_at_the_redirect(monkeypatch):

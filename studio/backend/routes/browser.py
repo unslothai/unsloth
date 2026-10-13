@@ -1691,12 +1691,14 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "last": origin,
         "origin": serialized_origin,
         "rewritten": False,
+        "redirected": False,
     }
 
     def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
+        hops["redirected"] = True
         hops["rewritten"] = hops["rewritten"] or hop_method != method
         last, hops["last"] = hops["last"], _origin(url)
         if hops["last"] != last and last != origin:
@@ -1784,6 +1786,9 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "url": final_url,
         "headers": [[name, value] for name, value in headers],
         "body": base64.b64encode(raw).decode("ascii"),
+        # Fetch's response.redirected and type: a chain back to the page's origin stays "cors".
+        "redirected": hops["redirected"],
+        "cors": not hops["same_origin"],
     }
 
 

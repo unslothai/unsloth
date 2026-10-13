@@ -381,11 +381,22 @@ test("a response a redirect brought from another site reads as a CORS one", asyn
   const t = setup(NativeXHR, "https://site.test/");
   const request = t.window.fetch("/download");
   await tick();
-  t.reply(t.posted[0].id, ok("{}", { url: "https://cdn.test/file" }));
+  t.reply(t.posted[0].id, ok("{}", { url: "https://cdn.test/file", redirected: true, cors: true }));
   const response = await request;
   assert.equal(response.type, "cors");
   assert.equal(response.redirected, true);
   assert.equal(response.url, "https://cdn.test/file");
+});
+
+test("a chain that went through another site and back is still a redirected CORS response", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const request = t.window.fetch("/models-json?q=1");
+  await tick();
+  t.reply(t.posted[0].id, ok("{}", { redirected: true, cors: true }));
+  const response = await request;
+  assert.equal(response.url, "https://site.test/models-json?q=1");
+  assert.equal(response.type, "cors");
+  assert.equal(response.redirected, true);
 });
 
 test("an XHR's Document body is sent serialized, as UTF-8 HTML or XML", async () => {

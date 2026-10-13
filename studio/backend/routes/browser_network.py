@@ -62,7 +62,7 @@ BROWSER_NETWORK_JS = r"""
         const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
         const withoutHash = (url) => url.split("#")[0];
         // What a fetched response has and a constructed one lacks, kept through clone(): "basic" on
-        // the page's origin, "cors" when a redirect led to another site.
+        // the page's origin, "cors" once a redirect led through another site.
         const asFetched = (response, url, redirected, type) => {
           const clone = response.clone;
           return Object.defineProperties(response, {
@@ -88,7 +88,7 @@ BROWSER_NETWORK_JS = r"""
           try { response = new Response(content, { status: reply.status, statusText: reply.statusText, headers }); }
           catch { response = new Response(content, { status: reply.status, headers }); }
           const url = withoutHash(reply.url);
-          return asFetched(response, url, url !== withoutHash(request.url), ownSite(url) ? "basic" : "cors");
+          return asFetched(response, url, reply.redirected === true, reply.cors === true ? "cors" : "basic");
         };
         window.fetch = (input, init) => {
           const done = track();

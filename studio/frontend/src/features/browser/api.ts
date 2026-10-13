@@ -103,6 +103,9 @@ export type PageResponse = {
   body: ArrayBuffer;
   /** A redirect the request said to stop at ("manual"): the page gets an opaque redirect. */
   opaqueRedirect?: boolean;
+  redirected?: boolean;
+  /** The chain went through another site, so it reads as a CORS response. */
+  cors?: boolean;
 };
 
 function toBase64(bytes: Uint8Array): string {
