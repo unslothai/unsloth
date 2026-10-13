@@ -109,6 +109,21 @@ def test_the_size_falls_back_to_the_installers_pick(managed):
     assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 70_000_000
 
 
+def test_assets_of_another_release_never_decide_the_offer(managed):
+    # After a restart the tag comes from the 24h disk cache while the asset list is fetched fresh, and a
+    # newer release may have been published in between: its assets say nothing about the offered tag.
+    managed.state.assets = {"audio-v0.9.2-unsloth.1-bin-windows-x64-cuda13.zip": 1}
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is True and plan["skip_reason"] is None
+    assert plan["status"]["update_size_bytes"] is None
+    assert plan["phase"]["pin_release_tag"] == _LATEST
+    managed.state.assets = {
+        "audio-v0.9.2-unsloth.1-bin-ubuntu-x64-cpu-portable.tar.gz": 1,
+        **_ASSETS,
+    }
+    assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 56_000_000
+
+
 def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
     monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
     monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")

@@ -830,7 +830,8 @@ def test_print_asset_takes_the_pin_flag(monkeypatch, capsys):
     argv = ["--print-asset", "--accelerator", "cpu", "--published-release-tag", OLDER_TAG]
     assert M.main(argv) == M.EXIT_OK
     assert capsys.readouterr().out.strip() == f"{FORK} {OLDER_TAG} {OLDER_ZIP}"
-    assert asked == [(FORK, OLDER_TAG, False)]
+    # The env pin is the user's pick, so an index-less release could fall back to GitHub's digest.
+    assert asked == [(FORK, OLDER_TAG, True)]
 
 
 # G12: UNSLOTH_AUDIO_CPP_ACCELERATOR
@@ -891,9 +892,9 @@ def test_an_exact_tag_pins_the_release(monkeypatch, heads):
         },
     )
     assert M.resolve("cpu", None) == (FORK, _names_release(OLDER_TAG, [OLDER_ZIP]), OLDER_ZIP)
-    # --published-release-tag beats the env pin, and is not the user's pick.
+    # --published-release-tag beats the env pin; trust still follows the user's pick from the env.
     assert M.resolve("cpu", None, FORK_TAG)[2] == CPU_ZIP
-    assert asked == [(FORK, OLDER_TAG, True), (FORK, FORK_TAG, False)]
+    assert asked == [(FORK, OLDER_TAG, True), (FORK, FORK_TAG, True)]
     assert heads == []
 
 
@@ -1160,13 +1161,21 @@ def test_the_index_is_never_skipped_by_default(monkeypatch, tmp_path):
     assert fetched == []
 
 
-def test_the_index_is_never_skipped_for_the_pin_flag(monkeypatch, tmp_path):
-    # The in-app update pins the tag it offered; the user's env does not open the escape hatch for it.
-    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", UPSTREAM)
+def test_the_pin_flag_never_skips_the_index_of_the_default_repo(monkeypatch, tmp_path):
     fetched = _unindexed_upstream(monkeypatch, tmp_path)
-    with pytest.raises(M.ReleaseLookupUnavailable):
+    with pytest.raises(M.ReleaseLookupUnavailable, match = "has no"):
         M.resolve("cpu", None, "v0.9.1")
     assert fetched == []
+
+
+def test_the_in_app_pin_installs_from_a_user_picked_repo_without_an_index(monkeypatch, tmp_path):
+    # The in-app update passes the tag it offered; setup accepted this repo on GitHub's digest, so the
+    # update must too, or the offer could never be applied.
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", UPSTREAM)
+    fetched = _unindexed_upstream(monkeypatch, tmp_path)
+    repo, release, chosen = M.resolve("cpu", None, "v0.9.1")
+    assert (repo, chosen, release["checksums"]) == (UPSTREAM, UPSTREAM_ZIP, None)
+    assert fetched == [(UPSTREAM, "v0.9.1")]
 
 
 def test_a_user_picked_release_that_publishes_an_index_never_skips_it(monkeypatch, tmp_path):

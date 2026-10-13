@@ -572,8 +572,9 @@ def resolve(
             repo,
             want,
             token = token,
-            # The in-app update pins the tag it offered; only the user's own pick skips the index.
-            allow_unindexed = explicit is None and _user_picked_release(),
+            # Trust follows the user's own repo/tag pick, so the in-app update can install the tag it
+            # offered from that repo too; the default fork release always publishes its index.
+            allow_unindexed = _user_picked_release(),
         )
     except core.ReleaseIntegrityError:
         raise
