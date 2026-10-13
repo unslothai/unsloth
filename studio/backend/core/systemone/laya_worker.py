@@ -65,7 +65,6 @@ class LayaWorker:
         self._conn, child = _CTX.Pipe()
         with native_path_secret_removed_for_child_start():
             self._process = _CTX.Process(
-                # The shim binds the child to this process's death, so a crashed Studio does not leave it on the GPU.
                 target = run_without_native_path_secret,
                 args = (run_laya_worker, child, str(root), checkpoint, device),
                 name = "systemone-laya",

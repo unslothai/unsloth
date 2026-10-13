@@ -168,7 +168,6 @@ def gpu(home, monkeypatch):
             self.device = device
 
         def predict(self, decision_state, questions):
-            # What the worker reports after an out-of-memory decision moved its model to CPU.
             if state.oom:
                 self.device = "cpu"
             return _answer(self, decision_state, questions)
