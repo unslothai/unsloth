@@ -44,9 +44,11 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    WINDOWED,
     compare_all_with,
     confine_to_runner,
     corroborated,
+    decide_modes,
     in_arm_repeatability,
     is_unstable,
     rung_of_cell,
@@ -178,16 +180,15 @@ def differing_actions(
     firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
     for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
-    # Windowed pairs have no structural verdict; `visible_report` scores them, with its own floor and
-    # no corroboration, so a declared change found only there still gets its picture.
-    windowed = {(a, s, c) for a, s, c, r in results if r["verdict"] == P.NOT_APPLICABLE}
+    # The pairs the verdict scores in visible mode, from its own plan; with that mode's floor and no
+    # corroboration, so a declared change found only there still gets its picture.
+    windowed = {key for key, (mode, _why) in decide_modes(result_paths).items() if mode == WINDOWED}
     if windowed:
         floor = visible_unstable_set(null_paths or None)
-        visible, _tally = compare_all_with(result_paths, P.compare_visible, "visible")
+        visible, _tally = compare_all_with(result_paths, P.compare_visible, "visible", windowed)
         for action, shard, cell, r in visible:
             if (
-                (action, shard, cell) in windowed
-                and r.get("_ran")
+                r.get("_ran")
                 and r["verdict"] == P.DIFFER
                 and (r.get("severe") or (rung_of_cell(cell), action) not in floor)
             ):

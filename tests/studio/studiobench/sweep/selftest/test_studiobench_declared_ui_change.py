@@ -111,7 +111,12 @@ def test_a_declared_change_on_every_action_is_still_a_decided_run(tmp_path):
     assert U.report(*args, min_reps = 2, min_compared = 16, declared_ui_change = True) == 0
 
 
-def _windowed_film(tmp_path: Path, name: str, head_visible: str) -> Path:
+def _windowed_film(
+    tmp_path: Path,
+    name: str,
+    head_visible: str,
+    head_root: str = "thread",
+) -> Path:
     """`settings` on a windowed treatment arm (no structural verdict), its visible region as given."""
     from tests.studio.studiobench.sweep.selftest.test_studiobench_windowed_parity import _capture
 
@@ -126,7 +131,10 @@ def _windowed_film(tmp_path: Path, name: str, head_visible: str) -> Path:
                     "cell_id": cid,
                     "action": "settings",
                     "ran": True,
-                    "parity": _capture(6 if treat else 18, 18, "d"),
+                    "parity": {
+                        **_capture(6 if treat else 18, 18, "d"),
+                        "root_kind": head_root if treat else "thread",
+                    },
                     "visible": {
                         "visible_attempted": True,
                         "ever_visible": [1],
@@ -176,3 +184,15 @@ def test_a_declared_visible_change_on_every_pair_is_still_a_decided_run(tmp_path
     paths = U.shards_of(str(_windowed_film(tmp_path, "result", "HEAD")))
     assert U.visible_report(paths, "t", min_reps = 2) == 1
     assert U.visible_report(paths, "t", min_reps = 2, declared_ui_change = True) == 0
+
+
+def test_a_visible_pair_the_digest_calls_not_comparable_still_gets_its_evidence(tmp_path):
+    """The verdict's own plan picks the pair, not the structural verdict (different root_kind here)."""
+    from tests.studio.studiobench.sweep import parity_shots as S
+
+    result = U.shards_of(str(_windowed_film(tmp_path, "result", "HEAD", head_root = "body")))
+    null = U.shards_of(str(_windowed_film(tmp_path, "null", "same")))
+    structural, _ = U.compare_all(result)
+    assert {r["verdict"] for *_k, r in structural} != {"not_applicable"}, structural
+    picked = S.differing_actions(result, null, min_reps = 2)
+    assert {d["action"] for d in picked} == {"settings"}, picked
