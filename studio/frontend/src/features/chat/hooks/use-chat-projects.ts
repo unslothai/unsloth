@@ -17,6 +17,7 @@ import {
 } from "../utils/chat-history-storage";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
+import { readFullListProjectActivity } from "./use-sidebar-row-pages";
 
 let cachedProjects: ProjectRecord[] = [];
 let projectsLoaded = false;
@@ -53,6 +54,19 @@ function publishProjects(projects: ProjectRecord[]): void {
   for (const onStoreChange of projectSubscribers) onStoreChange();
 }
 
+// An older server leaves out `lastActivityAt`, and the sidebar only loads some chats, so a folder's
+// newest chat comes from the full listing that server's lists read anyway.
+async function withChatActivity(projects: ProjectRecord[]): Promise<ProjectRecord[]> {
+  if (projects.every((project) => "lastActivityAt" in project)) return projects;
+  const activity = await readFullListProjectActivity().catch(() => null);
+  if (!activity) return projects;
+  return projects.map((project) =>
+    "lastActivityAt" in project
+      ? project
+      : { ...project, lastActivityAt: activity.get(project.id) ?? null },
+  );
+}
+
 function loadProjects(
   force = false,
   followUpIfPending = false,
@@ -71,7 +85,7 @@ function loadProjects(
       projectsRefreshPending = false;
       try {
         const next = await listStoredChatProjects({ includeArchived: false });
-        nextProjects = Array.isArray(next) ? next : [];
+        nextProjects = Array.isArray(next) ? await withChatActivity(next) : [];
       } catch (error) {
         if (!isExpectedBackgroundChatStorageError(error)) throw error;
         nextProjects = null;

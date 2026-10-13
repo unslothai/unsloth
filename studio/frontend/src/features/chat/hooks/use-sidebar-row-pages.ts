@@ -74,6 +74,18 @@ function readFullList() {
   return fullList.promise;
 }
 
+/** Each project's newest chat activity from the full listing, for servers whose projects come
+ *  without `lastActivityAt`: the same listing their paged lists read, so folders order as before. */
+export async function readFullListProjectActivity(): Promise<Map<string, number>> {
+  const activity = new Map<string, number>();
+  for (const item of groupThreads(await readFullList())) {
+    if (item.projectId && item.updatedAt > (activity.get(item.projectId) ?? 0)) {
+      activity.set(item.projectId, item.updatedAt);
+    }
+  }
+  return activity;
+}
+
 async function fullListPage(
   query: SidebarRowQuery,
   limit: number,

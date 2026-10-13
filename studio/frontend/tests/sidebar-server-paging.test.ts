@@ -439,6 +439,18 @@ test("an old server is answered from the full list, sliced in pages, read once",
   assert.equal(fullReads(), 1, "each page re-read the full list");
 });
 
+test("an old server's folders take their activity from the full list the lists already read", async () => {
+  const { mod, fullReads } = loadRowPages({ server: "old" });
+  await mod.fetchSidebarRowPage(sidebarRowQuery({}), 20, null);
+  // t4 is the newest unarchived chat in "p"; t44 is archived and does not count
+  assert.deepEqual([...(await mod.readFullListProjectActivity())], [["p", 996]]);
+  assert.equal(fullReads(), 1, "the folder activity read the history again");
+  // only a project list without the field pays for it
+  const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
+  assert.match(projects, /if \(projects\.every\(\(project\) => "lastActivityAt" in project\)\) return projects;/);
+  assert.match(projects, /nextProjects = Array\.isArray\(next\) \? await withChatActivity\(next\) : \[\];/);
+});
+
 test("until the browser-history import is done, the sidebar lists through the full list", async () => {
   const { mod, requests } = loadRowPages({
     server: "paged",
