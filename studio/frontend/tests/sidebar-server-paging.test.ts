@@ -520,8 +520,11 @@ test("a server page is asked for only after a scroll, one page per scroll", () =
   // a scroll while a page is in flight must not arm the next one
   assert.match(
     src,
-    /const onArm = \(\) => \{\n(?:\s*\/\/.*\n)?\s*if \(fetchingRef\.current \|\| performance\.now\(\) - drawnAtRef\.current < GESTURE_TAIL_MS\) return;\n\s*armedRef\.current = true;/,
+    /\n(?:\s*\/\/.*\n)?\s*if \(fetchingRef\.current \|\| performance\.now\(\) - drawnAtRef\.current < GESTURE_TAIL_MS\) return;\n\s*armedRef\.current = true;/,
   );
+  // only a scroll down arms: the focus nudge of a click on a row, or a scroll up, loads nothing
+  assert.match(src, /const down = top > lastTop;\n\s*lastTop = top;\n\s*if \(!down\) return;/);
+  assert.match(src, /event\.type === "wheel" && \(event as WheelEvent\)\.deltaY <= 0\) return;/);
   // nor can the scroll a wheel notch makes just after its page is drawn
   assert.match(src, /fetchingRef\.current = false;\n\s*drawnAtRef\.current = performance\.now\(\);/);
   assert.match(

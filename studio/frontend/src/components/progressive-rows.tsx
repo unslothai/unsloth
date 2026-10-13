@@ -100,7 +100,15 @@ export function ProgressiveRows<T extends { id: string }>({
       { root, rootMargin: `0px 0px ${PRELOAD_PX}px 0px` },
     );
     observer.observe(sentinel);
-    const onArm = () => {
+    let lastTop = root?.scrollTop ?? 0;
+    const onArm = (event: Event) => {
+      // only a scroll down asks for more: a click's focus nudge or a scroll up does not
+      if (event.type === "scroll") {
+        const top = root?.scrollTop ?? 0;
+        const down = top > lastTop;
+        lastTop = top;
+        if (!down) return;
+      } else if (event.type === "wheel" && (event as WheelEvent).deltaY <= 0) return;
       // a scroll during a fetch, or the wheel's own scroll just after it, arms nothing
       if (fetchingRef.current || performance.now() - drawnAtRef.current < GESTURE_TAIL_MS) return;
       armedRef.current = true;
