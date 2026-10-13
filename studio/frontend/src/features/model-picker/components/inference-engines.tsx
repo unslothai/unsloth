@@ -46,13 +46,15 @@ export function EngineInstall({
 }: {
   engine: EngineStatus;
   management?: boolean;
-  /** Centre text and buttons, for the load dialog; Settings keeps its row layout. */
+  /** The load dialog: centred, and the install prompt (size, Install and load) shown up front. */
   centered?: boolean;
   onUse?: () => void;
 }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
+  // Off once an install starts, until it fails or stops: the next poll may not show it running yet.
+  const [autoConfirm, setAutoConfirm] = useState(true);
   useEffect(() => {
     if (
       engine.job.state === "error" ||
@@ -60,6 +62,7 @@ export function EngineInstall({
       engine.job.state === "waiting"
     ) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
     }
     if (
       useAfterInstall.current &&
@@ -74,6 +77,11 @@ export function EngineInstall({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const running = engine.job.state === "running";
+  const canInstall = !engine.in_use && isOwner && !engine.unsupported_reason;
+  // The dialog's user already asked to load, so skip the extra "Install engine" click there.
+  const showConfirm =
+    confirm ||
+    (centered && autoConfirm && canInstall && !engine.installed && !running);
   const action = async (
     operation: "install" | "cancel" | "remove" | "rollback",
   ) => {
@@ -82,6 +90,7 @@ export function EngineInstall({
     try {
       if (operation === "install") {
         useAfterInstall.current = !!onUse;
+        setAutoConfirm(false);
       }
       if (operation === "cancel") {
         useAfterInstall.current = false;
@@ -90,6 +99,7 @@ export function EngineInstall({
       setConfirm(false);
     } catch (err) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
       setError(err instanceof Error ? err.message : "Engine operation failed");
     } finally {
       setBusy(false);
@@ -138,24 +148,23 @@ export function EngineInstall({
               })}
             </span>
           )}
-          {(!engine.installed || !engine.current || management) && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                busy || engine.in_use || !isOwner || !!engine.unsupported_reason
-              }
-              onClick={() => setConfirm(true)}
-            >
-              {engine.installed
-                ? t(
-                    engine.current
-                      ? "managedEngines.repair"
-                      : "managedEngines.update",
-                  )
-                : t("managedEngines.install")}
-            </Button>
-          )}
+          {(!engine.installed || !engine.current || management) &&
+            !(centered && showConfirm) && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !canInstall}
+                onClick={() => setConfirm(true)}
+              >
+                {engine.installed
+                  ? t(
+                      engine.current
+                        ? "managedEngines.repair"
+                        : "managedEngines.update",
+                    )
+                  : t("managedEngines.install")}
+              </Button>
+            )}
           {management && isOwner && engine.installed && (
             <Button
               size="sm"
@@ -181,12 +190,12 @@ export function EngineInstall({
       {management && engine.in_use && (
         <p className="text-muted-foreground">{t("managedEngines.inUse")}</p>
       )}
-      {confirm && (
+      {showConfirm && (
         <section
           aria-label={t("managedEngines.installTitle", {
             engine: names[engine.engine],
           })}
-          className="space-y-3 rounded-lg border p-3"
+          className={cn("space-y-3", !centered && "rounded-lg border p-3")}
         >
           <p>
             {engine.download_bytes
@@ -214,9 +223,11 @@ export function EngineInstall({
                 ? t("managedEngines.installAndLoad")
                 : t("managedEngines.install")}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
-              {t("common.cancel")}
-            </Button>
+            {!centered && (
+              <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
+                {t("common.cancel")}
+              </Button>
+            )}
           </div>
         </section>
       )}
