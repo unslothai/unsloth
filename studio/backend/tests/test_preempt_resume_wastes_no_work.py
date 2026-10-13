@@ -25,7 +25,6 @@ from test_llama_tool_loop_preempt_resume import (  # noqa: E402
     _finish,
     _run,
 )
-import pytest
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
