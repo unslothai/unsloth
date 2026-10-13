@@ -10,8 +10,6 @@ import { useChatPreferencesStore } from "../stores/chat-preferences-store.ts";
 
 const TITLE = "Reply finished";
 const BODY = "Your reply in Unsloth Studio is ready.";
-// One tag, so a later reply replaces the earlier browser notification instead of stacking.
-const BROWSER_TAG = "unsloth-reply-finished";
 
 // A reply cut at Max Tokens resumes as a new run (auto-continue), and a queued prompt starts the
 // next one; any run starting cancels this wait, so one notification fires once replies settle.
@@ -84,7 +82,10 @@ function sendReplyFinished(): void {
     return;
   }
   try {
-    const notification = new api(TITLE, { body: BODY, tag: BROWSER_TAG });
+    // No tag: a same-tag replacement alerts only with renotify, so a later reply would arrive
+    // silently while an earlier notification is still showing. The settle window already merges
+    // bursts.
+    const notification = new api(TITLE, { body: BODY });
     notification.onclick = () => {
       window.focus();
       notification.close();

@@ -304,7 +304,11 @@ test("the browser notifies only with permission already granted", async () => {
   await settle(() => granted.created.length, 1);
   assert.equal(granted.created.length, 1);
   assert.equal(granted.created[0].title, "Reply finished");
-  assert.equal(granted.created[0].options?.tag, "unsloth-reply-finished");
+  assert.equal(
+    granted.created[0].options?.tag,
+    undefined,
+    "a tagged replacement would arrive silently while the earlier one is showing",
+  );
 
   for (const permission of ["default", "denied", "absent"] as const) {
     const env = await load({ tauri: false, enabled: true, permission });
