@@ -377,6 +377,24 @@ def test_cgroup_v1_swappiness_zero_on_an_enforcing_level_admits_no_swap(tmp_path
     assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == expected
 
 
+@pytest.mark.parametrize(
+    "limit, expected",
+    [(str(30 * GIB), 0), ("9223372036854771712", 64 * GIB)],
+)
+def test_cgroup_v1_swappiness_zero_on_a_namespaced_root_counts_when_it_enforces(tmp_path, limit, expected):
+    """A v1 container sees its own cgroup as the mount root (/proc/self/cgroup reads "/"); its swappiness 0 counts
+    once that root enforces a limit, while an unlimited host root's value stays irrelevant."""
+    files = {
+        "memory/memory.limit_in_bytes": limit,
+        "memory/memory.usage_in_bytes": str(10 * GIB),
+        "memory/memory.memsw.limit_in_bytes": str(40 * GIB) if expected == 0 else limit,
+        "memory/memory.memsw.usage_in_bytes": str(10 * GIB),
+        "memory/memory.swappiness": "0",
+    }
+    paths = _cgroup(tmp_path, files, proc = "4:memory:/\n")
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == expected
+
+
 def test_the_kill_switch_turns_off_the_per_render_overhead_guard(monkeypatch):
     from core.inference import video_minimax_h3
 

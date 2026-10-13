@@ -191,12 +191,10 @@ def cgroup_swap_allowance_bytes(
         # level, never the per-level differences (a tight child RAM limit under a tight parent memsw limit would
         # otherwise subtract the parent's large RAM room and understate the swap).
         v1_root = os.path.join(cgroup_root, "memory")
-        # memory.swappiness 0 on any ENFORCING level (finite memory or memsw limit, the process's own cgroup
-        # included; the namespace root never enforces): that level's limit reclaim never swaps, so none of the swap
-        # can relieve it. A level without a limit reclaims nothing, so its value is irrelevant.
+        # memory.swappiness 0 on any ENFORCING level (finite memory or memsw limit; the process's own cgroup and a
+        # container's namespace root included): that level's limit reclaim never swaps, so none of the swap can
+        # relieve it. A level without a limit (a host root) reclaims nothing, so its value is irrelevant.
         for directory in _directories(v1_root, v1_relative):
-            if os.path.normpath(directory) == os.path.normpath(v1_root):
-                continue
             enforcing = any(
                 _integer(_first_line(os.path.join(directory, name)), limit = True) is not None
                 for name in ("memory.limit_in_bytes", "memory.memsw.limit_in_bytes")
