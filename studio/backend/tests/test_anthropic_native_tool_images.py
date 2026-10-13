@@ -230,3 +230,28 @@ def test_text_only_image_error_names_the_image_block(monkeypatch, vision):
     assert message.startswith("messages.2.content.1.image: ")
     assert "does not support vision" in message
     assert backend.calls == []
+
+
+def test_text_only_image_error_counts_folded_system_messages(monkeypatch):
+    async def switch(*args, **kwargs):
+        pass
+
+    backend = _mock_backend(monkeypatch, is_vision = False)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    body = {
+        "model": "test-model",
+        "max_tokens": 16,
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": [{"type": "text", "text": "What color?"}, image_block()]},
+        ],
+    }
+    with TestClient(app) as client:
+        response = client.post("/v1/messages", json = body)
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["message"].startswith("messages.1.content.1.image: ")
+    assert backend.calls == []

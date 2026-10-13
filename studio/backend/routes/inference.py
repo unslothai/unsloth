@@ -10013,11 +10013,12 @@ def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
 
 
 def _anthropic_top_level_image_location(payload) -> Optional[str]:
+    ordinals = getattr(payload, "_message_ordinals", None) or []
     for i, msg in enumerate(payload.messages):
         if isinstance(msg.content, list):
             for j, block in enumerate(msg.content):
                 if block.type == "image":
-                    return f"messages.{i}.content.{j}.image"
+                    return f"messages.{ordinals[i] if i < len(ordinals) else i}.content.{j}.image"
     return None
 
 
@@ -11036,6 +11037,7 @@ async def _maybe_auto_switch_model(
     require_vision: bool = False,
     require_image: bool = True,
     modality_label: str = "image or audio",
+    rejection_prefix: str = "",
     claim_resident: bool = True,
     require_audio_input: bool = False,
     require_video: bool = False,
@@ -11463,7 +11465,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    f"The requested model does not support the {modality_label} input in this request.",
+                    f"{rejection_prefix}The requested model does not support the {modality_label} input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -41797,6 +41799,10 @@ async def anthropic_messages(
     # only top-level images require vision or rule out server tools.
     _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
+    # Anthropic's block path lets clients drop the image instead of resending it every turn.
+    _anthropic_image_prefix = (
+        f"{_anthropic_top_level_image_location(payload)}: " if _anthropic_top_level_image else ""
+    )
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
     # server-tool loop can't relay client functions back to the caller). Reject
@@ -41893,6 +41899,7 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_top_level_image,
+        rejection_prefix = _anthropic_image_prefix,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -41923,11 +41930,10 @@ async def anthropic_messages(
     model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
-    # Anthropic's block path lets clients drop the image instead of resending it every turn.
     if _anthropic_top_level_image and not llama_backend.is_vision:
         raise HTTPException(
             status_code = 400,
-            detail = f"{_anthropic_top_level_image_location(payload)}: "
+            detail = f"{_anthropic_image_prefix}"
             "Image provided but current GGUF model does not support vision.",
         )
 

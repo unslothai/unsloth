@@ -4233,6 +4233,7 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+    _message_ordinals: Optional[list[int]] = PrivateAttr(default = None)
 
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
@@ -4288,6 +4289,20 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @model_validator(mode = "wrap")
+    @classmethod
+    def _record_message_ordinals(cls, data: Any, handler):
+        # Error paths name the client's own message index, not the one left after system folding.
+        model = handler(data)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(messages, list):
+            model._message_ordinals = [
+                i
+                for i, m in enumerate(messages)
+                if not (isinstance(m, dict) and m.get("role") == "system")
+            ]
+        return model
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod
