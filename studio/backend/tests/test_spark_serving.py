@@ -4416,3 +4416,42 @@ def test_a_model_loaded_alongside_leaves_the_primary_split_alone(monkeypatch):
     run(ss.before_load(primary, 4))
     run(ss.after_load(object(), 4))
     assert calls == ["before", "after"]
+
+
+def test_a_load_the_account_may_not_make_is_refused_before_the_split_is_touched(monkeypatch):
+    """before_load can tear down the split the current model is served through, so access has to
+    be refused first: a forbidden force_reload otherwise took the served model offline."""
+    import routes.inference as ri
+    from fastapi import HTTPException
+
+    touched = []
+
+    async def _before(*a, **k):
+        touched.append("before_load")
+        return a[0]
+
+    def _deny(path):
+        raise HTTPException(status_code = 403, detail = f"no access to {path}")
+
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    monkeypatch.setattr(ss, "before_load", _before)
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(ri.account_access, "require_model_access", _deny)
+    monkeypatch.setattr(ri, "_defers_access_to_native_grant", lambda request: False)
+    request = SimpleNamespace(
+        model_path = "org/forbidden-GGUF",
+        engine = "auto",
+        n_parallel = 4,
+        load_request_id = None,
+    )
+    with pytest.raises(HTTPException) as raised:
+        run(ri._run_tracked_load_model_impl(request, None, "someone"))
+    assert raised.value.status_code == 403
+    assert touched == []
+
+
+def test_an_uncached_repo_keeps_pipeline_groups_off_until_vision_is():
+    """First load of an uncached repo: no file to inspect yet, and the backend may fetch a projector
+    with it, which --pipeline-groups refuses."""
+    assert "fetches this repo" in ss.projector_blocks_pipeline_groups(None)
+    assert ss.projector_blocks_pipeline_groups(None, disable_vision = True) is None

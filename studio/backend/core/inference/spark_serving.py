@@ -1819,7 +1819,8 @@ def projector_blocks_pipeline_groups(
                 f"Studio opens this model's multimodal projector ({osp.basename(on_disk)}); "
                 f"load with vision off to get {PIPELINE_GROUPS_FLAG}"
             )
-        if _from_hub_repo(model_file):
+        # No file yet is a first load of an uncached repo, which is a Hub repo by definition.
+        if not model_file or _from_hub_repo(model_file):
             return (
                 "Studio fetches this repo's multimodal projector during the load when it has "
                 f"one, so it cannot be ruled out beforehand; load with vision off to get "

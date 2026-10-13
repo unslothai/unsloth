@@ -17799,6 +17799,15 @@ async def _run_tracked_load_model_impl(
         from core.inference import spark_serving
 
         _spark_slots = _resolve_parallel_slots(request, fastapi_request)
+        if (
+            spark_serving.enabled()
+            and request.engine == "auto"
+            and account_access.managed_account()
+            and not _defers_access_to_native_grant(request)
+        ):
+            # before_load can tear down the split the current model is served through, so a
+            # load this account may not make has to be refused first, not after.
+            await asyncio.to_thread(account_access.require_model_access, request.model_path)
         try:
             request = await spark_serving.before_load(
                 request,
