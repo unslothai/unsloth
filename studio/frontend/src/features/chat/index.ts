@@ -379,6 +379,7 @@ export {
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   regenerateChatTitle,
+  regenerateChatTitleWithToast,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
