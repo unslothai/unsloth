@@ -4190,35 +4190,47 @@ class VideoBackend:
                 except OSError:
                     return 0
 
-            try:
-                import psutil
-
-                # The render is a separate process, so Studio's own RSS is not reused (unlike the diffusers guard).
-                # Swap counts, as far as this cgroup may use it: only the pinned half cannot page out.
-                host_available = h3_native_host_available_bytes() + cgroup_swap_allowance_bytes(
-                    int(psutil.swap_memory().free)
-                )
-            except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
-                host_available = None
             # The build's own listing first: the install record names only builds Studio installed.
             fit_accelerator = (
                 native_listed_class
                 or (decided_accelerator if isinstance(decided_accelerator, str) else None)
                 or accelerator
             )
-            gtt_free = None
-            if fit_accelerator == "vulkan" and vulkan_device_is_amd(native_listed_description):
-                gtt_free = amdgpu_gtt_free_bytes(_torch_pci_slot(native_ordinal))
-            fit = h3_native_memory_fit(
-                native_offload,
-                accelerator = fit_accelerator,
-                memory_mode = requested_mode,
-                dit_bytes = _size(resolved[0]),
-                te_bytes = _size(resolved[1]),
-                vae_bytes = _size(resolved[2]) + _size(resolved[3]),
-                pinned_free_bytes = gtt_free,
-                host_available_bytes = host_available,
+            check_gtt = fit_accelerator == "vulkan" and vulkan_device_is_amd(
+                native_listed_description
             )
+
+            def _measure_fit() -> Any:
+                try:
+                    import psutil
+
+                    # The render is a separate process, so Studio's own RSS is not reused (unlike the diffusers
+                    # guard). RAM and swap stay apart: the pinned set cannot be swapped.
+                    host_ram = h3_native_host_available_bytes()
+                    host_swap = cgroup_swap_allowance_bytes(int(psutil.swap_memory().free))
+                except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
+                    host_ram, host_swap = None, 0
+                return h3_native_memory_fit(
+                    native_offload,
+                    accelerator = fit_accelerator,
+                    memory_mode = requested_mode,
+                    dit_bytes = _size(resolved[0]),
+                    te_bytes = _size(resolved[1]),
+                    vae_bytes = _size(resolved[2]) + _size(resolved[3]),
+                    pinned_free_bytes = amdgpu_gtt_free_bytes(_torch_pci_slot(native_ordinal))
+                    if check_gtt
+                    else None,
+                    host_ram_bytes = host_ram,
+                    host_swap_bytes = host_swap,
+                )
+
+            fit = _measure_fit()
+            if fit.refusal or fit.note:
+                # The model this load replaces may still hold an idle sd-server in its keepalive window: its host
+                # RAM and GTT are about to be freed by the teardown, so free them now and measure again. The old
+                # model stays loaded (a failed load keeps it) and respawns its server on its next render.
+                if self._release_native_server("a new MiniMax-H3 load is measuring host memory"):
+                    fit = _measure_fit()
             if requested_mode == "auto" and (fit.refusal or fit.note):
                 # Auto renders resident whenever live free VRAM covers it, which needs neither the GTT pool nor the
                 # host copy: decide at render time, and refuse here only when even the smallest clip cannot go
@@ -11253,6 +11265,20 @@ class VideoBackend:
             return True
 
     # ── teardown + status ────────────────────────────────────────────────────
+
+    def _release_native_server(self, reason: str) -> bool:
+        """Stop the committed model's idle H3 sd-server (a busy one stops at its render's end), keeping the model
+        itself loaded: the slot respawns on its next render. True when there was a server to release."""
+        with self._lock:
+            state = self._state
+        slot = getattr(getattr(state, "pipe", None), "server_slot", None)
+        if slot is None:
+            return False
+        try:
+            return bool(slot.release(reason))
+        except Exception as exc:  # noqa: BLE001 - a release failure leaves the reading as it was
+            logger.warning("video.h3_native_server_release_failed: %s", exc)
+            return False
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation

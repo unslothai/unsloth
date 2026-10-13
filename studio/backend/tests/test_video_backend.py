@@ -4135,6 +4135,7 @@ def _load_h3_native_offload(
     speed_mode = None,
     devices = None,
     installed_accelerator = None,
+    backend = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -4187,7 +4188,7 @@ def _load_h3_native_offload(
     monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
-    backend = VideoBackend()
+    backend = backend or VideoBackend()
     fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
     assert fam is not None
     backend._run_load_h3_native(
@@ -4378,6 +4379,82 @@ def test_h3_native_host_ram_check_ignores_studios_own_rss(monkeypatch, tmp_path)
     monkeypatch.setattr(video_minimax_h3, "h3_process_held_host_bytes", lambda: 1 << 50)
     with pytest.raises(RuntimeError, match = "system RAM"):
         _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+
+
+def _loaded_with_slot(monkeypatch, tmp_path, slot):
+    """A backend holding a committed native H3 model whose sd-server slot is ``slot``."""
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 1 << 50)
+    backend = VideoBackend()
+    _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    backend._state = dataclasses.replace(
+        backend._state, pipe = dataclasses.replace(backend._state.pipe, server_slot = slot)
+    )
+    return backend
+
+
+class _ReleasableSlot:
+    def __init__(self):
+        self.released = []
+
+    def release(self, reason):
+        self.released.append(reason)
+        return True
+
+    def stop(self, reason = "stopped"):
+        pass
+
+
+def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(monkeypatch, tmp_path):
+    """A cached H3 model's sd-server in its keepalive window holds the GTT this load measures; the teardown would free
+    it, so the load releases it and measures again instead of refusing until the idle timer fires."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    roomy = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 100
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "amdgpu_gtt_free_bytes",
+        lambda *a, **k: roomy if slot.released else 0,
+    )
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert slot.released and "--clip-on-cpu" not in offload
+    assert state.pipe.offloaded_flags is None and state.pipe.offload_refusal is None
+
+
+def test_h3_native_keeps_the_outgoing_server_when_the_load_fits(monkeypatch, tmp_path):
+    from core.inference import video as video_mod
+
+    slot = _ReleasableSlot()
+    backend = _loaded_with_slot(monkeypatch, tmp_path, slot)
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert slot.released == []
 
 
 def test_h3_native_gtt_pool_is_not_a_cuda_build_concern(monkeypatch, tmp_path):

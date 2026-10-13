@@ -1477,14 +1477,19 @@ def h3_native_memory_fit(
     te_bytes: int,
     vae_bytes: int,
     pinned_free_bytes: Optional[int],
-    host_available_bytes: Optional[int],
+    host_ram_bytes: Optional[int],
+    host_swap_bytes: int = 0,
     env: Optional[dict] = None,
 ) -> H3NativeFit:
     """Fit the committed sd-cli offload flags to the host before any render. Only the offloaded path is judged (its
-    weights all live in host memory); ``pinned_free_bytes`` (free GTT of the selected AMD card) applies to a Vulkan
-    build only, and None skips it. Memory ``auto`` moves
-    the text encoder to the CPU when that alone makes the pinned set fit; anything else that cannot fit is refused
-    with the setting that would."""
+    weights all live in host memory).
+
+    Under --offload-to-cpu every GPU-run module's weights sit in the device's page-locked host buffer, which can
+    never be swapped, so that pinned set (plus sd-cli's overhead) must fit ``host_ram_bytes`` alone; swap
+    (``host_swap_bytes``, already bounded by the cgroup) covers only the pageable rest, the CPU-run modules.
+    ``pinned_free_bytes`` (free GTT of the selected AMD card) additionally bounds the pinned set on a Vulkan build;
+    None skips it. Memory ``auto`` moves the text encoder to the CPU when that alone makes both fit; anything else
+    that cannot fit is refused with the setting that would."""
     flags = tuple(flags)
     environ = env if env is not None else os.environ
     if str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
@@ -1493,54 +1498,96 @@ def h3_native_memory_fit(
         return H3NativeFit(flags)
     mode = memory_mode or "auto"
     vae_on_cpu = "--vae-on-cpu" in flags
+    te_given = "--clip-on-cpu" in flags
+    total = dit_bytes + te_bytes + vae_bytes
+    overhead = H3_NATIVE_HOST_OVERHEAD_BYTES
+    swap = max(int(host_swap_bytes or 0), 0)
+    vulkan_gtt = (accelerator or "").strip().lower() == "vulkan" and pinned_free_bytes is not None
+    budget = int(pinned_free_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES if vulkan_gtt else None
 
     def pinned(te_on_cpu: bool) -> int:
         return dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
 
+    def host_problem(te_on_cpu: bool) -> Optional[str]:
+        if host_ram_bytes is None:
+            return None
+        if pinned(te_on_cpu) + overhead > host_ram_bytes:
+            return "pinned"
+        if total + overhead > host_ram_bytes + swap:
+            return "total"
+        return None
+
+    def gtt_ok(te_on_cpu: bool) -> bool:
+        return budget is None or pinned(te_on_cpu) <= budget
+
+    def ok(te_on_cpu: bool) -> bool:
+        return host_problem(te_on_cpu) is None and gtt_ok(te_on_cpu)
+
+    if ok(te_given):
+        return H3NativeFit(flags)
+    ram = _gib(int(host_ram_bytes)) if host_ram_bytes is not None else "unknown"
+    limit = _gib(int(pinned_free_bytes)) if vulkan_gtt else None
+    if not te_given and ok(True):
+        if not gtt_ok(False):
+            note = (
+                f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
+                f"(GTT), {_gib(pinned(False))} here against {limit} free"
+            )
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
+                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
+                f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
+                f"({_gib(pinned(True))})."
+            )
+        else:
+            note = (
+                f"text encoder on the CPU: GPU-run weights are held in page-locked system RAM that cannot be "
+                f"swapped, {_gib(pinned(False) + overhead)} here against {ram} of RAM available"
+            )
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode: it locks {_gib(pinned(False) + overhead)} of "
+                f"weights in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
+                f"to Auto or Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True) + overhead)} "
+                f"locked)."
+            )
+        if mode == "auto":
+            return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
+        return H3NativeFit(flags, refusal = refusal)
     q2_dit, q2_te = H3_NATIVE_Q2_PAIR_BYTES
-    host_need = dit_bytes + te_bytes + vae_bytes + H3_NATIVE_HOST_OVERHEAD_BYTES
-    q2_host = q2_dit + q2_te + vae_bytes + H3_NATIVE_HOST_OVERHEAD_BYTES
-    if host_available_bytes is not None and host_need > host_available_bytes:
+    q2_pinned = q2_dit + (0 if vae_on_cpu else vae_bytes)
+    q2_total = q2_dit + q2_te + vae_bytes + overhead
+    problem = host_problem(True)
+    if problem == "total":
         smaller = (
-            f" The Q2_K denoiser (with its Q2_K_M encoder) needs about {_gib(q2_host)}."
-            if q2_host < host_need
+            f" The Q2_K denoiser (with its Q2_K_M encoder) needs about {_gib(q2_total)}."
+            if q2_total < total + overhead
             else ""
         )
         return H3NativeFit(
             flags,
             refusal = (
                 f"MiniMax-H3 GGUF keeps its denoiser, text encoder and VAEs in system RAM while it renders: about "
-                f"{_gib(host_need)} for this quant, and {_gib(host_available_bytes)} is available. Close other "
-                f"applications or load a smaller quant.{smaller}"
+                f"{_gib(total + overhead)} for this quant, and {ram} of RAM plus {_gib(swap)} of swap is "
+                f"available. Close other applications or load a smaller quant.{smaller}"
             ),
         )
-    if (accelerator or "").strip().lower() != "vulkan" or pinned_free_bytes is None:
-        return H3NativeFit(flags)
-    te_on_cpu = "--clip-on-cpu" in flags
-    budget = int(pinned_free_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES
-    if pinned(te_on_cpu) <= budget:
-        return H3NativeFit(flags)
-    limit = _gib(int(pinned_free_bytes))
-    if not te_on_cpu and pinned(True) <= budget:
-        note = (
-            f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
-            f"(GTT), {_gib(pinned(False))} here against {limit} free"
+    if problem == "pinned":
+        smaller = (
+            f" The Q2_K denoiser locks about {_gib(q2_pinned + overhead)} with Memory mode Low VRAM."
+            if q2_pinned < pinned(True)
+            else ""
         )
-        if mode == "auto":
-            return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
         return H3NativeFit(
             flags,
             refusal = (
-                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
-                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
-                f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
-                f"({_gib(pinned(True))})."
+                f"MiniMax-H3 GGUF locks the weights of its GPU-run parts in system RAM, which cannot be swapped: "
+                f"about {_gib(pinned(True) + overhead)} even with the text encoder on the CPU, and {ram} of RAM "
+                f"is available. Close other applications or load a smaller quant.{smaller}"
             ),
         )
-    q2_pinned = q2_dit + (0 if vae_on_cpu else vae_bytes)
     smaller = (
         f" The Q2_K denoiser needs about {_gib(q2_pinned)} with Memory mode Low VRAM."
-        if q2_pinned <= budget
+        if budget is not None and q2_pinned <= budget
         else ""
     )
     return H3NativeFit(

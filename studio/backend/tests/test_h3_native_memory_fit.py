@@ -44,13 +44,15 @@ def _fit(
     host = 40 * GIB,
     sizes = Q4,
     env = None,
+    swap = 0,
 ):
     return h3_native_memory_fit(
         flags,
         accelerator = accelerator,
         memory_mode = mode,
         pinned_free_bytes = gtt,
-        host_available_bytes = host,
+        host_ram_bytes = host,
+        host_swap_bytes = swap,
         env = env or {},
         **sizes,
     )
@@ -102,6 +104,42 @@ def test_a_resident_render_is_not_judged():
 def test_a_host_without_room_for_the_weights_is_refused_naming_q2():
     fit = _fit(AUTO, "auto", accelerator = "cuda", host = 30 * GIB)
     assert "system RAM" in fit.refusal and "Q2_K" in fit.refusal
+
+
+# Denoiser 10, encoder 4, VAEs 2 GiB: 12 GiB pinned with the encoder on the CPU, 15 with sd-cli's overhead.
+SMALL = dict(dit_bytes = 10 * GIB, te_bytes = 4 * GIB, vae_bytes = 2 * GIB)
+# Denoiser 10, encoder 17, VAEs 5 GiB: 15 GiB pinned with the encoder on the CPU, 32 with it on the GPU.
+BIG_TE = dict(dit_bytes = 10 * GIB, te_bytes = 17 * GIB, vae_bytes = 5 * GIB)
+
+
+def test_swap_never_covers_the_pinned_set():
+    """Page-locked host buffers cannot be swapped: 15 GiB locked against 12 GiB of RAM is refused however much swap
+    the cgroup allows."""
+    fit = _fit(LOW_VRAM, "low_vram", accelerator = "cuda", host = 12 * GIB, swap = 500 * GIB, sizes = SMALL)
+    assert "cannot be swapped" in fit.refusal and "12.0 GiB of RAM" in fit.refusal
+
+
+def test_swap_covers_the_pageable_cpu_run_encoder():
+    fit = _fit(AUTO, "auto", accelerator = "cuda", host = 25 * GIB, swap = 20 * GIB, sizes = BIG_TE)
+    assert fit.refusal is None
+    assert fit.flags == AUTO + ("--clip-on-cpu",)
+    assert "page-locked" in fit.note
+
+
+def test_an_explicit_mode_whose_locked_set_overflows_ram_names_low_vram():
+    fit = _fit(AUTO, "balanced", accelerator = "cuda", host = 25 * GIB, swap = 20 * GIB, sizes = BIG_TE)
+    assert "Low VRAM" in fit.refusal and "cannot be swapped" in fit.refusal
+
+
+def test_without_swap_the_whole_set_must_fit_ram():
+    fit = _fit(AUTO, "auto", accelerator = "cuda", host = 25 * GIB, swap = 0, sizes = BIG_TE)
+    assert "RAM plus 0.0 GiB of swap" in fit.refusal
+
+
+def test_the_16gb_card_48gb_host_decision_is_unchanged():
+    """About 42 GiB of a 48 GB host available, no swap, 23.4 GiB of GTT: the encoder still moves for GTT."""
+    fit = _fit(AUTO, "auto", gtt = int(23.4 * GIB), host = 42 * GIB, swap = 0)
+    assert fit.flags == AUTO + ("--clip-on-cpu",) and "GTT" in fit.note
 
 
 def test_the_kill_switch_restores_the_old_flags():
