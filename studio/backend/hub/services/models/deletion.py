@@ -646,6 +646,13 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
         loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         return False
+    # An on-device model outside the cache is named by its path (local_model_actions).
+    if Path(repo_id).is_absolute():
+        try:
+            held = Path(repo_id).resolve(strict = False)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return loaded_path == held or loaded_path.is_relative_to(held)
     for repo_dir in iter_repo_cache_dirs("model", repo_id):
         try:
             resolved_repo = repo_dir.resolve(strict = False)

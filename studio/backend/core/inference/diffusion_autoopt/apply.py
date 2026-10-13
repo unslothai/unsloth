@@ -26,7 +26,9 @@ VIDEO_COMPILE_CACHE_DECLINE = (
     "not wired for video loads yet (process-wide inductor cache dir shared with the image backend)"
 )
 
-_CURRENT_AUDIT: contextvars.ContextVar = contextvars.ContextVar("unsloth_autoopt_audit", default = None)
+_CURRENT_AUDIT: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_autoopt_audit", default = None
+)
 
 
 # ---------------------------------------------------------------------------------------------------------- audit
@@ -39,7 +41,12 @@ class Audit:
     entries: dict[str, dict] = field(default_factory = dict)
     generic: bool = False
 
-    def record(self, step: str, status: str, reason: Optional[str] = None) -> None:
+    def record(
+        self,
+        step: str,
+        status: str,
+        reason: Optional[str] = None,
+    ) -> None:
         prev = self.entries.get(step)
         # A failure is never overwritten by a later "declined"; an engagement upgrades a decline (dual-DiT views).
         if prev is not None:
@@ -87,8 +94,10 @@ class _AuditingLogger:
     def __getattr__(self, name: str) -> Any:
         inner = self.__dict__.get("_inner")
         if inner is None:
+
             def _noop(*a: Any, **k: Any) -> None:
                 return None
+
             return _noop
         return getattr(inner, name)
 
@@ -112,12 +121,17 @@ class FamilyHook:
     backends: tuple[str, ...] = ("video",)
 
 
-def _is_ltx(family: Any) -> bool:
-    try:
-        from ..video_families import LTX_FAMILIES  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return False
-    return getattr(family, "name", None) in LTX_FAMILIES
+def _profile_flag(attr: str) -> Callable[[Any], bool]:
+    """Gate a hook on a ``FamilyProfile`` flag (registry data), so a new family opts in by data."""
+
+    def applies(family: Any) -> bool:
+        try:
+            from ..family_profile import profile_for  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(getattr(profile_for(family), attr, False))
+
+    return applies
 
 
 def _ltx_static_pre(view: Any, family: Any) -> None:
@@ -133,7 +147,9 @@ def _ltx_static_pre(view: Any, family: Any) -> None:
 def _ltx_stg_post(view: Any, family: Any, applied: dict, logger: Any) -> Optional[dict]:
     if applied.get("compiled"):
         from ..video_ltx2 import install_stg_compile_adapter  # noqa: PLC0415
-        install_stg_compile_adapter(getattr(view, getattr(family, "denoiser_attr", "transformer"), None))
+        install_stg_compile_adapter(
+            getattr(view, getattr(family, "denoiser_attr", "transformer"), None)
+        )
     return None
 
 
@@ -146,8 +162,8 @@ def _cudnn_off_post(view: Any, family: Any, applied: dict, logger: Any) -> Optio
 
 
 FAMILY_HOOKS: list[FamilyHook] = [
-    FamilyHook("ltx_static_compile", _is_ltx, pre = _ltx_static_pre),
-    FamilyHook("ltx_stg_compile_adapter", _is_ltx, post = _ltx_stg_post),
+    FamilyHook("ltx_static_compile", _profile_flag("compile_static"), pre = _ltx_static_pre),
+    FamilyHook("ltx_stg_compile_adapter", _profile_flag("stg_compile_adapter"), post = _ltx_stg_post),
     FamilyHook(
         "cudnn_benchmark_off",
         lambda fam: not getattr(fam, "cudnn_benchmark", True),
@@ -211,10 +227,16 @@ def install_compile_patches(
 
 
 # ------------------------------------------------------------------------------------------------ the speed layer
-def _generic_family_view(view: Any, family: Any, plan: plan_mod.OptimizationPlan, logger: Any) -> Any:
+def _generic_family_view(
+    view: Any, family: Any, plan: plan_mod.OptimizationPlan, logger: Any
+) -> Any:
     """For a family with no data: trial-compile discovered blocks, or decline the compile with the plan's reason."""
     step = plan.step("compiled")
-    if step is not None and not step.attempt and str(step.reason or "").startswith(plan_mod.GRAPH_BREAK_DECLINE):
+    if (
+        step is not None
+        and not step.attempt
+        and str(step.reason or "").startswith(plan_mod.GRAPH_BREAK_DECLINE)
+    ):
         # Graph-break suspects in a discovered block: decline rather than compile a graph that breaks every call.
         if logger is not None:
             logger.info("diffusion.autoopt: compile declined for %s: %s", plan.family, step.reason)
@@ -243,11 +265,13 @@ def _family_with(family: Any, **overrides: Any) -> Any:
     try:
         return replace(family, **overrides)
     except Exception:  # noqa: BLE001 - not a dataclass: a thin proxy
+
         class _Proxy:
             def __getattr__(self, name: str) -> Any:
                 if name in overrides:
                     return overrides[name]
                 return getattr(family, name)
+
         return _Proxy()
 
 
@@ -323,7 +347,12 @@ def _safe_applies(hook: FamilyHook, family: Any) -> bool:
         return False
 
 
-def record_applied(audit: Audit, applied: dict, plan: Optional[plan_mod.OptimizationPlan], view: Any = None) -> None:
+def record_applied(
+    audit: Audit,
+    applied: dict,
+    plan: Optional[plan_mod.OptimizationPlan],
+    view: Any = None,
+) -> None:
     """Fold an ``apply_speed_optims`` result into the audit with the plan's reasons for what did not engage."""
     for name, on in applied.items():
         if on:
@@ -375,7 +404,11 @@ def record_load_steps(
         )
 
 
-def finalize(audit: Optional[Audit], speed_optims: Any, resolved: Optional[dict] = None) -> Optional[list]:
+def finalize(
+    audit: Optional[Audit],
+    speed_optims: Any,
+    resolved: Optional[dict] = None,
+) -> Optional[list]:
     """Reconcile the audit with the final ``speed_optims`` (post-placement arming may engage or drop a step) and attach
     it to ``resolved["speed_mode"]["steps"]``. Returns the step list; never raises."""
     if audit is None:
@@ -391,7 +424,12 @@ def _finalize(audit: Audit, speed_optims: Any, resolved: Optional[dict]) -> list
     for name, entry in list(audit.entries.items()):
         if name in final and entry["status"] != "engaged":
             audit.entries[name] = {"status": "engaged", "reason": None}
-        elif entry["status"] == "engaged" and name in plan_mod.STEP_ORDER and name not in final and _is_speed_key(name):
+        elif (
+            entry["status"] == "engaged"
+            and name in plan_mod.STEP_ORDER
+            and name not in final
+            and _is_speed_key(name)
+        ):
             audit.entries[name] = {"status": "declined", "reason": "disengaged after placement"}
     for name in final:
         if name not in audit.entries:
@@ -406,9 +444,20 @@ def _finalize(audit: Audit, speed_optims: Any, resolved: Optional[dict]) -> list
 
 _SPEED_KEYS = frozenset(
     {
-        "channels_last", "vae_fp16_decode", "vae_single_frame", "vae_fused", "cudnn_benchmark", "tf32",
-        "fp16_accum", "fused_qkv", "compiled", "compiled_dequant", "rocm_query_chunks", "compiled_vae_decode",
-        "cuda_graph", "int8_gemm",
+        "channels_last",
+        "vae_fp16_decode",
+        "vae_single_frame",
+        "vae_fused",
+        "cudnn_benchmark",
+        "tf32",
+        "fp16_accum",
+        "fused_qkv",
+        "compiled",
+        "compiled_dequant",
+        "rocm_query_chunks",
+        "compiled_vae_decode",
+        "cuda_graph",
+        "int8_gemm",
     }
 )
 
