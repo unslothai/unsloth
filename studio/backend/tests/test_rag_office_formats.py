@@ -492,8 +492,8 @@ def build_msg(path):
 
 BUILDERS = {
     ".doc": build_doc,
-    ".xls": build_xls,
-    ".ppt": build_ppt,
+    **dict.fromkeys((".xls", ".xlt"), build_xls),
+    **dict.fromkeys((".ppt", ".pps"), build_ppt),
     ".msg": build_msg,
     ".eml": build_eml,
     ".rtf": build_rtf,
@@ -1270,3 +1270,14 @@ def test_documents_upload_index_and_stay_searchable(rag_home, stub_embeddings, t
         assert store.search_lexical(conn, scope, "zebramarker", 5)
     finally:
         conn.close()
+
+
+def test_binary_dot_and_pot_parse_as_office_templates_and_text_ones_stay_text(tmp_path):
+    assert "Zebramarker" in _text(build_doc(tmp_path / "letter.dot"))
+    assert "Zebramarker" in _text(build_ppt(tmp_path / "deck.pot"))
+    graph = tmp_path / "graph.dot"
+    graph.write_text("digraph { a -> b }", encoding = "utf-8")
+    assert _text(graph) == "digraph { a -> b }"
+    catalog = tmp_path / "messages.pot"
+    catalog.write_text('msgid "hi"\nmsgstr ""\n', encoding = "utf-8")
+    assert _text(catalog).startswith('msgid "hi"')

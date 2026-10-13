@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   DEFAULT_AGENT_RULE,
   type HistoryAccess,
+  type ScriptAccess,
   type SiteRule,
   normalizeSitePattern,
   useBrowserAgentStore,
@@ -43,7 +44,7 @@ function RuleSelect({
           ["ask", t(isDefault ? "browser.agentSettings.askNewSites" : "browser.agentSettings.requiresApproval")],
           ["block", t("browser.agentSettings.blocked")],
         ]
-      : column === "actions"
+      : column === "actions" || column === "unlabelled"
         ? [
             ["ask", t("browser.agentSettings.requiresApproval")],
             ["allow", t("browser.agentSettings.alwaysAllow")],
@@ -83,6 +84,7 @@ function PermissionsTable() {
     ["browsing", t("browser.agentSettings.browsing")],
     ["actions", t("browser.agentSettings.actions")],
     ["downloads", t("browser.agentSettings.downloads")],
+    ["unlabelled", t("browser.agentSettings.unlabelled")],
   ];
 
   const add = () => {
@@ -189,17 +191,18 @@ function PermissionsTable() {
   );
 }
 
-/** Settings > Browser: browser use on or off, history access, and the agent's site permissions. */
+/** Settings > Browser: browser use on or off, history and script access, and the agent's site permissions. */
 export function BrowserAgentSettings() {
   const t = useT();
   const enabled = useBrowserAgentStore((state) => state.enabled);
   const historyAccess = useBrowserAgentStore((state) => state.historyAccess);
-  const { setEnabled, setHistoryAccess } = useBrowserAgentStore.getState();
+  const scriptAccess = useBrowserAgentStore((state) => state.scriptAccess);
+  const { setEnabled, setHistoryAccess, setScriptAccess } = useBrowserAgentStore.getState();
   return (
     <>
       <SettingsSection title={t("browser.agentSettings.title")}>
         <SettingsRow
-          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="size-6" />}
+          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="me-1.5 size-7" />}
           label={t("browser.agentSettings.enable")}
           description={t("browser.agentSettings.enableDescription")}
         >
@@ -216,6 +219,17 @@ export function BrowserAgentSettings() {
             <SelectContent>
               <SelectItem value="ask">{t("browser.agentSettings.alwaysAsk")}</SelectItem>
               <SelectItem value="allow">{t("browser.agentSettings.alwaysAllow")}</SelectItem>
+              <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow label={t("browser.agentSettings.scripts")} description={t("browser.agentSettings.scriptsDescription")}>
+          <Select value={scriptAccess} onValueChange={(value) => setScriptAccess(value as ScriptAccess)}>
+            <SelectTrigger className="w-40" aria-label={t("browser.agentSettings.scripts")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ask">{t("browser.agentSettings.askEveryTime")}</SelectItem>
               <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
             </SelectContent>
           </Select>

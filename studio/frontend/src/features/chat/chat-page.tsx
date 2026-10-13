@@ -75,6 +75,7 @@ import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
   NativeAttachmentTargetContext,
+  NativeAttachmentDragContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -232,6 +233,7 @@ import {
 } from "@/features/settings";
 import {
   ChatActiveContext,
+  ChatComposerFocusableContext,
   ChatRuntimeProvider,
   useChatActive,
 } from "./runtime-provider";
@@ -404,7 +406,7 @@ function BrowserOverlay(): ReactElement {
   };
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 sm:p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           useBrowserStore.getState().closePanel();
@@ -2764,8 +2766,12 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
+  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
+  // take focus and dismiss them.
+  const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
+      setHandoffOwnsPicker(true);
       setSettingsOpen(false);
       setModelSelectorLocked(false);
       setModelSelectorOpen(true);
@@ -2773,6 +2779,8 @@ export function ChatPage({
     },
     [setSettingsOpen],
   );
+  // During render, so the composer is focusable again in the commit that closes the picker.
+  if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when compare was opened from a
   // path that does not set viewBeforeCompareRef.
@@ -2788,6 +2796,7 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
@@ -2862,7 +2871,8 @@ export function ChatPage({
     : null;
   const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
     useChatSidebarItems({
-    projectId: currentProjectId ?? "__no_project_selected__",
+      projectId: currentProjectId ?? "__no_project_selected__",
+      enabled: Boolean(currentProjectId),
     });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
@@ -3720,21 +3730,13 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  // Dropped documents go to the thread bar, which owns the RAG upload and can materialize a thread
-  // id for a chat that has not been sent to yet.
-  const handleNativeAttachmentDrop = useCallback(
-    (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
-    },
-    [artifactViewKey],
-  );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
-  const handleNativeOpenDocumentDrop = useCallback(
+  const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
@@ -3768,9 +3770,8 @@ export function ChatPage({
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
-    onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
-    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
+    onAttachDocuments: handleNativeDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
     onAttachVideo: handleNativeVideoDrop,
   });
@@ -4633,6 +4634,10 @@ export function ChatPage({
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
     // runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
+    {/* Before adoption sets handoffOwnsPicker, the pending request is what holds the picker open. */}
+    <ChatComposerFocusableContext.Provider
+      value={modelConfigRequest === null && !handoffOwnsPicker}
+    >
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden wrapper, so gate them
           on `active` to keep them off other tabs. */}
@@ -4709,6 +4714,7 @@ export function ChatPage({
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}
+                activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
                 configRequest={modelConfigRequest}
@@ -4966,12 +4972,16 @@ export function ChatPage({
                     runtimeReady={projectRuntimeReady}
                   />
                 ) : (
-                  <NativeAttachmentTargetContext.Provider
-                    value={baseAttachmentTargetKey}
+                  <NativeAttachmentDragContext.Provider
+                    value={nativeModelDropState.status === "attach"}
                   >
-                    <TemporaryChatSaveBridge />
-                    <SingleContent threadId={baseView.threadId} />
-                  </NativeAttachmentTargetContext.Provider>
+                    <NativeAttachmentTargetContext.Provider
+                      value={baseAttachmentTargetKey}
+                    >
+                      <TemporaryChatSaveBridge />
+                      <SingleContent threadId={baseView.threadId} />
+                    </NativeAttachmentTargetContext.Provider>
+                  </NativeAttachmentDragContext.Provider>
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
@@ -5030,6 +5040,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
+    </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );
 }

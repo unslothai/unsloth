@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { revealCachedModel } from "@/features/chat";
+import { useRevealLabel } from "@/features/library/reveal";
+import { toast } from "@/lib/toast";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
@@ -16,7 +19,12 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  CubeIcon,
+  Folder01Icon,
+  Share05Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -30,7 +38,10 @@ import {
   type BaseModelSource,
   type LocalModelInfo,
   type ModelInventoryFormat,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
@@ -186,6 +197,36 @@ function BaseModelReference({
   );
 }
 
+/** Null unless this is the owner on the backend's own machine with a file manager. */
+function CardRevealButton({ onReveal }: { onReveal: () => Promise<unknown> }) {
+  const revealLabel = useRevealLabel();
+  if (!revealLabel) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={revealLabel}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReveal().catch((err) => {
+              toast.error(
+                err instanceof Error ? err.message : "Failed to open file manager",
+              );
+            });
+          }}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100"
+        >
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {revealLabel}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function LocalOnDeviceCard({
   modelId,
   displayName,
@@ -246,12 +287,17 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const isCacheRow = source === "hf_cache";
   const deleteImpact = useDeleteImpact(
-    deleteOpen && Boolean(repoId),
+    deleteOpen && isCacheRow && Boolean(repoId),
     repoId ?? "",
   );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
+      if (!isCacheRow) {
+        await deleteLocalModel(path, modelId);
+        return;
+      }
       if (!repoId) return;
       // Delete is only offered for hf_cache rows (see canDelete), so `path` is
       // the cache snapshot path: pass it so the delete targets the cache this
@@ -259,7 +305,7 @@ export function LocalOnDeviceCard({
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
-    successMessage: () => `Deleted ${repoId}`,
+    successMessage: () => `Deleted ${isCacheRow ? repoId : displayName}`,
     onSuccess: () => {
       setDeleteOpen(false);
       onChange?.();
@@ -295,8 +341,7 @@ export function LocalOnDeviceCard({
   }));
 
   const canDelete =
-    source === "hf_cache" &&
-    !!repoId &&
+    (isCacheRow ? !!repoId : DELETABLE_LOCAL_SOURCES.has(source) && !!path) &&
     !isActive &&
     !isLoading &&
     !runPending;
@@ -569,8 +614,17 @@ export function LocalOnDeviceCard({
               )}
               {canDelete && (
                 <CardDeleteButton
-                  label={`Delete ${repoId}`}
+                  label={`Delete ${isCacheRow ? repoId : displayName}`}
                   onClick={() => setDeleteOpen(true)}
+                />
+              )}
+              {(isCacheRow ? repoId : path) && (
+                <CardRevealButton
+                  onReveal={() =>
+                    isCacheRow && repoId
+                      ? revealCachedModel(repoId)
+                      : revealLocalModel(path, modelId)
+                  }
                 />
               )}
               <PathInfoButton path={path} />
@@ -634,19 +688,28 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-        title="Delete cached model?"
+        title={isCacheRow ? "Delete cached model?" : "Delete local model?"}
         deleting={deleting}
         // Same gate the model row menu applies: when an installed image model still needs these
         // assets the summary says so, and leaving Delete enabled only bought the user a 400.
         blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
-          </>
+          isCacheRow ? (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files from disk. You can re-download it later.
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          ) : (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{displayName}</span>{" "}
+              from{" "}
+              <span className="break-all font-mono text-xs">{path}</span>.
+            </>
+          )
         }
       />
       <UpdateConfirmDialog

@@ -9,6 +9,8 @@ export type BrowserPage =
       kind: "html";
       url: string;
       base: string;
+      /** The page declared its <base>, so it stays put when the page's router moves. */
+      ownBase?: boolean;
       html: string;
       refresh: { delay: number; url: string } | null;
     }
