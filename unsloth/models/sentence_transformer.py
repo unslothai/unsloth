@@ -2068,9 +2068,12 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    # Subclasses too: their own load() would read the weights a second time, without Unsloth's patches or trust_remote_code.
-                    is_transformer_module = isinstance(module_class, type) and issubclass(
-                        module_class, Transformer
+                    # Subclasses that inherit the stock load() too: it would read the weights a second time, without Unsloth's patches or trust_remote_code. A subclass with its own load() keeps it.
+                    is_transformer_module = (
+                        isinstance(module_class, type)
+                        and issubclass(module_class, Transformer)
+                        and inspect.getattr_static(module_class, "load", None)
+                        is inspect.getattr_static(Transformer, "load", None)
                     )
 
                 if is_transformer_module:

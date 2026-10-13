@@ -46,6 +46,12 @@ def subclass_model(tmp_path, monkeypatch):
         "class RepoTransformer(Transformer):\n"
         "    def repo_method(self):\n"
         "        return 'repo'\n"
+        "class OwnLoadTransformer(Transformer):\n"
+        "    @classmethod\n"
+        "    def load(cls, input_path):\n"
+        "        obj = cls.__new__(cls)\n"
+        "        obj.loaded_by_own_load = input_path\n"
+        "        return obj\n"
         "class NotATransformer:\n"
         "    @classmethod\n"
         "    def load(cls, path, **kwargs):\n"
@@ -111,3 +117,13 @@ def test_a_custom_module_that_is_not_a_transformer_keeps_its_own_load(subclass_m
     module = _load(model_dir, model, tokenizer)
 
     assert type(module).__name__ == "NotATransformer"
+
+
+def test_a_transformer_subclass_with_its_own_load_keeps_it(subclass_model):
+    model_dir, model, tokenizer, write_modules = subclass_model
+    write_modules(f"{PKG}.OwnLoadTransformer")
+
+    module = _load(model_dir, model, tokenizer)
+
+    assert type(module).__name__ == "OwnLoadTransformer"
+    assert module.loaded_by_own_load
