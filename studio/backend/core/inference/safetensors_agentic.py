@@ -670,7 +670,6 @@ def run_safetensors_tool_loop(
         from core.inference.mcp_image import note_attached_image
         from core.inference.tools import mcp_image_targets
         messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
-    # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
     conversation = restore_replayed_tool_results(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
@@ -682,7 +681,7 @@ def run_safetensors_tool_loop(
     # switch to safetensors, so search_conversation is advertised here too and needs the
     # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
     # response in them.
-    # `conversation`: restored results are new dicts, and the branch is matched by identity.
+    # Restored dicts are new; the branch matches by identity.
     _live_branch = list(conversation)
     # ...and the replies and tool results the loop adds to it: a fit can evict this request's
     # own earlier tool exchange into the archive, where the client's messages alone would

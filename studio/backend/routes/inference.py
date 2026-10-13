@@ -41227,8 +41227,7 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         from core.inference.tool_loop_controller import restore_replayed_tool_results
 
-        # As the completion path restores them, or failed results are undercounted. Off the
-        # loop: placing feedback before an envelope parses it.
+        # As generation sends them; off the loop since restoring may parse an envelope.
         _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
@@ -41367,7 +41366,7 @@ async def chat_count_tokens(
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
-        # Off the loop: the first call per server probes the template over HTTP.
+        # Off the loop: first use probes the template.
         payload.preserve_thinking
         if _takes_passthrough
         else await asyncio.to_thread(
@@ -44578,7 +44577,6 @@ def _openai_messages_for_gguf_chat(
     messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(
             _drop_empty_assistant_sentinels(
-                # Replayed tool results as the model saw them, so the cached prefix holds.
                 restore_replayed_tool_results(
                     [m.model_dump(exclude_none = True) for m in payload.messages]
                 )

@@ -415,7 +415,6 @@ export function createGenerationToolRecovery(
       return;
     }
     if (event.type === "tool_model_note") {
-      // Same as the live adapter: model-only feedback on a finished card, replayed next turn.
       const suffix = typeof event.suffix === "string" ? event.suffix : "";
       const at = toolModelNoteTarget(
         carried.map((carriedEntry) => record(carriedEntry.part) ?? {}) as unknown as Parameters<

@@ -1232,7 +1232,7 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
-    // Backend-only feedback folded into this result after tool_end; the backend re-appends it.
+    // Model-only feedback the backend re-appends on replay.
     ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
@@ -7548,7 +7548,6 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_model_note") {
-                  // Model-only feedback folded into a finished result; kept off screen, replayed next turn.
                   const at = toolModelNoteTarget(
                     toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
                     (toolEvent.tool_call_id as string) || "",

@@ -9018,15 +9018,8 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Optional[bool]:
-        """``preserve_thinking`` for a thinking-off request whose history carries no reasoning.
-
-        With nothing to preserve, the kwarg only decides whether earlier answers keep the empty
-        think block the generation prompt put in front of them. Dropped, every follow-up of a
-        thinking-off chat diverges from llama-server's cache at the previous answer, and a hybrid
-        or SWA model re-processes it. Kept only where the template's own render proves it is
-        byte-identical to what was generated, so other templates see no change. A thinking-on
-        request keeps the caller's setting: its own reasoning is real and theirs to drop.
-        """
+        """True for a thinking-off follow-up with no reasoning in its history, where the template proves
+        that only preserve_thinking replays each answer's empty think block as generated."""
         if preserve_thinking is not False or not getattr(
             self, "_supports_preserve_thinking", False
         ):
@@ -9042,7 +9035,7 @@ class LlamaCppBackend:
             reasoning = message.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning.strip():
                 return preserve_thinking
-            # Reasoning carried inline in the answer, which templates split back out.
+            # Inline reasoning counts too.
             content = message.get("content")
             parts = content if isinstance(content, list) else [content]
             if any(
@@ -9057,11 +9050,7 @@ class LlamaCppBackend:
         return True if self._empty_think_replays_with_preserve() else preserve_thinking
 
     def _empty_think_replays_with_preserve(self) -> bool:
-        """Whether this template replays a thinking-off answer exactly only with preserve_thinking.
-
-        Probed once per server through /apply-template: the generation prompt plus the answer
-        must be a prefix of the next turn's render with preserve_thinking on, and not with it off.
-        """
+        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
         key = (
             getattr(self, "base_url", None),
             id(getattr(self, "_chat_template", None)),
@@ -9101,7 +9090,7 @@ class LlamaCppBackend:
                 kept = _render(history, True)
                 dropped = _render(history, False)
             if generated is None or kept is None or dropped is None:
-                return False  # Busy or refused: keep the caller's setting, ask again next time.
+                return False  # Unanswered: not cached, so the next request asks again.
             result = kept.startswith(generated + answer) and not dropped.startswith(
                 generated + answer
             )
@@ -37601,7 +37590,6 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
-        # Before anything prices or renders the prompt, so every pass agrees.
         preserve_thinking = self._replay_preserve_thinking(
             preserve_thinking, messages, enable_thinking, reasoning_effort
         )
@@ -38069,7 +38057,6 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        # Before anything prices or renders the prompt, so every pass agrees.
         preserve_thinking = self._replay_preserve_thinking(
             preserve_thinking, messages, enable_thinking, reasoning_effort
         )
@@ -38118,7 +38105,6 @@ class LlamaCppBackend:
             messages = note_attached_image(
                 messages, mcp_image_targets(_gguf_active_tool_names(tools))
             )
-        # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
         conversation = restore_replayed_tool_results(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
@@ -38140,7 +38126,7 @@ class LlamaCppBackend:
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
         # has to be told which branch is live, and the client's messages are the answer.
-        # `conversation`, not `messages`: restored results are new dicts, and both lists are matched by identity.
+        # Restored dicts are new; both branch lists match by identity.
         _request_branch: list[dict] = list(conversation)
         # ...and everything this request adds to it. A long agent run can evict its own
         # earlier tool exchange, which is archived; filtered against the messages the
@@ -38162,11 +38148,8 @@ class LlamaCppBackend:
                 _rolling_anchor_ids.add(id(message))
                 break
 
-        # Tool messages this run appended, by id(), to the card id their tool_end carried.
         _tool_card_by_message: dict[int, str] = {}
-        # Feedback folded into a result after its tool_end. The client replays only the
-        # tool_end result, so it is told the suffix too, or the next turn's prompt diverges
-        # at that result and llama-server re-processes everything after it.
+        # Feedback folded in after tool_end, reported so the client replays it.
         _model_note_events: list[dict] = []
 
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
@@ -38613,9 +38596,7 @@ class LlamaCppBackend:
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
         _prompt_sent = False
-        # The catalogue the last tool round rendered. The final answer pass sends it again with
-        # tool_choice "none": the template puts tools at the top of the system prompt, so dropping
-        # them made that pass, and the next turn, re-process the whole conversation.
+        # Resent on the final pass with tool_choice "none": tools head the system prompt.
         _last_sent_tools = None
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
@@ -40378,9 +40359,7 @@ class LlamaCppBackend:
                                 provisional = provisional_match,
                                 allowed_tool_names = {forced_name} if forced_name else None,
                             )
-                    # As in the safetensors loop: the frontend keeps a round's cards in one
-                    # assistant message by this id. Without it a parallel batch replayed as
-                    # separate assistant/tool pairs, so the next turn's prompt diverged there.
+                    # The frontend groups a parallel batch into one assistant message by this.
                     decision.provenance["round_id"] = iteration
 
                     if not decision.should_execute:
@@ -41659,7 +41638,6 @@ class LlamaCppBackend:
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _final_tools:
-            # Same catalogue, no calls: the prompt keeps the prefix the tool rounds cached.
             stream_payload["tools"] = llama_grammar_tools(_final_tools)
             stream_payload["tool_choice"] = "none"
         if _reasoning_kw is not None:

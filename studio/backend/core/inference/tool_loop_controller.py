@@ -861,20 +861,12 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
-# Where the client keeps feedback the loop folded into a result after its tool_end.
 TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
 
 
 def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
-    """Rebuild replayed tool results exactly as the model saw them.
-
-    ``model_message`` showed the model a failed result plus ``TOOL_ERROR_NUDGE``, and the loop may
-    fold later feedback (the tool budget notice) into the last result, but the client stores and
-    replays the bare result, and for the retrieval tools the citation source map the model never
-    saw. Otherwise the next turn's prompt diverges from the server's cached tokens at that result,
-    and a hybrid or SWA model then re-processes everything after it. The folded feedback comes
-    back in ``extra_content``. Idempotent.
-    """
+    """Replayed tool results as the model saw them (error nudge, folded feedback from
+    ``extra_content``, no citation map), so the cached prefix holds. Idempotent."""
     out = list(messages)
     for i, message in enumerate(out):
         if not isinstance(message, dict) or message.get("role") != "tool":
@@ -882,21 +874,19 @@ def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
         content = message.get("content")
         if not isinstance(content, str):
             continue
-        # The retrieval tools' source map is the card's citations, never shown to the model live,
-        # and each record repeats its whole chunk.
+        # The source map is the card's; the live loop never showed it.
         if message.get("name") in _SOURCE_MAP_TOOLS and "\n__RAG_SOURCES__:" in content:
             content = _strip_rag_sources_sentinel(content)
         extra = message.get("extra_content")
         suffix = extra.get(TOOL_MODEL_SUFFIX_KEY) if isinstance(extra, dict) else None
         suffix = suffix if isinstance(suffix, str) else ""
-        # `in`, not endswith: an already restored message may carry folded feedback after it.
+        # `in`: restored output may carry feedback after the nudge.
         nudge = (
             TOOL_ERROR_NUDGE if is_tool_error(content) and TOOL_ERROR_NUDGE not in content else ""
         )
         restored = {**message, "content": content}
         if nudge or suffix:
-            # Before any frontend envelope, as the live loop placed it: text after the image
-            # array breaks its parse and ships the base64 as prompt text.
+            # Before any envelope, as live: text after the image array breaks its parse.
             from core.inference.tools import _split_frontend_suffix
             body, envelope = _split_frontend_suffix(content, message.get("name"))
             restored["content"] = body + nudge + suffix + envelope

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Feedback the backend folded into a finished tool result for the model only (the tool budget
- *  notice). It is never shown; it rides the card's provenance and goes back with the result on the
- *  next request, so the replayed prompt matches the prefix llama-server already cached. */
+/** Model-only feedback (the tool budget notice) on a finished card, replayed with its result. */
 
 type NotedPart = {
   toolCallId: string;
@@ -11,8 +9,7 @@ type NotedPart = {
   provenance?: Record<string, unknown>;
 };
 
-/** Index of the card a `tool_model_note` targets: the LAST match, since generated ids restart at
- *  call_0 every round. */
+/** The LAST match: generated ids restart at call_0 every round. */
 export function toolModelNoteTarget(
   parts: readonly NotedPart[],
   backendToolCallId: string,
@@ -30,8 +27,7 @@ export function toolModelNoteTarget(
   return -1;
 }
 
-/** Provenance with `suffix` appended to any suffix already noted. A note delivered twice (a
- *  reconnect replaying the stream) is kept once. */
+/** A note delivered twice (a reconnect replay) is kept once. */
 export function withToolModelSuffix(
   provenance: Record<string, unknown> | undefined,
   suffix: string,
@@ -45,7 +41,6 @@ export function withToolModelSuffix(
   };
 }
 
-/** `extra_content` for the replayed role="tool" message, or nothing. */
 export function toolModelSuffixExtraContent(
   provenance: Record<string, unknown> | null | undefined,
 ): { extra_content: { studio_model_suffix: string } } | Record<string, never> {

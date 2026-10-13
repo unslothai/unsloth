@@ -1407,8 +1407,7 @@ async def stream_with_studio_tools(
     cancel_event: threading.Event,
     mcp_image = None,
 ) -> AsyncIterator[str]:
-    # Replayed failed results get back the nudge the model saw, so the prompt prefix matches.
-    # Off the loop: placing it before an envelope parses the envelope.
+    # Off the loop: restoring may parse an envelope.
     restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
     conversation = [dict(message) for message in restored]
     if mcp_image is not None:
