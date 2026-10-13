@@ -1037,6 +1037,7 @@ def test_an_abandoned_encodes_error_does_not_fail_the_next_one():
 
 
 def test_ancestral_step_matches_diffusers_rf_reference():
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.schedulers.scheduling_ltx_euler_ancestral_rf import LTXEulerAncestralRFScheduler
@@ -1062,6 +1063,7 @@ def test_ancestral_step_matches_diffusers_rf_reference():
 
 
 def test_keep_tokens_step_deterministically_and_copies_share_the_generator():
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
 
@@ -1081,6 +1083,7 @@ def test_keep_tokens_step_deterministically_and_copies_share_the_generator():
 
 
 def test_prepare_scheduler_per_variant(monkeypatch):
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     pipe = SimpleNamespace(scheduler = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = False))
@@ -1217,6 +1220,7 @@ def test_two_stage_t2v_follows_the_reference_recipe():
 
 
 def test_two_stage_i2v_conditions_both_stages(monkeypatch):
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     pipe = _FakePipe(SimpleNamespace(keep_tokens = None))
     cond = _FakePipe(pipe.scheduler)
     pipe._unsloth_ltx25_condition_pipe = cond
@@ -1233,6 +1237,7 @@ def test_two_stage_i2v_conditions_both_stages(monkeypatch):
 
 
 def test_every_image_path_resets_the_offload_hooks(monkeypatch):
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     import threading
 
     image = object()
@@ -1400,6 +1405,7 @@ def test_real_ltx25_header_converts_onto_the_ltx25_transformer(key):
     shape; range-read headers) lands on a parameter of
     the same shape after load_ltx25_transformer's key handling (2.3 pre-rename + diffusers' converter), with nothing
     missing; the connector stacks in the file are dropped (they come from the pack)."""
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     import torch
     from accelerate import init_empty_weights
     from diffusers import LTX2VideoTransformer3DModel
@@ -1563,6 +1569,7 @@ def test_embedded_transformer_config_matches_the_tested_layout():
 
 
 def test_single_file_assembly_refuses_quantized_connectors(tmp_path):
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     import torch
     from safetensors.torch import save_file
 
@@ -2015,6 +2022,7 @@ def _ltx25_pack_plan(monkeypatch, total_gib):
 def test_plan_counts_the_encoder_worker_per_card(
     monkeypatch, total_gib, policy, stream_te, stream_dit, resident
 ):
+    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
     from core.inference.video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
     plan, inputs, placed_resident = _ltx25_pack_plan(monkeypatch, total_gib)
@@ -2117,3 +2125,89 @@ def test_client_sends_the_budget_and_the_servers_share():
     )
     assert client.config["budget_mib"] == 43622
     assert v25._server_reserved_mib("cpu") is None
+
+
+# ── the encoder worker spawn consults the shutdown latch ─────────────────────
+class _FakeEncoderProc:
+    def __init__(self, *args, **kwargs):
+        self.pid = 424242
+        self.started = False
+        self.alive = False
+        self.terminated = False
+
+    def start(self):
+        self.started = True
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.terminated = True
+        self.alive = False
+
+    def join(self, timeout = None):
+        pass
+
+    def kill(self):
+        self.alive = False
+
+
+def _gated_encoder_client(monkeypatch, latch_answers):
+    import multiprocessing as mp
+
+    import utils.process_lifetime as lifetime
+
+    answers = iter(latch_answers)
+    spawned: list[_FakeEncoderProc] = []
+    adopted: list[int] = []
+
+    class _Ctx:
+        def Queue(self):
+            return queue.Queue()
+
+        def Process(self, *args, **kwargs):
+            proc = _FakeEncoderProc()
+            spawned.append(proc)
+            return proc
+
+    monkeypatch.setattr(mp, "get_context", lambda method = None: _Ctx())
+    monkeypatch.setattr(lifetime, "is_process_shutting_down", lambda: next(answers))
+    monkeypatch.setattr(lifetime, "adopt_pid", adopted.append)
+    client = v25.Ltx25TextEncoderClient(
+        repo = "Lightricks/LTX-2.5-Diffusers",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/nonexistent",
+    )
+    return client, spawned, adopted
+
+
+def test_encoder_worker_is_not_started_once_shutdown_has_begun(monkeypatch):
+    client, spawned, adopted = _gated_encoder_client(monkeypatch, [True])
+    with pytest.raises(v25.TextEncoderWorkerError, match = "shutting down"):
+        client.start()
+    assert spawned == [] and adopted == []
+    assert not client.alive()
+
+
+def test_encoder_worker_started_as_shutdown_begins_is_reaped(monkeypatch):
+    client, spawned, adopted = _gated_encoder_client(monkeypatch, [False, True])
+    with pytest.raises(v25.TextEncoderWorkerError, match = "shutting down"):
+        client.start()
+    (proc,) = spawned
+    # Adopted first, so the sweep still holds it, then reaped here.
+    assert adopted == [proc.pid]
+    assert proc.started and proc.terminated and not proc.is_alive()
+    assert not client.alive()
+
+
+def test_encoder_worker_starts_while_the_latch_is_clear(monkeypatch):
+    client, spawned, adopted = _gated_encoder_client(monkeypatch, [False, False])
+    client.start()
+    (proc,) = spawned
+    assert adopted == [proc.pid] and client.alive() and not proc.terminated
