@@ -18,18 +18,25 @@ from typing import Any, Callable, Iterable, Optional
 logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 256 * 1024 * 1024
-# Float8/float4/MX count as float: loaded at bf16 they occupy 2 bytes per parameter.
-FLOAT_WIDTH = {
-    "F64": 8,
-    "F32": 4,
-    "F16": 2,
-    "BF16": 2,
-    "F8_E4M3": 1,
-    "F8_E5M2": 1,
-    "F8_E4M3FNUZ": 1,
-    "F8_E5M2FNUZ": 1,
-    "F8_E8M0": 1,
+# Bits per element of every floating dtype safetensors names. Float8 / float6 / float4 / MX scales count as float:
+# loaded at bf16 they occupy 2 bytes per parameter. Sub-byte types are packed: the header ``shape`` is the logical
+# element count and the byte span is numel * bits / 8 (an F4 [4, 16] tensor spans 32 bytes), so parameters are
+# counted as bytes * 8 / bits.
+FLOAT_BITS = {
+    "F64": 64,
+    "F32": 32,
+    "F16": 16,
+    "BF16": 16,
+    "F8_E4M3": 8,
+    "F8_E5M2": 8,
+    "F8_E4M3FNUZ": 8,
+    "F8_E5M2FNUZ": 8,
+    "F8_E8M0": 8,
+    "F6_E2M3": 6,
+    "F6_E3M2": 6,
+    "F4": 4,
 }
+FLOAT_WIDTH = {k: v / 8 for k, v in FLOAT_BITS.items()}
 _GB = 1000.0**3
 
 ReadRange = Callable[[int, int], bytes]
@@ -109,6 +116,8 @@ class ComponentSizes:
     components: dict
     source: str = "local"
     revision: Optional[str] = None
+    # Component names model_index.json declares (None when it was not read).
+    manifest: Optional[frozenset] = None
 
     def get(self, name: str) -> Optional[ComponentSize]:
         return self.components.get(name)
@@ -145,8 +154,9 @@ def _accumulate(
             except Exception:  # noqa: BLE001
                 return None
             stored += nbytes
-            if dtype in FLOAT_WIDTH:
-                float_params += numel
+            if dtype in FLOAT_BITS:
+                bits = FLOAT_BITS[dtype]
+                float_params += numel if bits >= 8 else (nbytes * 8) // bits
                 by_dtype[dtype] = by_dtype.get(dtype, 0) + nbytes
             else:
                 nonfloat += nbytes
@@ -162,21 +172,24 @@ def _accumulate(
     )
 
 
+# The loader's default weight stems (diffusion.py _DEFAULT_PIPELINE_WEIGHT_RE), safetensors only.
 _DEFAULT_WEIGHT_RE = re.compile(
-    r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
 _SHARD_RE = re.compile(r"^.+-\d{5}-of-\d{5}\.safetensors$")
-_INDEX_RE = re.compile(r"^(?:diffusion_pytorch_model|model)\.safetensors\.index\.json$")
+_INDEX_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)\.safetensors\.index\.json$"
+)
 
 
 _TRANSFORMERS_FOLDER_RE = re.compile(r"^(?:text_encoder|image_encoder|prompt_enhancer)(?:_\d+)?$")
 
 
-def _stem_order(folder: str) -> tuple[str, str]:
-    """LTX-2's text_encoder/ ships both stems; only the preferred one loads."""
+def _stem_order(folder: str) -> tuple[str, ...]:
+    """LTX-2's text_encoder/ ships both stems; only the preferred one loads. ``pytorch_model`` is the legacy stem."""
     if _TRANSFORMERS_FOLDER_RE.match(folder or ""):
-        return ("model", "diffusion_pytorch_model")
-    return ("diffusion_pytorch_model", "model")
+        return ("model", "diffusion_pytorch_model", "pytorch_model")
+    return ("diffusion_pytorch_model", "model", "pytorch_model")
 
 
 def select_weight_files(
@@ -256,7 +269,32 @@ def local_component_sizes(
             size = _accumulate(sub.name, ((f, read_safetensors_header(sub / f)) for f in files))
             if size is not None:
                 out[sub.name] = size
-        return ComponentSizes(out, source="local") if out else None
+        return ComponentSizes(out, source="local", manifest=_manifest_names(base)) if out else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _manifest_from_text(text: str) -> Optional[frozenset]:
+    try:
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        return frozenset(
+            k
+            for k, v in data.items()
+            if not k.startswith("_") and isinstance(v, (list, tuple)) and v and v[0] is not None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _manifest_names(root: Path) -> Optional[frozenset]:
+    """Components ``model_index.json`` loads (an entry set to null is not loaded)."""
+    try:
+        path = root / "model_index.json"
+        if not path.is_file() or path.stat().st_size > 1 << 20:
+            return None
+        return _manifest_from_text(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
 
@@ -387,6 +425,53 @@ def _fetch_capped_text(
             pass
 
 
+_REF_CACHE: dict = {}
+
+
+def resolve_ref(
+    repo_id: str,
+    revision: Optional[str] = None,
+    *,
+    token: Any = None,
+    timeout_seconds: float = HUB_TIMEOUT_SECONDS,
+) -> Optional[str]:
+    """The commit sha ``revision`` (default ``main``) points at now, from one metadata call cached for
+    ``HUB_REFRESH_SECONDS`` (a failure for ``HUB_RETRY_SECONDS``). A pinned sha is returned as is. None when the Hub
+    is off or does not answer. Never raises."""
+    if revision and _SHA_RE.match(str(revision)):
+        return str(revision)
+    if hub_disabled():
+        return None
+    import time
+
+    key = (repo_id, revision, _token_id(token))
+    with _HUB_LOCK:
+        if key in _REF_CACHE:
+            sha, stamp = _REF_CACHE[key]
+            age = time.monotonic() - stamp
+            if (sha is not None and age < HUB_REFRESH_SECONDS) or (
+                sha is None and age < HUB_RETRY_SECONDS
+            ):
+                return sha
+    sha = None
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi(token=token).model_info(repo_id, revision=revision, timeout=timeout_seconds)
+        sha = getattr(info, "sha", None)
+    except Exception:  # noqa: BLE001
+        sha = None
+    _note_ref(repo_id, revision, token, sha)
+    return sha
+
+
+def _note_ref(repo_id: str, revision: Optional[str], token: Any, sha: Optional[str]) -> None:
+    import time
+
+    with _HUB_LOCK:
+        _REF_CACHE[(repo_id, revision, _token_id(token))] = (sha, time.monotonic())
+
+
 def hub_component_sizes(
     repo_id: str,
     *,
@@ -437,6 +522,8 @@ def _hub_component_sizes(
     except Exception:  # noqa: BLE001 - offline, gated, missing: the table answers
         return None
     commit = getattr(info, "sha", None) or revision
+    if getattr(info, "sha", None):
+        _note_ref(repo_id, revision, token, info.sha)  # the same resolve resolve_ref would make
     sha_key = (
         repo_id,
         commit,
@@ -514,7 +601,24 @@ def _read_hub_sizes(
             out[folder] = size
     except Exception:  # noqa: BLE001
         return None
-    return ComponentSizes(out, source="hub", revision=commit) if out else None
+    if not out:
+        return None
+    manifest = None
+    if any(str(getattr(s, "rfilename", "")) == "model_index.json" for s in info.siblings or ()):
+        try:
+            manifest = _manifest_from_text(
+                _fetch_capped_text(
+                    get_session(),
+                    hf_hub_url(repo_id, "model_index.json", revision=commit),
+                    dict(build_hf_headers(token=token)),
+                    max(1.0, deadline - time.monotonic()),
+                    deadline,
+                    cap=1 << 20,
+                )
+            )
+        except Exception:  # noqa: BLE001 - no manifest: family roles alone decide
+            manifest = None
+    return ComponentSizes(out, source="hub", revision=commit, manifest=manifest)
 
 
 def component_sizes(
@@ -540,7 +644,12 @@ def component_sizes(
         else (tuple(components) if components is not None else ())
     )
     if local is not None and all(c in local.components for c in need):
-        return local
+        if not allow_hub or snap is None or hub_disabled():
+            return local
+        # online: the cached snapshot answers only while the ref still points at it (TTL-cached resolve)
+        head = resolve_ref(str(repo_or_dir), token=token)
+        if head is None or head == snap.name:
+            return local
     if allow_hub:
         hub = hub_component_sizes(str(repo_or_dir), components=components, token=token)
         if hub is not None:
@@ -554,6 +663,22 @@ VIDEO_ROLE_DENOISER = ("transformer", "transformer_2")
 VIDEO_ROLE_TEXT = ("text_encoder", "text_encoder_2")
 VIDEO_ROLE_VAE = ("vae", "audio_vae", "vocoder", "connectors")
 VIDEO_EXTRA_VAE_ROLE: dict[str, tuple[str, ...]] = {"ltx-2.5": ("latent_upsampler",)}
+# Companion folders and when a family loads them; one that is present is counted only when its family rule says so
+# or model_index.json names it (a leftover folder in a repo is not a loaded component).
+VIDEO_COMPANION_RULES: dict[str, Callable[[Any], bool]] = {
+    "audio_vae": lambda fam: bool(getattr(fam, "has_audio", False)),
+    "vocoder": lambda fam: bool(getattr(fam, "has_audio", False)),
+    "connectors": lambda fam: str(getattr(fam, "name", "") or "").startswith("ltx"),
+}
+
+
+def _companion_loaded(fam: Any, sizes: ComponentSizes, name: str) -> bool:
+    rule = VIDEO_COMPANION_RULES.get(name)
+    if rule is None:
+        return True
+    if rule(fam):
+        return True
+    return sizes.manifest is not None and name in sizes.manifest
 TABLE_ROUNDING_GB = 0.06
 
 _MISMATCHES: dict = {}
@@ -606,7 +731,7 @@ def video_header_terms(
             sum(
                 sizes.components[n].resident_bytes(vae_itemsize if n == "vae" else 2)
                 for n in vae_names
-                if sizes.get(n) is not None
+                if sizes.get(n) is not None and _companion_loaded(fam, sizes, n)
             )
             / _GB
         )

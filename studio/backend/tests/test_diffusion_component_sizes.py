@@ -879,3 +879,134 @@ def test_transformer_2_counts_only_for_moe(tmp_path):
     sizes = dcs.local_component_sizes(tmp_path)
     assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), sizes)[0] == pytest.approx(2.0)
     assert dcs.video_header_terms(_fam("wan2.2-t2v-a14b"), sizes)[0] == pytest.approx(4.0)
+
+
+# ---- review round 4 ----
+
+
+def test_pytorch_model_stem_and_its_index_are_recognised(tmp_path):
+    t = tmp_path / "transformer"
+    for i in (1, 2):
+        _write_header(t / f"pytorch_model-0000{i}-of-00002.safetensors", {f"p{i}": ("BF16", 100)})
+    _index(
+        t / "pytorch_model.safetensors.index.json",
+        ["pytorch_model-00001-of-00002.safetensors", "pytorch_model-00002-of-00002.safetensors"],
+    )
+    size = dcs.local_component_sizes(tmp_path).get("transformer")
+    assert size.float_params == 200 and len(size.files) == 2
+    # the stems match the loader's default weight names
+    from core.inference.diffusion import _DEFAULT_PIPELINE_WEIGHT_INDEX_RE, _DEFAULT_PIPELINE_WEIGHT_RE
+
+    for name in ("pytorch_model-00001-of-00002.safetensors", "pytorch_model.safetensors"):
+        assert dcs._DEFAULT_WEIGHT_RE.match(name) and _DEFAULT_PIPELINE_WEIGHT_RE.match(name)
+    assert dcs._INDEX_RE.match("pytorch_model.safetensors.index.json")
+    assert _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match("pytorch_model.safetensors.index.json")
+    # an incomplete pytorch_model index is unknown, like the others
+    (t / "pytorch_model-00002-of-00002.safetensors").unlink()
+    assert dcs.local_component_sizes(tmp_path) is None
+
+
+def test_complete_local_snapshot_is_revalidated_online(tmp_path, monkeypatch):
+    fam = _fam("wan2.2-ti2v-5b")
+    snap = tmp_path / ("a" * 40)
+    _stub_for_table(snap, fam)
+    _component(snap, "transformer", fam.bf16_components_gb[0] + 5.0)  # the cached (old) commit is larger
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: snap)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
+    fresh_root = tmp_path / "fresh"
+    _stub_for_table(fresh_root, fam)
+    fresh = dcs.local_component_sizes(fresh_root)
+    hub_calls, ref_calls = [], []
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: hub_calls.append(repo) or fresh)
+    head = ["a" * 40]
+    monkeypatch.setattr(dcs, "resolve_ref", lambda repo, revision = None, **k: ref_calls.append(repo) or head[0])
+    expected_old = round(fam.bf16_components_gb[0] + 5.0, 1)
+    # the ref still points at the cached snapshot: local answer, no header reads
+    assert dcs.video_components_gb(fam, "o/variant", allow_hub = True)[0] == expected_old
+    assert hub_calls == [] and ref_calls == ["o/variant"]
+    # the ref moved: hub sizing
+    head[0] = "b" * 40
+    assert dcs.video_components_gb(fam, "o/variant", allow_hub = True) == fam.bf16_components_gb
+    assert hub_calls == ["o/variant"]
+    # offline / local-only / allow_hub=False stay local without resolving
+    ref_calls.clear()
+    assert dcs.video_components_gb(fam, "o/variant", allow_hub = False)[0] == expected_old
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert dcs.video_components_gb(fam, "o/variant", allow_hub = True)[0] == expected_old
+    assert ref_calls == []
+
+
+def test_resolve_ref_is_ttl_cached(monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(dcs, "_REF_CACHE", {})
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
+    calls, sha = [], ["c" * 40]
+
+    class _Api:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(self, repo_id, revision = None, timeout = None, files_metadata = False):
+            calls.append(files_metadata)
+            return _Info(sha[0])
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    clock = [0.0]
+    import time as _time
+
+    monkeypatch.setattr(_time, "monotonic", lambda: clock[0])
+    assert dcs.resolve_ref("o/r") == "c" * 40
+    assert dcs.resolve_ref("o/r") == "c" * 40
+    assert calls == [False]  # one cheap call (no files metadata) inside the TTL
+    clock[0] += dcs.HUB_REFRESH_SECONDS + 1
+    sha[0] = "d" * 40
+    assert dcs.resolve_ref("o/r") == "d" * 40 and len(calls) == 2
+    assert dcs.resolve_ref("o/r", "e" * 40) == "e" * 40 and len(calls) == 2  # pinned: no call
+
+
+def test_companion_folders_follow_the_family_or_manifest(tmp_path):
+    wan = _fam("wan2.2-ti2v-5b")  # no audio, not LTX
+    _stub_for_table(tmp_path, wan)
+    base = dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[2]
+    for folder in ("connectors", "vocoder", "audio_vae"):
+        _component(tmp_path, folder, 1.0)
+    # leftover companion folders are not counted for a family that does not load them
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[2] == pytest.approx(base)
+    # ... unless model_index.json names them
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "X", "vae": ["diffusers", "A"], "vocoder": ["transformers", "B"], "connectors": [None, None]})
+    )
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert sizes.manifest == frozenset({"vae", "vocoder"})
+    assert dcs.video_header_terms(wan, sizes)[2] == pytest.approx(base + 1.0)
+    # the LTX family loads connectors, an audio family audio_vae and vocoder
+    ltx = _fam("ltx-2")
+    ltx_root = tmp_path / "ltx"
+    _stub_for_table(ltx_root, ltx)
+    before = dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2]
+    _component(ltx_root, "connectors", 1.0)
+    _component(ltx_root, "vocoder", 0.5)
+    assert dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2] == pytest.approx(before + 1.5)
+
+
+def test_sub_byte_floats_count_parameters_by_bit_width(tmp_path):
+    # safetensors packs sub-byte dtypes: shape is the logical element count, bytes = numel * bits / 8
+    header = {
+        "__metadata__": {},
+        "f4": {"dtype": "F4", "shape": [4, 16], "data_offsets": [0, 32]},
+        "f6a": {"dtype": "F6_E2M3", "shape": [8], "data_offsets": [32, 38]},
+        "f6b": {"dtype": "F6_E3M2", "shape": [16], "data_offsets": [38, 50]},
+        "scale": {"dtype": "F8_E8M0", "shape": [4], "data_offsets": [50, 54]},
+    }
+    raw = json.dumps(header).encode()
+    path = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+    path.parent.mkdir(parents = True)
+    path.write_bytes(struct.pack("<Q", len(raw)) + raw)
+    size = dcs.local_component_sizes(tmp_path).get("transformer")
+    assert size.float_params == 64 + 8 + 16 + 4
+    assert size.nonfloat_bytes == 0
+    assert size.resident_bytes(2) == (64 + 8 + 16 + 4) * 2  # a bf16 load budgets 2 bytes per param
+    assert dcs.FLOAT_BITS["F4"] == 4 and dcs.FLOAT_BITS["F6_E2M3"] == dcs.FLOAT_BITS["F6_E3M2"] == 6
