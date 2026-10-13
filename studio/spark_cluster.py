@@ -2768,6 +2768,19 @@ def _hf_snapshot_dir(root: str) -> Optional[str]:
     return dirs[0] if len(dirs) == 1 else None
 
 
+def hf_hub_cache() -> str:
+    """The hub cache this process reads, resolved as huggingface_hub does from its environment."""
+    for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return osp.expanduser(value)
+    home = (os.environ.get("HF_HOME") or "").strip()
+    if home:
+        return osp.join(osp.expanduser(home), "hub")
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip() or "~/.cache"
+    return osp.join(osp.expanduser(xdg), "huggingface", "hub")
+
+
 def model_size_report(target: str) -> Dict[str, Any]:
     """`{"gib": float|None, "why": str}`: the size of the ONE model `target` names, or why that cannot
     be answered."""
@@ -2797,7 +2810,7 @@ def model_size_report(target: str) -> Dict[str, Any]:
             return {"gib": None, "why": f"could not read {path}: {exc}"}
     root = path if osp.isdir(path) else None
     if root is None:
-        cache = osp.expanduser("~/.cache/huggingface/hub")
+        cache = hf_hub_cache()
         slug = "models--" + target.replace("/", "--")
         repo = osp.join(cache, slug)
         if not osp.isdir(repo):
@@ -2825,9 +2838,7 @@ def bf16_resident_gib(target: str) -> Optional[float]:
     headers: an FP8 checkpoint doubles, so its size on disk understates it. None if unreadable."""
     root = osp.expanduser(target)
     if not osp.isdir(root):
-        repo = osp.join(
-            osp.expanduser("~/.cache/huggingface/hub"), "models--" + target.replace("/", "--")
-        )
+        repo = osp.join(hf_hub_cache(), "models--" + target.replace("/", "--"))
         root = _hf_snapshot_dir(repo) if osp.isdir(repo) else None
     shards = sorted(glob.glob(osp.join(root, "*.safetensors"))) if root else []
     if not shards:
@@ -3774,7 +3785,7 @@ def model_dimensions(target: str) -> Optional[Dict[str, int]]:
 
     root = path if osp.isdir(path) else None
     if root is None:
-        cache = osp.expanduser("~/.cache/huggingface/hub")
+        cache = hf_hub_cache()
         repo = osp.join(cache, "models--" + target.replace("/", "--"))
         root = _hf_snapshot_dir(repo) if osp.isdir(repo) else None
     if root is None:
@@ -4433,9 +4444,7 @@ def stage_run_inputs(
             continue
         if token != "--model":
             continue
-        cached = osp.expanduser(
-            osp.join("~/.cache/huggingface/hub", "models--" + value.replace("/", "--"))
-        )
+        cached = osp.join(hf_hub_cache(), "models--" + value.replace("/", "--"))
         if not osp.isdir(cached):
             continue
         remote = f"{home.rstrip('/')}/.cache/huggingface/hub/{osp.basename(cached)}"

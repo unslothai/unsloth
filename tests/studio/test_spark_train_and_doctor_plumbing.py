@@ -274,6 +274,10 @@ def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, 
 def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_path) -> None:
     """Cached only on the initiating Spark, the peer would refetch it at internet speed over a link
     that moves 444 MB/s, or fail."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
     monkeypatch.setenv("HOME", str(tmp_path))
     cached = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--m"
     cached.mkdir(parents = True)

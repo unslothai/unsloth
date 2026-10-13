@@ -2107,3 +2107,17 @@ def test_spark_up_is_not_ready_when_ssh_cannot_check_the_peer(monkeypatch) -> No
     assert "Ready" not in result.output
     monkeypatch.setattr(S, "_peer_has_venv", lambda peer: True)
     assert "Ready" in CliRunner().invoke(S.spark_app, ["up"]).output
+
+
+def test_the_hub_cache_follows_the_environment(monkeypatch, tmp_path) -> None:
+    """A repo cached under HF_HOME / HF_HUB_CACHE was invisible to staging and sizing, so rank 1
+    downloaded the model (or failed offline) while rank 0 loaded it from the custom cache."""
+    sc = _load("studio/spark_cluster.py")
+    for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert sc.hf_hub_cache() == str(tmp_path / ".cache" / "huggingface" / "hub")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    assert sc.hf_hub_cache() == str(tmp_path / "hf" / "hub")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub2"))
+    assert sc.hf_hub_cache() == str(tmp_path / "hub2")
