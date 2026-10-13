@@ -206,19 +206,27 @@ export async function regenerateChatTitle(
   regeneratingTitles.add(item.id);
   // One deadline over every step (history reads, token refresh, status, model): whichever stalls,
   // the busy mark and the loading toast are released.
+  // Past the deadline the run may still finish, so it must not write: a retry may already own the chat.
+  const run = { expired: false };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<RegenerateTitleOutcome>((resolve) => {
-    timer = setTimeout(() => resolve("failed"), TITLE_REGENERATE_DEADLINE_MS);
+    timer = setTimeout(() => {
+      run.expired = true;
+      resolve("failed");
+    }, TITLE_REGENERATE_DEADLINE_MS);
   });
   try {
-    return await Promise.race([regenerateChatTitleNow(item), deadline]);
+    return await Promise.race([regenerateChatTitleNow(item, run), deadline]);
   } finally {
     clearTimeout(timer);
     regeneratingTitles.delete(item.id);
   }
 }
 
-async function regenerateChatTitleNow(item: SidebarItem): Promise<RegenerateTitleOutcome> {
+async function regenerateChatTitleNow(
+  item: SidebarItem,
+  run: { expired: boolean },
+): Promise<RegenerateTitleOutcome> {
   try {
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
@@ -256,6 +264,7 @@ async function regenerateChatTitleNow(item: SidebarItem): Promise<RegenerateTitl
     if (!title) return "empty";
     // Every pane already has it: a comparison's panes can differ, so the first one alone can't say.
     if (panes ? panes.every((pane) => pane.title === title) : title === startTitle) return "unchanged";
+    if (run.expired) return "failed";
     const targets = panes
       ? [...new Map(panes.map((pane) => [pane.id, pane.title])).entries()]
       : [[threadId, startTitle] as const];

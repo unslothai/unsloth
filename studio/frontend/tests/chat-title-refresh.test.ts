@@ -158,7 +158,10 @@ test("a refresh follows the connection that answered, and asks a local model onl
     /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
   // One deadline over the whole regeneration releases the busy mark whichever step stalls.
-  assert.match(body, /return await Promise\.race\(\[regenerateChatTitleNow\(item\), deadline\]\);/);
+  assert.match(body, /return await Promise\.race\(\[regenerateChatTitleNow\(item, run\), deadline\]\);/);
+  // A run that lost the race never writes: a retry may already own the chat.
+  assert.match(body, /run\.expired = true; resolve\("failed"\);/);
+  assert.match(body, /if \(run\.expired\) return "failed"; const targets = panes/);
   assert.match(body, /finally \{ clearTimeout\(timer\); regeneratingTitles\.delete\(item\.id\); \}/);
   // Unchanged only when every pane already has the title.
   assert.match(body, /if \(panes \? panes\.every\(\(pane\) => pane\.title === title\) : title === startTitle\) return "unchanged";/);
