@@ -219,8 +219,20 @@ def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) ->
 def _gpu_vendors() -> Optional[set[str]]:
     """GPU vendors this process can reach, or None when that cannot be told."""
     try:
-        from utils.llama_cpp_path_settings import host_gpu_vendors
-        return host_gpu_vendors()
+        from utils.llama_cpp_path_settings import (
+            _amd_mask_hides_all,
+            _mask_hides_all,
+            host_gpu_vendors,
+        )
+
+        vendors = host_gpu_vendors()
+        # Windows detection only sees driver DLLs, so apply the visibility masks here too.
+        if vendors is not None:
+            if _mask_hides_all("CUDA_VISIBLE_DEVICES"):
+                vendors = vendors - {"nvidia"}
+            if _amd_mask_hides_all():
+                vendors = vendors - {"amd"}
+        return vendors
     except Exception:  # noqa: BLE001 - an unknown host keeps the build's backend
         return None
 

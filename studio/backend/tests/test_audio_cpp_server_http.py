@@ -350,6 +350,41 @@ def test_gpu_vendor_probe_failure_reads_as_unknown(monkeypatch):
     assert srv._gpu_vendors() is None
 
 
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # With no HIP or ROCR mask set, CUDA_VISIBLE_DEVICES stands in for AMD too.
+        ({"CUDA_VISIBLE_DEVICES": ""}, set()),
+        ({"CUDA_VISIBLE_DEVICES": "-1", "HIP_VISIBLE_DEVICES": "0"}, {"amd"}),
+        ({"HIP_VISIBLE_DEVICES": ""}, {"nvidia"}),
+        ({"CUDA_VISIBLE_DEVICES": "0"}, {"nvidia", "amd"}),
+        ({}, {"nvidia", "amd"}),
+    ],
+)
+def test_visibility_masks_hide_vendors_found_by_driver_dlls(monkeypatch, env, expected):
+    """Windows detection only globs driver DLLs, so the masks are applied on top of it."""
+    from utils import llama_cpp_path_settings
+
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia", "amd"})
+    assert srv._gpu_vendors() == expected
+
+
+def test_a_masked_windows_gpu_build_launches_on_cpu(tmp_path, monkeypatch):
+    from utils import llama_cpp_path_settings
+
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: {"nvidia"})
+    binary = _recorded_build(tmp_path, "cuda")
+    assert srv.select_backend(binary, False) == "cpu"
+    monkeypatch.setattr(llama_cpp_path_settings, "host_gpu_vendors", lambda: None)
+    assert srv.select_backend(binary, False) == "cuda"
+
+
 _EXITS_WITH = textwrap.dedent(
     """
     import sys
