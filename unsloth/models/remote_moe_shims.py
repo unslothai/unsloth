@@ -327,8 +327,11 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
 # keeps the counts on the device and runs every expert in three grouped GEMMs; every routed token is computed.
 
 
+_EXPERT_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+
+
 def _plain_expert(expert, dtype):
-    names = ("gate_proj", "up_proj", "down_proj")
+    names = _EXPERT_PROJECTIONS
     return all(
         type(getattr(expert, name, None)) is torch.nn.Linear
         and getattr(expert, name).bias is None
@@ -337,31 +340,73 @@ def _plain_expert(expert, dtype):
     ) and hasattr(expert, "act_fn")
 
 
+def _grouped_mm_ready(weight):
+    """torch._grouped_mm runs on this weight's device / dtype / layout: 2.6 / 2.7 lack it, 2.8 raises off sm90,
+    float16 needs 2.10+, and odd strides are refused. One tiny call decides, so a refusal keeps the original
+    path instead of failing generation."""
+    if not (
+        weight.is_cuda
+        and weight.dtype in (torch.bfloat16, torch.float16)
+        and hasattr(torch, "_grouped_mm")
+    ):
+        return False
+    try:
+        offsets = torch.ones(1, dtype = torch.int32, device = weight.device)
+        torch._grouped_mm(
+            weight.new_zeros((1, weight.shape[1])),
+            weight.detach()[None].transpose(-2, -1),
+            offs = offsets,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _grouped_experts_live(
+    block,
+    stacked,
+    every = True,
+):
+    """The experts are still plain linears whose weights alias `stacked`. A LoRA wrap, `model.to(...)` or a
+    reload breaks the alias; `every = False` checks only the first expert (cheap, per forward)."""
+    experts = block.experts
+    if len(experts) != stacked[0].shape[0]:
+        return False
+    for buffer, name in zip(stacked, _EXPERT_PROJECTIONS):
+        for index in range(len(experts) if every else 1):
+            linear = getattr(experts[index], name, None)
+            if (
+                type(linear) is not torch.nn.Linear
+                or linear.weight.dtype != buffer.dtype
+                or linear.weight.data_ptr() != buffer[index].data_ptr()
+            ):
+                return False
+    return True
+
+
 def _grouped_experts(block):
     """Stack the expert weights once into [E, out, in] buffers and point each expert's weights at its slice,
-    so no weight is held twice. None when the experts are not plain bf16 / fp16 linears on CUDA."""
+    so no weight is held twice. The Parameter objects stay the same (an optimizer built earlier still owns
+    them). None when the experts are not plain bf16 / fp16 linears on a device torch._grouped_mm serves."""
     cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
     if cached is not _MISSING:
-        return cached
+        if cached is None or _grouped_experts_live(block, cached, every = False):
+            return cached
     experts = block.experts
     stacked = None
     first = experts[0] if isinstance(experts, torch.nn.ModuleList) and len(experts) else None
-    weight = getattr(getattr(first, "gate_proj", None), "weight", None)
     if (
-        weight is not None
-        and weight.is_cuda
-        and weight.dtype in (torch.bfloat16, torch.float16)
-        and hasattr(torch, "_grouped_mm")
-        and all(_plain_expert(expert, weight.dtype) for expert in experts)
+        first is not None
+        and isinstance(getattr(first, "gate_proj", None), torch.nn.Linear)
+        and all(_plain_expert(expert, first.gate_proj.weight.dtype) for expert in experts)
+        and _grouped_mm_ready(first.gate_proj.weight)
+        and _grouped_mm_ready(first.down_proj.weight)
     ):
         stacked = []
-        for name in ("gate_proj", "up_proj", "down_proj"):
+        for name in _EXPERT_PROJECTIONS:
             buffer = torch.stack([getattr(expert, name).weight.detach() for expert in experts])
             for index, expert in enumerate(experts):
-                linear = getattr(expert, name)
-                linear.weight = torch.nn.Parameter(
-                    buffer[index], requires_grad = linear.weight.requires_grad
-                )
+                getattr(expert, name).weight.data = buffer[index]
             stacked.append(buffer)
         stacked = tuple(stacked)
     block.__dict__["_unsloth_grouped_experts"] = stacked
@@ -428,4 +473,9 @@ def prepare_remote_moe_for_inference(model):
         ):
             cls.moe_infer = _grouped_moe_infer(cls.__dict__["moe_infer"])
             patched.append(cls.__name__)
+        # Re-decide stacks that went stale (LoRA added, model moved or reloaded, dtype changed) or were
+        # refused earlier (e.g. first seen on the CPU), so a stale buffer is neither used nor kept alive.
+        cached = module.__dict__.get("_unsloth_grouped_experts", _MISSING)
+        if cached is not _MISSING and (cached is None or not _grouped_experts_live(module, cached)):
+            module.__dict__.pop("_unsloth_grouped_experts")
     return patched

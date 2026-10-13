@@ -231,6 +231,10 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
     capacity = -(-capacity // block_length) * block_length
     key = (batch, block_length, capacity, dtype, device)
     graphs = base.__dict__.setdefault("_unsloth_llada2_graphs", {})
+    # A graph replays raw weight addresses: once any parameter or buffer was re-pointed (`model.to(...)` there
+    # and back, a reload with assign, a re-stacked MoE), every captured graph would read freed memory.
+    if graphs.get("weights") not in (None, _weight_addresses(base)):
+        graphs.clear()
     graph = graphs.get(key)
     if graph is None:
         if graphs.get("failed"):
@@ -244,10 +248,18 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
             )
             return None
         # Keep the latest two shapes: each holds its own memory pool.
-        for old in [k for k in graphs if k != "failed"][:-1]:
+        for old in [k for k in graphs if isinstance(k, tuple)][:-1]:
             graphs.pop(old)
         graphs[key] = graph
+        # Taken after capture: its warm-up may re-point weights (the MoE shim stacks experts lazily).
+        graphs["weights"] = _weight_addresses(base)
     return graph
+
+
+def _weight_addresses(base):
+    return tuple(tensor.data_ptr() for tensor in base.parameters()) + tuple(
+        tensor.data_ptr() for tensor in base.buffers()
+    )
 
 
 def _sdar_runner(base, ids, mask, position_ids, cache, store_kv):
