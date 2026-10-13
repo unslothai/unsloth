@@ -106,19 +106,43 @@ export interface DecisionExportInfo {
   existing_export: ({ quantizations?: string[] } & Record<string, unknown>) | null;
 }
 
+/** Export limits of a text-diffusion LM checkpoint (LLaDA, Dream, DiffusionGemma, ...). */
+export interface DiffusionLmExportInfo {
+  profile: string;
+  disabled_methods: ("merged" | "lora" | "gguf")[];
+  reason: string | null;
+}
+
+export interface CheckpointExportProbe {
+  decision: DecisionExportInfo | null;
+  diffusionLm: DiffusionLmExportInfo | null;
+}
+
+/** Decision and text-diffusion export info for a local checkpoint folder; nulls for any other model. */
+export async function fetchCheckpointExportProbe(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<CheckpointExportProbe> {
+  const response = await authFetch(
+    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
+    { signal },
+  );
+  const body = await parseJson<{
+    decision: DecisionExportInfo | null;
+    diffusion_lm?: DiffusionLmExportInfo | null;
+  }>(response);
+  return {
+    decision: body.decision ?? null,
+    diffusionLm: body.diffusion_lm ?? null,
+  };
+}
+
 /** Decision export info for a local checkpoint folder; null for any other model. */
 export async function fetchDecisionExportInfo(
   checkpointPath: string,
   signal?: AbortSignal,
 ): Promise<DecisionExportInfo | null> {
-  const response = await authFetch(
-    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
-    { signal },
-  );
-  const body = await parseJson<{ decision: DecisionExportInfo | null }>(
-    response,
-  );
-  return body.decision ?? null;
+  return (await fetchCheckpointExportProbe(checkpointPath, signal)).decision;
 }
 
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
@@ -230,6 +254,19 @@ export async function convertGgufToQ4nx(params: {
   hf_token?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/convert/q4nx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
+/** Copy an image-generation LoRA from the Images catalog (weights plus its .json sidecar) to a folder. */
+export async function exportDiffusionLora(params: {
+  lora_id: string;
+  save_directory: string;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/diffusion-lora", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),

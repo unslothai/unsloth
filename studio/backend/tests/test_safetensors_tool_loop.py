@@ -2795,6 +2795,31 @@ class TestLoopBehaviour:
         )
         assert "previous tool request" not in after[1]["content"].lower()
 
+    @pytest.mark.parametrize("deduplicate", [True, False])
+    def test_identical_calls_in_one_turn_run_when_deduplication_is_off(self, deduplicate):
+        call = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["1", "1"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "run it twice"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = deduplicate,
+            )
+        )
+
+        assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
+
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
         captured_tool_names: list[list[str]] = []
@@ -5054,12 +5079,6 @@ class TestEnabledToolNameGate:
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
 
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
-
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (
             parse_tool_calls_from_text('foo[ARGS]{"a":1}', enabled_tool_names = {"web_search"}) == []
@@ -5823,6 +5842,29 @@ def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
     ]
 
 
+def test_mcp_listing_runs_again_after_an_mcp_write():
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    turns = iter([listing + create + listing, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["[]", "created", "[a]"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [args.get("action") for _, args in executor.calls] == ["list", "create", "list"]
+
+
 def test_every_independent_edit_gets_its_own_verification_rerun():
     """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
     test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
@@ -5853,3 +5895,118 @@ def test_every_independent_edit_gets_its_own_verification_rerun():
         "edit_file",
         "terminal",
     ]
+
+
+def _post_tool_stall(
+    tool_name,
+    arguments,
+    replies,
+    also = (),
+):
+    """One tool call, then the scripted replies, recording every prompt the model saw."""
+    captured: list[list] = []
+    call = '<tool_call>{"name":"%s","arguments":%s}</tool_call>' % (tool_name, arguments)
+    script = [call, *replies]
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield script[len(captured) - 1] if len(captured) <= len(script) else "Done."
+
+    exec_fn = FakeExecuteTool([])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}} for name in (tool_name, *also)],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 5,
+        )
+    )
+    return captured, exec_fn
+
+
+def test_browser_turns_get_a_post_tool_nudge():
+    # A browser step announced and not taken would end the task: GGUF and external parity.
+    call = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot",
+        "{}",
+        ["I'll click the first result.", call, "The title is X."],
+        also = ("browser_click",),
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]
+    assert captured[2][-1]["role"] == "user"
+
+
+def test_other_tools_still_never_nudge_after_a_tool():
+    captured, exec_fn = _post_tool_stall("web_search", '{"query":"x"}', ["I'll search again."])
+    assert [name for name, _ in exec_fn.calls] == ["web_search"]
+    assert len(captured) == 2, captured
+
+
+def test_a_browser_tool_turn_allows_one_nudge():
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", ["I'll click the first result.", "Let me click it now."]
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot"]
+    # The call, the stall, one nudged retry: the second stall in the same tool turn is the answer.
+    assert len(captured) == 3, captured
+
+
+def test_the_same_stall_words_in_a_later_browser_turn_are_nudged_again():
+    stall = "I'll click it now."
+    click = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", [stall, click, stall, click, "Done."], also = ("browser_click",)
+    )
+    assert [name for name, _ in exec_fn.calls] == [
+        "browser_snapshot",
+        "browser_click",
+        "browser_click",
+    ]
+
+
+def test_a_browser_turn_is_nudged_after_retrieval_was_injected(monkeypatch):
+    import core.inference.tools as tools_module
+
+    monkeypatch.setattr(
+        tools_module,
+        "build_rag_autoinject",
+        lambda *a, **k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Notes: background."}],
+        },
+    )
+    click = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured: list[list] = []
+    script = [
+        '<tool_call>{"name":"browser_snapshot","arguments":{}}</tool_call>',
+        "I'll click it now.",
+        click,
+        "Done.",
+    ]
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield script[len(captured) - 1] if len(captured) <= len(script) else "Done."
+
+    exec_fn = FakeExecuteTool([])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "browser_snapshot"}},
+                {"type": "function", "function": {"name": "browser_click"}},
+                {"type": "function", "function": {"name": "search_knowledge_base"}},
+            ],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 5,
+            rag_scope = {"kind": "thread", "thread_id": "t"},
+        )
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]

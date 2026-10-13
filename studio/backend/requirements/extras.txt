@@ -15,6 +15,10 @@ scikit-learn==1.8.0; sys_platform == "win32" and platform_machine == "ARM64"
 jiwer==4.0.0                     # WER/CER metrics for vision OCR save-merge benchmarks
 gguf>=0.10.0                     # Required by transformers to load GGUF checkpoints in PyTorch
 omegaconf==2.3.1
+# Imported only by Hub remote code (DeepSeek-OCR and DeepSeek-OCR-2 modeling files), so a
+# grep of this repo finds no user; without them those models fail to load (#8732).
+addict==2.4.0
+easydict==1.13
 einx<0.4.3; sys_platform == "win32"
 # einx dropped 3.9 in 0.4.0, so the non-Windows pin splits at 3.10.
 einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"

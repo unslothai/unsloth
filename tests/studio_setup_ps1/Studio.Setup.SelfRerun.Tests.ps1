@@ -84,8 +84,10 @@ BeforeAll {
     if ($script:RerunBlock -notmatch 'step "setup" "([^"]+)"') { throw "drift: the rerun block lost its handoff step." }
     $script:Handoff = $Matches[1]
 
+    # Complete-FrontendBuildBackground returns at once here: no background build was started.
     $functions = foreach ($name in @('Write-StudioLine', 'Remove-WoaMergedOverrides', 'Exit-SetupFailure',
-                                     'Test-SetupScriptReplaced', 'Restore-SetupStartEnvironment')) {
+                                     'Test-SetupScriptReplaced', 'Restore-SetupStartEnvironment',
+                                     'Complete-FrontendBuildBackground')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $name
         if (-not $src) { throw "drift: $name is gone from setup.ps1." }
         $src
@@ -345,8 +347,9 @@ Describe 'elevation prompts across the rerun' {
         $script:SetupText.IndexOf('winget install Git.Git') | Should -BeLessThan $script:HandoffAt
     }
 
-    It 'Git: tries the optional install on a first run and not on the rerun (<Guard>)' -ForEach @(
-        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    It 'Git: installs only when a clone needs it (rerun=<Guard>, needed=<Needed>)' -ForEach @(
+        @{ Guard = ''; Needed = $false; Expected = 0 }, @{ Guard = '1'; Needed = $false; Expected = 0 },
+        @{ Guard = ''; Needed = $true; Expected = 1 }, @{ Guard = '1'; Needed = $true; Expected = 1 }
     ) {
         function Invoke-SetupCommand { param([scriptblock]$Block) }
         function Refresh-Environment { }
@@ -360,8 +363,11 @@ Describe 'elevation prompts across the rerun' {
         }
         $DefaultLlamaPrForce = ''; $DefaultLlamaSource = 'https://github.com/ggml-org/llama.cpp'; $DefaultLlamaTag = 'b1'
         if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
+        if ($Needed) { $env:UNSLOTH_LLAMA_FORCE_COMPILE = '1' }
         $StageRoot = $null
-        . ([scriptblock]::Create($script:GitBlock))
+        # Git stays missing under the mock, so a needed install ends in Exit-SetupFailure.
+        try { . ([scriptblock]::Create($script:GitBlock)) } catch { if (-not $Needed) { throw } }
+        Remove-Item Env:UNSLOTH_LLAMA_FORCE_COMPILE -ErrorAction SilentlyContinue
         Should -Invoke Invoke-SetupCommand -Times $Expected -Exactly
     }
 

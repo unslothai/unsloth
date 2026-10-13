@@ -7,6 +7,7 @@ import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { defaultZoom } from "./prefs-store";
+import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -351,6 +352,19 @@ function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): numbe
   return tab.zoom;
 }
 
+/** The same-origin address the page's router moved to, for Reload; null if unmoved or a POST. */
+function routerEntry(tab: BrowserTab): BrowserEntry | null {
+  const entry = currentEntry(tab);
+  if (nativeWebHistory || entry.kind !== "web" || entry.method === "POST") return null;
+  if (!tab.displayUrl || tab.displayUrl === entry.url) return null;
+  try {
+    if (new URL(tab.displayUrl).origin !== new URL(entry.url).origin) return null;
+  } catch {
+    return null;
+  }
+  return webEntry(tab.displayUrl, "GET", undefined, undefined, entry.temporary);
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
   const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
@@ -510,11 +524,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
+      const type = contentType || blob.type;
       const entry: BrowserEntry = {
         kind: "file",
         fileId,
         name: name || "Untitled",
-        contentType: contentType || blob.type,
+        // Only a React preview opened from chat runs as one; a file that claims the type is text.
+        contentType: type === REACT_PREVIEW_TYPE && !key?.startsWith(REACT_PREVIEW_KEY_PREFIX) ? "text/plain" : type,
         plainText,
         ...(openKey ? { openKey } : {}),
         ...(key?.startsWith("html:") ? { chatPage: true } : {}),
@@ -586,7 +602,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (tab) pageCache.delete(currentEntry(tab));
       set((state) => ({
-        tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const moved = routerEntry(tab);
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1 };
+          // Swapped in place, as a browser's reload: Forward keeps its pages.
+          const next = pushEntry(tab, moved, true);
+          return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };
+        }),
       }));
     },
     activateTab: (tabId) => set({ activeTabId: tabId, annotateTabId: null }),

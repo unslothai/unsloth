@@ -59,9 +59,9 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
-  AudioWave01Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -503,6 +503,8 @@ export function VoiceTab() {
   );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
+  const autoReadAloud = useVoiceSettingsStore((s) => s.autoReadAloud);
+  const setAutoReadAloud = useVoiceSettingsStore((s) => s.setAutoReadAloud);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
@@ -1580,6 +1582,16 @@ export function VoiceTab() {
             </SettingsRow>
 
             <SettingsRow
+              label={t("settings.voice.readAloud.autoLabel")}
+              description={t("settings.voice.readAloud.autoDescription")}
+            >
+              <Switch
+                checked={autoReadAloud}
+                onCheckedChange={setAutoReadAloud}
+              />
+            </SettingsRow>
+
+            <SettingsRow
               label={t("settings.voice.readAloud.engineLabel")}
               description={
                 effectiveTtsEngine === "studio"
@@ -1699,7 +1711,7 @@ export function VoiceTab() {
                     }}
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.openAudioAction")}

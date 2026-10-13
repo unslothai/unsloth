@@ -59,6 +59,19 @@ class LoadCheckpointRequest(BaseModel):
         None,
         description = "Hugging Face token used to scan/load gated checkpoints and their base models.",
     )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
+
+
+class ExportCancelRequest(BaseModel):
+    expected_op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Stop only the operation started with this op_id; one not started yet is refused when it starts.",
+    )
 
 
 class ExportStatusResponse(BaseModel):
@@ -135,11 +148,22 @@ class DecisionExportInfo(BaseModel):
     )
 
 
+class DiffusionLmExportInfo(BaseModel):
+    """Export limits for a text-diffusion LM checkpoint (LLaDA, Dream, SDAR, DiffusionGemma, ...)."""
+
+    profile: str = Field(..., description = "Text-diffusion family of the checkpoint's base model")
+    disabled_methods: List[str] = Field(
+        default_factory = list, description = "Export methods this checkpoint cannot use"
+    )
+    reason: Optional[str] = Field(None, description = "Why those methods are unavailable")
+
+
 class ExportDecisionInfoResponse(BaseModel):
     """Decision-model export info for a checkpoint path; decision is None for any other model."""
 
     checkpoint_path: str
     decision: Optional[DecisionExportInfo] = None
+    diffusion_lm: Optional[DiffusionLmExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):
@@ -186,6 +210,17 @@ class ExportCommonOptions(BaseModel):
         None,
         description = "HuggingFace model ID of the base model (for model card metadata)",
     )
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
 
 class ExportMergedModelRequest(ExportCommonOptions):
@@ -223,6 +258,18 @@ class ExportBaseModelRequest(ExportCommonOptions):
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
+
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
     save_directory: str = Field(
         ...,
@@ -290,6 +337,20 @@ class ConvertQ4NXRequest(BaseModel):
         "its config.json and tokenizer files.",
     )
     hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
+
+
+class ExportDiffusionLoRARequest(BaseModel):
+    """Copy an image-generation LoRA from the Images catalog into an export folder."""
+
+    lora_id: str = Field(
+        ..., description = "Local adapter id as listed by /api/models/diffusion-loras"
+    )
+    save_directory: str = Field(..., description = "Directory the adapter is copied into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):

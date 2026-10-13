@@ -68,7 +68,13 @@ from .models.loader_utils import (
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model, lora_relative_to_original_base
+from .models._utils import (
+    _convert_torchao_model,
+    _merged_torchao_config_for_peft_qat,
+    _peft_untied_lm_head,
+    _strip_torchao_fake_quantization,
+    lora_relative_to_original_base,
+)
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
@@ -3348,7 +3354,10 @@ def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
         return False
     if state_dict is not None or getattr(model, "_unsloth_full_finetuning", False):
         return False
-    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    # A ModelScope load keeps its snapshot here, since `_name_or_path` holds the repo id (#3726).
+    name_or_path = getattr(model, "_unsloth_modelscope_snapshot", None) or getattr(
+        getattr(model, "config", None), "_name_or_path", None
+    )
     try:
         return bool(name_or_path and os.path.isdir(str(name_or_path)))
     except Exception:
@@ -3438,7 +3447,9 @@ def _gguf_model_input_directory(
 ):
     """The folder the converter reads, which is not always `save_directory`: a reused loaded checkpoint, which `unsloth_save_pretrained_gguf` assigns to `save_directory` before calling `save_to_gguf`. It matters only in the unwritable-CWD fallback, where the intermediate GGUF lands beside the reused checkpoint rather than the requested output, and the two can be on different filesystems."""
     if _gguf_reuses_loaded_checkpoint(model, state_dict):
-        return str(model.config._name_or_path)
+        return str(
+            getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path
+        )
     return save_directory
 
 
@@ -3880,7 +3891,9 @@ def _assert_export_target_is_not_base_with_lora_layers(self):
             "Unsloth: This model has LoRA layers, but the save method was called on the "
             "base model. This happens when the adapter is attached with "
             "`peft.PeftModel.from_pretrained`. Load the adapter folder with "
-            "`FastModel.from_pretrained(<adapter folder>)` instead."
+            "`FastModel.from_pretrained(<adapter folder>)` instead. If the adapter was added with "
+            "`peft.get_peft_model` (VeRA, LoHa, AdaLoRA, ...), run `model = model.merge_and_unload()` "
+            "first, then save."
         )
 
 
@@ -4094,7 +4107,9 @@ def unsloth_save_pretrained_gguf(
             ) from e
     else:
         # Non-PEFT model: convert the loaded checkpoint in place when it still holds the weights to export.
-        original_path = getattr(self.config, "_name_or_path", None)
+        original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
+            self.config, "_name_or_path", None
+        )
         if _gguf_reuses_loaded_checkpoint(self, state_dict):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
@@ -5161,6 +5176,21 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _modelscope_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
+    name = get_model_name(model_name, load_in_4bit = load_in_4bit)
+    if not name or os.path.exists(name):
+        return name
+    try:
+        from modelscope import snapshot_download
+        return snapshot_download(name)
+    except Exception as e:
+        logger.warning_once(
+            f"Unsloth: Could not download `{name}` from ModelScope ({e}), trying Hugging Face."
+        )
+        return name
+
+
 def _prewarm_base_model_hub_cache(
     model,
     save_method = "merged_16bit",
@@ -5171,6 +5201,9 @@ def _prewarm_base_model_hub_cache(
     if os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower() in _false:
         return
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+        return
+    # The merge fetches the base from ModelScope, so a Hub cache copy would go unused.
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
         return
     _true = ("1", "true", "yes", "on")
     if (
@@ -5707,7 +5740,9 @@ def unsloth_generic_save(
         in_place = save_method in ("merged_4bit", "forced_merged_4bit")
         with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
-                get_model_name,
+                _modelscope_base_model_name
+                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
+                else get_model_name,
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
@@ -6009,17 +6044,23 @@ def _unsloth_save_torchao_with_attached_config(
     token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
-    _convert_torchao_model(model)
-    if isinstance(model, PeftModelForCausalLM):
+    if isinstance(model, (PeftModelForCausalLM, PeftModel)):
+        # Quantizing in place leaves int4 base layers the LoRA merge cannot read, so merge in 16-bit and quantize the reload with the QAT configs.
+        torchao_config = _merged_torchao_config_for_peft_qat(model)
+        untied_lm_head = _peft_untied_lm_head(model)
+        _strip_torchao_fake_quantization(model)
         _unsloth_save_torchao_with_given_config(
             model = model,
             save_directory = save_directory,
             tokenizer = tokenizer,
-            torchao_config = model.config.quantization_config,
+            torchao_config = torchao_config,
             push_to_hub = push_to_hub,
             token = token,
+            untied_lm_head = untied_lm_head,
         )
         return
+
+    _convert_torchao_model(model)
 
     # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
@@ -6032,6 +6073,66 @@ def _unsloth_save_torchao_with_attached_config(
         tokenizer.save_pretrained(save_directory)
 
 
+def _untie_merged_checkpoint(save_directory, lm_head_key, lm_head_weight):
+    """Give a tied merged 16-bit checkpoint the model's own lm_head, so its torchao reload quantizes it apart from the embedding as QAT trained them."""
+    from safetensors.torch import load_file, save_file
+
+    config_path = os.path.join(save_directory, "config.json")
+    with open(config_path, encoding = "utf-8") as f:
+        config = json.load(f)
+    # Only the configs on lm_head's path (e.g. thinker_config.text_config for thinker.lm_head), not sibling decoders.
+    candidates, node = [config, config.get("text_config")], config
+    for part in lm_head_key.split(".")[:-2]:
+        node = node.get(f"{part}_config") if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            break
+        candidates += [node, node.get("text_config")]
+    tied = [c for c in candidates if isinstance(c, dict) and c.get("tie_word_embeddings")]
+    if not tied:
+        return
+
+    weight = lm_head_weight.detach().to("cpu").contiguous()
+    index_path = os.path.join(save_directory, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path, encoding = "utf-8") as f:
+            index = json.load(f)
+        if lm_head_key not in index["weight_map"]:
+            used, shard, i = set(index["weight_map"].values()), "model-lm_head.safetensors", 0
+            while shard in used:
+                i += 1
+                shard = f"model-lm_head-{i}.safetensors"
+            save_file(
+                {lm_head_key: weight},
+                os.path.join(save_directory, shard),
+                metadata = {"format": "pt"},
+            )
+            index["weight_map"][lm_head_key] = shard
+            with open(index_path, "w", encoding = "utf-8") as f:
+                json.dump(index, f, indent = 2)
+    else:
+        # The merge keeps the base repo's file name (model.safetensors, consolidated.safetensors, ...).
+        files = [
+            f
+            for f in os.listdir(save_directory)
+            if f.endswith(".safetensors") and not f.startswith("adapter_model")
+        ]
+        if "model.safetensors" in files:
+            files = ["model.safetensors"]
+        if len(files) != 1:
+            return
+        path = os.path.join(save_directory, files[0])
+        tensors = load_file(path)
+        if lm_head_key not in tensors:
+            tensors[lm_head_key] = weight
+            save_file(tensors, path, metadata = {"format": "pt"})
+        del tensors
+
+    for c in tied:
+        c["tie_word_embeddings"] = False
+    with open(config_path, "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2)
+
+
 def _unsloth_save_torchao_with_given_config(
     model,
     save_directory: Union[str, os.PathLike],
@@ -6039,6 +6140,7 @@ def _unsloth_save_torchao_with_given_config(
     torchao_config,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
+    untied_lm_head = None,
 ):
     """Quantize the model with torchao and save a torchao quantized checkpoint.
 
@@ -6057,12 +6159,16 @@ def _unsloth_save_torchao_with_given_config(
     arguments["push_to_hub"] = False
     arguments["save_method"] = "merged_16bit"
     del arguments["torchao_config"]
+    del arguments["untied_lm_head"]
 
     if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
         model.save_pretrained(save_directory)
         tokenizer.save_pretrained(save_directory)
     else:
         unsloth_generic_save(**arguments)
+
+    if untied_lm_head is not None:
+        _untie_merged_checkpoint(save_directory, *untied_lm_head)
 
     for _ in range(3):
         gc.collect()
@@ -6906,10 +7012,10 @@ def unsloth_save_pretrained_torchao(
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
 ):
-    """Save a torchao quantized model checkpoint. Two mutually exclusive workflows: a model trained with `qat_scheme` must NOT be given a `torchao_config` and has its fake-quantized weights converted to real quantized ones; any other model must be given one, and is quantized here.
+    """Save a torchao quantized model checkpoint. A model trained with `qat_scheme` may omit `torchao_config` and is quantized with its QAT scheme; any other model must be given one, and is quantized here.
 
     `save_directory`: local folder, or a hub id when `push_to_hub` is True.
-    `torchao_config` (TorchAOBaseConfig): required for PTQ, None for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
+    `torchao_config` (TorchAOBaseConfig): required for PTQ, optional for QAT. https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
     _assert_export_target_is_not_base_with_lora_layers(self)
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -6921,11 +7027,9 @@ def unsloth_save_pretrained_torchao(
     has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
 
     if torchao_config is not None:
-        assert not has_qat_config, (
-            "Unsloth: You passed `torchao_config` but this model was trained with `qat_scheme`. "
-            "For QAT models, do not pass `torchao_config` - the quantization config is already "
-            "attached to the model from training."
-        )
+        if has_qat_config:
+            # The 16-bit save below must see plain modules, not fake-quantized ones.
+            _strip_torchao_fake_quantization(self)
         _unsloth_save_torchao_with_given_config(
             model = self,
             save_directory = save_directory,
@@ -7276,9 +7380,93 @@ def not_implemented_save(*args, **kwargs):
     raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
 
 
+class _TokenizerBoundMethod:
+    """Picklable `types.MethodType`: a bound method pickles as getattr(obj, func.__name__), which no
+    tokenizer has. Unpickled it becomes the class's own method (or None), so readers need no Unsloth."""
+
+    def __init__(self, func, obj, name):
+        self.__func__ = func
+        self.__self__ = obj
+        self._unsloth_name = name
+
+    def __call__(self, *args, **kwargs):
+        return self.__func__(self.__self__, *args, **kwargs)
+
+    def __getattr__(self, name):
+        if name.startswith("_unsloth") or name in ("__func__", "__self__"):
+            raise AttributeError(name)
+        return getattr(self.__func__, name)
+
+    @property
+    def __doc__(self):
+        return self.__func__.__doc__
+
+    @property
+    def __signature__(self):
+        import inspect
+        import types
+        return inspect.signature(types.MethodType(self.__func__, self.__self__))
+
+    def __reduce__(self):
+        # During unpickling __dict__ is still empty, so this resolves the class attribute.
+        if hasattr(type(self.__self__), self._unsloth_name):
+            return (getattr, (self.__self__, self._unsloth_name))
+        return (type(None), ())
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        import copy
+        return type(self)(self.__func__, copy.deepcopy(self.__self__, memo), self._unsloth_name)
+
+
+def _bind_saving_method(func, obj, name):
+    import types
+    if isinstance(obj, (PreTrainedTokenizerBase, ProcessorMixin)):
+        return _TokenizerBoundMethod(func, obj, name)
+    return types.MethodType(func, obj)
+
+
+def unsloth_tokenizer_save_pretrained(
+    self,
+    save_directory,
+    legacy_format = None,
+    filename_prefix = None,
+    push_to_hub = False,
+    **kwargs,
+):
+    result = self.original_save_pretrained(
+        save_directory,
+        legacy_format = legacy_format,
+        filename_prefix = filename_prefix,
+        push_to_hub = False,
+        **kwargs,
+    )
+    _preserve_sentencepiece_tokenizer_assets(
+        self,
+        save_directory,
+        token = kwargs.get("token", None),
+    )
+    _preserve_tokenizer_eos_token(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+    )
+    _preserve_repaired_tokenizer_class(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+    )
+    if push_to_hub:
+        push_kwargs = dict(kwargs)
+        repo_id = push_kwargs.pop("repo_id", save_directory)
+        self.push_to_hub(repo_id, **push_kwargs)
+    return result
+
+
 def patch_saving_functions(model, vision = False):
     import inspect
-    import types
     from typing import Callable, Optional, Union, List
 
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
@@ -7351,42 +7539,6 @@ def patch_saving_functions(model, vision = False):
     '''
     exec(push_to_hub_text, globals())
 
-    def unsloth_tokenizer_save_pretrained(
-        self,
-        save_directory,
-        legacy_format = None,
-        filename_prefix = None,
-        push_to_hub = False,
-        **kwargs,
-    ):
-        result = self.original_save_pretrained(
-            save_directory,
-            legacy_format = legacy_format,
-            filename_prefix = filename_prefix,
-            push_to_hub = False,
-            **kwargs,
-        )
-        _preserve_sentencepiece_tokenizer_assets(
-            self,
-            save_directory,
-            token = kwargs.get("token", None),
-        )
-        _preserve_tokenizer_eos_token(
-            self,
-            save_directory,
-            filename_prefix = filename_prefix,
-        )
-        _preserve_repaired_tokenizer_class(
-            self,
-            save_directory,
-            filename_prefix = filename_prefix,
-        )
-        if push_to_hub:
-            push_kwargs = dict(kwargs)
-            repo_id = push_kwargs.pop("repo_id", save_directory)
-            self.push_to_hub(repo_id, **push_kwargs)
-        return result
-
     def unsloth_model_save_pretrained(self, *args, **kwargs):
         """`safe_serialization = None` means the safetensors default, not a pickle.
 
@@ -7426,7 +7578,9 @@ def patch_saving_functions(model, vision = False):
         and model.save_pretrained.__name__ != "unsloth_tokenizer_save_pretrained"
     ):
         model.original_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_tokenizer_save_pretrained, model)
+        model.save_pretrained = _bind_saving_method(
+            unsloth_tokenizer_save_pretrained, model, "save_pretrained"
+        )
     elif getattr(model, "tokenizer", None) is not None:
         patch_saving_functions(model.tokenizer)
 
@@ -7439,7 +7593,9 @@ def patch_saving_functions(model, vision = False):
         and getattr(model.save_pretrained, "__name__", "") != "unsloth_model_save_pretrained"
     ):
         model.original_model_save_pretrained = model.save_pretrained
-        model.save_pretrained = types.MethodType(unsloth_model_save_pretrained, model)
+        model.save_pretrained = _bind_saving_method(
+            unsloth_model_save_pretrained, model, "save_pretrained"
+        )
 
     original_model = model
     while True:
@@ -7448,7 +7604,9 @@ def patch_saving_functions(model, vision = False):
             and original_model.push_to_hub.__name__ != "unsloth_push_to_hub"
         ):
             original_model.original_push_to_hub = original_model.push_to_hub
-            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+            original_model.push_to_hub = _bind_saving_method(
+                unsloth_push_to_hub, original_model, "push_to_hub"
+            )
             if hasattr(original_model, "add_model_tags"):
                 original_model.add_model_tags(
                     [
@@ -7463,33 +7621,55 @@ def patch_saving_functions(model, vision = False):
 
     if not vision:
         if hasattr(model, "config"):
-            model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
-            model.save_pretrained_merged = types.MethodType(
-                unsloth_generic_save_pretrained_merged, model
+            model.push_to_hub_merged = _bind_saving_method(
+                unsloth_generic_push_to_hub_merged, model, "push_to_hub_merged"
             )
-            model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
-            model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
-            model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
-            model.save_pretrained_openvino = types.MethodType(
-                unsloth_save_pretrained_openvino, model
+            model.save_pretrained_merged = _bind_saving_method(
+                unsloth_generic_save_pretrained_merged, model, "save_pretrained_merged"
             )
-            model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
-            model.push_to_hub_ggml = types.MethodType(
-                unsloth_convert_lora_to_ggml_and_push_to_hub, model
+            model.push_to_hub_gguf = _bind_saving_method(
+                unsloth_push_to_hub_gguf, model, "push_to_hub_gguf"
             )
-            model.save_pretrained_ggml = types.MethodType(
-                unsloth_convert_lora_to_ggml_and_save_locally, model
+            model.save_pretrained_gguf = _bind_saving_method(
+                unsloth_save_pretrained_gguf, model, "save_pretrained_gguf"
+            )
+            model.save_pretrained_torchao = _bind_saving_method(
+                unsloth_save_pretrained_torchao, model, "save_pretrained_torchao"
+            )
+            model.save_pretrained_openvino = _bind_saving_method(
+                unsloth_save_pretrained_openvino, model, "save_pretrained_openvino"
+            )
+            model.push_to_hub_openvino = _bind_saving_method(
+                unsloth_push_to_hub_openvino, model, "push_to_hub_openvino"
+            )
+            model.push_to_hub_ggml = _bind_saving_method(
+                unsloth_convert_lora_to_ggml_and_push_to_hub, model, "push_to_hub_ggml"
+            )
+            model.save_pretrained_ggml = _bind_saving_method(
+                unsloth_convert_lora_to_ggml_and_save_locally, model, "save_pretrained_ggml"
             )
     else:
-        model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
-        model.save_pretrained_merged = types.MethodType(
-            unsloth_generic_save_pretrained_merged, model
+        model.push_to_hub_merged = _bind_saving_method(
+            unsloth_generic_push_to_hub_merged, model, "push_to_hub_merged"
         )
-        model.push_to_hub_gguf = types.MethodType(unsloth_push_to_hub_gguf, model)
-        model.save_pretrained_gguf = types.MethodType(unsloth_save_pretrained_gguf, model)
-        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao, model)
-        model.save_pretrained_openvino = types.MethodType(unsloth_save_pretrained_openvino, model)
-        model.push_to_hub_openvino = types.MethodType(unsloth_push_to_hub_openvino, model)
+        model.save_pretrained_merged = _bind_saving_method(
+            unsloth_generic_save_pretrained_merged, model, "save_pretrained_merged"
+        )
+        model.push_to_hub_gguf = _bind_saving_method(
+            unsloth_push_to_hub_gguf, model, "push_to_hub_gguf"
+        )
+        model.save_pretrained_gguf = _bind_saving_method(
+            unsloth_save_pretrained_gguf, model, "save_pretrained_gguf"
+        )
+        model.save_pretrained_torchao = _bind_saving_method(
+            unsloth_save_pretrained_torchao, model, "save_pretrained_torchao"
+        )
+        model.save_pretrained_openvino = _bind_saving_method(
+            unsloth_save_pretrained_openvino, model, "save_pretrained_openvino"
+        )
+        model.push_to_hub_openvino = _bind_saving_method(
+            unsloth_push_to_hub_openvino, model, "push_to_hub_openvino"
+        )
     return model
 
 

@@ -858,12 +858,33 @@ test("closing the last Downloads button dismisses its result, but a button swapp
   assert.equal(keptDownloadFile("save:swap"), null);
 });
 
+test("the agent's Downloads rule covers its tab while a chat run is using it, and just after", async () => {
+  const { agentDownloadRule, endBrowserAgentRun, useBrowserAgentStore } = await import(
+    "../src/features/browser/agent/agent-store.ts"
+  );
+  const blocked = { browsing: "ask", actions: "ask", downloads: "block", unlabelled: "ask" } as const;
+  useBrowserAgentStore.setState({ tabId: "t1", runKey: "run1", permissions: { defaults: blocked, sites: {} } });
+  assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");
+  assert.equal(agentDownloadRule("t2", "https://example.com/", "https://example.com/f.pdf"), null);
+  // Another run ending leaves this one alone; this one ending hands the tab back to the user.
+  endBrowserAgentRun("run0");
+  assert.equal(agentDownloadRule("t1", "https://example.com/", "https://example.com/f.pdf"), "block");
+  // A blob: download is the rule of the site that made it.
+  useBrowserAgentStore.setState({
+    permissions: { defaults: { ...blocked, downloads: "allow" }, sites: { "site.example": blocked } },
+  });
+  assert.equal(agentDownloadRule("t1", "blob:https://site.example/3f2a", "blob:https://site.example/3f2a"), "block");
+  // A download reported just after the run ends is still the agent's.
+  endBrowserAgentRun("run1");
+  assert.equal(agentDownloadRule("t1", "blob:https://site.example/3f2a", "blob:https://site.example/3f2a"), "block");
+});
+
 test("file toolbars keep a Downloads button registered, and a hidden panel closes its popover", async () => {
   const { readFileSync } = await import("node:fs");
   const read = (file: string) => readFileSync(new URL(`../src/features/browser/${file}`, import.meta.url), "utf8");
   // Mounted only once a save began, it would register after a quick save had already finished.
   const panel = read("browser-panel.tsx");
-  assert.equal(panel.match(/<DownloadsButton [^>]*visible=\{visible\} idleHidden=\{true\} \/>/g)?.length, 3);
+  assert.equal(panel.match(/<DownloadsButton [^>]*visible=\{visible\} idleHidden=\{true\} \/>/g)?.length, 2);
   assert.doesNotMatch(panel, /BusyDownloadsButton/);
   // The popover is portaled out of the panel, so it would stay up over the next page.
   assert.match(read("downloads-button.tsx"), /if \(!visible && mode !== "closed"\) \{\s*setMode\("closed"\);/);

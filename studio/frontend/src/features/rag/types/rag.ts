@@ -99,10 +99,20 @@ export interface LinkedFolder {
   status: LinkedFolderStatus;
   documentCount?: number;
   lastSyncedAt?: string | null;
+  lastChangedAt?: string | null;
   error?: string | null;
   activeJobId?: string | null;
   createdAt?: string | null;
+  skipped?: Partial<Record<LinkedFolderSkipReason, number>>;
+  failures?: { path: string; error: string }[];
+  failureCount?: number;
 }
+
+export type LinkedFolderSkipReason =
+  | "gitignored"
+  | "build_dirs"
+  | "too_large"
+  | "over_limit";
 
 export function linkedFolderSourcesChanged(
   previous: LinkedFolder[] | null,
@@ -121,7 +131,9 @@ export function linkedFolderSourcesChanged(
     return (
       prior !== undefined &&
       (prior.documentCount !== folder.documentCount ||
-        prior.lastSyncedAt !== folder.lastSyncedAt)
+        // lastSyncedAt moves every pass; older backends without lastChangedAt fall back to it.
+        (prior.lastChangedAt ?? prior.lastSyncedAt) !==
+          (folder.lastChangedAt ?? folder.lastSyncedAt))
     );
   });
 }
@@ -140,8 +152,24 @@ export interface FolderSyncJob {
   processedFiles?: number;
   indexedFiles?: number;
   removedFiles?: number;
+  renamedFiles?: number;
   failedFiles?: number;
   error?: string | null;
+}
+
+/** Missing counts (older backends) count as a change. */
+export function jobChangedSources(job: FolderSyncJob): boolean {
+  if (
+    job.indexedFiles === undefined &&
+    job.removedFiles === undefined &&
+    job.renamedFiles === undefined
+  ) {
+    return true;
+  }
+  return (
+    (job.indexedFiles ?? 0) + (job.removedFiles ?? 0) + (job.renamedFiles ?? 0) >
+    0
+  );
 }
 
 /** One SSE frame from /linked-folder-jobs/{jobId}/events. */
@@ -181,3 +209,7 @@ export interface PreviewTarget {
 }
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
+
+/** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */
+export const RAG_DOCUMENT_UPLOAD_ACCEPT =
+  ".doc,.docm,.dotx,.dotm,.xls,.xlt,.xlsx,.xlsm,.xltx,.xltm,.ppt,.pps,.pptx,.pptm,.potx,.potm,.ppsx,.ppsm,.odt,.ods,.odp,.ott,.ots,.otp,.msg,.eml,.mht,.mhtml,.rtf,.epub,.xhtml,.xht";

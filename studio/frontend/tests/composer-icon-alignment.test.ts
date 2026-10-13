@@ -52,3 +52,9 @@ test("neither composer action glyph carries a device-pixel nudge", () => {
     assert.doesNotMatch(source, RETIRED_CANCEL_CLASS);
   }
 });
+
+test("the dictate glyph keeps a 1px optical nudge, not the 2px that read as low", () => {
+  const body = css.match(/& svg\.unsloth-dictate-icon \{([\s\S]*?)\n\t\}/)?.[1];
+  assert.ok(body, "dictate icon rule");
+  assert.match(body, /transform:\s*translateY\(1px\);/);
+});

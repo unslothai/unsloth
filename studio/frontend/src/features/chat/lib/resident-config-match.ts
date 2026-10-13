@@ -11,6 +11,10 @@ import {
 } from "./llama-extra-args-normalize";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -20,6 +24,9 @@ type ResidentRuntime = Pick<
   | "engine"
   | "engine_parallelism"
   | "engine_precision"
+  | "engine_kv_cache_dtype"
+  | "engine_seed"
+  | "engine_gpu_memory_utilization"
   | "context_length"
   | "requested_context_length"
   | "cache_type_kv"
@@ -27,6 +34,7 @@ type ResidentRuntime = Pick<
   | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
+  | "spec_draft_model"
   | "requested_parallel_slots"
   | "requested_n_batch"
   | "requested_n_ubatch"
@@ -48,6 +56,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_mlx"
   | "is_diffusion"
   | "diffusion_requested_ngl"
   | "diffusion_split_supported"
@@ -182,12 +191,17 @@ export function residentSpeculativeNeedsRepair(
     | "spec_dflash_retry_pending"
     | "spec_dspark_sidecar_absent"
     | "spec_drafter_kind"
+    | "is_mlx"
   >,
   resolvedSpeculativeType: string | null,
   /** Whether the load carries a `gguf_path`, which the route sets from the identifier alone:
    *  `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`. */
   sendsGgufPath = false,
 ): boolean {
+  // Every arm below is llama.cpp's; an identical MLX load dedupes.
+  if (status.is_mlx === true) {
+    return false;
+  }
   const mode = resolvedSpeculativeType ?? "auto";
   // Two arms that record no fallback reason, so the reason check below cannot see them. The probe
   // arm is not gated on a mode; the DFlash one is, as the backend gates it.
@@ -279,14 +293,28 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
     // it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    mlxComparable: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      (standing.normalizeSpeculative(c.speculativeType) ??
-        standing.speculativeType) ===
-      (standing.normalizeSpeculative(s.speculative_type) ??
-        standing.speculativeType),
+    agrees: (c, s, standing) => {
+      const unset = resolveSpeculativeType(
+        null,
+        standing.speculativeType ?? "auto",
+        s.is_mlx === true,
+      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
+    },
   },
   {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftModel ?? null) === (s.spec_draft_model ?? null),
+  },
+  {
+    mlxComparable: true,
     // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
     // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
     // as the status carries a count only when a depth-consuming load recorded an override.
@@ -448,19 +476,22 @@ const SETTING_CHECKS: SettingCheck[] = [
         c.selectedGpuIds ?? null,
         c.selectedGpuIndexKind,
       );
-      // The diffusion runner drives one device, so matches_gpu_ids reduces the request to its lowest id
-      // and the status reports only that.
-      const pick =
+      // The diffusion runner reports the lowest id of a pick that fits it, else the whole sorted pick
+      // it split over; matches_gpu_ids accepts either.
+      const picks: (number[] | null)[] =
         s.is_diffusion === true && reconciled?.length
-          ? [Math.min(...reconciled)]
-          : reconciled;
-      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
+          ? [[Math.min(...reconciled)], [...reconciled].sort((a, b) => a - b)]
+          : [reconciled];
+      if (picks.some((pick) => sameGpuPlacement(pick, s.requested_gpu_ids))) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
+      return (
+        Boolean(s.gpu_ids?.length) &&
+        picks.some((pick) => sameGpuPlacement(pick, s.gpu_ids))
+      );
     },
   },
   {
@@ -584,7 +615,12 @@ export function residentRuntimeMatchesConfig(
   if (status.engine === "vllm" || status.engine === "sglang") {
     if (
       (status.engine_precision ?? "auto") !== (config.enginePrecision ?? "auto") ||
-      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor")
+      (status.engine_parallelism ?? "tensor") !== (config.engineParallelism ?? "tensor") ||
+      (status.engine_kv_cache_dtype ?? "auto") !==
+        (config.engineKvCacheDtype ?? "auto") ||
+      (status.engine_seed ?? null) !== (config.engineSeed ?? null) ||
+      (status.engine_gpu_memory_utilization ?? null) !==
+        (config.engineGpuMemoryUtilization ?? null)
     )
       return false;
     if (
