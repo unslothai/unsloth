@@ -141,6 +141,30 @@ def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp
             )
 
 
+def test_off_card_quantize_falls_back_to_the_host_on_accelerator_oom(monkeypatch):
+    import core.inference.diffusion_convrot as convrot
+
+    real = convrot.quantize_convrot_int8_weight
+    seen = []
+
+    def _quantize(weight, group):
+        seen.append(weight.device.type)
+        if weight.device.type != "cpu":
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        return real(weight, group)
+
+    monkeypatch.setattr(convrot, "quantize_convrot_int8_weight", _quantize)
+    weight = torch.randn(8, 512, dtype = torch.bfloat16)
+    # "meta" stands in for a full card: the copy succeeds, the quantization runs out of memory.
+    codes, scale, work = worker._quantize_off_card(weight, torch.device("meta"))
+    assert seen == ["meta", "cpu"] and work.type == "cpu"
+    ref_codes, ref_scale = real(weight, worker.CONVROT_GROUP)
+    assert torch.equal(codes, ref_codes) and torch.equal(scale, ref_scale)
+    seen.clear()
+    worker._quantize_off_card(weight, work)
+    assert seen == ["cpu"]
+
+
 def test_host_quantize_copies_out_of_the_map_when_pages_cannot_be_released(monkeypatch):
     monkeypatch.setattr(worker, "_release_mapped_pages", lambda tensor: False)
     model = _TinyGemma().to(torch.bfloat16)

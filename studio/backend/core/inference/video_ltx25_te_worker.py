@@ -224,6 +224,33 @@ def _release_mapped_pages(tensor: Any) -> bool:
         return False
 
 
+def _empty_device_cache(device: Any) -> None:
+    import torch
+    empty = getattr(getattr(torch, device.type, None), "empty_cache", None)
+    if callable(empty):
+        empty()
+
+
+def _quantize_off_card(weight: Any, work: Any) -> tuple[Any, Any, Any]:
+    """``(codes, scale, work)`` for a host-kept projection. The accelerator only speeds the rotation up: a non-resident
+    encoder shares a card the plan did not size for it, so an out-of-memory there moves this and every later projection
+    to the host instead of failing the load."""
+    import torch
+
+    from core.inference.diffusion_convrot import quantize_convrot_int8_weight
+
+    if work.type != "cpu":
+        oom = getattr(torch, "OutOfMemoryError", torch.cuda.OutOfMemoryError)
+        try:
+            return (*quantize_convrot_int8_weight(weight.detach().to(work), CONVROT_GROUP), work)
+        except oom:
+            pass
+        # Outside the handler, so the failed attempt's tensors are already unreferenced.
+        _empty_device_cache(work)
+        work = torch.device("cpu")
+    return (*quantize_convrot_int8_weight(weight.detach(), CONVROT_GROUP), work)
+
+
 def quantize_int8_convrot_(
     model: Any,
     device: Any = "cpu",
@@ -257,9 +284,12 @@ def quantize_int8_convrot_(
                 if not isinstance(linear, nn.Linear):
                     continue
                 home = linear.weight.device
-                codes, scale = quantize_convrot_int8_weight(
-                    linear.weight.detach().to(work), CONVROT_GROUP
-                )
+                if on_card:
+                    codes, scale = quantize_convrot_int8_weight(
+                        linear.weight.detach().to(work), CONVROT_GROUP
+                    )
+                else:
+                    codes, scale, work = _quantize_off_card(linear.weight, work)
                 if not on_card:
                     released_all = _release_mapped_pages(linear.weight) and released_all
                 new = cls(
@@ -275,6 +305,9 @@ def quantize_int8_convrot_(
                 del linear, codes, scale
     if swapped == 0:
         raise RuntimeError("no Gemma 4 decoder projection could be quantized")
+    if not on_card and work.type != "cpu":
+        # The plan never priced this transient: hand the cached blocks back before the DiT needs them.
+        _empty_device_cache(work)
     if not on_card and not released_all:
         with torch.no_grad():
             for module in model.modules():
