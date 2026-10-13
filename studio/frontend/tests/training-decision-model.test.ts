@@ -577,6 +577,9 @@ test("a Mac lists Clef Omni and trains it on rows that carry audio", () => {
     isDatasetAudio: true,
   };
   assert.equal(deriveTrainingReadiness(config, "mac", true).isReady, true);
+  // So can an LLM that is given a decision head, such as a plain omni model.
+  const fresh = { ...config, decisionLayout: "llm" as const };
+  assert.equal(deriveTrainingReadiness(fresh, "mac", true).isReady, true);
   // The backend refuses the chat audio flag on a Mac, and the decision trainer never reads it.
   assert.equal(buildTrainingStartPayload(config, null).is_dataset_audio, false);
   // Only the MLX Clef trainer reads the clips: Laya, another device and a chat model would not.

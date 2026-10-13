@@ -48,19 +48,19 @@ function isTrainingConfigSupportedOnDevice(
 }
 
 /**
- * On a Mac a Clef's trainer reads the audio in its own rows and reports the ones the model cannot
- * hear, so the chat audio path's limits do not apply. Elsewhere, and for Laya, audio rows would be
- * trained on as text alone.
+ * On a Mac the trainer of a Clef, or of an LLM given a Clef head, reads the audio in its own rows
+ * and reports the ones the model cannot hear, so the chat audio path's limits do not apply.
+ * Elsewhere, and for Laya, audio rows would be trained on as text alone.
  */
 function hasChatAudioRows(
   config: TrainingConfigState,
   deviceType?: string,
 ): boolean {
-  const clefReadsRows =
+  const trainerReadsRows =
     deviceType === "mac" &&
     config.modelType === "decision" &&
-    config.decisionLayout === "clef";
-  return config.isDatasetAudio === true && !clefReadsRows;
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
+  return config.isDatasetAudio === true && !trainerReadsRows;
 }
 
 export function hasIncompatibleTrainingModalities(
