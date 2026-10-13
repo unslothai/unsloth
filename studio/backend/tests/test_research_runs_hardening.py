@@ -195,8 +195,7 @@ def test_sanitize_query_redacts_bearer_token():
 
 
 def test_sanitize_query_redacts_scheme_and_credential_in_authorization_header():
-    # The label rule used to consume only the scheme word, which left the credential behind
-    # and stopped the bearer rule from matching it.
+    # Eating only the scheme word leaves the credential for no later rule to catch.
     secret = "9f8e7d6c5b4a" + "39281706f5e4d3c2b1a0"
     for header in (
         f"Authorization: Bearer {secret}",
