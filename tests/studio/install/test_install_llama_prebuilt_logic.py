@@ -3335,6 +3335,7 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert (
         "        _build_frontend\n"
         "        _install_oxc_runtime\n"
+        '        rm -f "$_FRONTEND_BUILD_MARK"\n'
         '        _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"\n'
         '        _remove_agent_instruction_files "$_OXC_DIR/node_modules"'
     ) in setup_sh
