@@ -31,8 +31,8 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=][ \t]*\\?["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|(?-i:(?=[\w.~+/=-]{{4}})(?=[\w.~+/-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{{2}})|[\w.~+/-]{{16}}))[\w.~+/-]+=*)"""
+    rf"""(?aix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=][ \t]*\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)[ \t]+
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
 )
 _AUTH_PARAM_PAIR = re.compile(
     r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
@@ -40,6 +40,21 @@ _AUTH_PARAM_PAIR = re.compile(
 # Digest parameters that describe the challenge rather than prove identity.
 _PUBLIC_AUTH_PARAMS = frozenset(
     {"algorithm", "charset", "domain", "nc", "qop", "realm", "stale", "uri", "userhash"}
+)
+_REGISTERED_AUTH_SCHEMES = frozenset(
+    {"aws4-hmac-sha256", "basic", "bearer", "digest", "dpop", "negotiate", "ntlm", "token"}
+)
+# Prose after "Authorization:" ("design patterns", "RBAC role=admin") is not a credential.
+_CREDENTIAL_SHAPE = re.compile(r"(?=.{4})(?:.*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|.{16})")
+_AUTH_SECRET_PARAM_SUFFIXES = (
+    "credential",
+    "key",
+    "nonce",
+    "password",
+    "response",
+    "secret",
+    "signature",
+    "token",
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
@@ -159,6 +174,27 @@ def _shield_untrusted(text: str) -> str:
     return _REPORT_BOUNDARY_TAG.sub(escape, _PROMPT_DELIMITER_TAGS.sub(escape, text))
 
 
+def _authorization_values(match: re.Match) -> list[str]:
+    """Decoded credential values of an Authorization match; empty when it reads as prose."""
+    found = match["credentials"]
+    if re.fullmatch(r"[\w.~+/-]+=*", found):
+        pairs = [("", found)]
+    else:
+        pairs = [
+            (name.lower(), value)
+            for name, value in _AUTH_PARAM_PAIR.findall(found)
+            if name.lower() not in _PUBLIC_AUTH_PARAMS
+        ]
+    pairs = [(name, re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))) for name, value in pairs]
+    values = [value for _, value in pairs]
+    if match["scheme"].lower() in _REGISTERED_AUTH_SCHEMES or any(
+        name.endswith(_AUTH_SECRET_PARAM_SUFFIXES) or _CREDENTIAL_SHAPE.match(value)
+        for name, value in pairs
+    ):
+        return values
+    return []
+
+
 def _sanitize_public_query(query: str) -> str:
     # The Authorization pass may eat a label a later pass needs, so keep only tokens that also
     # survive without it: it can remove more than the plain passes, never less.
@@ -167,18 +203,7 @@ def _sanitize_public_query(query: str) -> str:
     # An echoed copy of an identified credential (an error repeating it) goes too.
     credentials, exact = set(), set()
     for match in _QUERY_AUTHORIZATION.finditer(query):
-        found = match["credentials"]
-        values = (
-            [found]
-            if re.fullmatch(r"[\w.~+/-]+=*", found)
-            else [
-                value
-                for name, value in _AUTH_PARAM_PAIR.findall(found)
-                if name.lower() not in _PUBLIC_AUTH_PARAMS
-            ]
-        )
-        for value in values:
-            value = re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))
+        for value in _authorization_values(match):
             for variant in {value, value.rstrip(".!?")}:
                 exact.add(variant)
                 credentials.update(
@@ -216,7 +241,9 @@ def _redact_public_query(query: str, *, authorization: bool) -> list[str]:
         return match.group(0)
 
     if authorization:
-        query = _QUERY_AUTHORIZATION.sub(" ", query)
+        query = _QUERY_AUTHORIZATION.sub(
+            lambda match: " " if _authorization_values(match) else match[0], query
+        )
     query = _QUERY_CREDENTIAL.sub(" ", query)
     query = _QUERY_NAMED_ASSIGNMENT.sub(redact_named_assignment, query)
     query = _QUERY_BEARER.sub(" ", query)
