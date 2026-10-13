@@ -1106,9 +1106,17 @@ def _require_own_seed_source(dataset_name: str) -> None:
     try:
         account_path(dataset_name, reference = True)
         local = Path(dataset_name).expanduser()
-        if local.exists():
-            for entry in local.rglob("*") if local.is_dir() else (local,):
-                account_path(entry)
+        seen: set[str] = set()
+        # followlinks, as the loader's glob follows linked folders; seen stops link cycles.
+        for root, dirs, files in os.walk(local, followlinks = True):
+            real = os.path.realpath(root)
+            if real in seen:
+                dirs[:] = []
+                continue
+            seen.add(real)
+            account_path(root)
+            for name in files:
+                account_path(os.path.join(root, name))
     except (ValueError, RuntimeError, OSError) as exc:
         raise HTTPException(status_code = 400, detail = "dataset_name is not a valid path") from exc
 

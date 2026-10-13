@@ -1443,7 +1443,7 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
 
 
-@pytest.mark.parametrize("case", ["outside", "own", "symlink", "malformed"])
+@pytest.mark.parametrize("case", ["outside", "own", "symlink", "linked_dir", "malformed"])
 def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch, tmp_path, case):
     from core.training import account_jobs
 
@@ -1481,10 +1481,16 @@ def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch,
         "outside": (str(owner_rows), 403),
         # Its sandbox can plant a link to the owner's file inside its own folder.
         "symlink": (str(workspace / "linked"), 403),
+        # A linked folder inside its workspace that holds such a link.
+        "linked_dir": (str(workspace / "via"), 403),
         "malformed": ("org/\x00repo", 400),
     }
     (workspace / "linked").mkdir()
     (workspace / "linked" / "train.csv").symlink_to(owner_rows / "train.csv")
+    (workspace / "via").mkdir()
+    (workspace / "via" / "alias").symlink_to(workspace / "linked", target_is_directory = True)
+    # A link cycle inside its own folder must not hang the walk.
+    (workspace / "seeds" / "loop").symlink_to(workspace / "seeds", target_is_directory = True)
     if case in refusals:
         name, status = refusals[case]
         with pytest.raises(HTTPException) as refused:
