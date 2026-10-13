@@ -112,9 +112,16 @@ def test_the_ddp_script_path_is_quoted(cluster, monkeypatch) -> None:
     assert "'/work/my train.py'" in plan["node1"]
 
 
-def test_the_peer_replica_executable_is_quoted() -> None:
+def test_the_peer_replica_executable_is_quoted_and_still_expands_home() -> None:
+    """Quoted for spaces, but a quoted `~` never expands on the peer: it must be `$HOME`."""
     source = (REPO / "studio" / "spark_cluster.py").read_text()
-    assert "peer_server_cmd = f'\"{peer_bin_dir}/llama-server\"'" in source
+    assert "peer_server_cmd = f'\"{_peer_path(peer_bin_dir)}/llama-server\"'" in source
+    spec = importlib.util.spec_from_file_location("sc_r19", REPO / "studio" / "spark_cluster.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert (
+        module._peer_path("~/.unsloth/llama.cpp/build/bin") == "$HOME/.unsloth/llama.cpp/build/bin"
+    )
 
 
 def test_a_shared_parameter_is_scaled_once() -> None:

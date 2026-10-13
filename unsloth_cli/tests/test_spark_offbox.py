@@ -318,6 +318,61 @@ def test_setup_applies_only_with_an_explicit_yes(monkeypatch, tmp_path) -> None:
     assert called == ["rsync", "write"]
 
 
+def test_a_failed_provision_is_not_saved_as_a_configured_cluster(monkeypatch, tmp_path) -> None:
+    """cluster_state() reads `enabled` plus addressed rails as configured, so a setup whose copy
+    failed must not save it; a later successful `spark provision` completes the plan."""
+    sc = _load("studio/spark_cluster.py")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setattr(
+        sc,
+        "cabled_rails",
+        lambda: [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.12"]}],
+    )
+    monkeypatch.setattr(sc, "peer_ip_for", lambda *a, **k: "192.168.200.13")
+    monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
+    monkeypatch.setattr(sc, "config_path", lambda: tmp_path / "spark_cluster.json")
+    failed = {"refused": "", "copied": [], "skipped": [], "failed": [("venv", "rsync exit 23")]}
+    monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: failed)
+    assert sc._cmd_setup(assume_yes = True) == 1
+    assert sc.load_config()["enabled"] is False
+    assert sc.cluster_state() != "configured"
+
+    ok = {
+        "refused": "",
+        "copied": [],
+        "skipped": [],
+        "failed": [],
+        "timings": [],
+        "fast": {"used": False, "reason": "", "errors": [], "stop": None},
+    }
+    monkeypatch.setattr(sc, "provision_peer", lambda *a, **k: ok)
+    assert sc._cmd_provision() == 0
+    assert sc.load_config()["enabled"] is True
+
+
+def test_setup_on_the_second_spark_keeps_its_own_address(monkeypatch, tmp_path) -> None:
+    """Setup always planned the local node as .12; run on the Spark already at .13 it assigned that
+    machine the first one's address."""
+    sc = _load("studio/spark_cluster.py")
+    sc._IS_SPARK_CACHE = True
+    monkeypatch.setattr(
+        sc,
+        "cabled_rails",
+        lambda: [{"ib_device": "rocep1s0f0", "netdev": "enp1s0f0np0", "ipv4": ["192.168.200.13"]}],
+    )
+    monkeypatch.setattr(sc, "_studio_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        sc,
+        "provision_peer",
+        lambda *a, **k: {"refused": "", "copied": [], "skipped": [], "failed": []},
+    )
+    saved = {}
+    monkeypatch.setattr(sc, "save_config", lambda cfg: saved.update(cfg) or True)
+    sc._cmd_setup(assume_yes = True)
+    assert [r["address"].split("/")[0] for r in saved["rails"]] == ["192.168.200.13"]
+    assert [r["address"].split("/")[0] for r in saved["peer_rails"]] == ["192.168.200.12"]
+
+
 def test_peer_gpu_probe_fails_closed(monkeypatch) -> None:
     """Unanswerable must read as BUSY. Fail-open here has bitten this project twice."""
     sc = _load("studio/spark_cluster.py")
@@ -1791,3 +1846,86 @@ def test_fast_path_check_is_advisory_and_never_raises() -> None:
     assert pp.check_fast_path("no/such/model/anywhere", log = lambda *_: None) is None
     # The CPU path has nothing to lose, so it must not warn even with the packages absent.
     assert pp.check_fast_path("no/such/model", log = lambda *_: None, use_cpu = True) is None
+
+
+def test_a_run_too_large_for_one_spark_loads_only_its_shard(monkeypatch) -> None:
+    """Without --shard-load each node materialises the whole checkpoint first, which is the OOM a
+    layer split exists to avoid."""
+    sc = _load("studio/spark_cluster.py")
+    sc._IS_SPARK_CACHE = True
+    seen = []
+
+    def plan(
+        model,
+        port = 29500,
+        *,
+        extra = "",
+    ):
+        seen.append(extra)
+        return {"ok": True, "problems": []}
+
+    monkeypatch.setattr(sc, "pipeline_launch_plan", plan)
+    monkeypatch.setattr(sc, "run_pipeline", lambda p: 0)
+    monkeypatch.setattr(sc, "model_size_gib", lambda m: 140.0)
+    assert sc._cmd_pipeline("big", run = True) == 0
+    monkeypatch.setattr(sc, "model_size_gib", lambda m: 16.0)
+    assert sc._cmd_pipeline("small", run = True) == 0
+    assert seen == ["--shard-load", ""]
+
+
+def test_a_printed_peer_command_names_where_to_copy_a_local_dataset(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    sc = _load("studio/spark_cluster.py")
+    data = tmp_path / "train.jsonl"
+    data.write_text('{"q": "a", "a": "b"}\n', encoding = "utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sc, "venv_activate_sh", lambda: "/venv/bin/activate")
+    sc._print_launch(
+        {
+            "env": {},
+            "local_ip": "192.168.200.12",
+            "peer_ip": "192.168.200.13",
+            "node0": "torchrun x --model org/m --data train.jsonl",
+            "node1": "torchrun x --model org/m --data train.jsonl",
+        }
+    )
+    out = capsys.readouterr().out
+    want = str(data)
+    assert f"rsync -a --mkpath {want} 192.168.200.13:{want}" in out
+    assert f"--data {want}" in out.split("On the peer")[1]
+    assert "org/m" in out
+
+
+def test_one_spark_does_not_claim_a_fit_its_kv_overflows() -> None:
+    sc = _load("studio/spark_cluster.py")
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    plan = sc.plan_deployment(budget - 10, n_nodes = 1, kv_gib_per_user = 1.0, concurrency = 32)
+    assert plan["fits"] is False and plan["min_nodes"] == 2
+    assert sc.plan_deployment(budget - 10, n_nodes = 1)["fits"] is True
+
+
+def test_gguf_reader_keeps_per_layer_arrays_and_skips_vocab_tables() -> None:
+    import io
+    import struct
+
+    sc = _load("studio/spark_cluster.py")
+
+    def array(count):
+        return io.BytesIO(struct.pack("<IQ", 5, count) + struct.pack(f"<{count}i", *range(count)))
+
+    assert sc._gguf_read_value(array(80), 9) == list(range(80))
+    assert sc._gguf_read_value(array(5000), 9) == []
+
+
+def test_a_configured_pair_is_two_nodes_even_when_mdns_sees_the_peer_on_its_lan(
+    monkeypatch,
+) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.setattr(
+        sc,
+        "load_config",
+        lambda: {"peer_rails": [{"netdev": "enp1s0f0np0", "address": "192.168.200.13/24"}]},
+    )
+    lan = [{"hostname": "spark-b.local", "address": "10.0.0.5", "source": "mdns"}]
+    assert len(sc.merge_peers(lan)) == 1

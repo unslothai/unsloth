@@ -274,7 +274,17 @@ def merge_peers(
     """Every known peer, deduplicated and ordered by (address, hostname) so every node computes the
     same list: ``index`` is only usable as a node rank because of that."""
     merged: Dict[str, Dict[str, Any]] = {}
-    for entry in list(mdns or []) + configured_peers():
+    configured = configured_peers()
+    planned = {
+        str(entry.get("address") or "").split("/")[0]
+        for entry in configured
+        if entry.get("source") == "config-rails"
+    }
+    if planned:
+        # A saved rail plan names every node; mDNS also sees them on LAN addresses that share
+        # neither key nor address with the rail entries, so only a rail-address match may name one.
+        mdns = [e for e in (mdns or []) if str(e.get("address") or "") in planned]
+    for entry in list(mdns or []) + configured:
         hostname = str(entry.get("hostname", ""))
         address = str(entry.get("address", ""))
         key = hostname.split(".")[0].lower() or address
@@ -2650,6 +2660,11 @@ def _cmd_provision(
             print("  daemon  stopped on the peer; `pgrep -x rsync` there finds nothing")
     if res["failed"]:
         return 1
+    if not dry_run:
+        # A setup whose provisioning failed was saved disabled; this run completes it.
+        config = load_config()
+        if config.get("planned") and not config.get("enabled"):
+            save_config({**config, "enabled": True})
     print("\n  Peer now matches this node. Verify with: unsloth doctor")
     return 0
 
@@ -2816,7 +2831,8 @@ def _gguf_read_value(
         if depth:
             raise ValueError("nested GGUF array")
         element, count = struct.unpack("<IQ", handle.read(12))
-        if element in _GGUF_FIXED and count > 64:
+        # Skips vocab-sized tables; per-layer arrays (head_count_kv on hybrids) must survive.
+        if element in _GGUF_FIXED and count > 4096:
             handle.seek(_GGUF_FIXED[element] * count, 1)
             return []
         return [_gguf_read_value(handle, element, depth + 1) for _ in range(count)]
@@ -3328,8 +3344,10 @@ def plan_deployment(
         )
         return out
 
-    fits_one = size_gib <= budget
-    min_nodes = _nodes_needed(size_gib, budget)
+    # Model plus every user's KV: weights alone called a launch fitting that the KV then overflows.
+    split_need = size_gib + max(0.0, float(kv_gib_per_user or 0)) * max(1, int(concurrency or 1))
+    fits_one = split_need <= budget
+    min_nodes = _nodes_needed(split_need, budget)
     out["min_nodes"] = min_nodes
     out["fits_one_node"] = fits_one
 
@@ -3356,9 +3374,6 @@ def plan_deployment(
         out["command"] = "\n".join(out["commands"])
         return out
 
-    # KV counted here, not only in `recommend_topology`: a layer split spreads the KV with the
-    # layers, so what has to fit across the pair is model plus every user's KV.
-    split_need = size_gib + max(0.0, float(kv_gib_per_user or 0)) * max(1, int(concurrency or 1))
     out["split_need_gib"] = split_need
     if split_need > nodes * budget:
         topology = "too-large"
@@ -3843,6 +3858,20 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
         return False
 
 
+def _addressed_node_index(rails: List[Dict[str, Any]], n_nodes: int) -> int:
+    """This node's index from an address an earlier plan gave its rail, so setup run on the second
+    Spark keeps .13 instead of re-planning itself as .12; 0 when no rail carries one."""
+    for rail in rails:
+        for addr in rail.get("ipv4", []):
+            try:
+                index = int(addr.rpartition(".")[2].split("/")[0]) - NODE_BASE_OCTET
+            except ValueError:
+                continue
+            if 0 <= index < n_nodes:
+                return index
+    return 0
+
+
 def _cmd_setup(
     assume_yes: bool = False,
     n_nodes: int = 2,
@@ -3860,17 +3889,20 @@ def _cmd_setup(
         return 1
 
     n_nodes = max(2, int(n_nodes))
-    report = rail_plan_report(rails, node_index = 0, n_nodes = n_nodes, switched = switched)
+    local = _addressed_node_index(rails, n_nodes)
+    peer_index = 1 if local == 0 else 0
+    report = rail_plan_report(rails, node_index = local, n_nodes = n_nodes, switched = switched)
     if not report["ok"]:
         print(f"Cannot plan addressing for {n_nodes} Sparks:")
         for problem in report["problems"]:
             print(f"  - {problem}")
         return 1
     plan = report["plan"]
-    peer_plan = rail_plan(rails, node_index = 1, n_nodes = n_nodes, switched = switched)
+    peer_plan = rail_plan(rails, node_index = peer_index, n_nodes = n_nodes, switched = switched)
     extra_plans = [
         rail_plan(rails, node_index = i, n_nodes = n_nodes, switched = switched)
-        for i in range(2, n_nodes)
+        for i in range(n_nodes)
+        if i not in (local, peer_index)
     ]
     for note in report["notes"]:
         print(f"  NOTE: {note}")
@@ -3934,7 +3966,8 @@ def _cmd_setup(
 
     saved = save_config(
         {
-            "enabled": True,
+            # Not enabled while the peer lacks the environment, or cluster_state() says configured.
+            "enabled": not provision_failures,
             "planned": True,
             "n_nodes": n_nodes,
             "switched": switched,
@@ -4053,7 +4086,7 @@ def _cmd_serve(
         print(f"  2. The peer ({peer_ip}) -- the model must exist there; copy it over the")
         print("     ConnectX link rather than downloading (444 MB/s vs ~20 KB/s internet):")
         print(f"     rsync -a <model.gguf> {peer_ip}:<path>")
-        peer_server_cmd = f'"{peer_bin_dir}/llama-server"'
+        peer_server_cmd = f'"{_peer_path(peer_bin_dir)}/llama-server"'
         print(f"     ssh {peer_ip} '{peer_server_cmd} -m <path> \\")
         print(f"         -ngl 999 --ctx-size {ctx * slots} -np {slots} -cb -ub 512 \\")
         print(f"         --host 0.0.0.0 --port {peer_port}'")
@@ -4101,7 +4134,7 @@ def _cmd_serve(
         # Already absolute in the PEER's filesystem, whose home may not be ours.
         peer_command = peer_server
     else:
-        peer_command = f"{peer_bin_dir}/{Path(binary).name}"
+        peer_command = f"{_peer_path(peer_bin_dir)}/{Path(binary).name}"
         print("  note: the peer's bundle could not be probed, so the command below assumes it")
         print("        keeps its ggml-rpc-server where this Spark does.")
         print("")
@@ -4115,6 +4148,10 @@ def _cmd_serve(
         # Bound to the rail, not 0.0.0.0. ggml-rpc-server has no authentication and executes graphs
         # on whoever connects, and llama-server reaches it only over `peer_ip`, so every other
         # interface the peer has -- LAN, Wi-Fi -- was exposure with no purpose.
+        if i == 0 and (preflight.get("peer_rpc") or {}).get("state") == "ok":
+            # The preflight just verified it; a second server cannot bind the port it holds.
+            print(f"     already running on {peer_ip}:{rpc_port} and verified above; reuse it")
+            continue
         quoted_server = '"' + peer_command.replace("\\", "\\\\").replace('"', '\\"') + '"'
         print(f"     ssh {peer_ip} '{quoted_server} -H {peer_ip} -p {rpc_port + i} -c'")
     print("")
@@ -4510,15 +4547,21 @@ def _cmd_pipeline(
     if not is_dgx_spark():
         print(NOT_A_SPARK)
         return 0
+    size = model_size_gib(model)
+    budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
+    if run and size is not None and size > budget and "--shard-load" not in extra.split():
+        # Without it every node materialises the whole checkpoint before dropping foreign layers.
+        print(
+            f"  {model} is {size:.1f} GiB, over one Spark's {budget:.0f} GiB: adding --shard-load"
+        )
+        extra = f"{extra} --shard-load".strip()
     plan = pipeline_launch_plan(model, port, extra = extra)
     if not plan["ok"]:
         for problem in plan["problems"]:
             print(f"  cannot launch: {problem}")
         return 1
 
-    size = model_size_gib(model)
     if size is not None:
-        budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
         if size <= budget:
             print(
                 f"  NOTE: {model} is {size:.1f} GiB and fits on ONE Spark "
@@ -4547,9 +4590,28 @@ def _print_launch(plan: Dict[str, Any]) -> None:
     print("")
     print(f"  On this Spark ({plan['local_ip']}):")
     print(f"    {plan['node0']}")
+    node1, local_inputs = _absolute_local_inputs(plan["node1"])
+    if local_inputs:
+        # --run stages these itself; a hand-run peer command would exit on the missing path.
+        print("  Copy this Spark's inputs to the same path on the peer first:")
+        for path in local_inputs:
+            print(
+                f"    rsync -a --mkpath {shlex.quote(path)} {plan['peer_ip']}:{shlex.quote(path)}"
+            )
     print(f"  On the peer ({plan['peer_ip']}):")
-    print(f"    {plan['node1']}")
+    print(f"    {node1}")
     print("")
+
+
+def _absolute_local_inputs(command: str) -> Tuple[str, List[str]]:
+    """``command`` with each --data/--model that exists here made absolute, and those paths."""
+    tokens = shlex.split(command)
+    found: List[str] = []
+    for i, token in enumerate(tokens[:-1]):
+        if token in ("--data", "--model") and osp.exists(osp.expanduser(tokens[i + 1])):
+            tokens[i + 1] = osp.abspath(osp.expanduser(tokens[i + 1]))
+            found.append(tokens[i + 1])
+    return (shlex.join(tokens) if found else command), found
 
 
 def _cmd_train(script: str, port: int = 29500) -> int:

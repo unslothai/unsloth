@@ -348,10 +348,13 @@ def build_stage_model(
         if embed_name:
             setattr(owner, embed_name, torch.nn.Identity())
     if not keep_all_layers and not want_head:
-        if hasattr(owner, "norm"):
-            owner.norm = torch.nn.Identity()
-        if hasattr(model, "lm_head"):
-            model.lm_head = torch.nn.Identity()
+        # GPT-NeoX names these final_layer_norm and embed_out, as _PPStageModule resolves them.
+        norm_name, _ = _first_named(owner, _FINAL_NORM_NAMES)
+        if norm_name:
+            setattr(owner, norm_name, torch.nn.Identity())
+        head_name, _ = _first_named(model, ("lm_head", "embed_out"))
+        if head_name:
+            setattr(model, head_name, torch.nn.Identity())
 
     log(
         f"{n} decoder layers; this stage owns {_ranges(mine)}"

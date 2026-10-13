@@ -657,11 +657,16 @@ def setup(
     switched: bool = typer.Option(
         False, "--switched", help = "All Sparks share a switched RoCE fabric. Required above two."
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help = "Show exactly what would be written, and write nothing."
+    ),
 ) -> None:
     """Plan and configure the link between the Sparks."""
     argv = ["setup"]
     if yes:
         argv.append("--yes")
+    if dry_run:
+        argv.append("--dry-run")
     if nodes is not None:
         argv += ["--nodes", str(int(nodes))]
     if switched:

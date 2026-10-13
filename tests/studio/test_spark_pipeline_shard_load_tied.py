@@ -161,3 +161,38 @@ def test_the_legacy_backend_is_covered_without_a_plan() -> None:
     pipeline = _pipeline_module()
     assert pipeline.tied_split_problem(True, True, 2, None)
     assert pipeline.tied_split_problem(True, True, 1, None) is None
+
+
+def test_a_non_final_gpt_neox_stage_drops_its_output_head(tmp_path) -> None:
+    """GPT-NeoX calls its final norm `final_layer_norm`, and its head `embed_out` before
+    transformers 5; a stage looking only for `norm` and `lm_head` kept them on every rank."""
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pipeline = _pipeline_module()
+
+    out = str(tmp_path / "neox")
+    transformers.GPTNeoXForCausalLM(
+        transformers.GPTNeoXConfig(
+            vocab_size = 64,
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = 4,
+            num_attention_heads = 4,
+            max_position_embeddings = 32,
+        )
+    ).save_pretrained(out, safe_serialization = True)
+    model, _, _ = pipeline.build_stage_model(
+        out,
+        rank = 0,
+        world = 2,
+        device = "cpu",
+        shard_load = True,
+        dtype = torch.float32,
+        log = lambda *a, **k: None,
+    )
+    head = "embed_out" if hasattr(model, "embed_out") else "lm_head"
+    assert isinstance(getattr(model, head), torch.nn.Identity)
+    assert isinstance(model.gpt_neox.final_layer_norm, torch.nn.Identity)
+    assert not any(
+        name.startswith((head, "gpt_neox.final_layer_norm")) for name, _ in model.named_parameters()
+    )
