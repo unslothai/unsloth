@@ -45,6 +45,7 @@ from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_piss
 from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    deepspeed_zero3_device_map,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
@@ -1038,6 +1039,7 @@ class FastLanguageModel(FastLlamaModel):
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
+        device_map = deepspeed_zero3_device_map(device_map)
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
@@ -2015,6 +2017,7 @@ class FastModel(FastBaseModel):
             if is_dist:
                 # One whole model per rank; sharding one across the ranks' GPUs too would have every rank fighting for the same cards.
                 device_map = distributed_device_map
+        device_map = deepspeed_zero3_device_map(device_map)
 
         # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:

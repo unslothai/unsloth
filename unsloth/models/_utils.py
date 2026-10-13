@@ -4321,8 +4321,17 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    # DeepSpeed keeps its type even on one device: reporting NO turns on accelerate's native AMP, whose
+    # dtype-less autocast under DeepSpeed is float16 and breaks a bfloat16 model (#225).
+    def _single_device_distributed_type(self):
+        real = getattr(self.__dict__.get("state"), "distributed_type", None)
+        return (
+            DistributedType.DEEPSPEED if real == DistributedType.DEEPSPEED else DistributedType.NO
+        )
+
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(_single_device_distributed_type)
 
 
 _PER_LAYER_DEVICE_MISSING = object()
@@ -5353,6 +5362,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
+            _prepare_model_for_deepspeed_zero3(self)
             _enable_ddp_batched_grad_copy(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
@@ -8325,6 +8335,59 @@ def _block_swap_for_trainer_backend(trainer):
             f"or launch without {backend}."
         )
     return []
+
+
+def _zero3_leaf_classes(model):
+    """Classes repeated in a ModuleList (decoder layers, vision blocks): the units ZeRO-3 gathers whole."""
+    classes = set()
+    for module in model.modules():
+        if isinstance(module, torch.nn.ModuleList) and len(module) > 1:
+            first = type(module[0])
+            if all(type(x) is first for x in module) and any(True for _ in module[0].parameters()):
+                classes.add(first)
+    return classes
+
+
+def _prepare_model_for_deepspeed_zero3(trainer):
+    """ZeRO-3 gathers a module's weights only when its own forward runs, but Unsloth's fast paths read child
+    weights (norms, fused LoRA bases, lm_head in the fused loss) from the parent's forward, which would see
+    empty shards (#225). Gather each repeated block as one unit and every other weight with its parent."""
+    if not getattr(trainer, "is_deepspeed_enabled", False):
+        return 0
+    try:
+        from transformers.integrations import is_deepspeed_zero3_enabled
+
+        if not is_deepspeed_zero3_enabled():
+            return 0
+        from deepspeed.utils import set_z3_leaf_modules
+        from deepspeed.zero import register_external_parameter
+    except Exception:
+        return 0
+    model = getattr(trainer, "model", None)
+    if model is None or getattr(model, "_unsloth_zero3_prepared", False):
+        return 0
+    leaf_classes = _zero3_leaf_classes(model)
+    if leaf_classes:
+        set_z3_leaf_modules(model, list(leaf_classes))
+
+    def has_leaf(module):
+        return any(type(m) in leaf_classes for m in module.modules())
+
+    n = 0
+    stack = [model]
+    while stack:
+        module = stack.pop()
+        for child in module.children():
+            if type(child) in leaf_classes:
+                continue
+            if has_leaf(child):
+                stack.append(child)
+                continue
+            for param in child.parameters():
+                register_external_parameter(module, param)
+                n += 1
+    model._unsloth_zero3_prepared = True
+    return n
 
 
 def _trainer_offload_replan_skip(trainer):

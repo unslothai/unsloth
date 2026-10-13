@@ -197,6 +197,25 @@ def prepare_device_map():
     return device_map, True
 
 
+def deepspeed_zero3_device_map(device_map):
+    """None under DeepSpeed ZeRO-3 init: transformers refuses any device_map there, since ZeRO-3 places the
+    weights itself (#225). Only placements we picked are dropped; a caller's explicit map still raises."""
+    try:
+        from transformers.integrations import is_deepspeed_zero3_enabled
+        zero3 = is_deepspeed_zero3_enabled()
+    except Exception:
+        zero3 = False
+    if not zero3:
+        return device_map
+    if (
+        device_map is None
+        or is_automatic_device_map(device_map)
+        or (isinstance(device_map, dict) and set(device_map) == {""})
+    ):
+        return None
+    return device_map
+
+
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 # Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.
