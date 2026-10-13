@@ -142,11 +142,41 @@ class TestMatrix:
                 assert cell["smoke_extra"] == cell["smoke_exclude"] == ""
 
     def test_every_torch_minor_has_a_triton_windows_pin(self):
-        """torch 2.13 pins triton 3.7.1 and 2.14 pins triton 3.8.x; triton-windows mirrors those."""
-        minors = {prebuilt_wheels.torch_minor(v) for v in prebuilt_wheels.TORCH_VERSIONS}
+        """torch 2.11 pins triton 3.6.0, 2.13 3.7.1 and 2.14 3.8.x; triton-windows mirrors those."""
+        minors = {
+            prebuilt_wheels.torch_minor(v)
+            for platform, target in prebuilt_wheels.PLATFORMS.items()
+            if target["os"] == "windows"
+            for v in prebuilt_wheels._platform(platform, "torches")
+            or prebuilt_wheels.TORCH_VERSIONS
+        }
         assert set(prebuilt_wheels.TRITON_WINDOWS) == minors
+        assert prebuilt_wheels.TRITON_WINDOWS["2.11"].startswith("3.6.0.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.13"].startswith("3.7.1.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.14"].startswith("3.8.0.post")
+
+    def test_torch_211_is_win_amd64_only_and_opt_in(self):
+        cells = prebuilt_wheels.build_matrix(
+            torches = "2.11.0", platforms = "win_amd64", pythons = "3.11,3.12,3.13"
+        )
+        assert len(cells) == 9
+        assert {cell["python_tag"] for cell in cells} == {"cp311", "cp312", "cp313"}
+        assert {cell["torch_spec"] for cell in cells} == {"torch==2.11.0"}
+        for cell in cells:
+            assert "+cu13torch2.11cxx11abiTRUE-" in cell["wheel_name"]
+            if cell["package"] == "mamba-ssm":
+                assert cell["smoke_extra"] == "triton-windows==3.6.0.post26"
+        for platform in ("linux_x86_64", "linux_aarch64", "win_arm64"):
+            with pytest.raises(SystemExit):
+                prebuilt_wheels.build_matrix(torches = "2.11.0", platforms = platform)
+        # A default dispatch builds what it did before.
+        assert "2.11.0" not in {cell["torch"] for cell in prebuilt_wheels.build_matrix()}
+        both = prebuilt_wheels.build_matrix(torches = "2.11.0,2.13.0")
+        assert {(c["platform"], c["torch"]) for c in both} == {
+            ("win_amd64", "2.11.0"),
+            ("win_amd64", "2.13.0"),
+            ("linux_x86_64", "2.13.0"),
+        }
 
     def test_pytorch_nvcc_paths_have_no_spaces(self):
         """torch writes PYTORCH_NVCC into build.ninja verbatim; a space would split a path."""
@@ -277,6 +307,24 @@ class TestNotes:
             "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13. "
             "Windows x86_64: flash-attn 2.8.4, causal-conv1d 1.7.0 and mamba-ssm 2.3.2.post1, "
             "built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
+        )
+
+    def test_torch_minors_with_different_interpreters_are_not_merged(self):
+        entries = [
+            (f"{index:064x}", prebuilt_wheels.wheel_name(package, torch, python, "win_amd64"))
+            for index, (package, torch, python) in enumerate(
+                [
+                    (pkg, "2.11.0", py)
+                    for py in ("3.11", "3.12", "3.13")
+                    for pkg in prebuilt_wheels.SPECS
+                ]
+                + [(pkg, t, "3.13") for t in ("2.13.0", "2.14.0") for pkg in prebuilt_wheels.SPECS]
+            )
+        ]
+        notes = prebuilt_wheels.render_notes(entries, tag = "t", repo = "r")
+        assert (
+            "built for PyTorch 2.11 on Python 3.11, 3.12 and 3.13; 2.13 and 2.14 on Python 3.13."
+            in notes
         )
 
     def test_platforms_with_different_coverage_are_not_merged(self):
