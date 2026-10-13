@@ -432,6 +432,18 @@ def test_shutdown_cleanup_runs_off_the_event_loop_and_once(monkeypatch):
     app.state._shutdown_thread.join(5)
     assert not app.state._shutdown_thread.is_alive()
 
+    # an embedded host's next launch installs a new trigger: its Shutdown runs it, not the old marker
+    second = []
+    app.state.trigger_shutdown = lambda: second.append(True)
+    with TestClient(app) as http:
+        assert (
+            http.post("/api/desktop/shutdown", headers = {"X-Desktop-Secret": raw}).status_code == 200
+        )
+        deadline = time.monotonic() + 5
+        while not second and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert second and len(calls) == 1
+
 
 def test_desktop_secret_stops_the_backend_it_owns(monkeypatch):
     import main

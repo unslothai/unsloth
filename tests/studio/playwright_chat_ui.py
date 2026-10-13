@@ -2821,9 +2821,13 @@ with sync_playwright() as p:
         while time.time() - t0 < 60:
             try:
                 os.kill(int(studio_pid), 0)
-                stat = Path(f"/proc/{studio_pid}/stat")  # Linux: exited but not yet reaped is done
-                if stat.exists() and stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
-                    raise ProcessLookupError
+                if Path("/proc/self").exists():  # Linux: exited but not yet reaped is done
+                    try:
+                        stat = Path(f"/proc/{studio_pid}/stat").read_text()
+                    except FileNotFoundError:  # reaped between the probe and the read
+                        raise ProcessLookupError from None
+                    if stat.rsplit(")", 1)[1].split()[0] == "Z":
+                        raise ProcessLookupError
             except ProcessLookupError:
                 info(
                     f"OK server process {studio_pid} exited {time.time() - t0:.1f}s after the port closed"

@@ -2307,13 +2307,16 @@ def _schedule_shutdown(request: Request) -> dict:
             # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
             # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
             # uvicorn from closing the port until all of it was done. The main thread still waits
-            # for it (_shutdown_event) before the process exits. One cleanup per process.
+            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
+            # the trigger, since an embedded host's next run_server() installs a new one.
             with _shutdown_thread_lock:
-                running = getattr(request.app.state, "_shutdown_thread", None)
-                if running is None:
-                    running = threading.Thread(target = trigger, name = "studio-shutdown")
-                    request.app.state._shutdown_thread = running
-                    running.start()
+                state = request.app.state
+                if getattr(state, "_shutdown_trigger", None) is not trigger:
+                    state._shutdown_trigger = trigger
+                    state._shutdown_thread = threading.Thread(
+                        target = trigger, name = "studio-shutdown"
+                    )
+                    state._shutdown_thread.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
