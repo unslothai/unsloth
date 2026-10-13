@@ -23,6 +23,7 @@ __all__ = [
     "is_remote_deepseek_gate",
     "is_remote_deepseek_moe",
     "packed_expert_target_parameters",
+    "prepare_remote_moe_for_inference",
 ]
 
 
@@ -319,3 +320,112 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
         else:
             kept.extend(f"{stack}.{projection}" for stack in chosen)
     return kept or None
+
+
+# Eval routing without a host sync. The remote `moe_infer` reads per-expert token counts back to the host and
+# loops over experts, so each MoE layer syncs and launches one GEMM chain per active expert. The grouped version
+# keeps the counts on the device and runs every expert in three grouped GEMMs; every routed token is computed.
+
+
+def _plain_expert(expert, dtype):
+    names = ("gate_proj", "up_proj", "down_proj")
+    return all(
+        type(getattr(expert, name, None)) is torch.nn.Linear
+        and getattr(expert, name).bias is None
+        and getattr(expert, name).weight.dtype == dtype
+        for name in names
+    ) and hasattr(expert, "act_fn")
+
+
+def _grouped_experts(block):
+    """Stack the expert weights once into [E, out, in] buffers and point each expert's weights at its slice,
+    so no weight is held twice. None when the experts are not plain bf16 / fp16 linears on CUDA."""
+    cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
+    if cached is not _MISSING:
+        return cached
+    experts = block.experts
+    stacked = None
+    first = experts[0] if isinstance(experts, torch.nn.ModuleList) and len(experts) else None
+    weight = getattr(getattr(first, "gate_proj", None), "weight", None)
+    if (
+        weight is not None
+        and weight.is_cuda
+        and weight.dtype in (torch.bfloat16, torch.float16)
+        and hasattr(torch, "_grouped_mm")
+        and all(_plain_expert(expert, weight.dtype) for expert in experts)
+    ):
+        stacked = []
+        for name in ("gate_proj", "up_proj", "down_proj"):
+            buffer = torch.stack([getattr(expert, name).weight.detach() for expert in experts])
+            for index, expert in enumerate(experts):
+                linear = getattr(expert, name)
+                linear.weight = torch.nn.Parameter(
+                    buffer[index], requires_grad = linear.weight.requires_grad
+                )
+            stacked.append(buffer)
+        stacked = tuple(stacked)
+    block.__dict__["_unsloth_grouped_experts"] = stacked
+    return stacked
+
+
+def _grouped_moe_infer(original):
+    @functools.wraps(original)
+    def moe_infer(self, x, topk_ids, topk_weight):
+        stacked = None
+        if not self.training and not torch.is_grad_enabled():
+            stacked = _grouped_experts(self)
+        if stacked is None or x.dtype != stacked[0].dtype:
+            return original(self, x, topk_ids, topk_weight)
+        gate, up, down = stacked
+        num_experts = gate.shape[0]
+        counts = topk_ids.new_zeros((topk_ids.shape[0], num_experts))
+        counts.scatter_(1, topk_ids, 1)
+        offsets = counts.sum(dim = 0).cumsum(0).to(torch.int32)
+        order = topk_ids.view(-1).argsort()
+        sorted_tokens = x[order // topk_ids.shape[1]]
+        act = self.experts[0].act_fn
+        hidden = act(torch._grouped_mm(sorted_tokens, gate.transpose(-2, -1), offs = offsets))
+        hidden = hidden * torch._grouped_mm(sorted_tokens, up.transpose(-2, -1), offs = offsets)
+        outs = torch._grouped_mm(hidden, down.transpose(-2, -1), offs = offsets)
+        new_x = torch.empty_like(outs)
+        new_x[order] = outs
+        return (
+            new_x.view(*topk_ids.shape, -1)
+            .type(topk_weight.dtype)
+            .mul_(topk_weight.unsqueeze(dim = -1))
+            .sum(dim = 1)
+            .type(new_x.dtype)
+        )
+
+    moe_infer._unsloth_grouped_moe_infer = True
+    return moe_infer
+
+
+def _is_host_synced_moe_infer(cls) -> bool:
+    import inspect
+
+    infer = cls.__dict__.get("moe_infer")
+    if infer is None or getattr(infer, "_unsloth_grouped_moe_infer", False):
+        return False
+    try:
+        source = inspect.getsource(infer)
+    except (OSError, TypeError):
+        return False
+    # The DeepSeek-style loop: counts to the host, then one expert at a time.
+    return ".cpu()" in source and "self.experts[" in source
+
+
+def prepare_remote_moe_for_inference(model):
+    """Patch remote MoE blocks whose eval `moe_infer` syncs the host per layer (LLaDA2) to the grouped dispatch.
+    Training, LoRA-wrapped or quantized experts and CPU tensors keep the original path."""
+    patched = []
+    for module in model.modules():
+        cls = type(module)
+        if (
+            _is_remote_code(cls)
+            and isinstance(getattr(module, "experts", None), torch.nn.ModuleList)
+            and _is_host_synced_moe_infer(cls)
+        ):
+            cls.moe_infer = _grouped_moe_infer(cls.__dict__["moe_infer"])
+            patched.append(cls.__name__)
+    return patched
