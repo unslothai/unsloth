@@ -1496,8 +1496,7 @@ class WhisperSttSidecar:
         snapshot_path = _find_complete_cached_snapshot(model_id)
         if snapshot_path is None:
             raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
+                f"STT model '{model_id}' is not downloaded yet."
             )
 
         if model_id in STT_MODELS:
@@ -1569,8 +1568,7 @@ class WhisperSttSidecar:
                 snapshot_path = cached.path
                 if snapshot_path is None:
                     raise SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device(preference)
@@ -1586,8 +1584,7 @@ class WhisperSttSidecar:
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
                     return SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
 
                 retry_on_cpu = False
@@ -1853,10 +1850,10 @@ class WhisperSttSidecar:
         current = self._model_id
         if current is None:
             return False
-        if current == expected:
+        if current.casefold() == expected.casefold():
             return True
         try:
-            return current == resolve_model_id(expected)
+            return current.casefold() == resolve_model_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 

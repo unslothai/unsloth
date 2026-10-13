@@ -174,7 +174,7 @@ def resolve_audio_cpp_stt_model(
     found = resolve(base, variant or ref_variant, hf_token, network = network)
     if found is None and not network:
         raise SttModelNotDownloadedError(
-            f"STT model '{base}' is not downloaded. Download it in Settings, then Voice, before loading it."
+            f"STT model '{base}' is not downloaded yet."
         )
     if found is None:
         raise SttModelIdError(
@@ -188,8 +188,7 @@ def resolve_audio_cpp_stt_model(
             row = resolve(base, None, hf_token, network = False)
             if row is not None and row.task == "asr" and row.unsupported is None:
                 raise SttModelNotDownloadedError(
-                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded. Download "
-                    "it in Settings, then Voice, before loading it."
+                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded yet."
                 ) from exc
         raise SttModelIdError(str(exc)) from exc
     return found
@@ -689,8 +688,9 @@ class AudioCppSttSidecar:
         if current is None:
             return False
         try:
-            # Row ids on both sides: a legacy key and its folder id name the same model.
-            return current == acm_row_id(expected)
+            # Row ids on both sides: a legacy key and its folder id name the same model,
+            # and hub ids match case-insensitively.
+            return current.casefold() == acm_row_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 
@@ -763,8 +763,7 @@ class AudioCppSttSidecar:
             return audio_cpp_files.materialize(model)
         except FileNotFoundError:
             raise SttModelNotDownloadedError(
-                f"STT model '{model.display_name}' ({model.variant.key}) is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
+                f"STT model '{model.display_name}' ({model.variant.key}) is not downloaded yet."
             ) from None
         except AudioCppUnavailableError as exc:
             # A path the runtime cannot open (Windows MAX_PATH) is a runtime limit, not a missing download.

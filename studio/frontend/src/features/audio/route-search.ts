@@ -80,6 +80,36 @@ export function audioRouteIntent(search: {
   return audioWorkflowForTask(search.task);
 }
 
+export type AudioWorkflowUrlAction =
+  | { kind: "intent"; workflow: AudioWorkflowId }
+  | { kind: "write"; workflow: AudioWorkflowId }
+  | { kind: "none" };
+
+/** Keeps `?workflow=` in step with the committed page, like the Hub's `?tab=`, so a reload
+ *  reopens it. A URL that moved off the last synced value is a request (a link, back/forward);
+ *  one still on it means the page moved on, so the URL catches up. */
+export function audioWorkflowUrlAction({
+  urlWorkflow,
+  lastSynced,
+  committed,
+  hasModel,
+  hasItem,
+}: {
+  urlWorkflow: AudioWorkflowId | null;
+  lastSynced: AudioWorkflowId | null;
+  committed: AudioWorkflowId;
+  hasModel: boolean;
+  hasItem: boolean;
+}): AudioWorkflowUrlAction {
+  // The model and Library handoffs own the URL until they clean it up.
+  if (hasModel || hasItem) return { kind: "none" };
+  if (urlWorkflow === committed) return { kind: "none" };
+  if (urlWorkflow !== null && urlWorkflow !== lastSynced) {
+    return { kind: "intent", workflow: urlWorkflow };
+  }
+  return { kind: "write", workflow: committed };
+}
+
 export function audioWorkflowForPick(pick: {
   id: string;
   task?: string | null;

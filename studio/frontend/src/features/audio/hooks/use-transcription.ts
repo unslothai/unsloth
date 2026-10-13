@@ -9,7 +9,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { AudioApiError } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
-import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
+import { sttSameModel } from "../audio-page-policy";
+import { sttRepoIdForSidecarKey, sttSidecarKeyFor } from "../catalog";
 import {
   getTranscript,
   renameTranscriptSpeakers,
@@ -65,6 +66,8 @@ export function useTranscription({
   ensureSttLoaded,
   setLastSttRepo,
   refreshSttStatus,
+  sttEngineFor,
+  readSttResidency,
 }: Pick<AudioHostState, "activeRef" | "busyRef" | "setBusy"> &
   Pick<
     SttSidecar,
@@ -76,6 +79,8 @@ export function useTranscription({
     | "ensureSttLoaded"
     | "setLastSttRepo"
     | "refreshSttStatus"
+    | "sttEngineFor"
+    | "readSttResidency"
   >) {
   const [draftKey] = useState(transcriptDraftKey);
   const [recoveredTranscript] = useState(() => readTranscriptDraft(draftKey));
@@ -184,8 +189,24 @@ export function useTranscription({
     selectedSttRepoRef.current = repo;
     setSelectedSttRepo(repo);
     const model = sttSidecarKeyFor(repo);
-    const engine = sttEngineForRepoId(repo);
-    if (sttLoadedModel !== model || sttLoadedEngine !== engine) {
+    const engine = sttEngineFor(repo);
+    // Page state lags an idle unload; transcribing against it skipped the load and hit a 409.
+    const resident = await readSttResidency(engine).catch(() =>
+      sttLoadedModel && sttLoadedEngine
+        ? { model: sttLoadedModel, engine: sttLoadedEngine }
+        : null,
+    );
+    if (
+      !resident ||
+      resident.engine !== engine ||
+      !sttSameModel(
+        repo,
+        resident.model,
+        sttSidecarKeyFor,
+        engine,
+        sttRepoIdForSidecarKey,
+      )
+    ) {
       if (!(await ensureSttLoaded(repo, model, engine))) return null;
     }
     setLastSttRepo(repo);
@@ -194,6 +215,8 @@ export function useTranscription({
     lastSttRepo,
     sttLoadedModel,
     sttLoadedEngine,
+    sttEngineFor,
+    readSttResidency,
     ensureSttLoaded,
     setLastSttRepo,
   ]);

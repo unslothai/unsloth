@@ -833,8 +833,7 @@ class MtmdSttSidecar:
         paths = _cached_model_paths(model_id)
         if paths is None:
             raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
+                f"STT model '{model_id}' is not downloaded yet."
             )
         return paths
 
