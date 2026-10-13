@@ -158,8 +158,7 @@ class TestUntrustedHostBlock:
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     def test_untrusted_host_behind_a_name_blocked(self):
-        # A name holding a literal is still a host this screen reads, so it gets the same verdict
-        # as the spelled-out call. Nothing screens python-tool code again after this.
+        # python-tool code has no later screen, so named literals need the same verdict
         _blocked(
             'import requests; url = "https://example.com/"; requests.get(url)',
             expect_phrase = "Blocked: host not in sandbox allowlist",
@@ -231,7 +230,7 @@ _H = "203.0.113.5"
 
 
 class TestNetworkTargetResolution:
-    """The allowlist applies to a host however the call spells it (#10397)."""
+    """the allowlist follows the host across supported call spellings (#10397)."""
 
     @pytest.mark.parametrize(
         "code",
