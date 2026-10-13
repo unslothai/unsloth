@@ -569,18 +569,66 @@ export function persistedClipForGeneration<T extends { id: string }>(
   return clipId ? (refreshed.find((clip) => clip.id === clipId) ?? null) : null;
 }
 
+/** Compare a picker row with the sidecar's resident name by row id. A legacy dictation key
+ *  (`audiocpp-qwen3-asr-0.6b`) names the same folder as the Transcribe row, and ids differ in case. */
+export function sttSameModel(
+  selectedRepo: string,
+  loadedModel: string,
+  sidecarKeyFor: (repoId: string) => string,
+  engine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
+): boolean {
+  if (loadedModel === sidecarKeyFor(selectedRepo)) return true;
+  if (!repoIdForSidecarKey) return false;
+  const rowId = (id: string) =>
+    repoIdForSidecarKey(id, engine ?? undefined).trim().toLowerCase();
+  return rowId(loadedModel) === rowId(sidecarKeyFor(selectedRepo));
+}
+
 export function sttSelectionReady(
   selectedRepo: string | null,
   loadedModel: string | null,
   sidecarKeyFor: (repoId: string) => string,
   selectedEngine?: SttEngine | null,
   loadedEngine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
 ): boolean {
   return Boolean(
     selectedRepo &&
-      loadedModel === sidecarKeyFor(selectedRepo) &&
+      loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine ?? selectedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!selectedEngine || !loadedEngine || selectedEngine === loadedEngine),
   );
+}
+
+/** Eject only what is resident: the selector keeps showing the last Transcribe model after an
+ *  unload, and an Eject there had nothing to release. */
+export function audioEjectAvailable({
+  mode,
+  busy,
+  hasValue,
+  showLastPageModel,
+  sttReady,
+}: {
+  mode: string;
+  busy: AudioBusy;
+  hasValue: boolean;
+  showLastPageModel: boolean;
+  sttReady: boolean;
+}): boolean {
+  if (!hasValue || busy !== null || showLastPageModel) return false;
+  return mode !== "transcribe" || sttReady;
+}
+
+/** Older backends return no `released` flag; treat that as released, like before. */
+export function sttEjectSucceeded(released: boolean | undefined): boolean {
+  return released !== false;
 }
 
 type SttEngineResidency = {
@@ -677,7 +725,13 @@ export function reconcileSttSelection({
   if (loadedModel) {
     if (
       selectedRepo &&
-      sidecarKeyFor(selectedRepo) === loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!loadedEngine ||
         !engineForRepo ||
         engineForRepo(selectedRepo) === loadedEngine)
