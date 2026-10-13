@@ -304,7 +304,6 @@ def _infer_device_map_from_loaded_model(model, skip = ()):
 
 def _repair_dispatch_hooks(model):
     """Give a dispatched module its hook back after the load replaced it. `dispatch_model` hooks every map entry; what drops the hook is our own `post_patch` -> `patch_model_and_tokenizer`, which installs a NEW Embedding and Linear over the same weights, so `_hf_hook` dies with the old module. Not tied-specific: `tie_word_embeddings = False` fails identically. Unrepaired, a split model raises `index is on cuda:0, different from other tensors on cuda:1` at the first embedding lookup."""
-    # Every split load passes here, so RoPE knows about the split before the first forward.
     register_split_model(model)
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:

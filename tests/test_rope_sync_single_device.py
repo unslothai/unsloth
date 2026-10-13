@@ -12,7 +12,6 @@ import unsloth.kernels.rope_embedding as RE
 
 
 class _FakeQ:
-    # Enough of a tensor for the sync decision: the Triton / torch RoPE is stubbed out below.
     def __init__(self, index):
         self.index = index
         self.device = torch.device("cuda", index)
@@ -28,7 +27,6 @@ class _Model:
 
 @pytest.fixture
 def current(monkeypatch):
-    # The current device of the process: a DDP rank sets it to its own index.
     device = [0]
     monkeypatch.setattr(RE, "_current_device", lambda: device[0], raising = False)
     return device
@@ -60,7 +58,6 @@ def _rope(index):
 
 @pytest.mark.parametrize("index", [0, 3])
 def test_single_device_on_multi_gpu_host_never_syncs(monkeypatch, synced, current, index):
-    # Single-GPU training (or one DDP rank) with several GPUs visible.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 8)
     current[0] = index
     assert not RE.register_split_model(_Model({"": index}))
@@ -88,8 +85,6 @@ def test_one_visible_device_never_syncs(monkeypatch, synced):
 
 
 def test_split_model_syncs_from_the_first_call(monkeypatch, synced):
-    # Layers on cuda:0 then cuda:1 (device_map split): registered at load, so the cuda:0 shard of the
-    # very first forward drains too, as on main.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     model = _Model({"model.embed_tokens": 0, "model.layers.0": "cuda:0", "model.layers.1": "1", "lm_head": "cpu"})
     assert RE.register_split_model(model)
@@ -104,7 +99,6 @@ def test_split_model_syncs_from_the_first_call(monkeypatch, synced):
 
 
 def test_independent_single_device_models_stay_unsynced(monkeypatch, synced, current):
-    # Two single-device models on different GPUs of one process, each run with its device current.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     a, b = _Model({"": 0}), _Model({"": "cuda:1"})
     assert not RE.register_split_model(a) and not RE.register_split_model(b)
@@ -128,7 +122,6 @@ def test_freed_split_model_stops_syncing(monkeypatch, synced):
 
 
 def test_unregistered_split_syncs_once_seen(monkeypatch, synced):
-    # A split nothing registered: from the first call off the current device, every call drains.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     for _ in range(2):
         for index in [0, 0, 1, 1]:
@@ -157,8 +150,6 @@ def test_unhashable_split_model_drains_instead_of_raising(monkeypatch, synced):
 
 
 def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
-    # accelerate.dispatch_model called by hand after loading registers the split before the first forward,
-    # including through the names transformers bound at import.
     import importlib
     import sys
 

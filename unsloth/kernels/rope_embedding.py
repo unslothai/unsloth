@@ -397,16 +397,10 @@ if _TRACEABLE:
     _tag_compile_cache(__file__)
 
 
-# Models whose device_map spans several accelerators, registered at load (`register_split_model`). The
-# stream drain after RoPE was added for such split models (#3049, #3061), so while one is alive every
-# RoPE call drains, including the first shard of the first forward. One model on one device of a
-# multi-GPU host, or one DDP rank, launches every kernel on that device's current stream and skips it.
-# Weak, so a freed split model stops costing the others.
+# The RoPE stream drain exists only for models split over devices (#3049, #3061); single-device skips it.
 _SPLIT_MODELS = weakref.WeakSet()
 
-# Set by the first RoPE call off the current device: a split nothing registered (dispatched through a
-# dispatch_model bound before Unsloth was imported), or a split model that cannot be tracked. From then
-# on every call drains, as on main.
+# Unregistered or untrackable split seen: drain every call from then on.
 _UNREGISTERED_SPLIT_SEEN = False
 
 if DEVICE_COUNT > 1:
@@ -416,7 +410,7 @@ else:
 
 
 def _accelerator_indices(device_map):
-    # An index-less entry ("cuda", torch.device("cuda")) means the current device, not device 0.
+    # Index-less "cuda" means the current device, not device 0.
     current = _current_device() if _current_device is not None else 0
     indices = set()
     for value in device_map.values():
@@ -458,7 +452,6 @@ def register_split_model(model, device_map = None):
 
 
 def _register_splits_on_dispatch():
-    # A model the user dispatches by hand after loading is registered too, before its first forward.
     import sys
     try:
         import accelerate.big_modeling as big_modeling
@@ -475,7 +468,7 @@ def _register_splits_on_dispatch():
         return out
 
     dispatch_model._unsloth_registers_split = True
-    # transformers binds it by name at import (modeling_utils on 4.x, integrations on 5.x).
+    # transformers binds it by name at import.
     for name in (
         "accelerate",
         "accelerate.big_modeling",
