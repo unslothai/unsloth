@@ -521,7 +521,6 @@ class TestWhenNothingWillReclaim:
         assert 4 * (prompt + enforced) <= 16384
 
 
-
 BUDGET, SLOTS = 16384, 4
 SHARE = BUDGET // SLOTS
 
