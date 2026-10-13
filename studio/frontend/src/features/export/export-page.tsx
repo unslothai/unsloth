@@ -855,6 +855,8 @@ export function ExportPage() {
     const checkpointPath = selectedCp?.path ?? null;
 
     const pushToHub = destination === "hub";
+    if (pushToHub && !isDecision && (!hfUsername.trim() || !modelName.trim()))
+      return;
     const preparedToken = await prepareHfTokenForUse(hfToken, {
       allowAnonymous: !pushToHub,
     });
