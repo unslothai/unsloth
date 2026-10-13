@@ -1447,11 +1447,16 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def _holds_gpu() -> bool:
+    # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
+    return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
+
+
 def _misplaced() -> bool:
     # The resident model follows the same rule: off the GPU while training holds it, back on it after.
     if getattr(_agent, "_unsloth_for_training", False):
         return not _training_active()
-    return _device_name not in (None, "cpu") and _training_active()
+    return _holds_gpu() and _training_active()
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
@@ -2291,6 +2296,7 @@ def status() -> dict[str, Any]:
             # Laya never falls back, so a reason left by an earlier Clef is not its status.
             "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
             "device": _device_name,
+            "holds_gpu": _holds_gpu(),
             "loading_model": _loading.name if _loading else None,
             # Kept for the settings API: laya is vendored, so there is never an install in flight.
             "installing": False,

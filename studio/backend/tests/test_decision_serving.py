@@ -208,6 +208,12 @@ def test_a_gpu_worker_that_fell_back_to_cpu_reports_cpu(home, client, gpu):
     gpu.oom = True
     assert _post(client).status_code == 200
     assert client.get("/api/settings/systemone").json()["loaded_device"] == "cpu"
+    # Its CUDA context lives until the worker ends, so training still takes it off the GPU.
+    assert laya_runtime.status()["holds_gpu"]
+    gpu.training = True
+    assert _post(client).status_code == 200
+    assert gpu.closed == 1
+    assert gpu.placed == ["cuda", "cpu"]
 
 
 def test_shutdown_ends_a_gpu_worker(home, client, gpu):
