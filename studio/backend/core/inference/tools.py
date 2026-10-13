@@ -19243,6 +19243,10 @@ def _check_signal_escape_patterns(code: str):
                     module = alias.name.partition(".")[0]
                     name = alias.asname or module
                     (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            elif isinstance(node, ast.comprehension):
+                stack.append(node.iter)
+                stack.extend(node.ifs)
+                continue
             else:
                 other.update(_binding_names(node))
             stack.extend(ast.iter_child_nodes(node))
