@@ -880,6 +880,7 @@ pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), Stri
 /// Start the first-launch installation process.
 /// Runs the platform installer script with --tauri flag and streams progress events.
 /// Returns "NEEDS_ELEVATION" if system packages need elevated install (Linux only).
+/// `skip_long_paths`: Windows Long Paths was declined on the startup screen.
 #[tauri::command]
 pub async fn start_install(
     app: AppHandle,
@@ -887,6 +888,7 @@ pub async fn start_install(
     backend_state: tauri::State<'_, BackendState>,
     update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    skip_long_paths: Option<bool>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
         return Err(
@@ -902,9 +904,12 @@ pub async fn start_install(
 
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
-    tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
-        .await
-        .map_err(|e| format!("Install task panicked: {e}"))?
+    let skip_long_paths = skip_long_paths.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        install::run_install(app, state, diagnostics_state, skip_long_paths)
+    })
+    .await
+    .map_err(|e| format!("Install task panicked: {e}"))?
 }
 
 /// Record that the user canceled a pending system-package elevation flow.
