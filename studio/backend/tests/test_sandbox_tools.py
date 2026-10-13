@@ -175,7 +175,6 @@ class TestLocalDatabaseFileIsNotAHost:
             'import duckdb\nduckdb.connect("a.duckdb")',
             'import sqlite3 as sql\nsql.connect("sales.db")',
             'import duckdb as ddb\nddb.connect("a.duckdb")',
-            'import sqlite3\nsqlite3.connect("file:sales.db?mode=ro", uri = True)',
         ],
     )
     def test_local_database_file_opens(self, code):
@@ -195,6 +194,17 @@ class TestLocalDatabaseFileIsNotAHost:
         ],
     )
     def test_remote_connect_still_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'import sqlite3\nsqlite3.connect("file:sales.db?mode=ro", uri = True)',
+            'import sqlite3\nsqlite3.connect("FILE:///tmp/sales.db", uri = True)',
+            'import sqlite3\nsqlite3.connect("file:data/sales.db", uri = True)',
+        ],
+    )
+    def test_sqlite_uri_keeps_host_check(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
 

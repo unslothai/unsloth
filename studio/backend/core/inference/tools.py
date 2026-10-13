@@ -19194,9 +19194,9 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     def _is_local_database_target(target: str) -> bool:
-        if target.startswith(("md:", "motherduck:", "\\\\", "//", "file://")):
-            return target.startswith(("file:///", "file://localhost/"))
-        return "://" not in target or target.startswith("file:")
+        if target.startswith(("md:", "motherduck:", "file:", "\\\\", "//")):
+            return False
+        return "://" not in target
 
     def _local_database_names(nodes) -> frozenset:
         imported: set[str] = set()
