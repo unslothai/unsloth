@@ -763,6 +763,13 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
+  // A handler can navigate mid-drag: the rest must not act on a page nobody gated.
+  const doc = (await pageCall(tab, { op: "status" })).doc;
+  const sameTab = () => {
+    const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+    return Boolean(now && !now.loading && tabUrl(now) === before);
+  };
+  const samePage = async () => sameTab() && (await pageCall(tab, { op: "status" }).catch(() => null))?.doc === doc;
   const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] });
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
@@ -771,8 +778,10 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   let sent = performance.now();
   for (let step = 1; step <= steps && !signal?.aborted; step++) {
     await sleep(Math.max(0, DRAG_FRAME_MS - (performance.now() - sent)));
+    if (!sameTab()) break;
     sent = performance.now();
-    const next = { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
+    // The last step lands on `end` exactly: interpolated floats can miss it by an ulp.
+    const next = step === steps ? end : { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
     const moved = await pageCall(tab, { op: "pointer", phase: "move", ...next }).catch(() => null);
     if (!moved?.ok) break;
     at = next;
@@ -782,6 +791,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     return { ok: false, error };
   };
   if (signal?.aborted) return cancel(STOPPED);
+  if (!doc || !(await samePage())) return { ok: false, error: "the page changed during the drag, so it was not finished; take a snapshot." };
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged.
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
@@ -794,6 +804,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
       if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
     }
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
+    if (!(await samePage())) return { ok: false, error: "the page changed during the drag, so it was not finished; take a snapshot." };
   }
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);

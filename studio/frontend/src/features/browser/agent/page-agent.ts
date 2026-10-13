@@ -729,6 +729,7 @@ export function installPageAgent(): PageAgent {
     // The press and the release are held to the elements the user was asked about; moves are not.
     const el = phase === "down" || phase === "up" ? stillAt(at, expect, sig) : elementAt(at);
     if (phase === "down") {
+      if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
       pressAt(el, at, expect, sig);
       drag = { html: null };
       const source = lineage(el).find((node) => node.getAttribute("draggable") === "true");
@@ -772,11 +773,19 @@ export function installPageAgent(): PageAgent {
         html.over = el;
       }
       html.accepted = !dragEvent(el, "dragover", at, html.data);
+      // Drop zone handlers can rewire the target: the drop waits for a fresh check, as the press does.
+      if (expect && stillAt(at, expect, sig) !== el) {
+        dragEvent(html.source, "dragend", at, html.data);
+        throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+      }
       if (html.accepted) dragEvent(el, "drop", at, html.data);
       dragEvent(html.source, "dragend", at, html.data);
       return html.accepted ? { ok: true } : { ok: true, note: "Nothing at the end point took the drop." };
     }
     hoverTo(el, at, 1);
+    if (expect && stillAt(at, expect, sig) !== el) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
     mouse(el, "pointerup", at);
     mouse(el, "mouseup", at);
     return { ok: true };
