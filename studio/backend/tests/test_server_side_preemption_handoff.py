@@ -87,7 +87,7 @@ class TestMode:
     @pytest.mark.parametrize(
         "args, disabled",
         [
-            # Nothing named is parking off: unslothai/llama.cpp#197 defaults the budget to 0.
+            # unslothai/llama.cpp#197 defaults the budget to 0.
             ([], True),
             (["--preempt-ram", "8192"], False),
             (["--preempt-ram", "0"], True),
@@ -149,7 +149,6 @@ class TestController:
         assert controller.server_mode is True
         signals = _fill(controller, n = 4, tokens = 2400)  # 9600 against 8192
         assert controller.plan_preemptions() == []
-        # The per-token sweep is the same call, and it must stay quiet too.
         for i in range(4):
             assert controller.observe(f"g{i}", 64) == []
         assert not any(s.is_set() for s in signals)
@@ -298,7 +297,6 @@ class TestThePauseReachesTheClient:
         body = {"messages": [{"role": "user", "content": "write me an essay"}], "stream": True}
         if tools:
             body["enable_tools"] = True
-        # The Studio UI's opt-in: tools with confirmation are refused without it.
         response = TestClient(app, headers = {"X-Unsloth-Events": "1"}).post(
             "/chat/completions", json = body
         )
@@ -329,12 +327,9 @@ class TestADurableRunRelaysThePause:
         ]
         glued = 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n: preempt-paused\n\n'
         assert _admission_status_chunks(glued) == [{"_admissionStatus": "paused"}]
-        # Renewed on, never relayed: a keepalive is progress for the lease, not a status.
         assert _admission_status_chunks(": preempt-keepalive\n\n") == []
 
     def test_a_recompute_reaches_a_follower_after_the_resume_it_qualifies(self):
-        # The park could not be held, so the answer was re-prefilled: the durable follower
-        # needs it to mark the thread, not to change the status line.
         both = ": preempt-resumed\n\n: preempt-recomputed\n\n"
         assert [c["_admissionStatus"] for c in _admission_status_chunks(both)] == [
             "resumed",
@@ -342,8 +337,6 @@ class TestADurableRunRelaysThePause:
         ]
 
     def test_the_queue_comments_reach_a_follower_once_per_change(self):
-        # The legacy stream shows "Waiting for a free slot" off these; the wait repeats every
-        # keepalive while queued, and a later requeue is a change.
         last: list = []
         relayed = []
         for piece in (": admission-wait\n\n",) * 4 + (
@@ -358,8 +351,7 @@ class TestEverySignalTheClientReadsHasAProducer:
     """The one cross-language contract here: the client understands four comments, and a
     signal it can read that the server never sends is a user staring at a stopped answer."""
 
-    # No behavioural reach: the producers are asserted elsewhere in this file, but only
-    # the frontend source says which comments the client is prepared to read.
+    # Only the frontend source says which comments the client reads.
     def test_the_frontend_declares_exactly_the_comments_the_route_emits(self):
         backend_dir = pathlib.Path(__file__).resolve().parent.parent
         ts = backend_dir.parent / "frontend/src/features/chat/utils/admission-status.ts"
@@ -486,8 +478,6 @@ class TestAParkIsNotAStall:
         assert clock["t"] == pytest.approx(3 * self._STALL, abs = 1.0)
 
     def test_the_grace_is_measured_from_the_deadline_it_first_crossed(self, monkeypatch):
-        # Parked for good: the wait is the stall window and then the whole grace, not the
-        # grace less the window it took to reach the deadline.
         read, clock = self._drive(monkeypatch, lambda: True)
         self._read_until_stall(read)
         cap = llama_cpp_mod._SERVER_PARK_STALL_CAP_S

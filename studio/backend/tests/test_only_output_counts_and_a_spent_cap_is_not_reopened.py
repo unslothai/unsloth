@@ -55,9 +55,7 @@ class TestOnlyOutputCountsTowardsTheSweep:
         assert reports == [_TOKEN_REPORT_EVERY]
 
     def test_the_servers_own_count_outranks_the_frame_count(self, monkeypatch):
-        # A structured tool-call frame can carry several tokens' worth of arguments: the
-        # per-frame count under-reports the cache. `timings_per_token` puts the server's
-        # count on every frame, and the request asks for it whenever a watermark listens.
+        # A tool-call frame can carry several tokens, so the server's per-frame count is used.
         signal = preemption.PreemptSignal()
         reports: list[int] = []
         counted = (
@@ -110,7 +108,6 @@ class TestOnlyOutputCountsTowardsTheSweep:
             inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools).split()
         )
         assert plain.count(predicate) == 1
-        # The tool round and the final pass.
         assert tools.count(predicate) == 2
 
 
@@ -161,7 +158,6 @@ class TestASpentCapIsNotReopened:
         assert "awaited" not in policy.events, "a spent cap queued for room it cannot use"
         dicts = [e for e in events if isinstance(e, dict)]
         assert [e["finish_reason"] for e in dicts if e.get("type") == "metadata"][-1] == "length"
-        # The caller's own cap ended it, which is not a give-up.
         assert not any(e.get("type") == "context_truncated" for e in dicts)
 
 
@@ -181,7 +177,6 @@ class TestThePassThroughBatchSizesTheReserve:
             requested_n_batch = 512
             extra_args = []
 
-        # The launcher's own flag comes before the extras, so the extras win at launch.
         assert inference._openai_llama_effective_batch_tokens(_Typed()) == 8192
         assert inference._openai_llama_effective_batch_tokens(_LastWins()) == 4096
         assert inference._openai_llama_effective_batch_tokens(_Empty()) == 512

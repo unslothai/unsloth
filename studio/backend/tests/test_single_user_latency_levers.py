@@ -61,14 +61,11 @@ def test_count_memo_reuses_a_render_only_within_one_server_process(monkeypatch):
     first = backend.count_chat_tokens(msgs, prefer_native = True)
     second = backend.count_chat_tokens(msgs, prefer_native = True)
     assert first == second and len(calls) == 1
-    # A different prompt is counted afresh.
     backend.count_chat_tokens([{"role": "user", "content": "other"}], prefer_native = True)
     assert len(calls) == 2
-    # A relaunched server (new pid) never reads the old answer.
     backend._process = SimpleNamespace(pid = 4343)
     backend.count_chat_tokens(msgs, prefer_native = True)
     assert len(calls) == 3
-    # No process, no memo.
     backend._process = None
     backend.count_chat_tokens(msgs, prefer_native = True)
     backend.count_chat_tokens(msgs, prefer_native = True)
@@ -84,8 +81,7 @@ def test_display_strip_leaves_markup_free_text_alone_and_still_strips_markup():
 
 
 def test_display_strip_fast_path_matches_the_full_strip_on_random_text(monkeypatch):
-    # The full strip must already be the identity on text without < [ {; force the slow path
-    # to prove it rather than trusting the fast path to agree with itself.
+    # Force the slow path to prove the full strip is the identity on trigger-free text.
     pieces = list("abcxyz ABC019\n\t.,;:!?'\"()-_=+*&^%$#@~`|/\\}]") + [
         "call:",
         "call: web_search",

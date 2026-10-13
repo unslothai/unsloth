@@ -477,9 +477,7 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
 
 
 def test_park_notices_before_the_first_token_keep_the_first_token_window():
-    # A request parked during its prefill relays `: preempted` and `: resumed` before any
-    # token. Taken as the first item, they armed the short stall clock over the prefill the
-    # resume goes back into, and a large one was cut off as a stall.
+    # Park notices before the first token must not arm the short stall clock over the prefill.
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         items = iter([": preempted", ": resumed", "data: {}", "data: {}"])
@@ -503,9 +501,6 @@ def test_park_notices_before_the_first_token_keep_the_first_token_window():
             seen.append((item, response.request.extensions["timeout"].get("read")))
 
         assert [item for item, _ in seen] == [": preempted", ": resumed", "data: {}", "data: {}"]
-        # The first read waits out what was left of the window; the notice renews it, since
-        # a park longer than the window would otherwise end at the next read; the first token
-        # arms the stall clock.
         assert 3 < seen[0][1] <= 5
         assert seen[1][1] > inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S - 5
         assert all(abs(read - 2.0) < 0.05 for _, read in seen[2:])

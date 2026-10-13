@@ -4,8 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** What the user can ask for. `auto` asks and accepts a refusal; `on` asks and fails the load
- *  if the server refuses; `off` never asks. */
+/** `auto` accepts a refusal; `on` fails the load on one; `off` never asks. */
 export type ExactConcurrencySetting = "auto" | "off" | "on";
 
 export const EXACT_CONCURRENCY_SETTINGS: readonly ExactConcurrencySetting[] = [
@@ -21,23 +20,16 @@ export function isExactConcurrencySetting(
 }
 
 export interface ExactConcurrencySettings {
-  /** The stored value, or null when nothing is stored. Not the same as a stored "off". */
+  /** Null when nothing is stored, which differs from a stored "off". */
   stored: ExactConcurrencySetting | null;
-  /** What the next load resolves to once the environment, this store and an inherited
-   *  LLAMA_EXACT_CONCURRENCY have been read. */
   effective: string;
-  /** What applies when nothing is stored. */
   fallback: string;
-  /** Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine, in which case saving here
-   *  changes nothing until the variable goes away. */
+  /** Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine; saving here then changes nothing. */
   envOverride: string | null;
-  /** What the RUNNING server does: on, off or unavailable. */
   active: string;
   reloadRequired: boolean;
-  /** Exact mode needs the server to own parking, which the environment opts into; until then
-   *  Auto reports unavailable and On fails the load. */
+  /** Exact mode needs server parking; without it Auto reports unavailable and On fails the load. */
   parkingAvailable: boolean;
-  /** The setting that turns parking on, when it is off. */
   parkingPrerequisite: string | null;
 }
 

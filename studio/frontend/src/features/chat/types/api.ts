@@ -51,8 +51,7 @@ export interface LoadModelRequest {
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
-  /** Exact concurrency for this load (auto/off/on). Omitted, the persisted setting applies;
-   *  a rollback sends what the previous load asked for, not the setting saved since. */
+  /** Omitted, the persisted setting applies; a rollback sends what the previous load asked for. */
   exact_concurrency?: string | null;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
@@ -272,9 +271,7 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
-  /** What the running llama-server does about exact concurrency: "on", "off" or "unavailable". */
   exact_concurrency?: string | null;
-  /** The exact-concurrency setting the load resolved to (auto/off/on): what was asked for. */
   requested_exact_concurrency?: string | null;
   context_unbounded_when_batched?: boolean;
   supports_reasoning?: boolean;
@@ -483,10 +480,8 @@ export interface InferenceStatusResponse {
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
   parallel_slots?: number | null;
-    /** What the running llama-server does about exact concurrency: "on", "off", or
-     *  "unavailable". Absent on a backend that predates the switch, which reads as "off". */
+    /** Absent on a backend that predates the switch, which reads as "off". */
   exact_concurrency?: string | null;
-    /** The exact-concurrency setting the load resolved to (auto/off/on). What was ASKED for. */
   requested_exact_concurrency?: string | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -847,8 +842,8 @@ export interface OpenAIChatChunk {
     latest_turn_role?: string;
     // prompt share of context_length after the reply reserve, calculated by the fit
     prompt_target?: number;
-    // Why this event was sent when no fit sent it. Only "preempt_gave_up" so far, which is not a
-    // truncation and carries `fits: true`. It rides this event because this event reaches everyone.
+    // Only "preempt_gave_up" so far: not a truncation, it rides this event because it reaches
+    // everyone.
     reason?: string;
   };
 }

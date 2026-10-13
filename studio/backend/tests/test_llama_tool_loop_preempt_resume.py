@@ -119,9 +119,8 @@ class TestARoundPauses:
 
         class _Policy(_RecordingPolicy):
             def on_resumed(self):
-                # `on_resumed` is what puts this participant back among the candidates. A
-                # signal still set here aborts the resumed attempt on its first read, and
-                # clearing after it races a sweep that could have chosen it again.
+                # Clearing after `on_resumed` races a sweep; still set, it aborts the resumed
+                # attempt.
                 seen.append(signal.is_set())
                 super().on_resumed()
 
@@ -284,7 +283,6 @@ def _final_pass(
         policy = policy,
         tools = [_PLAIN_TOOL],
         prompt = "what kernel is current?",
-        # One round, so the loop breaks mid-round into the synthesized final pass.
         max_tool_iterations = 1,
         permission_mode = "off",
         **run_kwargs,
@@ -392,7 +390,6 @@ class TestTheFinalPassPausesAndResumes:
         assert recorder.payloads[0]["max_tokens"] == 512, "the rounds were already clamped"
 
     def test_an_allowance_does_not_hand_a_paused_pass_its_cap_back(self, monkeypatch):
-        # Each attempt re-derives max_tokens from its attempt cap and the allowance.
         signal = preemption.PreemptSignal()
         recorder, _events = _final_pass(
             monkeypatch,
@@ -465,8 +462,7 @@ class TestTheFinalPassReportsItsGrowth:
         _recorder, policy, events = self._run(monkeypatch, on_tokens = lambda _n: None)
         checkpoint = policy.checkpoints[0]
         assert checkpoint.visible_text == "a" * self._PER_ATTEMPT
-        # One character per chunk, so the four-characters-per-token estimate is a quarter
-        # of the truth: the shape of the undercharge on token-dense text.
+        # One character per chunk: the four-chars-per-token estimate undercharges token-dense text.
         assert checkpoint.charged_tokens == self._PER_ATTEMPT, (
             "the pause was charged the character estimate while the attempt's own chunk "
             f"count was known: {checkpoint.charged_tokens} against {self._PER_ATTEMPT}"
@@ -503,9 +499,8 @@ class TestGivingUpTellsTheClient:
         recorder = _two_part(monkeypatch, signal)
         events = _run(recorder.backend, signal = signal, policy = policy)
         assert policy.events.count("preempted") == 1
-        # One request, not two: the lease went back with `on_preempted` and this
-        # participant is PAUSED, so breaking into the final answering pass would decode
-        # on cells the planner had already handed to somebody else.
+        # One request: the lease went back, so a final pass would decode on cells handed to somebody
+        # else.
         assert len(recorder.payloads) == 1
         assert len(_gave_up(events)) == 1, "the tool loop gave up without telling anyone"
         assert _metadata(events)[-1]["finish_reason"] == "length"
@@ -616,12 +611,10 @@ class TestADeclinedContinuationTellsTheClient:
         events = _run(backend)
 
         assert len(payloads) == 1, "the continuation was sent after all"
-        # Once: `mergeContextTruncation` on the client SUMS the counters across a turn.
+        # Once: the client SUMS the counters across a turn.
         refusals = [event for event in events if event.get("type") == "context_truncated"]
         assert len(refusals) == 1, refusals
         assert refusals[0]["fits"] is False
-        # Nothing was evicted, and a non-zero count here raises "This conversation was
-        # compacted" for a compaction that never happened.
         assert refusals[0]["dropped_messages"] == 0
         assert 0 < refusals[0]["prompt_target"] < refusals[0]["context_length"] == 4096
         assert _tc_metadata(events)["finish_reason"] == "length"

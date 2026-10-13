@@ -1753,10 +1753,8 @@ function scheduleGenerationRecovery(
               };
               if (chunk._admissionStatus !== undefined) {
                 if (chunk._admissionStatus === "recomputed") {
-                  // Qualifies the resume before it, so the status line stays as it is. Reaches
-                  // the chip through the message, as the live adapter's does.
-                  // With the model it happened on, as the live adapter stamps it: a follower
-                  // settled as interrupted carries no details to scope the note by.
+                  // Stamped with its model, as the live adapter does: an interrupted follower has
+                  // no details.
                   const recomputedOn = update.run.requestPayload?.model;
                   currentMetadata = {
                     ...currentMetadata,
@@ -1772,8 +1770,7 @@ function scheduleGenerationRecovery(
                   };
                   continue;
                 }
-                // Queued or paused: the line the live adapter shows, so a follower does
-                // not read the pause as a wedged backend. Cleared with the run below.
+                // The live adapter's line, so a follower does not read a pause as a wedged backend.
                 useChatRuntimeStore
                   .getState()
                   .setToolStatus(
@@ -3826,18 +3823,12 @@ function ThreadScopedSettingsSync({
 
 // Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
 // none, and a retried thread's newest stored leaf is not what the runtime would send.
-/** The exact-concurrency chip's recompute note follows the answer on screen. A thread-level
- *  flag set when a turn ended conflated a thread's retry branches: a normal retry cleared the
- *  note of its re-prefilled sibling, and switching back to that sibling showed Exact over an
- *  answer that was not. Read from the visible branch's last assistant message, whose metadata
- *  both adapters write and persist, so a reload and a branch switch read the same source. */
+/** The recompute note follows the visible branch's last answer, not a thread flag that retries clobbered. */
 function VisibleAnswerRecomputeSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
-  // The answer's model rides in its usage record. A note from model A must not qualify the
-  // chip for model B, loaded into the same thread before B has answered.
-  // A primitive per selector: a selector returning a fresh object re-renders on every store
-  // read and React refuses the loop (error 185, seen in the Windows UI lane).
+  // Scoped by model. One primitive per selector: a fresh object re-renders forever (React error
+  // 185).
   const lastAnswer = useAuiState(({ thread }) => {
     const messages = thread.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -3849,11 +3840,8 @@ function VisibleAnswerRecomputeSync({
   const usage = custom?.contextUsage as { modelId?: unknown } | undefined;
   const details = custom?.responseDetails as { modelId?: unknown } | undefined;
   const answerRecomputed = custom?.preemptRecomputed === true;
-  // The recomputes' own models first: a Continue on another checkpoint stamps the joined answer's
-  // usage with that one, while a re-prefill may have happened on either, so each counts.
   const recomputedOn = recomputedModelIds(custom);
-  // An answer with no usage (interrupted, or a server that sent none) still has its details.
-  // None known: keep the note, which can only add a caveat, never claim exact.
+  // No model known: keep the note, which only adds a caveat.
   const answerModelId =
     typeof usage?.modelId === "string"
       ? usage.modelId

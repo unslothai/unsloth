@@ -44,7 +44,6 @@ def _read(chunks):
 
 
 def test_a_park_that_never_ends_still_times_out():
-    # Ten times the cap of keepalives; without the bound the stream just ends unrefused.
     forever = itertools.chain(
         [": preempted 1\n\n"], itertools.repeat(": preempt-keepalive\n\n", 300)
     )
@@ -101,8 +100,6 @@ class TestARawRelayParkedAfterItsFirstToken:
         assert seen[-1].endswith('"b"}}]}')
 
     def test_the_cap_holds_with_the_park_aware_read_installed(self, monkeypatch):
-        # Production relays pass `response`, which installs the wrapper and widens the pump's
-        # backstop by a cap; the keepalives keep the read returning, so only the pump ends it.
         import routes.inference as inference
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 1.0)
@@ -155,7 +152,6 @@ class TestARawRelayParkedBeforeItsFirstToken:
         return seen
 
     def test_the_cap_is_counted_from_the_park_not_from_the_last_keepalive(self, monkeypatch):
-        # Shorter window than cap, as in production (20 minutes against 30).
         items = [": preempted"] + [": preempt-keepalive"] * 400
         started = time.monotonic()
         with pytest.raises(httpx.ReadTimeout):
@@ -304,15 +300,13 @@ class TestALineSourceAndABatch:
             asyncio.run(self._relay(items, monkeypatch, cap = 0.3))
 
     def test_a_blank_before_the_first_token_is_not_the_first_token(self, monkeypatch):
-        # Before any token a park renews the first-token window only up to the cap; the blank
-        # after each notice must not end the prefill and swap in the post-token clock.
+        # The blank after each notice must not end the prefill and swap in the post-token clock.
         items = [": preempted", ""] + [": preempt-keepalive", ""] * 200
         with pytest.raises(httpx.ReadTimeout, match = "first token"):
             asyncio.run(self._relay(items, monkeypatch, cap = 0.3, window = 0.2))
 
     def test_a_sibling_resuming_does_not_reset_the_cap(self, monkeypatch):
-        # Prompt 1 stays parked across prompt 0's resume: each half fits the cap, the park
-        # as a whole does not, so the stream times out instead of answering.
+        # Each half fits the cap but the park as a whole does not.
         items = [b'data: {"choices":[{"text":"a"}]}\n\n', b": preempted 0\n\n: preempted 1\n\n"]
         items += [b": preempt-keepalive\n\n"] * 30 + [b": resumed 0\n\n"]
         items += [b": preempt-keepalive\n\n"] * 40 + [b'data: {"choices":[{"text":"b"}]}\n\n']
@@ -320,8 +314,7 @@ class TestALineSourceAndABatch:
             asyncio.run(self._relay(items, monkeypatch, cap = 0.5))
 
     def test_a_park_in_the_first_tokens_chunk_is_read(self, monkeypatch):
-        # The first output and the park that follows it arrive in one chunk: without reading
-        # that park, every keepalive after it looked like progress and the cap never fired.
+        # Output and park in one chunk: unread, every later keepalive looked like progress.
         items = [b'data: {"choices":[{"text":"a"}]}\n\n: preempted\n\n']
         items += [b": preempt-keepalive\n\n"] * 200
         with pytest.raises(httpx.ReadTimeout):

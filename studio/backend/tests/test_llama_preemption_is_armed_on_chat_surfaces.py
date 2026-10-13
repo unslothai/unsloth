@@ -156,7 +156,6 @@ def _post(
     return _client(monkeypatch, backend, reraise = reraise).post(
         "/chat/completions",
         json = body,
-        # The Studio UI's opt-in: local tool execution with confirmation is refused without it.
         headers = {"X-Unsloth-Events": "1"},
     )
 
@@ -190,16 +189,13 @@ class TestEveryLocalChatSurfaceArms:
         kwargs = backend.seen[0]
         assert kwargs.get("preempt_event") is not None
         assert kwargs.get("preempt_policy") is not None
-        # Armed without this, preemption is inert: four chats reached 16354 of a 16384
-        # cache with zero evictions because nothing told the controller they had grown.
+        # Without it four chats reached 16354 of a 16384 cache with zero evictions.
         assert callable(kwargs.get("on_tokens"))
         assert get_preemption_controller(BASE).snapshot().committed == 0
 
     @pytest.mark.parametrize("tools", [False, True])
     def test_a_stream_that_dies_still_drops_the_charge(self, monkeypatch, ledger, tools):
         backend = _ArmedBackend(tools = tools, raises = True)
-        # The surface may end the stream or let the error out; either way the charge
-        # goes back, so the error is not what is under test here.
         _post(monkeypatch, backend, stream = True, reraise = False)
         registered = [gen for kind, gen in ledger if kind == "register"]
         dropped = [gen for kind, gen in ledger if kind == "unregister"]
@@ -283,7 +279,6 @@ class TestAQueuedChatIsArmedOnceItIsGranted:
         ).encode()
 
         async def _drive():
-            # Somebody else holds the only slot, so the request below must queue.
             holder = (
                 get_llama_admission_queue(BASE)
                 .reserve(capacity = 1, config = LlamaAdmissionConfig(max_queue = 4))
@@ -339,7 +334,6 @@ def _scope(app, body: bytes) -> dict:
             (b"host", b"testserver"),
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
-            # The Studio UI's opt-in: tools with confirmation are refused without it.
             (b"x-unsloth-events", b"1"),
         ],
         "client": ("127.0.0.1", 12345),
@@ -412,8 +406,7 @@ class TestArmingItself:
         controller = get_preemption_controller(url)
         snapshot = controller.snapshot()
         assert snapshot.committed == 4096, "the real charge did not reach the controller"
-        # The budget is the cache llama-server was launched with. Reducing it here to
-        # reserve the drafts double-counts them: the watermark buffer holds them back.
+        # Not reduced for drafts: the watermark buffer already holds them back.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend()) == 16384
         assert (
             0 < snapshot.buffer < snapshot.budget
@@ -538,8 +531,6 @@ class TestTheResidencySweep:
         controller,
         gen_id = "chat",
     ):
-        # An eligible backend: the sweep answers to the same switches arming does, so a
-        # private cache or a missing budget would rightly sweep nothing.
         backend = SimpleNamespace(
             base_url = BASE,
             _auth_headers = None,
@@ -612,7 +603,6 @@ class TestTheRespawnRetryKeepsItsControls:
         from core.inference import llama_cpp
 
         source = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
-        # One helper the connect and stream retries share.
         retry = source[source.index("def _replay_on_replacement_server(") :]
         retry = retry[: retry.index("_allow_respawn_retry = False")]
         for kwarg in (

@@ -852,21 +852,15 @@ class ExactConcurrencyPayload(BaseModel):
 
 
 class ExactConcurrencyResponse(BaseModel):
-    # The stored value, or None when nothing is stored, which is not the same as a stored "off".
+    # None when nothing is stored, which differs from a stored "off".
     exact_concurrency: Optional[str] = None
-    # What the next load will resolve to, once the environment override, this stored value and
-    # an inherited LLAMA_EXACT_CONCURRENCY have all been read.
     effective: str
     default: str = DEFAULT_EXACT_SETTING
-    # Set when UNSLOTH_LLAMA_EXACT_CONCURRENCY is pinning the machine, in which case saving
-    # here changes nothing until the variable goes away.
+    # Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine; saving then changes nothing.
     env_override: Optional[str] = None
-    # What the RUNNING llama-server does: on, off, or unavailable.
     active: str
     reload_required: bool
-    # Exact mode needs the server to own parking, which is off until the environment opts in:
-    # without it Auto reports unavailable and On fails the load. `parking_prerequisite` names
-    # the setting that would turn it on.
+    # Exact mode needs server parking, which the environment opts into.
     parking_available: bool = True
     parking_prerequisite: Optional[str] = None
 
@@ -2095,8 +2089,7 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
             continue
         if not getattr(backend, "is_active", False):
             continue
-        # A diffusion runner is not llama-server: it records `off` because it cannot apply the
-        # setting, and reloading it would record `off` again.
+        # A diffusion runner records `off` because it cannot apply the setting.
         if getattr(backend, "is_diffusion", False):
             continue
         if str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective:

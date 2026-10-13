@@ -38,8 +38,6 @@ def _backend(
     slots,
     unified = True,
 ):
-    # ``_kv_cache_unified`` as the real backend sets it: the window is offered only while
-    # preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
         context_length = window,
         _kv_cache_context_total = total,
@@ -59,9 +57,7 @@ def _prompt_tokens(payload):
 class TestEveryChatIsPermittedItsWholeWindow:
     """The invariant MOVED. It is no longer arithmetic, it is eviction."""
 
-    # Opted in per class, not per module: other classes here assert the SHARE-based bound a
-    # default install gets, and the whole-window bound asserted here exists only where a pause
-    # can reclaim it.
+    # Per class: other classes assert the SHARE-based bound a default install gets.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     @pytest.mark.parametrize("total", [2048, 4096, 8192, 16384, 65536, 262144])
@@ -469,7 +465,6 @@ class TestChargedAndPermittedCannotDrift:
             if len(admitted) < slots and used + charged <= budget:
                 used += charged
                 admitted.append(prompt)
-        # Against what the wire ACTUALLY permits, which is the window, not the share.
         permitted = sum(prompt + max(1, budget - prompt) for prompt in admitted)
         assert permitted > budget, (
             "the cache is meant to be overcommitted now; if this ever holds, admission has "
@@ -491,8 +486,6 @@ class TestChargedAndPermittedCannotDrift:
             if prompt < 1:
                 continue
             charged = self._charged(budget, share, prompt)
-            # Cheap enough that a full capacity fits, which is what bounds how many chats
-            # are admitted at once.
             assert (
                 charged * slots <= budget or charged <= share
             ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
@@ -528,7 +521,6 @@ class TestWhenNothingWillReclaim:
         assert 4 * (prompt + enforced) <= 16384
 
 
-# ------------------------------------------------------- a client-stated cap passes through
 
 BUDGET, SLOTS = 16384, 4
 SHARE = BUDGET // SLOTS
@@ -564,8 +556,6 @@ class TestAStatedCapNoLongerSerialises:
     def test_the_cases_that_must_not_change(self):
         assert _charged(50, 200, active = True) == _charged(50, 200, active = False) == 50
         for prompt in (1, 200, 1000, 3000):
-            # Pausable: the flat allowance. Unpausable: the rest of the share, which is the cap
-            # it is sent, so its reservation covers what it may generate.
             assert _charged(None, prompt, active = True) == min(
                 _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, SHARE - prompt
             )
@@ -590,8 +580,6 @@ class TestAStatedCapNoLongerSerialises:
 class TestTheGateIsTheEnforcementItself:
     """The optimism must be switched on by exactly what makes it survivable."""
 
-    # Opted in: each case here starts from the optimism being ON and turns one switch off, so
-    # the switch under test is the reason, not the default.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     class _Backend:
@@ -599,8 +587,6 @@ class TestTheGateIsTheEnforcementItself:
             self._kv_cache_unified = unified
 
     def test_no_kv_unified_and_no_budget_mean_no_optimism(self):
-        # Without one shared pool a paused slot's cells cannot be purged for anyone else;
-        # try_clear_idle_slots is gated on exactly this.
         assert _openai_llama_preemption_will_apply(self._Backend(False), BUDGET) is False
         assert _openai_llama_preemption_will_apply(self._Backend(True), 0) is False
         assert _openai_llama_preemption_will_apply(self._Backend(True), None) is False

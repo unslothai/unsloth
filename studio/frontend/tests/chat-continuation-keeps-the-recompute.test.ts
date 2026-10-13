@@ -47,7 +47,6 @@ test("the request keeps the model the recompute happened on", () => {
   });
   assert.deepEqual(request?.preemptRecomputedModelIds, ["model-a"]);
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  // Seeded from the request, and a recompute of the continuation's own adds its model.
   assert.match(adapter, /continuation\?\.preemptRecomputedModelIds \?\?/);
   assert.match(
     adapter,
@@ -56,7 +55,6 @@ test("the request keeps the model the recompute happened on", () => {
 });
 
 test("a second recompute on another model keeps the first", () => {
-  // Recomputed on A, continued on B and recomputed there too: both parts were re-prefilled.
   const joined = withRecomputedModel(["model-a"], "model-b");
   assert.deepEqual(joined, ["model-a", "model-b"]);
   assert.deepEqual(withRecomputedModel(joined, "model-a"), joined);
@@ -98,8 +96,7 @@ test("the continue button sends it and the adapter seeds its latch from it", () 
 });
 
 test("the recompute notice is published at once, before any more text", () => {
-  // A legacy run whose tab closes before the next text keeps the last live yield, and the
-  // detached abort skips the replacement yield, so the notice has to reach a yield itself.
+  // The detached abort skips the replacement yield, so the notice must reach a yield itself.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const notice = adapter.indexOf('if (admissionStatus === "recomputed") {');
   assert.ok(notice > 0, "the recompute branch is gone");

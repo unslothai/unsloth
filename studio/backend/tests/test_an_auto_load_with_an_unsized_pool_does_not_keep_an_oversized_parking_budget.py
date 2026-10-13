@@ -51,7 +51,6 @@ class _Backend:
 
 @pytest.fixture
 def host(monkeypatch):
-    # 10 GB free of 16: a quarter of it, 2500 MiB, is what an ordinary launch may pin.
     monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
     monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 16_000)
     monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [])
@@ -108,12 +107,10 @@ def test_the_child_is_launched_again_on_the_bounded_budget(host):
     assert launched[0][-2:] == ["--preempt-ram", str(bounded)]
     assert backend._launched_parking_mib == bounded
     assert backend._parking_reserving_mib is None
-    # Published as unavailable, so the replacement runs as an ordinary server.
     assert llama_mod._exact.CHILD_ENV not in namespace["env"], namespace["env"]
 
 
 def test_nothing_is_relaunched_without_a_shortfall_or_for_a_bounded_launch(host):
-    # The child runs no exact kernels here, so nothing else would call for a relaunch either.
     for args, kwargs in (((None, False), {}), (((8192, 3000), False), {"wanted": False})):
         backend = _Backend()
         relaunch, launched, _ = _relaunch(backend, **kwargs)
@@ -122,8 +119,6 @@ def test_nothing_is_relaunched_without_a_shortfall_or_for_a_bounded_launch(host)
 
 
 def test_a_child_still_running_exact_kernels_is_relaunched_without_them(host):
-    # Unavailable for another reason (parking it cannot confirm): no shortfall and no budget to
-    # bound, but the child still runs exact mode, which the published state says it does not.
     backend = _Backend()
     relaunch, launched, namespace = _relaunch(backend)
     assert relaunch(None, True) is True

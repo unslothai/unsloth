@@ -2565,17 +2565,13 @@ type ChatRuntimeStore = {
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
-  /** What the running llama-server does about exact concurrency. "off" until a status says
-   *  otherwise, so a backend that does not publish the field never claims the guarantee. */
+  /** "off" until a status says otherwise, so a silent backend never claims the guarantee. */
   loadedExactConcurrency: ExactConcurrencyState;
-  /** The exact setting the active load asked for (auto/off/on), for a rollback to resend. */
   loadedRequestedExactConcurrency: string | null;
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
-  /** Whether the answer on screen in this conversation was re-prefilled after a park the server
-   *  could not hold, so it is not byte-identical however exact concurrency is reported. Written
-   *  from the visible branch's last assistant message, since a retry branch has its own answer. */
+  /** Whether the visible answer was re-prefilled after a park, per thread from the visible branch. */
   preemptRecomputedByThreadId: Record<string, boolean>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
@@ -2759,7 +2755,6 @@ type ChatRuntimeStore = {
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
-  /** Whether the visible answer in this conversation took a recompute. */
   setPreemptRecompute: (threadId: string | null, recomputed: boolean) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;

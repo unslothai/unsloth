@@ -20,8 +20,7 @@ import {
 const pausedMetadata = { custom: { incomplete: { reason: "paused" } } };
 
 test("paused survives the metadata round trip", () => {
-  // readIncompleteInfo validates against a fixed list; a reason missing from it is silently
-  // dropped and the turn reloads as if it had completed normally.
+  // A reason missing from the validated list is dropped and the turn reloads as completed.
   assert.deepEqual(readIncompleteInfo(pausedMetadata), { reason: "paused" });
 });
 
@@ -36,13 +35,11 @@ test("paused never renders as an error", () => {
 });
 
 test("paused does not claim Max Tokens was reached", () => {
-  // The other non-error value. Truthful for `length` and a lie here.
   const status = restoredAssistantStatus(pausedMetadata);
   assert.equal((status as { reason: string }).reason, "cancelled");
 });
 
 test("the interrupted mapping is untouched", () => {
-  // A cut stream IS the thing the user has to be told about.
   const status = restoredAssistantStatus({
     custom: { incomplete: { reason: "interrupted" } },
   });
@@ -57,8 +54,7 @@ test("paused has its own explanation", () => {
 });
 
 test("a paused turn is never resumed automatically", () => {
-  // The pause is the backend rationing one KV cache and it resumes the response itself. An
-  // automatic client continuation would ask for a second slot for a turn already queued.
+  // The backend resumes a pause itself; a client continuation would ask for a second slot.
   resetAutoContinue();
   assert.equal(shouldAutoContinue("paused", "turn-1"), false);
   assert.equal(

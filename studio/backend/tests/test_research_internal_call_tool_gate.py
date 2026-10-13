@@ -127,8 +127,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    # The preemption arguments join the same list for the same stated reason: fresh per
-    # request, so identity comparison fails for any pair. Presence is asserted below.
+    # Fresh per request, so identity comparison fails; presence is asserted below.
     drop = {
         "cancel_event",
         "perf_callback",
@@ -143,19 +142,13 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
-    # Same shape for preemption, except the DEFAULT is the nothing-changes case: nothing here
-    # sets UNSLOTH_LLAMA_ADMISSION_PREEMPT, so neither side may be armed and the assertion is
-    # absence on both sides rather than presence. Pinned rather than dropped, because a surface
-    # that arms a default install is invisible to every other test here.
+    # Pinned absent on both sides: a surface arming a default install is invisible elsewhere.
     assert (
         preemption_enabled() is False
     ), "this test speaks for a default install, which does not opt into preemption"
     for _kwargs in (before_kwargs, after_kwargs):
         assert _kwargs.get("preempt_event") is None
         assert _kwargs.get("on_tokens") is None
-        # The policy object is still handed over, unbound, which is what it is for: it is the
-        # callback a pause would land on, and there is no pause to land. Pinned inert rather
-        # than absent, since it cannot be reached without a preempt_event.
         assert _kwargs["preempt_policy"].bound is False
         assert _kwargs["preempt_policy"].should_preempt() is False
         assert callable(_kwargs.get("on_prompt_fitted"))

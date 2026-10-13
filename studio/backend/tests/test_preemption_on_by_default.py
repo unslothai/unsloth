@@ -191,8 +191,6 @@ class TestADefaultLaunch:
         assert env == {}, "no LLAMA_ARG_PREEMPT_RAM written for a server that cannot park"
 
     def test_an_unread_probe_still_tells_the_child_not_to_park(self):
-        # A --help that timed out may be a swap build from before the zero default, which parks
-        # on an implicit budget Studio never launched and so never excuses.
         env = {}
         cmd = list(_Launch._ARGV)
         assert (
@@ -351,13 +349,11 @@ class TestExactParksAreCountedAcrossModels:
         monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 2_000
         assert llama_mod._exact_host_shortfall_after_load(8_000, 2_000) == (8_000, 2_000)
-        # Alone, the same model fits.
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, stock])
         assert llama_mod._exact_host_free_mib(me) == 10_000
 
     def test_what_a_neighbour_already_parked_is_not_counted_twice(self, monkeypatch):
-        # 6 GiB of the neighbour's 8 GiB is parked, so the free reading already lacks it: only
-        # the 2 GiB still to come is held back from this model.
+        # 6 GiB of the neighbour's 8 GiB is parked and already out of the free reading.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
@@ -386,7 +382,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._parked_host_mib(backend) == 0
 
     def test_a_plain_parking_neighbour_holds_its_launched_budget(self, monkeypatch):
-        # Default-on parking hands an ordinary load a host-bounded budget it may still fill.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
@@ -420,12 +415,10 @@ class TestExactParksAreCountedAcrossModels:
         monkeypatch.setattr(llama_mod, "_serving_backends_snapshot", lambda: [me, unlimited])
         monkeypatch.setattr(llama_mod, "_parked_host_reading", lambda backend: (0, None))
         assert llama_mod._exact_host_free_mib(me) == 0
-        # Nor can an ordinary budget keep its reserve beside it, so this one does not park.
         monkeypatch.setattr(llama_mod, "_total_host_memory_mib", lambda: 10_000)
         assert llama_mod._host_bounded_parking_mib(10**9, me) == 0
 
     def test_the_host_readings_are_the_containers(self, monkeypatch):
-        # A cgroup limit below the host's RAM: parking may only plan against what it can charge.
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
         )
@@ -436,7 +429,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._total_host_memory_mib() == 8_000
 
     def test_a_helper_backend_that_parks_is_counted_though_it_does_not_serve(self, monkeypatch):
-        # The dataset and Hub assistants build their own backend and never register as serving.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
@@ -456,8 +448,6 @@ class TestExactParksAreCountedAcrossModels:
         assert "if self._server_launched_parking: _note_parking_backend(self)" in source
 
     def test_a_plain_load_after_an_exact_one_leaves_its_room(self, monkeypatch):
-        # The exact model was certified first; a later ordinary load must not size its own
-        # parking into the RAM those parks were promised.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
@@ -471,8 +461,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._neighbour_parking_commitments(None) == ([], False)
 
     def test_a_neighbour_whose_server_is_gone_reserves_nothing(self, monkeypatch):
-        # A required exact load that failed its post-launch check kills its child and raises,
-        # leaving its launch flags behind.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 10_000)
@@ -506,8 +494,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._exact_host_free_mib(me) == 10_000
 
     def test_a_launch_in_flight_reserves_the_budget_it_named(self, monkeypatch):
-        # Two backends launching together: the second sizes while the first has named its
-        # budget but not registered, so the first's figure has to be visible already.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
@@ -551,7 +537,6 @@ class TestExactParksAreCountedAcrossModels:
             "with _parking_budget_lock: _exact_budget = _server_owned_parking_budget_mib("
         ) in source
         assert "_reserve_inflight_parking(self, _inflight_mib or None)" in source
-        # A budget the caller named reserves too, not only one Studio generated.
         assert (
             "if _inflight_mib is None and _park_supported and _kv_unified_from_args(cmd):"
         ) in source
@@ -567,8 +552,6 @@ class TestExactParksAreCountedAcrossModels:
         ) in source
 
     def test_the_launchs_own_host_weights_are_not_parking_room(self, monkeypatch):
-        # Sized before its weights load: a partly offloaded model will hold some in host RAM,
-        # and parking must not count those as room.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
@@ -605,13 +588,11 @@ class TestExactParksAreCountedAcrossModels:
         assert (
             "_exact_budget = _rebound_named_parking_budget( cmd, _exact_budget, self, _host_weights_mib )"
         ) in window
-        # Every launch holds its loading weights against a peer certifying exact parks, not
-        # only one that parks itself.
         assert "_held if _held < 0 else _held + _host_weights_mib" in window
 
     def test_ordinary_neighbours_reserve_their_budgets_too(self, monkeypatch):
-        # Each ordinary budget is allocated only when it parks, so four sized off the same free
-        # reading could together take the reserve the bound promises to leave.
+        # Ordinary budgets allocate only when they park, so four sized off one reading could take
+        # the reserve.
         from core.inference import llama_exact as exact
 
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 100_000)
@@ -642,8 +623,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._host_bounded_parking_mib(10**9, me) == 25_000
 
     def test_a_park_landing_between_the_readings_is_not_counted_twice(self, monkeypatch):
-        # The neighbour parks 6 GiB just after the free sample: that sample still holds it, so
-        # its parked figure must not also come off the commitment held back.
         from core.inference import llama_exact as exact
 
         me = self._backend(exact.EXACT_STATE_OFF, 8_000)
@@ -665,8 +644,6 @@ class TestExactParksAreCountedAcrossModels:
         assert llama_mod._exact_host_free_mib(me) == 2_000
 
     def test_a_resume_and_a_fresh_park_between_the_readings_are_caught(self, monkeypatch):
-        # Parked 6 GiB, resumed before the free sample, parked 6 GiB again before the second
-        # read: both parked figures say 6 GiB while the free sample held those 6 GiB.
         from core.inference import llama_exact as exact
 
         me = self._backend(exact.EXACT_STATE_OFF, 8_000)
@@ -685,7 +662,6 @@ class TestExactParksAreCountedAcrossModels:
             lambda b: (6_000, state["moves"]) if b is neighbour else (0, None),
         )
         assert llama_mod._exact_host_free_mib(me) == 2_000
-        # Nothing moved: the parked 6 GiB is already out of the free reading.
         monkeypatch.setattr(llama_mod, "_available_host_memory_mib", lambda: 4_000)
         assert llama_mod._exact_host_free_mib(me) == 2_000
 

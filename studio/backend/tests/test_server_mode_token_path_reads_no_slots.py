@@ -37,7 +37,6 @@ def _wire(monkeypatch):
 
     def _fetch(base, headers = None):
         calls["fetch"] += 1
-        # One idle slot with a big prefix cache: exactly what the sweep erases.
         return [
             {"id": 0, "is_processing": True, "n_prompt_tokens": 9000},
             {"id": 1, "is_processing": False, "n_prompt_tokens": 9000},
@@ -73,7 +72,6 @@ def _stream(backend, clock):
         llama_backend = backend, completion_id = "a"
     )
     controller.set_residency_probe(lambda: refresh(controller, force = True))
-    # Arming's fresh read, then a long stream with the TTL elapsing between reports.
     inference._refresh_residency_before_planning(controller)
     for generated in range(32, 32 * 40, 32):
         clock["t"] += 2.0
@@ -86,7 +84,6 @@ def test_server_mode_stream_reads_and_erases_nothing(_wire):
     calls, clock = _wire
     controller = _stream(_backend(1, server = True), clock)
     assert calls == {"fetch": 0, "erase": 0}
-    # The ledger still moves for admission and the UI.
     assert controller.participant("b") is not None
     assert controller.snapshot().mode == "server"
 

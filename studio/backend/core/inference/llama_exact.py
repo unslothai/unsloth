@@ -22,7 +22,6 @@ import re
 from typing import Any, Mapping, Optional, Sequence
 
 
-# Studio's own switch, overriding the request field and the stored setting.
 EXACT_ENV = "UNSLOTH_LLAMA_EXACT_CONCURRENCY"
 EXACT_AUTO = "auto"
 EXACT_OFF = "off"
@@ -30,11 +29,9 @@ EXACT_ON = "on"
 EXACT_SETTINGS = (EXACT_AUTO, EXACT_OFF, EXACT_ON)
 DEFAULT_EXACT_SETTING = EXACT_OFF
 
-# What the CHILD reads (unslothai/llama.cpp#194). Setting it on Studio is the workaround this replaces.
 CHILD_ENV = "LLAMA_EXACT_CONCURRENCY"
 
-# What the finished load reports. `unavailable` carries what a boolean cannot: the mode was asked
-# for, and the chat runs anyway without it (the server refused, or Studio withheld it).
+# `unavailable`: asked for, and the chat runs without it.
 EXACT_STATE_ON = "on"
 EXACT_STATE_OFF = "off"
 EXACT_STATE_UNAVAILABLE = "unavailable"
@@ -76,7 +73,6 @@ def exact_setting_env(environ: Optional[Mapping[str, str]] = None) -> Optional[s
     return normalize_setting(source.get(EXACT_ENV))
 
 
-# Sentinel for "read the store yourself", distinct from a stored None.
 _MISSING = object()
 
 
@@ -118,13 +114,8 @@ def wants_exact(setting: Any) -> bool:
     return normalize_setting(setting) in (EXACT_AUTO, EXACT_ON)
 
 
-# The refusals the server names, each printed on the way to exiting non-zero. Matching on the
-# mode's own name keeps a build that adds a new refusal covered.
 _REFUSAL_MARKERS = (
-    # `throw std::runtime_error("exact concurrency: ...")`, from the KV cache and the graph.
     "exact concurrency:",
-    # `LLAMA_EXACT_CONCURRENCY is set but ...`, and the column-bound refusal in
-    # common_exact_concurrency_init.
     "llama_exact_concurrency",
 )
 
@@ -137,12 +128,9 @@ def is_exact_refusal(text: Optional[str]) -> bool:
     return any(marker in text.lower() for marker in _REFUSAL_MARKERS)
 
 
-# What the mode cannot live beside. Most are checked in llama.cpp itself, so Studio can warn about
-# its own launch line: `--cache-reuse` and `--context-shift` move positions while a cell's offset
-# in its 256-cell page IS its position mod 256; `--no-kv-offload` drops a layer, and no flash
-# attention leaves V transposed. The CPU expert placements below are Studio's own refusal, llama.cpp
-# checking KV placement rather than every computation: they put per-layer matmuls on a backend whose
-# SGEMM and vector-dot selection is size dependent, outside the invariant CUDA expert dispatcher.
+# Incompatible with the mode: `--cache-reuse`/`--context-shift` move positions (a cell's page
+# offset IS its position), `--no-kv-offload` drops a layer, no flash attention leaves V
+# transposed, and CPU expert placements use size-dependent kernels.
 _CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v", "-ctk", "-ctv")
 _BARE_CONTRADICTIONS = (
     "--context-shift",
@@ -154,11 +142,9 @@ _BARE_CONTRADICTIONS = (
     "--cpu-moe",
     "-cmoe",
 )
-# llama.cpp APPENDS these tensor overrides rather than replacing them, so a later occurrence
-# cannot take an earlier CPU placement back the way a later `--flash-attn on` can.
+# llama.cpp APPENDS these overrides, so a later occurrence cannot take an earlier CPU placement
+# back.
 _ACCUMULATING_OVERRIDES = ("--n-cpu-moe", "-ncmoe", "--override-tensor", "-ot")
-# A later spelling of the same option replaces an earlier one, as llama-server applies argv,
-# so `--flash-attn off --flash-attn on` runs with flash attention and is no contradiction.
 _OPTION_FAMILY = {
     "-ctk": "--cache-type-k",
     "-ctv": "--cache-type-v",
@@ -203,8 +189,6 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
     return following
 
 
-# The env twins llama.cpp reads for the CPU expert and FFN placements, which reach the child
-# however the argv was stripped.
 _CPU_PLACEMENT_ENV = (
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
@@ -219,8 +203,7 @@ def _positive_count(value: Optional[str]) -> bool:
     return leading is not None and int(leading.group(0)) > 0
 
 
-# A replaceable option the launch line overrides: llama.cpp reads the environment first and the
-# argv after it, so a `--n-cpu-ffn` on the line decides, whatever the variable says.
+# llama.cpp reads env first and argv after, so a `--n-cpu-ffn` on the line decides.
 _ENV_REPLACED_BY_ARGV = {"LLAMA_ARG_N_CPU_FFN": "--n-cpu-ffn"}
 
 
@@ -239,7 +222,7 @@ def contradicting_env(
         if _ENV_REPLACED_BY_ARGV.get(name) in named:
             continue
         if name == "LLAMA_ARG_CPU_MOE":
-            # llama.cpp's is_truthy spellings, so `enabled` places the experts on the CPU too.
+            # llama.cpp's is_truthy spellings.
             hit = value.lower() in ("1", "on", "true", "enabled")
         elif name in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN"):
             hit = _positive_count(value)
@@ -256,7 +239,6 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
     type are the flag spelled as the default, not contradictions, and an option's LAST occurrence
     decides for it, except for the tensor overrides llama.cpp accumulates."""
     tokens = [str(a) for a in (args or ())]
-    # family -> (name as last spelled, contradicts)
     final: dict[str, tuple[str, bool]] = {}
     for index, token in enumerate(tokens):
         name = _flag_name(token)
@@ -270,7 +252,6 @@ def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
             value = (_flag_value(token, following) or "").strip().lower()
             contradicts = value in ("off", "0", "false", "disabled")
         elif name in ("--n-cpu-moe", "-ncmoe", "--n-cpu-ffn", "-ncffn"):
-            # The dense twin places the first N layers' FFN weights on the CPU the same way.
             contradicts = _positive_count(_flag_value(token, following))
         elif name in ("--override-tensor", "-ot"):
             contradicts = _places_tensors_on_cpu(_flag_value(token, following))

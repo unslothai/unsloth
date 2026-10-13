@@ -1924,8 +1924,7 @@ export async function* streamChatCompletions(
 
         const { dataLines, admission } = parseSseEvent(rawEvent);
         if (admission) {
-          // Before the empty-block exit below: an admission block is precisely a block with
-          // no data lines, so testing it after would drop every one of them.
+          // Before the empty-block exit: admission blocks have no data lines.
           yield {
             _admissionStatus: admission,
           } as unknown as OpenAIChatChunk;

@@ -25,8 +25,6 @@ test("the four signals are recognised", () => {
 });
 
 test("a recompute is read, and says nothing about what the run is doing", () => {
-  // It qualifies the resume before it: the answer came back, it just is not the one a
-  // restore would have produced, so no status line changes.
   assert.equal(
     readAdmissionComment(`: ${ADMISSION_COMMENT_RECOMPUTED}`),
     "recomputed",
@@ -45,8 +43,7 @@ test("the keep-alive comment is left to its own reader", () => {
 });
 
 test("a data line is never an admission signal", () => {
-  // The two are told apart by the leading colon alone, so a payload that happens to spell one
-  // must not be mistaken for the comment.
+  // Only the leading colon tells a comment from a payload spelling one.
   assert.equal(readAdmissionComment("data: admission-wait"), null);
   assert.equal(readAdmissionComment(""), null);
   assert.equal(readAdmissionComment("admission-wait"), null);
@@ -68,7 +65,6 @@ test("a run that is not generating gets a line, one that is gets none", () => {
 });
 
 test("queued and paused do not share one message", () => {
-  // Queued has produced nothing; paused has visible text above it.
   assert.notEqual(
     admissionStatusLabel("waiting"),
     admissionStatusLabel("paused"),

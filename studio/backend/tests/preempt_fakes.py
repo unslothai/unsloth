@@ -315,8 +315,6 @@ def executed(monkeypatch):
 
 @pytest.fixture
 def rendezvous(monkeypatch):
-    # Long enough that a loaded runner meets it, short enough that the serialised cases do not
-    # dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
     order: list[str] = []
     lock = threading.Lock()

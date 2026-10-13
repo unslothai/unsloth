@@ -22,8 +22,6 @@ def _clean(monkeypatch):
     reset_preemption_controllers()
 
 
-# A launch line of the shape Studio actually emits: four slots, a unified cache, flash
-# attention on, no context shift.
 _STUDIO_ARGV = [
     "llama-server",
     "-m",
@@ -46,8 +44,7 @@ _STUDIO_ARGV = [
     "--jinja",
 ]
 
-# What the server prints on its way out when it will not run the mode: all three
-# spellings from unslothai/llama.cpp#194.
+# All three refusal spellings from unslothai/llama.cpp#194.
 _REFUSAL = (
     "llama_kv_cache: LLAMA_EXACT_CONCURRENCY is set but it needs a unified KV cache "
     "(pass --kv-unified)\n"
@@ -94,7 +91,6 @@ class TestTheSetting:
     def test_an_inherited_llama_variable_is_the_default_rather_than_ignored(self):
         environ = {exact.CHILD_ENV: "1"}
         assert exact.resolve_exact_setting(None, stored = None, environ = environ) == exact.EXACT_ON
-        # And an explicit off, from anywhere, still beats it.
         assert exact.resolve_exact_setting(None, stored = "off", environ = environ) == exact.EXACT_OFF
         assert exact.resolve_exact_setting("off", stored = None, environ = environ) == exact.EXACT_OFF
         assert (
@@ -171,7 +167,6 @@ class TestTheLaunchArgs:
             (_STUDIO_ARGV, []),
             (["--cache-reuse", "256"], ["--cache-reuse"]),
             (["--cache-reuse=256"], ["--cache-reuse"]),
-            # The flag spelled as its default is the default, not a contradiction.
             (["--cache-reuse", "0"], []),
             (["--context-shift"], ["--context-shift"]),
             (["--no-kv-offload"], ["--no-kv-offload"]),
@@ -187,7 +182,6 @@ class TestTheLaunchArgs:
             (["--cache-reuse", "512", "--ctk", "q8_0", "-nkvo"], ["--cache-reuse", "-nkvo"]),
             ([], []),
             (None, []),
-            # An option's last occurrence decides, as llama-server applies argv.
             (["--flash-attn", "off", "--flash-attn", "on"], []),
             (["-fa", "off", "--flash-attn=on"], []),
             (["--no-flash-attn", "-fa", "on"], []),
@@ -198,25 +192,19 @@ class TestTheLaunchArgs:
             (["--context-shift", "--no-context-shift"], []),
             (["-nkvo", "--kv-offload"], []),
             (["--kv-offload", "-nkvo"], ["-nkvo"]),
-            # Expert weights on the CPU put per-layer matmuls on a backend whose kernel
-            # selection is size dependent, outside the invariant CUDA expert dispatcher.
             (["--cpu-moe"], ["--cpu-moe"]),
             (["-cmoe"], ["-cmoe"]),
             (["--n-cpu-moe", "8"], ["--n-cpu-moe"]),
             (["-ncmoe", "8"], ["-ncmoe"]),
             (["--n-cpu-moe=8"], ["--n-cpu-moe"]),
-            # A zero places nothing, like `--cache-reuse 0`.
             (["--n-cpu-moe", "0"], []),
             (["-ncmoe", "0"], []),
-            # An -ot is a contradiction for the buffer type it names, not for existing.
             (["-ot", "exps=CPU"], ["-ot"]),
             (["--override-tensor", "blk.*ffn=CPU"], ["--override-tensor"]),
             (["-ot", "attn=CUDA0"], []),
             (["-ot", "attn=CUDA0,exps=CPU"], ["-ot"]),
             (["-ot=exps=CPU"], ["-ot"]),
             (["-ot", "exps"], []),
-            # llama.cpp appends these overrides, so a later one cannot take an earlier
-            # CPU placement back the way a later --flash-attn can.
             (["-ot", "exps=CPU", "--override-tensor", "attn=CUDA0"], ["-ot"]),
             (["-ot", "attn=CUDA0", "--override-tensor", "exps=CPU"], ["--override-tensor"]),
             (["--n-cpu-moe", "8", "-ncmoe", "0"], ["--n-cpu-moe"]),
@@ -253,7 +241,6 @@ class TestTheLaunchArgs:
         ],
     )
     def test_what_the_mode_cannot_inherit(self, env, expected):
-        # llama.cpp reads these before argv and appends, so no later flag takes them back.
         assert exact.contradicting_env(env) == expected
 
     @pytest.mark.parametrize(
@@ -323,7 +310,6 @@ class TestTheAutoFallback:
     @pytest.mark.parametrize(
         ("setting", "crashed", "output"),
         [
-            # Under `on` a refusal is the answer rather than a prompt to retry.
             ("on", True, _REFUSAL),
             ("auto", True, _UNRELATED_CRASH),
             ("auto", False, _REFUSAL),
@@ -354,8 +340,6 @@ class TestTheAutoFallback:
 
 class TestTheReportedState:
     def _state(self, **kw):
-        # The build's own answer, read off the `--preempt-ram` capability: the same fork
-        # carries both, and a build without the mode starts fine while ignoring the variable.
         kw.setdefault("supports_exact", True)
         return LlamaCppBackend._exact_state_after_launch(**kw)
 
@@ -373,8 +357,6 @@ class TestTheReportedState:
 
     def test_off_when_the_load_never_asked(self):
         assert self._state(setting = "off", env = {}, args = _STUDIO_ARGV) == exact.EXACT_STATE_OFF
-        # Even with the variable still on the environment: the load resolved to off, so
-        # apply_child_env removed it.
         assert (
             self._state(setting = "off", env = {exact.CHILD_ENV: "1"}, args = _STUDIO_ARGV)
             == exact.EXACT_STATE_OFF
@@ -402,7 +384,6 @@ class TestTheReportedState:
                 self._state(setting = setting, env = {exact.CHILD_ENV: "1"}, args = args)
                 == exact.EXACT_STATE_UNAVAILABLE
             )
-        # An inherited CPU placement the argv never mentions counts the same way.
         assert (
             self._state(
                 setting = "on",

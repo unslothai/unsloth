@@ -77,7 +77,6 @@ def _run(
 
 def test_auto_falls_back_with_a_bounded_budget(host):
     backend = _Backend(writes = 40_000)
-    # What a plain launch with these weights is allowed: 100 GB free less 80 GB of weights.
     plain = llama_mod._host_bounded_parking_mib(40_000, backend, 80_000)
     assert 0 < plain < 40_000
     namespace, cmd = _run(backend, setting = exact.EXACT_AUTO, weights = 80_000)
@@ -105,7 +104,6 @@ def test_room_enough_keeps_exact(host):
 
 
 def test_an_unreadable_host_certifies_nothing(host, monkeypatch):
-    # Read as the check after the load reads it: an unknown reading is no room.
     monkeypatch.setattr(llama_mod, "_exact_host_free_mib", lambda backend: None)
     backend = _Backend(writes = 40_000)
     namespace, _cmd = _run(backend, setting = exact.EXACT_AUTO, weights = 80_000)

@@ -103,7 +103,6 @@ class TestTheRetryPricesItsOwnWeights:
         ), f"the plain retry still pins parks past its own weights: {cmd}"
 
     def test_the_weights_come_off_what_it_may_pin(self, host):
-        # What the retry pinned before: the host-bounded budget with no weights taken off.
         backend = _Backend(planned_mib = 80_000)
         without = ["llama-server", "--preempt-ram", "40000"]
         llama_mod._rebound_named_parking_budget(without, 40_000, backend)
@@ -136,8 +135,7 @@ class TestTheRetryPricesItsOwnWeights:
         assert cmd[-1] == "40000"
 
     def test_a_respawn_reprices_the_weights_it_places(self, host):
-        # Priced fully offloaded, then replayed on the CPU: the reservation holds the replay's
-        # weights in place of the first launch's, never both and never the stale figure.
+        # The reservation holds the replay's weights in place of the first launch's, never both.
         backend = _Backend(planned_mib = 0)
         backend._parking_reserving_mib = 4096 + 1000
         reserved = [1000]
@@ -150,8 +148,6 @@ class TestTheRetryPricesItsOwnWeights:
         assert backend._parking_reserving_mib == 4096 + 2000
 
     def test_a_retry_that_leaves_more_weights_on_the_host_is_bounded_again(self, host):
-        # Bounded off the refused attempt's placement, then a CPU fallback puts 30 GB more in
-        # host RAM: the child must not keep the budget sized beside the lighter placement.
         backend = _Backend(planned_mib = 20_000)
         bound: dict = {}
         cmd = ["llama-server", "--kv-unified", "--preempt-ram", "40000"]
@@ -165,7 +161,6 @@ class TestTheRetryPricesItsOwnWeights:
             assert int(retry[-1]) == expected < first, (retry, first)
         else:
             assert "--preempt-ram" not in retry, retry
-        # From the figure the budget was sized from: lighter weights give the room back.
         backend.planned_mib = 0
         lighter = ["llama-server", "--kv-unified", "--preempt-ram", str(first)]
         bound.update(named = first, weights = 20_000)

@@ -110,8 +110,6 @@ class TestPricingARequestThatCannotBePaused:
                 request = None, llama_backend = backend, payload = payload, pausable = False
             )
             try:
-                # The fair-share fallback the helper already applies when preemption is off:
-                # a stated cap below the window is charged in full.
                 assert _charge(unpausable) == prompt + 6000
             finally:
                 unpausable.cancel()
@@ -129,9 +127,6 @@ class TestPricingARequestThatCannotBePaused:
             )
             try:
                 charged = _charge(pausable)
-                # Its share of the cache rather than its whole cap: the three local chat
-                # surfaces can be paused, so admitting more of them than the arithmetic
-                # allows is the point.
                 assert charged < prompt + 6000
                 assert charged <= max(1, _BUDGET // _SLOTS)
             finally:
@@ -140,10 +135,8 @@ class TestPricingARequestThatCannotBePaused:
         asyncio.run(_run())
 
     def test_two_unpausable_requests_cannot_both_be_admitted_beyond_the_cache(self):
-        # Two raw streams charged a reduced allowance were admitted for 8064 tokens while
-        # permitted to occupy 18016 cells of a 16384 cache, with neither of them choosable
-        # as a victim. The prompt is pinned rather than written out, so the arithmetic is
-        # the subject and the estimator is not.
+        # Two raw streams were once admitted for 8064 tokens while permitted 18016 cells of a 16384
+        # cache.
         backend = _backend()
         payload = _chat(6000)
         prompt = 3008
@@ -161,8 +154,6 @@ class TestPricingARequestThatCannotBePaused:
                     )
                     held.append(reservation)
                 granted = [r for r in held if r.lease_nowait() is not None]
-                # 9008 each against a 16384 cache, so the second one waits. Priced at the
-                # reduced allowance they were 4032 each and both ran.
                 assert len(granted) == 1
                 assert _charge(granted[0]) == prompt + 6000
             finally:
@@ -293,13 +284,10 @@ class TestServerParkingSwitchedOffThroughTheEnvironment:
         assert not _preempt_ram_disabled_in(["--kv-unified"], env = {"LLAMA_ARG_PREEMPT_RAM": "8192"})
 
     def test_naming_no_budget_at_all_is_parking_off(self):
-        # unslothai/llama.cpp#197 defaults --preempt-ram to 0, so a launch that names nothing
-        # gets a server that parks nothing and behaves exactly like upstream.
         assert _preempt_ram_disabled_in(["--kv-unified"], env = {})
 
     @pytest.mark.parametrize("zero", ["00", "+0", " 0 ", "-0"])
     def test_every_numeric_zero_switches_parking_off(self, zero):
-        # llama.cpp parses the budget as an integer, so these are the same zero.
         assert _preempt_ram_disabled_in(["--kv-unified", "--preempt-ram", zero])
         assert _preempt_ram_disabled_in([f"--preempt-ram={zero}"])
         assert _preempt_ram_disabled_in(["--kv-unified"], env = {"LLAMA_ARG_PREEMPT_RAM": zero})
@@ -314,8 +302,8 @@ class TestServerParkingSwitchedOffThroughTheEnvironment:
 class TestExactModeIsOnlyReportedOnEvidence:
     @pytest.mark.parametrize("setting", ["auto", "on"])
     def test_a_binary_without_the_fork_flag_is_unavailable(self, setting):
-        # A build predating unslothai/llama.cpp#194 ignores LLAMA_EXACT_CONCURRENCY and comes
-        # up healthy, so the request and the launch line look identical to a working one.
+        # A build predating unslothai/llama.cpp#194 ignores LLAMA_EXACT_CONCURRENCY and still comes
+        # up healthy.
         assert (
             LlamaCppBackend._exact_state_after_launch(
                 setting = setting,
@@ -349,8 +337,6 @@ class TestExactModeIsOnlyReportedOnEvidence:
         )
 
     def test_the_load_reads_the_mode_off_the_running_server(self):
-        # Not off `--preempt-ram`: a build carrying the parking flag without the mode was
-        # reported `on`. The server says so itself on /props.
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
@@ -417,7 +403,6 @@ class TestArmingHonoursTheAccountingOptOuts:
                 controller = get_preemption_controller(_KEY)
                 for index in range(_SLOTS):
                     controller.observe(f"disabled-{index}", 4000)
-                # Nothing enrolled, so nothing to pause: the opt-out leaves a live stream be.
                 assert not any(signal.is_set() for signal in signals)
                 assert all(controller.participant(f"disabled-{i}") is None for i in range(_SLOTS))
             finally:
@@ -465,8 +450,6 @@ class TestTheWireClampFollowsTheSwitches:
         )
 
     def test_admission_on_and_preemption_off_still_clamps_to_a_share(self, monkeypatch):
-        # By design: with nothing able to pause, a share each is what physically fits, less
-        # the wire reserve that leaves the pool a cell to step into.
         monkeypatch.setenv(PREEMPT_ENV, "0")
         backend = _backend()
         payload = _chat()
@@ -477,8 +460,6 @@ class TestTheWireClampFollowsTheSwitches:
         assert clamp == max(1, _BUDGET // _SLOTS) - prompt - _RESERVE
 
     def test_a_stated_cap_at_or_above_the_window_is_still_unstated(self):
-        # `_build_passthrough_payload` sends max_tokens = backend_ctx and "Max" sends the
-        # context length, so both mean unstated and the clamp applies to them.
         backend = _backend()
         payload = _chat(20000)
         prompt = _prompt_tokens(payload, backend)
@@ -566,8 +547,6 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
         ],
     )
     def test_an_ineligible_generation_erases_no_idle_slot(self, monkeypatch, env, unified):
-        # A controller never configured has a budget of zero, so every resident token read as
-        # excess and the sweep erased another chat's idle prefix cache with preemption off.
         for key, value in env.items():
             monkeypatch.setenv(key, value)
         erases = _Erases(monkeypatch)
@@ -581,9 +560,7 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
         _refresh, observe, _note = inf._openai_llama_residency_observer(
             llama_backend = backend, completion_id = "active"
         )
-        # None of the four builds a sweep: llama.cpp skips the token callback outright when
-        # `on_tokens` is None, which is stronger than a sweep that declines. The accounting
-        # switches take the same gate arming does, so with any of them off nothing is armed.
+        # llama.cpp skips the token callback outright when `on_tokens` is None.
         assert observe is None
         assert erases.erased == []
 
@@ -598,7 +575,6 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
         assert inf._openai_llama_preemption_will_apply(backend, _BUDGET)
         controller = get_preemption_controller(_KEY)
         controller.configure(budget = 512, kv_unified = True, slots = _SLOTS)
-        # Two holders: a chat alone on the cache reads no slots on its token path.
         controller.register("active", tokens = 64)
         controller.register("theirs", tokens = 64)
         _refresh, observe, _note = inf._openai_llama_residency_observer(
@@ -613,8 +589,6 @@ class TestTheResidencySweepAnswersToTheSameSwitches:
 
 class TestAnUnpausableRequestIsChargedWhatItIsPermitted:
     def test_an_unstated_unpausable_request_reserves_the_rest_of_its_share(self):
-        # Two of these at the flat allowance beside one stated request reserved 16064 of a
-        # 16384 cache while being permitted 22192 cells, none of them choosable as a victim.
         share = _BUDGET // _SLOTS
         prompt = 8
         charged = inf._openai_llama_admission_output_allowance(
@@ -640,7 +614,6 @@ class TestAnUnpausableRequestIsChargedWhatItIsPermitted:
                 request = None, llama_backend = backend, payload = payload, pausable = False
             )
             try:
-                # The reserve comes out of the wire cap, not out of the charge.
                 assert _charge(reservation) == prompt + wire + _RESERVE
             finally:
                 reservation.cancel()
@@ -711,7 +684,6 @@ class TestTheAnthropicPassthroughIsSentTheCapItWasChargedFor:
                 inf.anthropic_messages(payload, request = _AnthropicRequest(), current_subject = "t")
             )
         assert raised.value.status_code == 418
-        # Priced from the messages and catalogue actually sent, held to the share.
         expected = inf._openai_llama_admission_enforced_max_tokens(
             payload,
             request = None,
@@ -734,8 +706,6 @@ class TestOneSwitchStandsTheChildsParkingDown:
         monkeypatch.setenv(PREEMPT_ENV, "0")
         env: dict = {}
         assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) == []
-        # Nothing named a budget, and the server parks only when told, so there is nothing to
-        # override and nothing to write: the child is a stock llama-server.
         assert env == {}
         assert _preempt_ram_disabled_in(["llama-server", "--kv-unified"], env = env)
 
@@ -747,9 +717,6 @@ class TestOneSwitchStandsTheChildsParkingDown:
         assert env == {}
 
     def test_studio_pausing_stands_the_child_down_too(self, monkeypatch):
-        # Studio is the one pausing and `server_preempts_kv` says the server does not, so a
-        # park the child made on its own budget raced Studio's pause unexcused. One owner:
-        # a budget somebody named loses to the mode, and the load warning names it.
         from core.inference.llama_cpp import _stand_down_child_parking
 
         monkeypatch.setenv(PREEMPT_MODE_ENV, "studio")
@@ -786,8 +753,6 @@ class TestOneSwitchStandsTheChildsParkingDown:
     def test_a_budget_someone_named_loses_to_the_switch(
         self, monkeypatch, env, args, overridden, line
     ):
-        # argv is applied after the environment, so a zero in the environment alone would
-        # have left a named flag parking.
         from core.inference.llama_cpp import _stand_down_child_parking
 
         monkeypatch.setenv(PREEMPT_ENV, "0")
@@ -815,8 +780,6 @@ class TestAnInconclusiveProbeStandsTheChildDown:
 
     def test_the_child_is_told_not_to_park(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_LLAMA_PREEMPT_MODE", raising = False)
-        # Preemption explicitly on, so the probe's answer is the only thing standing the child
-        # down here and the zero is written because Studio's own preemptor is armed.
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
         from core.inference import llama_cpp as llama_mod
 

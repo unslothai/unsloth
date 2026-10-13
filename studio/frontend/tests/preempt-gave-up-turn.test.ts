@@ -28,8 +28,6 @@ test("the give-up signal is read off the truncation event", () => {
 });
 
 test("an ordinary fit is not a give-up", () => {
-  // The same event carries real fits, several per turn on a compacting thread. Typed as the
-  // event the backend really sends, not a two-field stand-in.
   const fit: ContextTruncation = { fits: false, dropped_messages: 4 };
   assert.equal(isPreemptGaveUp(fit), false);
   assert.equal(isPreemptGaveUp({}), false);

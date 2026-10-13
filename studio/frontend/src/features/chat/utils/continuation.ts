@@ -111,11 +111,8 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
-/** assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure: mapping it
- *  to `error` paints a red box and a Retry over a turn that already offers the Continue bar.
- *  `interrupted` keeps `error` on purpose, a cut stream needing to be told about. `paused` takes
- *  `cancelled`, assistant-ui having no value for it: neither an error box over a healthy turn nor
- *  a false claim that Max Tokens was reached. */
+/** assistant-ui's reason for each of ours. `length` is a truthful stop (Continue bar), not `error`;
+ *  `interrupted` keeps `error`; `paused` takes `cancelled`, assistant-ui having no value for it. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -148,8 +145,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
-  // No failure vocabulary: nothing went wrong, the model was shared out. Deliberately does not
-  // promise text, the backend being able to give up before the first token.
+  // No failure vocabulary, and no promise of text: the backend can give up before the first token.
   paused: "Response paused while another chat used the model, and did not get it back",
   empty: "The model returned an empty response",
   quote_cut: "This response may have ended early",
@@ -282,9 +278,7 @@ export function budgetImpliesTruncation({
 
 /** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`.
  *
- *  `allowEmpty` drops the requirement that there BE text, and nothing else. Its one caller is the
- *  Continue bar on a turn the backend gave up on: a chat evicted while still prefilling never
- *  produced a token, and that must not render as a blank bubble with nothing to do. */
+ *  `allowEmpty` drops only the text requirement, for a turn given up on while still prefilling. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
   {
@@ -360,9 +354,8 @@ export function isPreemptGaveUp(
   return truncation?.reason === PREEMPT_GAVE_UP_REASON;
 }
 
-/** Whether a terminal `finish_reason` says the answer FINISHED, so an earlier give-up no longer
- *  describes how this turn ended: a tool run that gave up breaks into the final answering pass,
- *  which usually still writes the reply. `length` is excluded, being the shape a give-up ends on. */
+/** Whether a terminal `finish_reason` says the answer FINISHED after an earlier give-up.
+ *  `length` is excluded, being the give-up shape. */
 export function completedAfterGivingUp(
   finishReason: string | null | undefined,
 ): boolean {
@@ -464,10 +457,8 @@ export type ContinuationRequest = {
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
   providerCompactionConnectionKey?: string;
-  /** The answer being continued was re-prefilled after a park, so the joined answer was too. */
   preemptRecomputed?: boolean;
-  /** Every model a re-prefill of the joined answer happened on, kept when Continue runs on
-   *  another: each part was recomputed on its own. */
+  /** Every model a re-prefill of the joined answer happened on. */
   preemptRecomputedModelIds?: string[];
 };
 
@@ -590,7 +581,7 @@ export function readContinuationRequest(
   };
 }
 
-/** The models an answer's re-prefills happened on, as recorded; a message saved with the single
+/** The models an answer's re-prefills happened on; a legacy single
  *  `preemptRecomputedModelId` reads as that one. */
 export function recomputedModelIds(value: unknown): string[] {
   const fields = value as
@@ -605,7 +596,6 @@ export function recomputedModelIds(value: unknown): string[] {
   );
 }
 
-/** `ids` with `modelId` added, once. */
 export function withRecomputedModel(ids: string[], modelId: string | null | undefined): string[] {
   return !modelId || ids.includes(modelId) ? ids : [...ids, modelId];
 }
@@ -622,14 +612,12 @@ function preemptRecomputedField(
     : { preemptRecomputed: true };
 }
 
-/** The recompute fields a Continue carries forward, read off the message being continued. */
 export function readPreemptRecomputedFields(
   metadata: unknown,
 ): { preemptRecomputed?: true; preemptRecomputedModelIds?: string[] } {
   return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom);
 }
 
-/** Whether a message's answer was re-prefilled after a park, as its metadata records it. */
 export function readPreemptRecomputed(metadata: unknown): boolean {
   return preemptRecomputedField((metadata as { custom?: unknown } | undefined)?.custom)
     .preemptRecomputed === true;

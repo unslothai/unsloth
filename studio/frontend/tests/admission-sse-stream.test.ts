@@ -119,8 +119,7 @@ test("a queued run reports waiting, then admitted, then streams", async () => {
 });
 
 test("an admission block is not swallowed by the empty-block fast path", async () => {
-  // The regression this exists for: the reader skips blocks with no `data:` line, and an
-  // admission block is exactly that.
+  // The reader skips blocks with no `data:` line, which is exactly an admission block.
   const chunks = await collect([": admission-wait\n\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,
@@ -170,7 +169,6 @@ test("a paused run reports paused and then resumed", async () => {
 });
 
 test("repeated waits while queued are each reported", async () => {
-  // The backend re-emits the wait comment on an interval as its own keep-alive.
   const chunks = await collect([
     ": admission-wait\n\n",
     ": admission-wait\n\n",

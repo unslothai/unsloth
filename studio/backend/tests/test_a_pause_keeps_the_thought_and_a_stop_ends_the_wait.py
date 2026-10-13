@@ -125,8 +125,6 @@ def test_the_resume_cap_in_a_tool_round_keeps_the_attempt_and_its_charge(monkeyp
         permission_mode = "off",
     )
     assert "declined" in policy.events
-    # The cap declines the pause and the final pass extends what both attempts wrote, under
-    # what is left of the allowance, instead of starting afresh with the whole cap.
     assert len(recorder.payloads) == 3
     final = recorder.payloads[2]
     assert final.get("continue_final_message") is True
@@ -198,8 +196,7 @@ def test_a_pause_says_it_is_still_waiting_so_a_durable_lease_is_renewed(monkeypa
     assert states.index("paused") < states.index("keepalive") < states.index("resumed")
     assert "Once upon a time." in "".join(e for e in events if isinstance(e, str))
 
-    # The routes forward it as the comment the durable producer renews on; the frontend, which
-    # reads only its four named signals, ignores it.
+    # The frontend ignores this comment; the durable producer renews on it.
     from core.inference import chat_generation_runs as runs
     from routes import inference as routes
 
@@ -227,8 +224,7 @@ def test_a_policy_that_raises_during_the_wait_raises_on_the_caller():
 
 
 def test_stop_reaches_the_controller_through_the_deferred_wrapper():
-    # Every route hands the stream a DeferredPreemptionPolicy. Its await_resume took only a
-    # timeout, so the caller's keyword raised TypeError and the fallback waited without Stop.
+    # await_resume took only a timeout, so the caller's keyword raised TypeError and Stop was lost.
     cancel = threading.Event()
     cancel.set()
     seen: list = []
@@ -261,8 +257,6 @@ def test_the_deferred_wrapper_still_serves_an_inner_policy_without_the_keyword()
 
 @pytest.mark.parametrize("site", ["round", "final"])
 def test_a_policy_that_raises_during_the_wait_is_not_a_grant(monkeypatch, site):
-    # The lease went back with on_preempted, so decoding on after an exception ran on room
-    # nobody booked. The turn ends with its partial, as a refused resume does.
     class FailedResume(RecordingPolicy):
         def await_resume(
             self,
@@ -302,9 +296,7 @@ def test_a_policy_that_raises_during_the_wait_is_not_a_grant(monkeypatch, site):
 
 
 def test_a_rollback_closes_the_tool_card_it_abandons(monkeypatch):
-    # A provisional tool_start went out while the arguments streamed; the pause rolled the
-    # attempt back to before the call and the resumed attempt answered in prose, so the card
-    # had no result and no run.
+    # The rollback dropped a provisional tool_start, so its card had no result.
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
         monkeypatch,
@@ -342,8 +334,7 @@ def test_a_rollback_closes_the_tool_card_it_abandons(monkeypatch):
 
 @pytest.mark.parametrize("site", ["plain", "round", "final"])
 def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
-    # Four one-token deltas spend a cap of four. Reopening the stream for one floored token
-    # went past the cap by that token at all three sites; now the turn ends with `length`.
+    # Reopening for one floored token went past the cap; the turn now ends with `length`.
     signal = p.PreemptSignal()
     streams = [
         [delta("a") for _ in range(4)] + [finish("length"), done()],
@@ -368,9 +359,7 @@ def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
     assert not any(
         isinstance(e, dict) and e.get("reason") == llama_cpp.PREEMPT_GAVE_UP_REASON for e in events
     ), "nothing was given up: the caller's own cap ended it"
-    # Counted once. The interrupted attempt is folded into the accumulator before the
-    # terminal event is built, and the event used to add the attempt's own usage and
-    # timings on top of that, so a four-token answer reported eight.
+    # The interrupted attempt was counted twice: a four-token answer reported eight.
     completion = int((metadata[-1].get("usage") or {}).get("completion_tokens") or 0)
     assert completion <= 4, f"the interrupted attempt was counted twice: {completion}"
     predicted_n = int((metadata[-1].get("timings") or {}).get("predicted_n") or 0)
@@ -379,9 +368,6 @@ def test_a_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch, site):
 
 @pytest.mark.parametrize("site", ["round", "final"])
 def test_a_spent_cap_counts_the_interrupted_attempt_once(monkeypatch, site):
-    # llama-server reports cumulative timings on every chunk, so the attempt's own reading is
-    # in hand when the pause lands. It is folded into the accumulator, and the terminal event
-    # then added the same reading again: four tokens reported as eight.
     signal = p.PreemptSignal()
     streams = [
         [
@@ -411,9 +397,6 @@ def test_a_spent_cap_counts_the_interrupted_attempt_once(monkeypatch, site):
 
 
 def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_charge(monkeypatch):
-    # The final pass extends the declined partial in the prompt, so its snapshots carry it (a
-    # non-streaming drain keeps only the last one) and its cap deducts every token that call
-    # spent, the granted pause's six as well as the declined seven.
     _give_up_from_the_second_pause(monkeypatch)
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
@@ -442,14 +425,11 @@ def test_a_declined_pause_hands_the_final_pass_the_whole_partial_and_the_whole_c
     )
     assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
     assert [p["max_tokens"] for p in rec.payloads] == [100, 94, 87]
-    # No turn boundary between the partial and the pass that extends it.
     kinds = [e.get("type") for e in events if isinstance(e, dict)]
     assert "status" not in kinds[kinds.index("content") :]
 
 
 def test_a_declined_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch):
-    # Four one-token deltas spend a cap of four as the pause is declined. The decline handed
-    # the final pass a cap floored at one, a token past the caller's; the turn ends instead.
     monkeypatch.setattr(p, "DEFAULT_MAX_STALLED_RESUMES", 0)
     signal = p.PreemptSignal()
     streams = [
@@ -474,8 +454,6 @@ def test_a_declined_pause_with_the_callers_cap_spent_ends_the_turn(monkeypatch):
 
 @pytest.mark.parametrize("ending", ["declined", "not_resumed"])
 def test_the_final_pass_gave_up_counts_the_interrupted_attempt_once(monkeypatch, ending):
-    # The refusal never folded the attempt, so a stream with no terminal usage reported none
-    # of its tokens; the not-resumed end folded it and then added the reading again.
     if ending == "declined":
         monkeypatch.setattr(p, "DEFAULT_MAX_STALLED_RESUMES", 0)
         policy = DecliningPolicy()
@@ -509,8 +487,7 @@ def test_the_final_pass_gave_up_counts_the_interrupted_attempt_once(monkeypatch,
 
 
 def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(monkeypatch):
-    # The resumed attempt went on thinking and then called a tool. Its assistant message
-    # carried only the later thought, and the merge replaced the earlier one.
+    # The merge replaced the earlier thought with the later one.
     signal = p.PreemptSignal()
     rec = PreemptRecorder(
         monkeypatch,
@@ -540,8 +517,8 @@ def test_the_thought_before_a_pause_survives_a_resumed_turn_that_calls_a_tool(mo
 @pytest.mark.parametrize("parallel", ["0", "1"])
 @pytest.mark.parametrize("first", ["kernel", {"q": "kernel"}], ids = ["healed", "alias"])
 def test_two_spellings_of_one_call_run_once_in_a_parallel_round(monkeypatch, parallel, first):
-    # `kernel` heals to {"query": "kernel"}, and `q` is an accepted alias of `query`. The ledger
-    # keys on the healed, canonical call; the parallel gate keyed on less, so both ran.
+    # `kernel` heals to {"query": "kernel"} and `q` aliases `query`; the gate keyed on less, so both
+    # ran.
     import json as _json
 
     monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", parallel)

@@ -5370,8 +5370,7 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    # The cap keeps the FIRST calls and drops the tail; which reaches its tool first is
-    # no longer fixed. What it must never do is drop a leading call and keep a later one.
+    # Calls now run together: the cap must keep the FIRST calls, in any completion order.
     assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
     (notice,) = [
         m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")
@@ -5997,8 +5996,7 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together, so which thread records first is not
-    # fixed. This is argument routing; the order the model sees is asserted below.
+    # Sorted: a round's calls now RUN together.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
@@ -6049,8 +6047,7 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together, so which thread records first is not
-    # fixed. This is argument routing; the order the model sees is asserted below.
+    # Sorted: a round's calls now RUN together.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
@@ -6973,8 +6970,6 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
 
 def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
-    # Two files, so the round's keys differ and the calls overlap: edits to one file are
-    # kept in order on purpose.
     first_turn = _two_edits_in_one_turn()
     first_turn[0] = first_turn[0].replace(
         'game.html\\", \\"old_string\\": \\"TODO', 'readme.md\\", \\"old_string\\": \\"TODO'
@@ -7006,8 +7001,6 @@ def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
     real_compact = llama_cpp_module.compact_executed_call_arguments
 
     def recording_compact(conversation, tool_call_id):
-        # The gate compacts to price a call, and a later pass compacts for reply room;
-        # the promise is the one the settle applies when the tool's own result lands.
         if sys._getframe(1).f_code.co_name == "_settle_tool_call":
             compacted.append(tool_call_id)
         return real_compact(conversation, tool_call_id)

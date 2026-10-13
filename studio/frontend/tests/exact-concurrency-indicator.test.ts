@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The header indicator for llama.cpp's exact concurrency. "off" is the default and the common
-// case, so the chip renders nothing for it, and "unavailable" has to name the server's refusal
-// rather than read as a Studio fault. The wiring is checked at the source: the applier is one
-// large object literal with no seam to call.
+// "off" renders nothing; "unavailable" names the server's refusal. Wiring is checked at the source.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -90,13 +87,11 @@ test("the status type carries what the running server does", () => {
 
 test("the store holds the state and starts off", () => {
   assert.match(STORE, /loadedExactConcurrency: ExactConcurrencyState;/);
-  // Both the initial state and the unload reset.
   assert.equal(STORE.match(/loadedExactConcurrency: "off",/g)?.length, 2);
 });
 
 test("a rollback resends the exact setting the previous load asked for", () => {
-  // The store may have been switched to `on` since that load; an omitted field would
-  // resolve to it and fail the model that was running fine.
+  // An omitted field would resolve to a since-changed stored `on` and fail a running model.
   const request = API_TYPES.slice(
     API_TYPES.indexOf("export interface LoadModelRequest"),
     API_TYPES.indexOf("export interface LoadModelResponse"),
@@ -112,7 +107,6 @@ test("a rollback resends the exact setting the previous load asked for", () => {
     RUNTIME,
     /loadedRequestedExactConcurrency:\s*loadResponse\.requested_exact_concurrency \?\? null,/,
   );
-  // The committed load publishes the state too: the status refresh after it can fail quietly.
   assert.match(
     RUNTIME,
     /loadedExactConcurrency: normalizeExactConcurrency\(\s*loadResponse\.exact_concurrency,?\s*\)/,
@@ -124,8 +118,7 @@ test("a rollback resends the exact setting the previous load asked for", () => {
 });
 
 test("every status refresh republishes it, not just a seeded load", () => {
-  // A tab opened onto an already-loaded model performs no load, so the chip would never
-  // appear if this were gated on seedLoadParams.
+  // A tab opened onto an already-loaded model performs no load.
   assert.match(
     APPLIER,
     /loadedExactConcurrency: normalizeExactConcurrency\(status\.exact_concurrency\),/,
@@ -142,9 +135,8 @@ test("the chip reads the store and hangs the sentence off a title", () => {
 });
 
 test("the chat header renders it beside the model selector, for the resident local model only", () => {
-  // The state is the local llama-server's, which stays resident when a hosted model is picked
-  // beside it, so unconditionally the chip put the local guarantee next to hosted output. The
-  // window leaves room for the model notice main renders between the two.
+  // The local server stays resident beside a hosted model, so the chip must not show for hosted
+  // output.
   assert.match(
     CHAT_PAGE,
     /triggerDataTour="chat-model-selector"[\s\S]{0,1500}exactConcurrencyChipApplies\(\{[\s\S]{0,120}\}\) && <ExactConcurrencyChip \/>/,
@@ -177,8 +169,6 @@ test("the chip applies to a resident local model and to nothing else", () => {
 });
 
 test("a recompute in this chat is named in the chip, whatever the load reports", () => {
-  // The mode can be up and this one answer still re-prefilled: a chip that stayed silent
-  // would say the guarantee held for an answer it did not hold for.
   const on = exactConcurrencyChip("on", { recomputed: true });
   assert.ok(on);
   assert.match(on.title, /re-prefilled after a park the server could not hold/);
@@ -193,14 +183,11 @@ test("without a recompute the chip reads exactly as it did", () => {
   assert.deepEqual(exactConcurrencyChip("on"), exactConcurrencyChip("on", {}));
   assert.equal(exactConcurrencyChip("on")?.label, "Exact");
   assert.doesNotMatch(exactConcurrencyChip("on")!.title, /re-prefilled/);
-  // `off` renders nothing at all, so a recompute there has no chip to annotate.
   assert.equal(exactConcurrencyChip("off", { recomputed: true }), null);
 });
 
 test("the recompute note is persisted with the answer and read from the answer on screen", () => {
-  // The map is in memory only and a thread has retry branches, each with its own answer: the
-  // note travels in the message metadata both adapters write, and one sync reads it off the
-  // visible branch, so a reload, a retry and a switch back to a sibling all agree.
+  // The note rides message metadata, so reload, retry and branch switches agree.
   assert.equal(
     ADAPTER.match(/preemptRecomputed: sawPreemptRecompute \|\| undefined,/g)?.length,
     3,
@@ -213,17 +200,12 @@ test("the recompute note is persisted with the answer and read from the answer o
     PROVIDER,
     /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,600}\?\.preemptRecomputed === true/,
   );
-  // Scoped to the model that wrote the answer: a note from model A must not qualify model B,
-  // loaded into the same thread before it has answered.
   assert.match(
     PROVIDER,
     /answerRecomputed &&\s+\(recomputedOn\.length > 0\s+\? recomputedOn\.includes\(checkpoint\)\s+: answerModelId === null \|\| answerModelId === checkpoint\)/,
   );
-  // An answer with no usage record still names its model in its details.
   assert.match(PROVIDER, /custom\?\.responseDetails as \{ modelId\?: unknown \}/);
   assert.match(PROVIDER, /typeof details\?\.modelId === "string" && details\.modelId\s+\? details\.modelId/);
-  // An interrupted answer persists from a live yield, which carries no details, so the
-  // recompute records the model it happened on itself.
   assert.equal(
     ADAPTER.match(
       /preemptRecomputedModelIds: recomputedOnField\(sawPreemptRecompute, preemptRecomputedOn\),/g,
@@ -231,16 +213,12 @@ test("the recompute note is persisted with the answer and read from the answer o
     3,
     "the live, the final and the interrupted settlement all name the recompute's model",
   );
-  // Read before usage: a Continue on another checkpoint stamps the joined usage with that one,
-  // and every model a part was recomputed on counts.
   assert.match(PROVIDER, /const recomputedOn = recomputedModelIds\(custom\);/);
-  // And the durable follower, whose interrupted answers persist without details either.
   assert.match(
     PROVIDER,
     /const recomputedOn = update\.run\.requestPayload\?\.model;[\s\S]{0,400}preemptRecomputedModelIds: withRecomputedModel\(\s+recomputedModelIds\(currentMetadata\),\s+recomputedOn,/,
   );
-  // The selector hands back the message itself, never a fresh object: a new object on every
-  // store read re-renders without end (React error 185, seen in the Windows UI lane).
+  // A fresh object per store read re-renders without end (React error 185).
   assert.doesNotMatch(PROVIDER, /useAuiState\(\(\{ thread \}\) => \{[\s\S]{0,400}return \{/);
   assert.match(PROVIDER, /setPreemptRecompute\(activeThreadId, recomputed\)/);
   assert.match(PROVIDER, /<VisibleAnswerRecomputeSync\s+enabled=\{modelType === "base" && !pairId && !backgrounded\}/);
@@ -248,15 +226,11 @@ test("the recompute note is persisted with the answer and read from the answer o
 });
 
 test("the chip reads the flag for the conversation on screen", () => {
-  // The store keys the flag by thread, so a recompute in a background chat cannot annotate
-  // the one the user is looking at.
   assert.match(STORE, /preemptRecomputedByThreadId: Record<string, boolean>/);
   assert.match(CHIP, /preemptRecomputedByThreadId\[s\.activeThreadId/);
 });
 
 test("the settings selector says what exact mode needs before offering it", () => {
-  // Preemption is off by default and exact mode cannot run without the server parking, so
-  // Auto came up unavailable and On failed the load from a selector that offered both.
   const section = read(
     "src/features/settings/components/llama-backend-section.tsx",
   );

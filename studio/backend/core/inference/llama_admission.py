@@ -70,9 +70,7 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
-# How much longer than its patience a reparking lease may wait while the pool is visibly
-# draining. Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE; the two waits are the same wait,
-# and at 20 this one gave up at 30 minutes inside an outer wait raised to two hours.
+# Matches the preemptor's MAX_RESUME_WAIT_MULTIPLE: the two are the same wait.
 _MAX_REPARK_WAIT_MULTIPLE = 80
 
 
@@ -344,8 +342,7 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
-        # Set by preempt(), the upstream task having ended so the cells really are reclaimable.
-        # Distinct from _parked, where the task is alive.
+        # Set by preempt(): the task ended, so the cells are reclaimable (unlike _parked).
         self._preempted = False
         self._tokens = max(0, int(tokens or 0))
         self._parked_tokens = 0
@@ -408,8 +405,7 @@ class LlamaAdmissionLease:
                 return 0
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        # `yield_commitment` counts the caller as reparking until it reclaims, holding the wait
-        # line shut. Right for a round about to ask again; wrong here, where nothing asks.
+        # `yield_commitment` would hold the wait line shut for a caller that never asks again.
         queue.abandon_repark(0)
         return held
 
@@ -539,7 +535,6 @@ class LlamaAdmissionLease:
             slot, self._slot = self._slot, None
             tokens, self._tokens = self._tokens, 0
             self._preempted = True
-        # Outside the lease lock, matching release()'s order, so the room reaches a waiter at once.
         queue.release(slot, tokens)
         return True
 
@@ -578,8 +573,7 @@ class LlamaAdmissionLease:
                 return True
             if not self._preempted:
                 return True
-            # A parked holder's slot is owned by the park machinery and comes back through
-            # unpark_async, so a parked lease only ever re-takes its commitment.
+            # A parked slot comes back through unpark_async, so only the commitment is re-taken.
             commitment_only = self._parked or self._slot is not None
         deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         patience = None if deadline is None else float(timeout_s)
@@ -710,8 +704,7 @@ class LlamaAdmissionLease:
                 return True
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
-        # Stall, not wall clock, as the preemptor's resume wait measures it: one chat gave up here
-        # though the cache had room. The deadline resets whenever commitment FALLS, never on growth.
+        # Stall, not wall clock: the deadline resets whenever commitment FALLS, never on growth.
         patience = None if not timeout_s or timeout_s <= 0 else float(timeout_s)
         started = time.monotonic()
         deadline = None if patience is None else started + patience

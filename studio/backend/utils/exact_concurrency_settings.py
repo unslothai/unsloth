@@ -40,9 +40,7 @@ def _cached_setting(key: str) -> Any:
         try:
             from storage.studio_db import get_app_setting
 
-            # The owner's, as every machine-wide load policy is: a managed account's load read
-            # its own database and found nothing, and the shared cache then served that to
-            # the owner too.
+            # The owner's, as every machine-wide load policy is.
             stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
             # An unreadable database must never fail a load; the caller falls back.
@@ -51,8 +49,6 @@ def _cached_setting(key: str) -> Any:
             if _generation.get(key, 0) == generation:
                 _cache[key] = (time.monotonic(), stored)
                 return stored
-        # A write committed while this read was in flight, so `stored` predates it and a load
-        # taking it would launch contradicting the setting that was just saved.
     return stored
 
 

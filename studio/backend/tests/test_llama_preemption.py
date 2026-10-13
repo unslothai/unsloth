@@ -138,8 +138,7 @@ class TestTheSignal:
     @pytest.mark.parametrize(
         ("value", "enabled"),
         [
-            # OFF by default, which is the whole point: an install that sets nothing pauses
-            # nobody. A typo cannot switch it on either, so "maybe" keeps that default.
+            # OFF by default, and a typo such as "maybe" keeps that default.
             (None, False),
             ("maybe", False),
             ("   ", False),
@@ -213,8 +212,7 @@ class TestTheCheckpoint:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "", "reasoning_content": "half a thought"},
         ]
-        # The exact trap: "" is falsy, so every `and trailing_assistant_text(...)` gate
-        # dropped the continuation flag for a turn that had real work to continue.
+        # "" is falsy, so `and trailing_assistant_text(...)` gates dropped the continuation flag.
         assert trailing_assistant_text(convo) == ""
         assert trailing_assistant_reasoning(convo) == "half a thought"
         assert trailing_assistant_resumable(convo)
@@ -246,7 +244,6 @@ class TestTheCheckpoint:
 
         from core.inference.chat_template_helpers import trailing_assistant_resume_kind
 
-        # A partial paused inside its thought has no prose and must still be resumed.
         thought_only = [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
@@ -325,8 +322,6 @@ class TestWhichExceptionComesOutOfTheStream:
 
 class TestTheBufferArithmetic:
     def test_the_buffer_is_per_slot_with_a_floor_and_a_cap(self):
-        # Per SLOT, not per cache: the reaction headroom scales with how many chats decode
-        # at once and not with the size of the cache.
         four = preemption_buffer_tokens(16384, slots = 4)
         assert preemption_buffer_tokens(16384, slots = 8) > four, "twice the slots, twice as much"
         assert four == preemption_buffer_tokens(65536, slots = 4), "a bigger cache is not slower"
@@ -344,8 +339,6 @@ class TestTheBufferArithmetic:
         assert controller.plan_preemptions(), "one token past it must not"
 
         advance = _controller(key = "advance")
-        # Sized from the ceiling rather than the figure it happened to have, so raising the
-        # margin does not break the property being tested.
         _register(advance, "winner", _ceiling(advance) - 2000)
         _register(advance, "other", 1500)
         assert advance.plan_preemptions() == [], "it fits under the ceiling"
@@ -405,7 +398,6 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
         for i in range(self.SLOTS):
             c.register(f"chat{i}", tokens = 1700, signal = PreemptSignal())
             c.observe(f"chat{i}", 1)
-        # 6804: over the old 6136 ceiling, under the 7416 that stands with nothing prefilling.
         assert c.committed_tokens() == 6804 and c.snapshot().prefilling == 0
         assert c.plan_preemptions(needed = 0) == []
         c.note_tokens("chat0", 1701 + 2100)
@@ -462,8 +454,7 @@ class TestWhoStops:
     def test_the_biggest_chat_is_still_preemptable_and_the_last_holder_survives(self):
         """The epoch winner is gone, and this is what replaced it."""
         controller = _controller()
-        # The huge chat is deliberately NOT the oldest: as the oldest it would be taken last
-        # and then spared by the last-holder rule, making this assertion unreachable.
+        # NOT the oldest: as the oldest it would be spared by the last-holder rule.
         _fill(controller, "oldest", 0.14)
         _fill(controller, "huge", 0.72)
         _fill(controller, "newest", 0.14)
@@ -492,8 +483,6 @@ class TestWhoStops:
         chat = c.register("chat", tokens = 1000)
         c.note_tokens("chat", 1000)
         assert c.observe("chat", 1000) == [], "room while under the ceiling"
-        # Over it, the only preemptable holder is chosen rather than spared, because the raw
-        # stream is standing already and pausing nobody ends both.
         assert [v.gen_id for v in c.observe("chat", 1500)] == ["chat"]
         assert raw.state == ParticipantState.STREAMING_RAW
         assert chat.state == ParticipantState.PREEMPTING
@@ -673,7 +662,6 @@ class TestAParkedHolderGivesItsCellsBack:
     """A chat stopped on a tool approval must not keep waiting chats out of an empty cache."""
 
     def _c(self, key = "test://parked"):
-        # 8192 cells and a buffer well under 2100, so a 6000-plus ceiling: the failing shape.
         return _controller(budget = 8192, key = key, slots = 4, draft_tokens = 2, batch_tokens = 2048)
 
     def test_a_parked_holder_whose_cells_were_reclaimed_stops_counting(self):
@@ -733,8 +721,8 @@ class TestReadingWhatTheCacheActuallyHolds:
         assert [slot for slot, _ in occupancy["idle"]] == [0, 2], "largest idle first"
 
     def test_generated_tokens_are_added_to_the_cache_field_and_only_to_it(self):
-        # `n_prompt_tokens` ALREADY includes them: over 128 samples `n_prompt_tokens - n_decoded`
-        # is constant within a request, and adding them again scored 28238 in a 16384 cache.
+        # `n_prompt_tokens` ALREADY includes decoded tokens; adding them again scored 28238 in a
+        # 16384 cache.
         def _slot(field, processing = True):
             return [
                 {
@@ -767,8 +755,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         clock = [100.0]
         controller._clock = lambda: clock[0]
         controller.note_resident(16383)
-        # "a" has not decoded a token, so its 2000 are NOT among the 16383 already held:
-        # they are a prefill still to come, and both have to fit.
+        # "a" has not decoded yet, so its 2000 are a prefill still to come.
         assert controller.committed_tokens() == 18383
         controller.note_resident(None)
         assert (
@@ -795,8 +782,6 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.set_state("waiter", ParticipantState.PAUSED)
         controller.note_resident(21304, 21304)
         assert controller.room_for("waiter", 5000) is True, "reclaimable residue must not block"
-        # 16000 live cells, minus this waiter's own 5000, still leaves 11000 that a 5000
-        # token resume cannot fit beside.
         controller.note_resident(16000, 0)
         assert controller.room_for("waiter", 5000) is False
 
@@ -865,7 +850,6 @@ class TestTheSlotProbesAreAuthenticated:
                 return False
 
         def _urlopen(request, timeout = None):
-            # A bare URL would leave nowhere to put the header at all.
             assert isinstance(request, urllib.request.Request), request
             seen.append(request)
             return _Response()
@@ -927,7 +911,6 @@ class TestTheResumeGrantChecksRoom:
         for gen_id in ("a", "b"):
             controller.register(gen_id, tokens = 9000, signal = PreemptSignal())
             controller.set_state(gen_id, ParticipantState.PAUSED)
-        # Each fits alone; together they do not. That is exactly the shape that crashed.
         assert 9000 <= _ceiling(controller) < 18000
         assert controller.room_for("a", 9000) is True
         assert controller.room_for("b", 9000) is True, "the same answer twice, which is the bug"
@@ -978,8 +961,6 @@ class TestTheResumeWait:
         controller.register("holder", tokens = 1000, signal = PreemptSignal())
         controller.note_tokens("holder", 1000)
         controller.note_measured("holder")
-        # Far above the ledger's own sum, which pins `committed` at a number the decoders
-        # do not move, and past the ceiling, which keeps a waiter refused.
         controller.note_resident(16384)
         return controller
 
@@ -1025,10 +1006,8 @@ class TestTheResumeWait:
         assert after[0] == before[0] == 16384, "committed must be pinned for this test"
         assert after[1] == before[1], "and the same holder must still hold"
         assert after != before and after[2] > before[2], "the token total is what moves"
-        # A fresh attempt restarting its count is not read as lost tokens.
         controller.observe("holder", 32)
         assert controller.progress_signature()[2] > after[2]
-        # And a tool call and a round boundary are progress too.
         assert controller.note_state("holder", ParticipantState.TOOLS_RUNNING) is True
         tools = controller.progress_signature()
         assert tools[3] == after[3] + 1
@@ -1057,7 +1036,6 @@ class TestTheResumeWait:
         stop = threading.Event()
 
         def decode_then_free():
-            # Long enough that a wall-clock or committed-only bound has certainly fired.
             deadline = time.monotonic() + timeout * 3
             generated = 0
             while time.monotonic() < deadline and not stop.is_set():
@@ -1065,7 +1043,6 @@ class TestTheResumeWait:
                 generated += 32
                 controller.observe("holder", generated)
                 decoded["tokens"] = generated
-            # The blocker finishes: its cells come back and the waiter fits at last.
             controller.note_resident(1000)
             controller.note_tokens("holder", 1000)
 
@@ -1090,7 +1067,6 @@ class TestTheResumeWait:
 
     def test_the_hard_backstop_outlasts_the_slowest_answer_measured(self):
         bound = DEFAULT_RESUME_WAIT_TIMEOUT_S * MAX_RESUME_WAIT_MULTIPLE
-        # The admission wait nested inside it must not give up first.
         from core.inference import llama_admission
 
         assert llama_admission._MAX_REPARK_WAIT_MULTIPLE == MAX_RESUME_WAIT_MULTIPLE

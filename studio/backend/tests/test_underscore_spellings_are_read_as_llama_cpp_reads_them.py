@@ -25,7 +25,6 @@ class TestExactModeSeesTheUnderscoreSpelling:
         assert not exact.contradicting_args(["--n_cpu_moe", "0"])
 
     def test_cpu_ffn_layers_contradict_as_cpu_experts_do(self):
-        # The dense twin of --n-cpu-moe: the first N layers' FFN weights run on CPU kernels.
         for args in (["--n-cpu-ffn", "4"], ["-ncffn", "4"], ["--n_cpu_ffn=4"]):
             assert exact.contradicting_args(args), args
         assert not exact.contradicting_args(["--n-cpu-ffn", "0"])
@@ -68,5 +67,4 @@ def test_a_launch_line_count_overrides_the_inherited_ffn_variable():
     for args in (["--n-cpu-ffn", "0"], ["-ncffn", "0"], ["--n_cpu_ffn=0"]):
         assert exact.contradicting_env(env, args) == [], args
         assert exact.contradicting_args(args) == [], args
-    # The expert count accumulates instead, so its variable still counts beside a line zero.
     assert exact.contradicting_env({"LLAMA_ARG_N_CPU_MOE": "4"}, ["--n-cpu-moe", "0"])

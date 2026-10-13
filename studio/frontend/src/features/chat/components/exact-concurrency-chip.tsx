@@ -4,15 +4,10 @@
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { exactConcurrencyChip } from "../lib/exact-concurrency";
 
-/**
- * Says, next to the model name, that this model's answers do not depend on what else is decoding
- * beside them. Renders nothing in the ordinary `off` case. The label/title pair lives in a plain
- * `.ts` next door, the test runner not transforming JSX.
- */
+/** Says this model's answers do not depend on concurrent decoding. Renders nothing for `off`. */
 export function ExactConcurrencyChip() {
   const state = useChatRuntimeStore((s) => s.loadedExactConcurrency);
-  // A first turn files its flag under "__default", which is also where activeThreadId sits
-  // until the conversation persists.
+  // A first turn files its flag under "__default" until the conversation persists.
   const recomputed = useChatRuntimeStore(
     (s) =>
       s.preemptRecomputedByThreadId[s.activeThreadId || "__default"] === true,
@@ -21,7 +16,6 @@ export function ExactConcurrencyChip() {
   if (!chip) return null;
   return (
     <span
-      // The full sentence is the title; a chip this small can only carry the word.
       title={chip.title}
       data-testid="exact-concurrency-chip"
       data-exact-concurrency={state}

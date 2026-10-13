@@ -400,15 +400,12 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
-# The pause comments, same origin. A durable follower never sees SSE comments (`_SSEDecoder`
-# keeps data lines only), so a chat parked to make room showed a durable run nothing at all.
-# Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
+# A durable follower never sees SSE comments, so the pause is relayed as an `_admissionStatus`
+# chunk.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
-# Resumed by re-prefilling: the park did not fit, so the answer is not byte-identical.
 _PREEMPT_RECOMPUTED_MARKER = ": preempt-recomputed"
-# Still paused, every two seconds. Renewed on like a queue wait: a pause outlasting the lease
-# reaped the run waiting in it.
+# Renewed on like a queue wait: a pause outlasting the lease reaped the run.
 _PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
 
 
@@ -469,9 +466,7 @@ def _minimum_lease_seconds() -> float:
             reason = "not a usable keep-alive cadence",
         )
         interval = float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)
-    # And the park probe: a swap build without the stream notices is asked at most once per
-    # _PARK_PROBE_MIN_INTERVAL_S, so a lease shorter than two of those could settle a healthy
-    # parked run between two probes.
+    # Two park-probe intervals, so a short lease cannot settle a healthy parked run between probes.
     return max(max(1.0, interval) * 3.0, 2.0 * _PARK_PROBE_MIN_INTERVAL_S)
 
 
@@ -521,16 +516,11 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
-# The floor between two live `/metrics` probes. The renewal cadence derives from the lease and
-# reaches 0.25s for a very short one, which would turn a silent park into four scrapes a second.
+# The lease-derived cadence can reach 0.25s, which would scrape four times a second.
 _PARK_PROBE_MIN_INTERVAL_S = 5.0
-# Last live probe per backend: (monotonic time, answer). One scrape serves every silent run on
-# that server, and each run inside the interval gets the answer rather than a refusal; keyed by
-# backend, so a run on another model's server is never starved of its own reading.
+# Per backend: one scrape serves every silent run on that server.
 _park_probe_last: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
 _park_probe_lock = threading.Lock()
-# One probe in flight per backend: callers arriving while it runs wait for it and take its answer,
-# rather than each seeing the same expired entry and scraping at once.
 _park_probe_inflight: "weakref.WeakKeyDictionary[Any, threading.Lock]" = weakref.WeakKeyDictionary()
 
 
@@ -575,8 +565,6 @@ def _server_park_excused_recently() -> bool:
         probe = getattr(backend, "server_park_grace_recent", None)
         if probe is not None and bool(probe(_renew_interval_seconds() * 2.0)):
             return True
-        # No stamp: the read wrapper has not reached its deadline yet, so ask directly rather than
-        # let the lease expire waiting for it.
         return _server_park_probe_now(backend)
     except Exception:
         return False
@@ -889,8 +877,8 @@ class ChatGenerationSupervisor:
                 timeout = (
                     max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
                     if pending
-                    # Bounded even with nothing to flush: a silent park on a swap build without the
-                    # stream notices sends no bytes, and only here can the lease be renewed.
+                    # A silent park on a build without stream notices sends no bytes, and only here
+                    # is the lease renewed.
                     else _renew_interval_seconds()
                 )
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
@@ -934,8 +922,7 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text, last_status)
                 if status_chunks:
-                    # Written at once, not batched: nothing follows a pause while it lasts, so a
-                    # batched notice would reach the follower with the resume. Also lease progress.
+                    # Unbatched: a batched notice would reach the follower with the resume.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)
