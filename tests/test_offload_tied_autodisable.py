@@ -6,8 +6,8 @@ correctness switch, so it should turn itself off instead, as the fast_inference
 case a few lines earlier already does. Two shipped notebooks (NeMo-Gym-Sudoku,
 NeMo-Gym-Multi-Environment) died this way on unsloth/Qwen2.5-1.5B-Instruct.
 
-Every platform branch is driven explicitly, so the assertions hold on Linux,
-macOS, Windows and WSL alike: the host's own os.name never decides.
+Windows and WSL used to be refused outright (unslothai/unsloth#13388); the
+platform inputs are driven explicitly so the host's own os.name never decides.
 """
 
 import ast, os, types
@@ -63,13 +63,11 @@ def _load(*names):
 
 _NS = _load(
     "_embeddings_are_tied",
-    "_offload_embedding_unsupported_platform",
     "_embedding_dispatch_device",
     "_embedding_is_worth_offloading",
     "_resolve_offload_embedding",
 )
 resolve = _NS["_resolve_offload_embedding"]
-unsupported_platform = _NS["_offload_embedding_unsupported_platform"]
 dispatch_device = _NS["_embedding_dispatch_device"]
 
 _WSL_VARS = ("WSL_DISTRO_NAME", "WSL_INTEROP")
@@ -163,48 +161,18 @@ def test_opaque_model_disables_offload():
         assert resolve(_Opaque(), True) is False
 
 
-def test_wsl_and_windows_disable_offload():
-    # Neither can offload, and the flag also gates the multi-device hook attach, so it has to read False rather than
-    # pass through.
-    for var in _WSL_VARS:
-        with _as_platform("posix"):
-            os.environ[var] = "1"
-            assert unsupported_platform() == "WSL"
+def test_windows_and_wsl_offload_like_linux():
+    # Windows and WSL used to decline every offload, so an 8 GB card could not hold Gemma 4 E2B there (#13388).
+    platforms = [
+        ("nt", {}),
+        ("posix", {"wsl": True}),
+        ("posix", {"release": "6.6.87.2-microsoft-standard-WSL2"}),
+    ]
+    for os_name, kw in platforms:
+        with _as_platform(os_name, **kw):
+            assert resolve(_untied_model(), True) is True
             assert resolve(_tied_model(), True) is False
-            assert resolve(_untied_model(), True) is False
             assert resolve(_Opaque(), True) is False
-
-    with _as_platform("nt"):
-        assert unsupported_platform() == "Windows"
-        assert resolve(_tied_model(), True) is False
-        assert resolve(_untied_model(), True) is False
-        assert resolve(_Opaque(), True) is False
-
-    with _as_platform("posix"):
-        assert unsupported_platform() is None
-
-
-@pytest.mark.skipif(not hasattr(os, "uname"), reason = "os.uname is POSIX only")
-def test_docker_on_wsl2_disables_offload():
-    # A container on WSL2 sets no WSL_* variables; only the shared kernel says WSL (unslothai/unsloth#3511).
-    for release in ("6.6.87.2-microsoft-standard-WSL2", "5.15.153.1-microsoft-standard-WSL2"):
-        with _as_platform("posix", release = release):
-            assert unsupported_platform() == "WSL"
-            assert resolve(_untied_model(), True) is False
-
-    for release in ("6.8.0-1021-azure", "6.10.14-linuxkit"):
-        with _as_platform("posix", release = release):
-            assert unsupported_platform() is None
-
-
-def test_platform_gate_lives_in_one_place():
-    # The offload block used to re-test os.name itself; the copies drifted apart and only Windows noticed.
-    # _resolve_offload_embedding owns it now.
-    helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
-    helper = helper[: helper.index("\n\n\ndef ")]
-    for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):
-        assert _SRC.count(probe) == 1, f"{probe} must be tested in exactly one place"
-        assert probe in helper, f"{probe} belongs in _offload_embedding_unsupported_platform"
 
 
 def test_resolved_before_multidevice_hooks():
@@ -444,7 +412,6 @@ class _PerLayerModel(nn.Module):
 def _spare_ns():
     ns = _load(
         "_embeddings_are_tied",
-        "_offload_embedding_unsupported_platform",
         "_embedding_dispatch_device",
         "_input_side_embeddings",
         "_accelerator_device",

@@ -1652,6 +1652,140 @@ pub async fn browser_view_annotate<R: Runtime>(
     serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
+// The panel's browser agent (frontend agent/page-agent.ts): installed on first use per page, then
+// each call runs one command and returns `{ installed, result }`.
+const AGENT_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.agent");
+  const command = __COMMAND__;
+  if (!window[key] && command.install) {
+    try {
+__CODE__
+    } catch (error) {}
+  }
+  const agent = window[key];
+  if (!agent) return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.run(command.op) });
+})()"#;
+const MAX_AGENT_OP: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentCommand {
+    op: serde_json::Map<String, serde_json::Value>,
+    code: Option<String>,
+}
+
+fn agent_script(command: &AgentCommand) -> Result<String, String> {
+    let code = command.code.as_deref().unwrap_or("");
+    if code.len() > MAX_ANNOTATE_CODE {
+        return Err("agent code too large".into());
+    }
+    let args = serde_json::json!({ "install": !code.is_empty(), "op": command.op }).to_string();
+    if args.len() > MAX_AGENT_OP {
+        return Err("agent command too large".into());
+    }
+    let (head, rest) = AGENT_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad agent script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad agent script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs a browser agent command in a tab's page. The panel checks the result, since the page
+/// shares the agent's world and can write to it.
+#[tauri::command]
+pub async fn browser_view_agent<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AgentCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = agent_script(&command)?;
+    eval_json(&page, script).await
+}
+
+// Spliced past the CSP; the document check is its own statement since spliced code can close any wrapper.
+const EVAL_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
+})();
+JSON.stringify({ installed: true, result: window[Symbol.for("unsloth.agent")].evaluate(__ID__, __DOC__, async () => {
+__CODE__
+}) });"#;
+// browser_agent.py allows 8000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 32_000;
+
+fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
+    if doc.len() < 2
+        || doc.len() > 16
+        || !doc.starts_with('r')
+        || !doc[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err("bad document ref".into());
+    }
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("bad script id".into());
+    }
+    if code.len() > MAX_EVAL_CODE {
+        return Err("script too large".into());
+    }
+    // Single pass over the template, so the code can't inject a placeholder.
+    let mut out = String::with_capacity(EVAL_SCRIPT.len() + code.len() + 96);
+    let mut rest = EVAL_SCRIPT;
+    for (marker, value) in [
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__ID__", format!("\"{id}\"")),
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__CODE__", code.to_string()),
+    ] {
+        let (head, tail) = rest.split_once(marker).ok_or("bad eval script")?;
+        out.push_str(head);
+        out.push_str(&value);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn browser_view_eval<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    id: String,
+    doc: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = eval_script(&id, &doc, &code)?;
+    eval_json(&page, script).await
+}
+
+async fn eval_json<R: Runtime>(
+    page: &Webview<R>,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
+}
+
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
 /// across loads; macOS mutes the page's media, and each page it loads after (see `MUTE_SCRIPT`).
 #[tauri::command]
@@ -2239,6 +2373,47 @@ mod tests {
             code: "x".repeat(MAX_ANNOTATE_CODE + 1)
         })
         .is_err());
+    }
+
+    #[test]
+    fn agent_code_and_command_are_spliced_once() {
+        let mut op = serde_json::Map::new();
+        op.insert("op".into(), "find".into());
+        op.insert("query".into(), "__CODE__".into());
+        let script = agent_script(&AgentCommand {
+            op: op.clone(),
+            code: Some("window.x = '__COMMAND__';".into()),
+        })
+        .unwrap();
+        assert!(script.contains(
+            r#"const command = {"install":true,"op":{"op":"find","query":"__CODE__"}};"#
+        ));
+        assert!(script.contains("window.x = '__COMMAND__';"));
+        let bare = agent_script(&AgentCommand { op, code: None }).unwrap();
+        assert!(bare.contains(r#""install":false"#));
+        assert!(agent_script(&AgentCommand {
+            op: serde_json::Map::new(),
+            code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn eval_code_is_spliced_once_and_ids_are_plain() {
+        let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
+        let check = script
+            .find(r#"agent.owns("r100001") !== true) throw"#)
+            .unwrap();
+        let run = script
+            .find(r#".evaluate("s1-a_B", "r100001", async () => {"#)
+            .unwrap();
+        assert!(check < run && script[check..run].contains("})();"));
+        assert!(script.contains("return '__ID__' + '__DOC__';"));
+        assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
+        assert!(eval_script("", "r1", "").is_err());
+        assert!(eval_script("s1", "r1\"", "").is_err());
+        assert!(eval_script("s1", "", "").is_err());
+        assert!(eval_script("s1", "r1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

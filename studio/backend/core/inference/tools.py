@@ -8,12 +8,14 @@ import ast
 import codecs
 import copy
 from collections import deque
+from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
 from html.parser import HTMLParser
 import json
 import http.client
+import ntpath
 import os
 from functools import partial
 import signal
@@ -34,10 +36,13 @@ import sys
 import tempfile
 import contextlib
 import threading
+import zlib
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
+from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -1384,6 +1389,38 @@ _START_SWITCHES = frozenset(
 )
 
 
+# A program spelled as a Windows path, spaces allowed (C:\Program Files\..., %SystemDrive%\...). The characters
+# Windows forbids in a file name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
+_WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2}|%[A-Za-z_][\w()]*%)?[\\/][^:*?"<>|\r\n]*')
+_WIN_RELATIVE_PROGRAM_PATH_RE = re.compile(r'[^:*?"<>|\r\n]*[\\/][^:*?"<>|\r\n]*')
+
+
+def _blocked_program_path(word: str, program_slot: bool = False) -> str:
+    r"""The blocked name ``word`` runs when cmd or START takes it as one program path. Re-lexing it
+    as a command line splits `C:\Program Files\PowerShell\7\pwsh.exe` at the space. ntpath, not
+    os.path, so the Linux test runner reads backslashes the way Windows does."""
+    word = word.strip('"')
+    # ``program_slot``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too.
+    # An extensionless path resolves through PATHEXT either way.
+    if not (
+        _WIN_PROGRAM_PATH_RE.fullmatch(word)
+        or (program_slot and _WIN_RELATIVE_PROGRAM_PATH_RE.fullmatch(word))
+    ):
+        return ""
+    base = ntpath.basename(word).lower()
+    stem, ext = ntpath.splitext(base)
+    if (
+        not program_slot
+        and any(char.isspace() for char in word)
+        and any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
+    ):
+        # A rooted command line (`\Windows\System32\where.exe \src\rm`), not one path holding spaces.
+        return ""
+    if ext in {".exe", ".com", ".bat", ".cmd"}:
+        base = stem
+    return base if base in _BLOCKED_COMMANDS else ""
+
+
 def _is_start_title(token: str) -> bool:
     """True when START would read ``token`` as its window title, not the program. The cmd lexer
     keeps the quote marks, so a title still arrives quoted; the posix lexer leaves two spellings
@@ -1412,14 +1449,20 @@ def _blocked_word_re(assignment_prefixes: bool):
     """
     if not _BLOCKED_COMMANDS:
         return None
+    # `.` (source) is left to the token walk: here `\b` let it match only a dot glued to a word, never `source`, so
+    # `.venv/bin/python` and `C:/x/app.exe` were refused as `.` (#12054).
+    words = sorted(w for w in _BLOCKED_COMMANDS if w[:1].isalnum() or w[:1] == "_")
+    if not words:
+        return None
     return re.compile(
         # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
-        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        # Both prefixes end at a separator, so the name is a whole path segment.
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w./\\-]*[/\\])?)?"
         + r"("
-        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + "|".join(re.escape(w) for w in words)
         + r")"
         + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
@@ -2040,6 +2083,16 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
                 blocked |= _find_blocked_commands(payload, posix = posix)
+                # cmd runs a leading quoted path as the program (`cmd /c "C:\x y\pwsh.exe" -c ...`); `""prog" args"`
+                # loses its outer pair first. The posix lexer already handed that path over as one token.
+                if lexed_posix:
+                    program = tokens[i + 1]
+                else:
+                    rest = " ".join(tokens[i + 1 :])
+                    rest = '"' + rest[2:].lstrip() if rest.startswith('""') else rest
+                    quoted = re.match(r'"([^"]*)"', rest)
+                    program = quoted.group(1) if quoted else ""
+                blocked |= {_blocked_program_path(program)} - {""}
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -2057,6 +2110,8 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
         # approximation under-approximated.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j], posix = posix)
+            if not _is_start_title(tokens[j]):
+                blocked |= {_blocked_program_path(tokens[j], program_slot = True)} - {""}
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
@@ -2064,6 +2119,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
                 blocked |= _find_blocked_commands(tokens[k], posix = posix)
+                blocked |= {_blocked_program_path(tokens[k], program_slot = True)} - {""}
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -7224,6 +7280,9 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "deep_research",
         "mcp_tool_schema",
         "view_image",
+        # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
+        # purchases, sign-ins and new sites ask there, in every permission mode.
+        *BROWSER_TOOL_NAMES,
     }
 )
 
@@ -10082,10 +10141,20 @@ def _reaches_host_paths(kind: str, text: str) -> bool:
     return False
 
 
-def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+def _prepare_tool_launch(
+    plan,
+    *,
+    host_access_approved: bool = False,
+    user_folder: bool = False,
+):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if host_access_approved and plan.requested_mode == "auto":
         return _software_safeguards_launch(plan, "user_approved_host_access")
+    # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
+    # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
+    # never after a scan finding, which tool code could plant to drop its own boundary.
+    if user_folder and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_working_folder")
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -10837,6 +10906,32 @@ def _project_exists(project_id: str) -> bool:
         return True
 
 
+def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
+    """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import get_chat_project
+
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        sandbox = (project or {}).get("sandboxPath")
+        return bool(sandbox) and os.path.realpath(sandbox) == workdir
+    except Exception:
+        return False
+
+
+def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
+    """Whether *workdir* is the owner's chosen folder for this project; False when unsure, which keeps isolation."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        return available_project_working_folder(project) == os.path.realpath(workdir)
+    except Exception:
+        return False
+
+
 def _project_workdir_for(session_id: "str | None") -> "str | None":
     """The project workspace a session id names, if it names one. The prefixed id can be longer than
     a directory name may be, or carry a character one may not: it is the project part that has to
@@ -10879,7 +10974,9 @@ def _get_project_workdir(session_id: str) -> str | None:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
-    return sandbox_real
+    from storage.studio_db import available_project_working_folder
+
+    return available_project_working_folder(project) or sandbox_real
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
@@ -11619,7 +11716,10 @@ def _get_workdir(session_id: str | None = None) -> str:
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
-    if cached is not None and not _get_project_workdir(session_id or ""):
+    project_now = _get_project_workdir(session_id or "") if cached is not None else None
+    if cached is not None and project_now and os.path.realpath(cached) != project_now:
+        cached = None
+    if cached is not None and not project_now:
         # The same checks a fresh resolve makes: the entry can have been renamed and replaced with a link to another
         # chat's directory since, and containment alone accepts that.
         root_now = sandbox_root()
@@ -11686,8 +11786,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it.
-        if created or _sandbox_is_ours(workdir):
+        # whoever else uses it. Never the user's project folder.
+        if (created or _sandbox_is_ours(workdir)) and (
+            not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
+        ):
             try:
                 os.chmod(workdir, 0o700)
             except OSError:
@@ -12414,6 +12516,28 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     return None
 
 
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -12670,7 +12794,28 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    history: dict = {}
+    try:
+        text = _defuse_sentinels(
+            _edit_file_apply(arguments, session_id, disable_sandbox, created, history)
+        )
+    finally:
+        _history_end_file(history)
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict,
+    session_id: "str | None",
+    disable_sandbox: bool,
+    created: "list[str]",
+    history: "dict | None" = None,
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -12689,6 +12834,8 @@ def _edit_file(
         os.path.realpath(target)
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+    if history is not None:
+        history.update(_history_begin_file(session_id, target))
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -12699,13 +12846,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -14098,6 +14248,16 @@ def execute_tool(
     effective_timeout = (
         timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
     )
+    if is_browser_tool(name):
+        return execute_browser_tool(
+            name,
+            arguments,
+            cancel_event = cancel_event,
+            output_callback = output_callback,
+            session_id = session_id,
+            website_policy = website_policy,
+            timeout = effective_timeout,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -16033,6 +16193,80 @@ class _HTMLBodyLocator(HTMLParser):
         self.handle_entityref("#" + name)
 
 
+# What _ContentDecoder undoes, and what the fetcher's Accept-Encoding names: with none, any coding is
+# acceptable (RFC 9110 12.5.3), brotli and zstd included.
+_DECODED_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _ContentDecoder:
+    """Undoes a gzip or deflate Content-Encoding as the body is read. Servers send one unasked (python.org
+    does even for ``Accept-Encoding: identity``). Output is bounded per read and input by ``wire_limit``,
+    so a small compressed body can't expand past the caller's budget."""
+
+    def __init__(self, coding):
+        self.gzip = coding != "deflate"
+        self.inflater = None
+        # Before the first byte, or between gzip members: an end of input here is a complete body.
+        self.at_boundary = True
+        self.members = 0
+        self.unread = b""
+        self.wire = 0
+        self.wire_limit = 0
+        self.finished = False
+
+    def read(self, read_wire, size):
+        """At most ``size`` decoded bytes. ``b""`` before ``finished`` means only input was consumed: call again."""
+        if self.finished:
+            return b""
+        data, self.unread = self.unread, b""
+        draining = False
+        if len(data) < 2 and (self.inflater is None or not data):
+            more = read_wire(65536)
+            self.wire += len(more)
+            if self.wire > self.wire_limit:
+                raise ValueError("compressed response exceeds the byte limit")
+            if not more:
+                # An empty coded body (a 204, or Content-Length: 0) has nothing to decode; after a member, a
+                # stray byte is padding.
+                if self.at_boundary and (not data or self.members):
+                    self.finished = True
+                    return b""
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
+            data += more
+            if self.inflater is None and len(data) < 2:
+                self.unread = data
+                return b""
+        if self.inflater is None:
+            if self.gzip:
+                if self.members and not data.startswith(b"\x1f\x8b"):
+                    # Bytes after the last member are padding, which browsers ignore too.
+                    self.finished = True
+                    return b""
+                # Concatenated gzip members are one body (RFC 1952 2.2).
+                self.inflater = zlib.decompressobj(31)
+            else:
+                # "deflate" is meant to be zlib-wrapped (RFC 9110 8.4.1.2); some servers send it raw.
+                wrapped = data[0] & 0x0F == 8 and (data[0] << 8 | data[1]) % 31 == 0
+                self.inflater = zlib.decompressobj(15 if wrapped else -15)
+            self.at_boundary = False
+        out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
+        if not self.inflater.eof:
+            self.unread = self.inflater.unconsumed_tail
+        elif self.gzip:
+            self.members += 1
+            self.unread = self.inflater.unused_data
+            self.inflater = None
+            self.at_boundary = True
+        else:
+            self.finished = True
+        return out
+
+
 def _read_capped_body(
     resp,
     max_bytes,
@@ -16041,13 +16275,18 @@ def _read_capped_body(
     cancel_event,
     body_window = None,
     charset = None,
+    decoder = None,
 ):
-    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    """read at most ``max_bytes`` (decoded, with a ``decoder``), and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
     # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
+    if decoder is not None:
+        read_wire = read
+        decoder.wire_limit = decoder.wire + max_bytes + 65536
+        read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
     body_at = None
@@ -16065,8 +16304,18 @@ def _read_capped_body(
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = read(min(65536, remaining))
+        try:
+            chunk = read(min(65536, remaining))
+        except (ValueError, zlib.error) as exc:
+            if decoder is None:
+                raise
+            if decoder.wire > decoder.wire_limit:
+                return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
+            return f"Failed to decode the compressed response: {exc}", b""
         if not chunk:
+            # Checks the budget between compressed chunks that decode to nothing yet.
+            if decoder is not None and not decoder.finished:
+                continue
             break
         chunks.append(chunk)
         remaining -= len(chunk)
@@ -16256,6 +16505,7 @@ def _fetch_url_raw(
             headers = {
                 "User-Agent": ua,
                 "Host": validated_netloc,
+                "Accept-Encoding": "gzip, deflate",
             }
             if extra_headers:
                 headers.update(extra_headers)
@@ -16298,6 +16548,11 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
+            coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+            if coding not in ("", "identity", *_DECODED_CODINGS):
+                return f"Failed to fetch URL: unsupported Content-Encoding {coding[:40]!r}.", "", ""
+            decoder = _ContentDecoder(coding) if coding in _DECODED_CODINGS else None
+
             # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
@@ -16326,6 +16581,7 @@ def _fetch_url_raw(
                 cancel_event,
                 body_window = max_bytes if declared_html else None,
                 charset = resp.headers.get_content_charset() if declared_html else None,
+                decoder = decoder,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16349,6 +16605,7 @@ def _fetch_url_raw(
                     timeout,
                     deadline,
                     cancel_event,
+                    decoder = decoder,
                 )
                 if tail_error is not None:
                     return tail_error, "", ""
@@ -16597,9 +16854,11 @@ def _tool_result_char_budget() -> int:
     return _result_char_budget(cap)
 
 
-def _other_tool_result_char_budget() -> int:
-    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
-    page back through."""
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -21152,10 +21411,15 @@ def _fit_result_to_room(text, name = None):
     notice and no paging hint.
 
     With no priced room (external providers, the hosted path, any loop that does not measure its own
-    conversation) the text is returned untouched.
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
     """
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text:
         return text
+    if _request_result_room() is None:
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
     # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
     # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
@@ -21164,7 +21428,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body, _other_tool_result_char_budget())
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 
@@ -21415,6 +21679,14 @@ _DIR_FD_WRITES = (
 )
 
 
+# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
+# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
+# follow a symlink source, and os.link there takes no such flag.
+_LINK_NOFOLLOW = (
+    {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
+)
+
+
 def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
@@ -21449,7 +21721,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
-            os.link(tmp, installed)
+            os.link(tmp, installed, **_LINK_NOFOLLOW)
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
@@ -21466,7 +21738,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on POSIX, and the name may have
         # been taken since the caller looked. link fails with EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd, **_LINK_NOFOLLOW)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever the name resolves to by the
         # time this returns.
@@ -21541,8 +21813,31 @@ def materialize_sandbox_attachments(
                     logger.warning(
                         "could not copy attachment %s into the sandbox", sha256, exc_info = True
                     )
+            if _is_user_project_folder(session_id, workdir):
+                _git_ignore_dir(os.path.join(workdir, _ATTACHMENTS_DIR))
         finally:
             _call_finished(token)
+
+
+def _git_ignore_dir(directory: str) -> None:
+    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent.
+    Never through a link: the directory is opened no-follow and the file created relative to it."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        if _DIR_FD_WRITES:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                fd = os.open(".gitignore", flags, 0o644, dir_fd = dir_fd)
+            finally:
+                os.close(dir_fd)
+        else:
+            if os.path.islink(directory) or not os.path.isdir(directory):
+                return
+            fd = os.open(os.path.join(directory, ".gitignore"), flags, 0o644)
+    except OSError:
+        return
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write("*\n")
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
@@ -21569,7 +21864,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, os.path.join(target, name))
+                os.link(tmp, os.path.join(target, name), **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp)
         return
@@ -21589,12 +21884,104 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1], **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp, dir_fd = fds[-1])
     finally:
         for fd in fds:
             os.close(fd)
+
+
+class SandboxUploadExists(Exception):
+    """The upload's name is taken and the caller did not ask to replace it."""
+
+
+def sandbox_upload_name(name: "str | None") -> str:
+    """The name an uploaded file is saved under at the sandbox root, one the download route serves back."""
+    base = _UNSAFE_NAME_CHARS.sub("_", re.split(r"[\\/]", name or "")[-1]).strip(" .") or "upload"
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    if len(base.encode()) > 255:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        base = stem.encode()[: 255 - len(ext.encode())].decode("utf-8", "ignore").rstrip(" .") + ext
+    return base if _servable_segment(base) else "upload"
+
+
+def save_sandbox_upload(
+    session_id: "str | None",
+    name: "str | None",
+    chunks: "Iterable[bytes]",
+    overwrite: bool = False,
+) -> dict:
+    """Write an uploaded file into the root of a chat's sandbox. Raises SandboxUploadExists when the
+    name is taken, unless ``overwrite``."""
+    name = sandbox_upload_name(name)
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        # Registered as a call, so a tool call running meanwhile does not offer the upload as its own file.
+        token = _call_started(workdir)
+        try:
+            replaced = _install_upload(workdir, name, chunks, overwrite)
+        finally:
+            _call_finished(token)
+    return {"name": name, "path": os.path.join(workdir, name), "replaced": replaced}
+
+
+def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrite: bool) -> bool:
+    """Stream into a fresh O_EXCL file, then link it in or, when replacing, rename onto the name. Through a
+    directory descriptor where the platform has one, like the spill writer, so no link is followed."""
+    dir_fd = (
+        os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if _DIR_FD_WRITES else None
+    )
+    tmp, dest = f".tmp-{uuid.uuid4().hex[:12]}", name
+    if dir_fd is None:
+        tmp, dest = os.path.join(workdir, tmp), os.path.join(workdir, name)
+    at = {} if dir_fd is None else {"dir_fd": dir_fd}
+    pair = {} if dir_fd is None else {"src_dir_fd": dir_fd, "dst_dir_fd": dir_fd}
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        with os.fdopen(os.open(tmp, flags, 0o600, **at), "wb") as out:
+            for chunk in chunks:
+                out.write(chunk)
+        try:
+            os.stat(dest, follow_symlinks = False, **at)
+            existed = True
+        except FileNotFoundError:
+            existed = False
+        if existed and not overwrite:
+            raise SandboxUploadExists(name)
+        if not existed:
+            try:
+                # link, not rename: it fails when a tool took the name since the check.
+                os.link(tmp, dest, **pair, **_LINK_NOFOLLOW)
+                return False
+            except FileExistsError:
+                if not overwrite:
+                    raise SandboxUploadExists(name) from None
+            except OSError:
+                # A volume without hard links: claim the name exclusively, then rename onto the claim.
+                try:
+                    os.close(os.open(dest, flags, 0o600, **at))
+                except FileExistsError:
+                    if not overwrite:
+                        raise SandboxUploadExists(name) from None
+        try:
+            os.replace(tmp, dest, **pair)
+        except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:
+            # A folder holds the name (Windows reports that as access denied).
+            raise SandboxUploadExists(name) from exc
+        return existed
+    finally:
+        _quiet_unlink(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
@@ -21975,7 +22362,7 @@ def _restore_pruned_path(private: str, path: str) -> None:
     last resort is to leave the data under the private name and say where it went, rather than
     unlink it."""
     try:
-        os.link(private, path)
+        os.link(private, path, **_LINK_NOFOLLOW)
         _quiet_unlink(private)
         return
     except OSError:
@@ -22375,6 +22762,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -22392,7 +22789,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
-            return snapshot
+            return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
@@ -22405,6 +22802,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
             ]
         )
         for name in names:
@@ -22429,8 +22827,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return snapshot
+                return _CappedSnapshot(snapshot)
     return snapshot
+
+
+class _CappedSnapshot(dict):
+    """A walk cut short by a cap: a file missing from it is not known to be gone."""
 
 
 # Scratch scripts of calls running right now. Chats in one project share a workdir and each snapshots all of it, so
@@ -22463,6 +22865,9 @@ def _call_finished(token: "dict | None") -> None:
     """Drop a call's registration. Its token keeps whatever it learned."""
     if not token or not token.get("workdir"):
         return
+    if token.get("history") is not None and not token["history"].done:
+        # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
+        _history_end(token, _snapshot_workdir_files(token["workdir"]))
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -22473,6 +22878,98 @@ def _call_finished(token: "dict | None") -> None:
             pass
         if not running:
             _workdir_calls.pop(token["workdir"], None)
+
+
+def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+    """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
+    says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    with _scratch_lock:
+        scratch = set(_active_scratch)
+    kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
+    return kept, not isinstance(snap, _CappedSnapshot)
+
+
+def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+    if file_history.current_turn() is None:
+        return
+    snap, complete = _history_snapshot(before)
+    call_token["history"] = file_history.begin_call(
+        session_id, call_token.get("workdir"), snap, complete = complete
+    )
+
+
+def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+    if not call_token or call_token.get("history") is None:
+        return
+    if call_token.get("shared"):
+        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
+        call_token["history"].ambiguous = True
+    snap, complete = _history_snapshot(after)
+    file_history.end_call(call_token["history"], snap, complete = complete)
+
+
+def _walk_lists(workdir: str, rel: str) -> bool:
+    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
+    taken for a deletion by the next python or terminal walk."""
+    parts = rel.split("/")
+    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
+        map(_servable_segment, parts)
+    ):
+        return False
+    base = workdir
+    for part in parts[:-1]:
+        if part.startswith(".") or _snapshot_skips_dir(base, part):
+            return False
+        base = os.path.join(base, part)
+    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
+
+
+def _history_begin_file(session_id: "str | None", target: str) -> dict:
+    """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
+    if file_history.current_turn() is None or not session_id:
+        return {}
+    workdir = os.path.realpath(_get_workdir(session_id))
+    try:
+        rel = os.path.relpath(os.path.realpath(target), workdir)
+    except ValueError:  # Windows: another drive, so outside the folder
+        return {}
+    if rel.startswith(os.pardir) or os.path.isabs(rel):
+        return {}
+    rel = rel.replace(os.sep, "/")
+    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+        return {}
+    try:
+        baseline = file_history.store().needs_baseline(workdir)
+    except Exception:
+        # History is an extra: an index it cannot open must not stop the edit.
+        logger.warning("file history: could not open the index", exc_info = True)
+        return {}
+    if baseline:
+        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
+        snap = {**_history_file_snapshot(workdir, rel), **snap}
+    else:
+        snap, complete = _history_file_snapshot(workdir, rel), True
+    token = file_history.begin_call(session_id, workdir, snap, paths = {rel}, complete = complete)
+    return {"token": token, "workdir": workdir, "rel": rel} if token is not None else {}
+
+
+def _history_file_snapshot(workdir: str, rel: str) -> dict:
+    try:
+        info = os.lstat(os.path.join(workdir, rel))
+    except OSError:
+        return {}
+    return {rel: (info.st_mtime_ns, info.st_size, None)} if S_ISREG(info.st_mode) else {}
+
+
+def _history_end_file(history: dict) -> None:
+    if history.get("token") is None:
+        return
+    file_history.end_call(
+        history["token"],
+        _history_file_snapshot(history["workdir"], history["rel"]),
+        paths = {history["rel"]},
+    )
 
 
 def _snapshot_differs(before: tuple, after: tuple) -> bool:
@@ -22494,11 +22991,12 @@ def _created_file_sentinels(
     """Sentinels naming the files this call created or overwrote. ``__IMAGES__`` renders inline as
     before; ``__FILES__`` carries every file with its size so the UI can offer a download. Both
     are stripped before the model sees the result."""
-    if token is not None and token.get("shared"):
+    if token is not None and token.get("shared") and token.get("history") is None:
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
+    _history_end(token, after)
     if token is not None and token.get("shared"):
         # A call that started while that walk was running. What it wrote is in `after` and cannot be told apart from
         # ours, so the same rule applies: the check above only saves the walk when the sharing was already known.
@@ -22638,6 +23136,7 @@ def _python_exec(
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
+    _history_begin(call_token, session_id, _before)
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's helper.py stays importable and __file__
         # resolves inside the sandbox.
@@ -22695,6 +23194,7 @@ def _python_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+                user_folder = _is_user_project_folder(session_id, workdir),
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
@@ -22903,6 +23403,7 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
+        _history_begin(call_token, session_id, _before)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox
@@ -22931,7 +23432,15 @@ def _bash_exec(
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
-        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
+        # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
+        # advertised) but runs it with software safeguards (_prepare_tool_launch).
+        chosen_folder = _is_user_project_folder(session_id, workdir)
+        if (
+            profile == "cmd_isolated"
+            and requested_mode == "auto"
+            and not host_reach_approved
+            and not chosen_folder
+        ):
             # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
             # isolation drops out between the profile check and the launch.
             requested_mode = "required"
@@ -22955,6 +23464,7 @@ def _bash_exec(
                     cancel_event = cancel_event,
                 ),
                 host_access_approved = host_reach_approved,
+                user_folder = chosen_folder,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)

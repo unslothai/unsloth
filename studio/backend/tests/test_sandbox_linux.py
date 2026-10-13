@@ -1579,6 +1579,14 @@ def _fake_editable(
         encoding = "utf-8",
     )
     monkeypatch.syspath_prepend(str(site_dir))
+    # Only the fake: an editable install in the environment running the suite (pip install -e)
+    # would otherwise be granted too, and the expected roots would depend on the host.
+    from importlib import metadata
+
+    real_distributions = metadata.distributions
+    monkeypatch.setattr(
+        metadata, "distributions", lambda **kw: real_distributions(path = [str(site_dir)])
+    )
     os_sandbox.editable_source_roots.cache_clear()
     return site_dir
 

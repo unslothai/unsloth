@@ -123,6 +123,7 @@ async def managed_tool_chat(
             tools_on = tools_on,
             mcp_allowed = mcp_on,
             supports_vision = bool(info.get("is_vision")),
+            ui_events = ui_events,
         )
         if tools_on or mcp_on
         else []

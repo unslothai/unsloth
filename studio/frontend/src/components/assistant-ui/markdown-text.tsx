@@ -69,6 +69,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   Block,
   type BlockProps,
@@ -76,16 +77,27 @@ import {
   type StreamdownProps,
 } from "streamdown";
 import {
+  awaitWorker,
   DeferredFenceShell,
   FenceBody,
   type FenceTokens,
   fenceMode,
+  noteStreamingFence,
+  PlainFenceShell,
   trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
+import {
+  highlightWorkerState,
+  requestFullHighlight,
+} from "./use-reasoning-highlight";
+import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { CodeHighlightModeContext } from "./code-highlight-context";
+import { spellLines } from "./reasoning-code-colour";
+import { useThinkingCodeColour } from "./use-thinking-code-colour";
 import { withMathBlockMarker } from "./math-block-marker";
 import {
   MarkdownBlockBoundary,
@@ -113,6 +125,10 @@ import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
+  createDiscreteInputTracker,
+  type DiscreteInputTracker,
+} from "./discrete-input";
+import {
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
@@ -134,6 +150,9 @@ const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
+  StreamdownProps["plugins"]
+>;
+const STREAMDOWN_PLAIN_CODE_PLUGINS = { math, mermaid } satisfies NonNullable<
   StreamdownProps["plugins"]
 >;
 const STREAMDOWN_CONTROLS = {
@@ -168,6 +187,35 @@ const STREAMDOWN_ICONS = {
   Maximize2Icon: streamdownIcon(ExpandIcon),
 } satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
+
+const STREAMING_RENDER_DUTY = 3;
+const STREAMING_INPUT_YIELDS = 3;
+
+type InputPendingNavigator = Navigator & {
+  scheduling?: {
+    isInputPending?: (options?: { includeContinuous?: boolean }) => boolean;
+  };
+};
+
+let discreteInput: DiscreteInputTracker | null = null;
+
+const inputPending = (): boolean => {
+  const scheduling = (navigator as InputPendingNavigator).scheduling;
+  if (scheduling?.isInputPending) {
+    return scheduling.isInputPending();
+  }
+  discreteInput ??= createDiscreteInputTracker(document);
+  return discreteInput.pending();
+};
+
+const afterFrame = (callback: () => void): void => {
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    callback();
+  };
+  channel.port2.postMessage(null);
+};
 
 // Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React transition, and a continuous token
 // stream can starve that transition for seconds. Its animated path commits every block update directly.
@@ -630,7 +678,7 @@ export function CodeBlockActions({
 }: {
   disabled: boolean;
   language: string | null;
-  source: string;
+  source: string | (() => string);
 }) {
   const { copied, showCopied } = useCopiedState();
 
@@ -643,7 +691,8 @@ export function CodeBlockActions({
           title="Copy code"
           disabled={disabled}
           onClick={async () => {
-            if (!(await copyToClipboard(source))) {
+            const text = typeof source === "function" ? source() : source;
+            if (!(await copyToClipboard(text))) {
               return;
             }
             showCopied();
@@ -661,7 +710,10 @@ export function CodeBlockActions({
           title="Download file"
           disabled={disabled}
           onClick={() => {
-            downloadTextFile(getCodeFilename(language), source);
+            downloadTextFile(
+              getCodeFilename(language),
+              typeof source === "function" ? source() : source,
+            );
           }}
         >
           <HugeiconsIcon icon={Download01Icon} className="size-icon" />
@@ -715,6 +767,8 @@ function StreamdownBlockContent(props: BlockProps) {
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
   );
+  const highlightMode = useContext(CodeHighlightModeContext);
+  const highlightCode = highlightMode === "all";
   // ONE walk, both answers. `findMermaidFence` splits the block and scans every line, and asking
   // the two questions separately walked it twice on every render of every block. Measured on a
   // 3,000 line fence: 0.118 ms per walk, so the redundant one cost 0.092 ms per render, about
@@ -803,11 +857,21 @@ function StreamdownBlockContent(props: BlockProps) {
 
     return (
       <>
-        <FenceBlock
-          isIncomplete={props.isIncomplete}
-          language={codeFence.language}
-          source={codeFence.source}
-        />
+        {highlightCode || highlightMode === "settled" ? (
+          <FenceBlock
+            // A closed fence in a streaming trace is settled: worker route, not the main thread.
+            isIncomplete={highlightCode ? props.isIncomplete : false}
+            language={codeFence.language}
+            source={codeFence.source}
+          />
+        ) : (
+          <PlainFenceBlock
+            actions
+            isIncomplete={props.isIncomplete}
+            language={codeFence.language}
+            source={codeFence.source}
+          />
+        )}
         {svgSource && <SvgPreview source={svgSource} />}
       </>
     );
@@ -839,10 +903,16 @@ function StreamdownBlockContent(props: BlockProps) {
    */
   const settledFence = props.isIncomplete ? null : markdownBlockFallback(props.content);
   if (settledFence?.fenced && !(settledFence.language === "mermaid" && mermaidSource)) {
-    return (
+    return highlightCode ? (
       <StreamingFenceBlock
         isIncomplete={false}
         language={settledFence.language}
+        source={settledFence.text}
+      />
+    ) : (
+      <LiveThinkingFence
+        language={settledFence.language}
+        settled
         source={settledFence.text}
       />
     );
@@ -851,8 +921,13 @@ function StreamdownBlockContent(props: BlockProps) {
   if (props.isIncomplete) {
     const openFence = markdownBlockFallback(props.content);
     if (openFence.fenced) {
-      return (
+      return highlightCode ? (
         <StreamingFenceBlock
+          language={openFence.language}
+          source={openFence.text}
+        />
+      ) : (
+        <LiveThinkingFence
           language={openFence.language}
           source={openFence.text}
         />
@@ -882,13 +957,67 @@ function StreamdownBlockContent(props: BlockProps) {
  * chunk N can arrive after chunk N+1 has already been rendered, and letting it through would walk
  * the fence backwards by a frame.
  */
+const fenceHighlightOptions = (body: string, languageToken: string | null) => ({
+  code: body,
+  language: (languageToken ?? "text") as never,
+  themes: STREAMDOWN_SHIKI_THEME,
+});
+
+const tokenizesOffThread = (body: string, streaming: boolean): boolean =>
+  !streaming && body.length > MAX_HIGHLIGHT_CHARS;
+
+const slowMainThreadRegex =
+  typeof window !== "undefined"
+  && typeof window.requestIdleCallback !== "function";
+const MAIN_THREAD_TAIL_CHARS = 512;
+
+const settlesOffThread = (
+  body: string,
+  streaming: boolean,
+  options: ReturnType<typeof fenceHighlightOptions>,
+): boolean => {
+  if (!tokenizesOffThread(body, streaming)) {
+    if (streaming || !slowMainThreadRegex) return false;
+    const state = highlightWorkerState();
+    if (state === "unavailable" || state === "stalled") return false;
+  }
+  return code.cover(options).uncovered > MAIN_THREAD_TAIL_CHARS;
+};
+
+export const highlightFenceSource = (
+  body: string,
+  language: string | null,
+  late: (result: FenceTokens) => void,
+): FenceTokens | null =>
+  code.highlight(fenceHighlightOptions(body, language), late);
+
 function useFenceTokens(
   source: string,
   languageToken: string | null,
   enabled: boolean,
+  streaming: boolean,
 ): FenceTokens | null {
-  const [tokens, setTokens] = useState<FenceTokens | null>(null);
+  const highlight = useCallback(
+    (body: string, late: (result: FenceTokens) => void) =>
+      streaming
+        ? code.highlight(fenceHighlightOptions(body, languageToken), late)
+        : code.highlightExact(fenceHighlightOptions(body, languageToken), late),
+    [languageToken, streaming],
+  );
+  const [seed] = useState<{ body: string; tokens: FenceTokens } | null>(() => {
+    if (!enabled) return null;
+    const body = trimTrailingNewlines(source);
+    const options = fenceHighlightOptions(body, languageToken);
+    const settled = settlesOffThread(body, streaming, options)
+      ? code.cached(options)
+      : highlight(body, () => {});
+    return settled ? { body, tokens: settled } : null;
+  });
+  const [tokens, setTokens] = useState<FenceTokens | null>(
+    seed?.tokens ?? null,
+  );
   const wanted = useRef("");
+  const seedConsumed = useRef(false);
   /*
    * ONE effect, and a layout one. This was two -- a passive effect for the result and the
    * callback, plus a layout effect so an already-cached fence is coloured before its first paint.
@@ -902,20 +1031,71 @@ function useFenceTokens(
     if (!enabled) return;
     const body = trimTrailingNewlines(source);
     wanted.current = body;
-    const settled = code.highlight(
-      {
-        code: body,
-        language: (languageToken ?? "text") as never,
-        themes: STREAMDOWN_SHIKI_THEME,
-      },
-      (late) => {
-        if (wanted.current === body) setTokens(late);
-      },
-    );
+    if (!seedConsumed.current) {
+      seedConsumed.current = true;
+      if (seed?.body === body) return;
+    }
+    const late = (result: FenceTokens) => {
+      if (wanted.current === body) setTokens(result);
+    };
+    let cancel: (() => void) | null = null;
+    let release: (() => void) | null = null;
+    let settled: FenceTokens | null = null;
+    const options = fenceHighlightOptions(body, languageToken);
+    if (settlesOffThread(body, streaming, options)) {
+      const failover = !tokenizesOffThread(body, streaming);
+      settled = code.cached(options);
+      if (settled === null) {
+        cancel = requestFullHighlight(
+          body,
+          languageToken,
+          (result) => {
+            if (result === null) {
+              if (failover && wanted.current === body) {
+                setTokens(highlight(body, late));
+              }
+              return;
+            }
+            release?.();
+            release = null;
+            if (wanted.current !== body) return;
+            code.seed(options, result);
+            setTokens(result);
+          },
+          false,
+          !failover,
+        );
+        if (cancel === null && failover) {
+          settled = highlight(body, late);
+        } else {
+          highlight("", () => {});
+          settled = code.cover(options).result;
+        }
+        release = awaitWorker(body.length, () => {
+          if (highlight("", () => {}) === null) return false;
+          const result = code.highlightExact(
+            fenceHighlightOptions(body, languageToken),
+            late,
+          );
+          if (result === null) return false;
+          cancel?.();
+          setTokens(result);
+          release?.();
+          release = null;
+          return true;
+        });
+      }
+    } else {
+      settled = highlight(body, late);
+    }
     // `settled === null` means the plugin caught a tokenization error; keeping the previous
     // tokens would show an older, shorter body. The callback restores them if it succeeds later.
     setTokens(settled ?? null);
-  }, [enabled, source, languageToken]);
+    return () => {
+      release?.();
+      cancel?.();
+    };
+  }, [enabled, source, highlight, seed, streaming, languageToken]);
   return tokens;
 }
 
@@ -937,7 +1117,8 @@ function StreamingFenceBlock({
   isIncomplete?: boolean;
 }) {
   const languageToken = language?.trim().split(/\s+/)[0] || null;
-  const tokens = useFenceTokens(source, languageToken, true);
+  if (isIncomplete) noteStreamingFence(languageToken, source);
+  const tokens = useFenceTokens(source, languageToken, true, isIncomplete);
   return (
     <MarkdownRendererBoundary
       fallback={<DeferredFenceShell language={languageToken} source={source} />}
@@ -950,6 +1131,68 @@ function StreamingFenceBlock({
         windowing={fenceMode() === "window"}
       />
     </MarkdownRendererBoundary>
+  );
+}
+
+function PlainFenceBlock({
+  actions = false,
+  isIncomplete,
+  language,
+  source,
+}: {
+  actions?: boolean;
+  isIncomplete?: boolean;
+  language: string | null;
+  source: string;
+}) {
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+  const shell = <PlainFenceShell language={languageToken} source={source} />;
+  if (!actions) return shell;
+  return (
+    <div className="relative isolate">
+      {shell}
+      <CodeBlockActions
+        disabled={Boolean(isIncomplete)}
+        language={language}
+        source={source}
+      />
+    </div>
+  );
+}
+
+function LiveThinkingFence({
+  language,
+  settled = false,
+  source,
+}: {
+  language: string | null;
+  settled?: boolean;
+  source: string;
+}) {
+  const languageToken = language?.trim().split(/\s+/)[0] || null;
+  const host = useRef<HTMLDivElement | null>(null);
+  const colour = useThinkingCodeColour(host, source, languageToken, settled);
+  const result = useMemo(
+    () =>
+      colour === null
+        ? null
+        : spellLines(colour, trimTrailingNewlines(source).split("\n")),
+    [colour, source],
+  );
+  return (
+    <div className="relative isolate" ref={host}>
+      {result === null ? (
+        <PlainFenceShell language={languageToken} source={source} />
+      ) : (
+        <FenceBody
+          isIncomplete={!settled}
+          language={languageToken}
+          result={result}
+          source={source}
+          windowing={fenceMode() === "window"}
+        />
+      )}
+    </div>
   );
 }
 
@@ -997,11 +1240,37 @@ function FenceBlock({
      */
   const warm = useCallback(
     (tokens: boolean) => {
-      code.highlight({
-        code: tokens ? trimTrailingNewlines(source) : "",
-        language: (languageToken ?? "text") as never,
-        themes: STREAMDOWN_SHIKI_THEME,
-      }, () => {});
+      const body = trimTrailingNewlines(source);
+      const options = fenceHighlightOptions(body, languageToken);
+      const inline =
+        tokens
+        && (!settlesOffThread(body, Boolean(isIncomplete), options)
+          || code.cached(options) !== null);
+      if (inline && !isIncomplete) code.highlightExact(options, () => {});
+      else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});
+    },
+    [source, languageToken, isIncomplete],
+  );
+
+  const speculate = useCallback(
+    (settle: (seeded: boolean) => void) => {
+      const body = trimTrailingNewlines(source);
+      const options = fenceHighlightOptions(body, languageToken);
+      if (code.cached(options) !== null) {
+        settle(true);
+        return null;
+      }
+      const cancel = requestFullHighlight(
+        body,
+        languageToken,
+        (result) => {
+          if (result !== null) code.seed(options, result);
+          settle(result !== null);
+        },
+        true,
+      );
+      if (cancel === null) settle(false);
+      return cancel;
     },
     [source, languageToken],
   );
@@ -1014,7 +1283,9 @@ function FenceBlock({
     Boolean(isIncomplete),
     languageToken,
     trimmedLength(source),
+    source,
     warm,
+    speculate,
   );
 
   // MEASUREMENT ARM ONLY. See `FenceMode`: this puts the tokenizer work back while leaving the document at the
@@ -1023,7 +1294,12 @@ function FenceBlock({
   // Asked for only once the fence is reached, so a deferred fence still tokenizes nothing. The
   // latch calls `warm(true)` synchronously on the way in, so this is a cache hit rather than the
   // first tokenization of the body.
-  const tokens = useFenceTokens(source, languageToken, reached);
+  const tokens = useFenceTokens(
+    source,
+    languageToken,
+    reached,
+    Boolean(isIncomplete),
+  );
 
   const pretokenize = mode === "tokenize" && !reached;
   useEffect(() => {
@@ -1089,9 +1365,7 @@ StreamdownBlock.displayName = "StreamdownBlock";
 // Only the adapter's inline wav: any other src (remote URL, WebKit-followed audio/mpegurl) fetches on render.
 const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/wav;base64,[A-Za-z0-9+/=]+)"\s*\/>/;
 
-// Coalesce only token events that arrive before the browser's next paint, as
-// textgen does. There is no time or length throttle. Incremental block parsing
-// bounds the work performed per paint, and completion returns immediately.
+// One render per paint, spaced by measured cost; incremental parsing bounds the work per paint.
 function useCoalescedStreamingText(
   text: string,
   isStreaming: boolean,
@@ -1100,6 +1374,11 @@ function useCoalescedStreamingText(
   const [displayed, setDisplayed] = useState({ messageId, text });
   const pendingRef = useRef({ messageId, text });
   const rafRef = useRef<number | null>(null);
+  const renderedAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const frameAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const frameIntervalRef = useRef(Number.POSITIVE_INFINITY);
+  const costRef = useRef(0);
+  const yieldsRef = useRef(0);
   const activeMessageIdRef = useRef(messageId);
 
   const cancelScheduledRender = useCallback(() => {
@@ -1124,10 +1403,39 @@ function useCoalescedStreamingText(
       return;
     }
 
-    rafRef.current = requestAnimationFrame(() => {
+    const render = (frameTime: number) => {
       rafRef.current = null;
-      setDisplayed(pendingRef.current);
-    });
+      if (frameTime > frameAtRef.current) {
+        frameIntervalRef.current = Math.min(
+          frameIntervalRef.current,
+          frameTime - frameAtRef.current,
+        );
+        frameAtRef.current = frameTime;
+      }
+      if (
+        frameTime - renderedAtRef.current <
+        Math.max(
+          16 - Math.min(frameIntervalRef.current, 16) / 2,
+          STREAMING_RENDER_DUTY * costRef.current,
+        )
+      ) {
+        rafRef.current = requestAnimationFrame(render);
+        return;
+      }
+      if (yieldsRef.current < STREAMING_INPUT_YIELDS && inputPending()) {
+        yieldsRef.current += 1;
+        rafRef.current = requestAnimationFrame(render);
+        return;
+      }
+      yieldsRef.current = 0;
+      renderedAtRef.current = frameTime;
+      afterFrame(() => {
+        const startedAt = performance.now();
+        flushSync(() => setDisplayed(pendingRef.current));
+        costRef.current = performance.now() - startedAt;
+      });
+    };
+    rafRef.current = requestAnimationFrame(render);
   }, [cancelScheduledRender, messageId, text, isStreaming]);
 
   useEffect(() => {
@@ -1178,6 +1486,7 @@ function MarkdownTextRenderer({
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
+  const highlightCode = useContext(CodeHighlightModeContext) === "all";
   const threadId = remoteId ?? activeThreadId ?? undefined;
   // Streamdown's memo comparator ignores rehypePlugins.
   const sandboxScopeKey = JSON.stringify([threadId, projectId]);
@@ -1266,7 +1575,9 @@ function MarkdownTextRenderer({
             }
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
-            plugins={STREAMDOWN_PLUGINS}
+            plugins={
+              highlightCode ? STREAMDOWN_PLUGINS : STREAMDOWN_PLAIN_CODE_PLUGINS
+            }
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
             rehypePlugins={rehypePlugins}
@@ -1310,7 +1621,9 @@ const MarkdownTextImpl = () => {
     allowSearchImages ? partsPrecedingText(message.parts, partIndex) : "",
   );
   const messageTextKey = useAuiState(({ message }) =>
-    allowSearchImages ? partsTextKey(message.parts) : "[]",
+    allowSearchImages && partsSearchImagesSignature(message.parts) !== ""
+      ? partsTextKey(message.parts)
+      : "[]",
   );
 
   return (

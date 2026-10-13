@@ -16,6 +16,7 @@ import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
+import { useDropdownGlow } from "@/components/ui/dropdown-glow";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const SelectOpenContext = createContext(false);
@@ -130,6 +131,7 @@ function SelectContent({
       <SelectPrimitive.Content
         ref={snappedRef}
         data-slot="select-content"
+        data-dropdown-glow={useDropdownGlow()}
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         data-align-trigger={position === "item-aligned"}
         className={cn(

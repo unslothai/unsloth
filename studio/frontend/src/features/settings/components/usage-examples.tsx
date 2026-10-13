@@ -132,28 +132,35 @@ const ADV = {
 const DOC_LINKS = [
   { label: "Claude Code", href: "https://unsloth.ai/docs/basics/claude-code" },
   { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
-  { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
-  { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
   {
-    label: "Hermes Agent",
-    href: "https://unsloth.ai/docs/integrations/hermes-agent",
+    label: "VS Code",
+    href: "https://code.visualstudio.com/docs/copilot/customization/language-models",
   },
   {
     label: "DeepSeek Harness",
     href: "https://github.com/deepseek-ai/deepseek-harness",
   },
+  { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
+  {
+    label: "Hermes Agent",
+    href: "https://unsloth.ai/docs/integrations/hermes-agent",
+  },
+  { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
+  { label: "Pi", href: "https://pi.dev" },
   { label: "Mistral Vibe", href: "https://github.com/mistralai/mistral-vibe" },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
-// studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS (see ../api/coding-agents.ts).
+// studio/backend/utils/coding_agents.py.
 const DEFAULT_AGENTS = [
   "claude",
   "codex",
-  "openclaw",
+  "vscode",
+  "dsh",
   "opencode",
   "hermes",
-  "dsh",
+  "openclaw",
+  "pi",
   "vibe",
 ];
 // The agent selection resets to this whenever an auto-pick is no longer
@@ -163,10 +170,12 @@ const DEFAULT_AGENT = "claude";
 const AGENT_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
-  openclaw: "OpenClaw",
+  vscode: "VS Code",
+  dsh: "DeepSeek Harness",
   opencode: "OpenCode",
   hermes: "Hermes",
-  dsh: "DeepSeek Harness",
+  openclaw: "OpenClaw",
+  pi: "Pi",
   vibe: "Mistral Vibe",
 };
 
@@ -1073,6 +1082,11 @@ export function UsageExamples({
               />
             </button>
           </div>
+          {agent === "vscode" && (
+            <span className="text-ui-11 leading-snug text-muted-foreground">
+              {t("settings.agents.vscodeNote")}
+            </span>
+          )}
           <span className="text-ui-11 leading-snug text-muted-foreground">
             {detectedAgents.length > 0
               ? t("settings.apiKeys.codingAgentsDetectedHint", {

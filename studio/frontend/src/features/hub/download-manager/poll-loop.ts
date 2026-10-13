@@ -794,10 +794,10 @@ export async function startJob(
       : opts.adopt && existing?.checkpoint !== undefined
         ? { checkpoint: existing.checkpoint }
         : {}),
-    ...(req.breakdown
-      ? { breakdown: req.breakdown }
-      : opts.adopt && existing?.breakdown
-        ? { breakdown: existing.breakdown }
+    ...(req.downloadDir !== undefined
+      ? { downloadDir: req.downloadDir }
+      : opts.adopt && existing?.downloadDir !== undefined
+        ? { downloadDir: existing.downloadDir }
         : {}),
     ...(inventoryKind !== undefined
       ? { inventoryKind }

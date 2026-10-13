@@ -889,7 +889,7 @@ def _mlx_inference_patch(name):
 
 
 @contextmanager
-def _mlx_optional_fusion(name, model):
+def _mlx_optional_fusion(name, model, *args):
     """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
     an open scope must unwind through the ExitStack as an unguarded `with` would, or an
     interrupted generation stops restoring the module tree. A dead Metal queue is not guarded."""
@@ -898,7 +898,7 @@ def _mlx_optional_fusion(name, model):
         active = model
         if patch is not None:
             try:
-                entered = scope.enter_context(patch(model))
+                entered = scope.enter_context(patch(model, *args))
             except Exception as error:
                 if is_metal_queue_dead(error):
                     raise
@@ -931,6 +931,14 @@ def _mlx_fused_moe_routed_experts(model):
 
 def _mlx_fused_residual_norm_handoff(model):
     return _mlx_optional_fusion("fused_residual_norm_handoff", model)
+
+
+def _mlx_fused_packed_gated_delta(model):
+    return _mlx_optional_fusion("fused_packed_gated_delta", model)
+
+
+def _mlx_exact_speculative_verify(model):
+    return _mlx_optional_fusion("exact_speculative_verify", model)
 
 
 def _int8_prefill_zoo():
@@ -3399,7 +3407,9 @@ class _RowStream:
         if self._normalizer is not None:
             return self._normalize(self.sampled[self._released : self._cut])
         if not self._sequences:
-            return [self._prefix + self.sampled]
+            # Re-decoded snapshots hold back an unfinished character, as in _generate_text.
+            held = self.sampled.rstrip("\ufffd") if self._decode is not None else self.sampled
+            return [self._prefix + held]
         if self._decode is not None:
             return []
         if self._cut > self._released:
@@ -3409,6 +3419,8 @@ class _RowStream:
 
     def settle(self):
         if not self._sequences:
+            if self._decode is not None and self.sampled.endswith("\ufffd"):
+                return [self._prefix + self.sampled]
             return []
         if not self.stopped:
             self._cut = len(self.sampled)
@@ -3891,7 +3903,7 @@ class _VisionBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
-            self._held.enter_context(backend._int8_prefill_scope(zoo_generation = True))
+            self._held.enter_context(backend._int8_prefill_scope())
             self._speculative = getattr(backend, "_speculative_draft", None)
             self.stream = BatchStream(
                 backend._model,
@@ -4371,14 +4383,16 @@ class MLXInferenceBackend:
             max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
-    def _int8_prefill_scope(self, zoo_generation = False):
-        """Outermost scope of a generation, which every Zoo scope nested in it inherits. A path
-        running Zoo's own generation scopes is pinned off when inactive, or they read the env."""
+    def _int8_prefill_scope(self):
+        """Outermost scope of a generation, which every Zoo scope nested in it inherits. Pinned
+        off when inactive, so Zoo's full-precision NAX routes still run and no scope reads the Int8
+        Prefill env."""
         scope = (getattr(self, "_int8_prefill", None) or {}).get("scope")
         if scope is not None:
             return scope(self._model, True)
-        zoo = _int8_prefill_zoo() if zoo_generation else None
-        return zoo.nax_quantized_linear(self._model, False) if zoo is not None else nullcontext()
+        if _int8_prefill_zoo() is None:
+            return nullcontext()
+        return _mlx_optional_fusion("nax_quantized_linear", self._model, False)
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -5580,6 +5594,7 @@ class MLXInferenceBackend:
             _mlx_fused_moe_router(self._model),
             _mlx_fused_moe_routed_experts(self._model),
             _mlx_fused_residual_norm_handoff(self._model),
+            _mlx_fused_packed_gated_delta(self._model),
         ):
             (
                 gen_prompt,
@@ -5667,7 +5682,9 @@ class MLXInferenceBackend:
                                 ),
                             )
                         if not sequences:
-                            yield think_prefix + sampled
+                            # A character whose bytes span tokens decodes to U+FFFD until its last token lands, and
+                            # consumers diff snapshots by length, so yielding that would replace it for good (#8594).
+                            yield think_prefix + sampled.rstrip("\ufffd")
                         else:
                             # Matched every step, delivered once at the end: this decode revises earlier snapshots,
                             # and consumers diff them by length, so a revised one splices two renderings into text
@@ -5715,6 +5732,8 @@ class MLXInferenceBackend:
             sampled += streamed_text.finish(sampled)
             if sequences:
                 cut, stopped = _mlx_stop_cut(sampled, sequences)
+        if not sequences and streamed_text is None and sampled.endswith("\ufffd"):
+            yield think_prefix + sampled
         if sequences or streamed_text is not None:
             if not stopped:
                 cut = len(sampled)
@@ -6363,11 +6382,13 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
                 generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+                generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
                 final_response = None
                 clip_path = None
                 if draft is not None:
                     from unsloth_zoo.mlx.generate import SamplingParams
 
+                    generation_scope.enter_context(_mlx_exact_speculative_verify(self._model))
                     # Under the lock: the load's one draft serves one generation at a time.
                     draft.prepare(
                         vlm_kwargs["input_ids"][0].tolist(),
@@ -6708,7 +6729,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
-            self._int8_prefill_scope(zoo_generation = True),
+            self._int8_prefill_scope(),
         ):
             if any(plan.images for plan in plans):
                 self._release_vlm_snapshots()
@@ -6898,6 +6919,7 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
             generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+            generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
             final_response = None
             try:
                 with closing(

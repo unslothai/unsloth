@@ -897,17 +897,22 @@ class ExportBackend:
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
+                from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                 logger.info("Loading as BiCodec (Spark-TTS) audio model...")
-                model, tokenizer = FastModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None if _IS_MLX else torch.float32,
-                    load_in_4bit = False,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                    **_device_map_kw,
-                )
+                with spark_tts_adapter_load_target(
+                    checkpoint_path, hf_token = token, local_files_only = local_files_only
+                ) as load_target:
+                    model, tokenizer = FastModel.from_pretrained(
+                        model_name = load_target,
+                        max_seq_length = max_seq_length,
+                        dtype = None if _IS_MLX else torch.float32,
+                        load_in_4bit = False,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                        **_device_map_kw,
+                    )
 
             elif self._audio_type == "dac":
                 from unsloth import FastModel

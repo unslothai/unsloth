@@ -270,7 +270,9 @@ const UnmeasuredCollapsibleContent = React.forwardRef<
           // switches the display utility itself rather than relying on the attribute.
           present ? "grid" : "hidden",
           "transition-[grid-template-rows]",
-          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+          // Not bare `1fr` (`minmax(auto, 1fr)`): WebKit keeps that row at its old height when a
+          // narrower pane reflows the content taller, clipping the bottom of the trace.
+          expanded ? "grid-rows-[minmax(0,1fr)]" : "grid-rows-[minmax(0,0fr)]",
           className,
         )}
       >
