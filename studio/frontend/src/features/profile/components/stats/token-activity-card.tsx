@@ -1,18 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChartContainer, ChartTooltip } from "@/components/ui/chart";
+import type { ChartConfig } from "@/components/ui/chart";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type { ProfileStatsDay } from "../../api/profile-stats";
+import { useActivityChartStore } from "../../stores/activity-chart-store";
 import {
   type ActivityMode,
+  type WeekChartPoint,
   activitySummaryForMode,
   formatCompactNumber,
   formatProfileCount,
   heatLevel,
   parseDayKey,
   seriesForMode,
+  weekChartPoints,
   windowBaseline,
 } from "../../utils/stats-format";
 import { StatsCard } from "./stat-primitives";
@@ -252,6 +266,111 @@ function BarColumn({
   );
 }
 
+const WEEK_CHART_CONFIG = {
+  tokens: { color: "var(--primary)" },
+} satisfies ChartConfig;
+
+/** Opt-in view: Weekly as bars, Cumulative as a line, on labelled token and date axes. */
+function WeekChart({
+  grid,
+  mode,
+  dateFormatter,
+}: {
+  grid: Cell[][];
+  mode: ActivityMode;
+  dateFormatter: Intl.DateTimeFormat;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const data = useMemo(() => weekChartPoints(grid), [grid]);
+  const tickFormatter = useMemo(
+    () => new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }),
+    [locale],
+  );
+  const xAxis = (
+    <XAxis
+      dataKey="week"
+      tickLine={true}
+      axisLine={true}
+      tickMargin={6}
+      minTickGap={24}
+      interval="preserveStartEnd"
+      tickFormatter={(value) =>
+        tickFormatter.format(parseDayKey(String(value)))
+      }
+    />
+  );
+  const yAxis = (
+    <YAxis
+      tickLine={true}
+      axisLine={true}
+      tickMargin={4}
+      tickCount={4}
+      allowDecimals={false}
+      width={48}
+      tickFormatter={(value) => formatCompactNumber(Number(value), locale)}
+    />
+  );
+  const tooltip = (
+    <ChartTooltip
+      cursor={mode === "weekly" ? undefined : false}
+      content={({ active, payload }) => {
+        const point = payload?.[0]?.payload as WeekChartPoint | undefined;
+        if (!(active && point)) {
+          return null;
+        }
+        return (
+          <div className="rounded-md border border-border/50 bg-background px-2 py-1 text-xs shadow-md">
+            {t("settings.profile.stats.weekTooltip", {
+              date: dateFormatter.format(parseDayKey(point.week)),
+              tokens: formatProfileCount(point.tokens, "token", locale),
+            })}
+          </div>
+        );
+      }}
+    />
+  );
+  const margin = { top: 6, right: 8, bottom: 0, left: 0 };
+
+  return (
+    <ChartContainer
+      config={WEEK_CHART_CONFIG}
+      className="h-[calc(140px*var(--ui-space-scale,1))] w-full"
+    >
+      {mode === "weekly" ? (
+        <BarChart data={data} margin={margin} accessibilityLayer={true}>
+          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          <Bar
+            dataKey="tokens"
+            fill="var(--color-tokens)"
+            radius={[3, 3, 0, 0]}
+            isAnimationActive={false}
+          />
+        </BarChart>
+      ) : (
+        <LineChart data={data} margin={margin} accessibilityLayer={true}>
+          <CartesianGrid vertical={false} strokeDasharray="3 3" />
+          {xAxis}
+          {yAxis}
+          {tooltip}
+          <Line
+            type="linear"
+            dataKey="tokens"
+            stroke="var(--color-tokens)"
+            strokeWidth={2}
+            dot={data.length <= 1 ? { r: 3, strokeWidth: 0 } : false}
+            activeDot={{ r: 3, strokeWidth: 0 }}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      )}
+    </ChartContainer>
+  );
+}
+
 export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const t = useT();
   const [mode, setMode] = useState<ActivityMode>("daily");
@@ -259,6 +378,9 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const { ref, columns } = useVisibleColumns(maxColumns);
 
   const shaded = mode === "daily";
+  const showChart = useActivityChartStore((state) => state.showChart);
+  const setShowChart = useActivityChartStore((state) => state.setShowChart);
+  const charted = !shaded && showChart;
   const values = useMemo(() => seriesForMode(daily, mode), [daily, mode]);
   const grid = useMemo(
     () => buildColumns(daily, values, columns, mode),
@@ -319,59 +441,85 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
         weeks: formatProfileCount(grid.length, "week", locale),
       })}
       action={
-        <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
-          {MODES.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => setMode(option)}
-              aria-pressed={mode === option}
-              className={cn(
-                "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
-                mode === option
-                  ? "hub-tab-toggle-pill text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {t(`settings.profile.stats.mode.${option}`)}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {shaded ? null : (
+            <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
+              <button
+                type="button"
+                onClick={() => setShowChart(!showChart)}
+                aria-pressed={showChart}
+                title={t("settings.profile.stats.chartToggleHint")}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                  showChart
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.profile.stats.chartToggle")}
+              </button>
+            </div>
+          )}
+          <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
+            {MODES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setMode(option)}
+                aria-pressed={mode === option}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                  mode === option
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(`settings.profile.stats.mode.${option}`)}
+              </button>
+            ))}
+          </div>
         </div>
       }
     >
       {/* Measured, never scrolled: the grid is trimmed to fit instead. */}
       <div ref={ref} className="w-full overflow-hidden">
-        <div className="flex gap-[3px]">
-          {grid.map((column) =>
-            shaded ? (
-              <DayColumn
-                key={column[0]?.key ?? "column"}
-                column={column}
-                peak={peak}
-                dateFormatter={dateFormatter}
-              />
-            ) : (
-              <BarColumn
-                key={column[0]?.key ?? "column"}
-                column={column}
-                peak={peak}
-                dateFormatter={dateFormatter}
-              />
-            ),
-          )}
-        </div>
+        {charted ? (
+          <WeekChart grid={grid} mode={mode} dateFormatter={dateFormatter} />
+        ) : (
+          <>
+            <div className="flex gap-[3px]">
+              {grid.map((column) =>
+                shaded ? (
+                  <DayColumn
+                    key={column[0]?.key ?? "column"}
+                    column={column}
+                    peak={peak}
+                    dateFormatter={dateFormatter}
+                  />
+                ) : (
+                  <BarColumn
+                    key={column[0]?.key ?? "column"}
+                    column={column}
+                    peak={peak}
+                    dateFormatter={dateFormatter}
+                  />
+                ),
+              )}
+            </div>
 
-        <div className="relative mt-2 h-4">
-          {monthLabels.map((label) => (
-            <span
-              key={label.key}
-              className="absolute top-0 text-ui-11 text-muted-foreground"
-              style={{ left: `${label.column * COLUMN_WIDTH}px` }}
-            >
-              {label.text}
-            </span>
-          ))}
-        </div>
+            <div className="relative mt-2 h-4">
+              {monthLabels.map((label) => (
+                <span
+                  key={label.key}
+                  className="absolute top-0 text-ui-11 text-muted-foreground"
+                  style={{ left: `${label.column * COLUMN_WIDTH}px` }}
+                >
+                  {label.text}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </StatsCard>
   );
