@@ -189,7 +189,6 @@ from .diffusion_speed import (
     apply_speed_optims,
     engage_pinned_denoisers,
     auto_dynamic_active,
-    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
     family_compiles_regionally,
@@ -203,7 +202,6 @@ from .diffusion_speed import (
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
-    vae_decode_compile_allowed,
 )
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
@@ -811,60 +809,12 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
     return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
-# Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match
-_TRUSTED_NON_GGUF_REPOS = frozenset(
-    {
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        "stabilityai/sdxl-turbo",
-        # Vendor safetensors-only bases: LoRA training bases + the BF16 artifact per group. FLUX.1 is Hub-gated;
-        # Qwen/Z-Image open.
-        "black-forest-labs/flux.1-dev",
-        "black-forest-labs/flux.1-schnell",
-        "black-forest-labs/flux.1-kontext-dev",
-        # Krea: guidance-distilled FLUX.1-dev finetune, same arch and gating; detected via "flux.1"
-        "black-forest-labs/flux.1-krea-dev",
-        # FLUX.2 LoRA training bases (dev gated, klein-4B open); reloaded as a pipeline by "Deploy to Create".
-        "black-forest-labs/flux.2-dev",
-        "black-forest-labs/flux.2-klein-4b",
-        # The other klein sizes and variants. One family covers both sizes and defaults to 4B, on the understanding
-        # that the real base comes from the base_model card tag. Leaving these out made that tag untrusted, so a
-        # klein-9B GGUF silently resolved to the 4B config and died in the GGUF quantizer with a bare shape mismatch.
-        "black-forest-labs/flux.2-klein-9b",
-        "black-forest-labs/flux.2-klein-base-4b",
-        "black-forest-labs/flux.2-klein-base-9b",
-        "tongyi-mai/z-image-turbo",
-        # The undistilled Z-Image: the base the upstream DreamBooth recipe trains on, and the base_model tag of
-        # unsloth/Z-Image-GGUF. Leaving it out made that tag untrusted, so the GGUF fell back to the Turbo companions
-        # and denoised on its shift 3.0 scheduler.
-        "tongyi-mai/z-image",
-        "qwen/qwen-image",
-        "qwen/qwen-image-2512",
-        "qwen/qwen-image-edit-2511",
-        "qwen/qwen-image-layered",
-        # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
-        # not a family at all. Detection resolves it, the version gate passes once the pinned main
-        # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
-        # pipeline is ever built.
-        "qwen/qwen-image-2.1",
-        "qwen/qwen-image-2.1-turbo",
-        # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
-        "krea/krea-2-turbo",
-        "krea/krea-2-raw",
-        # Lumina Image 2.0: standard diffusers layout, generic from_pretrained path.
-        "alpha-vllm/lumina-image-2.0",
-        # HunyuanImage 2.1: open community diffusers mirror, safetensors-only.
-        "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
-        # HiDream-I1: open MIT weights, all three variants one family; Llama TE from the unsloth mirror.
-        "hidream-ai/hidream-i1-full",
-        "hidream-ai/hidream-i1-dev",
-        "hidream-ai/hidream-i1-fast",
-        # Ideogram 4: no bf16 ships. -fp8 stores both DiTs as raw float8 (the family base); both nf4 repos are
-        # identical.
-        "ideogram-ai/ideogram-4-fp8",
-        "ideogram-ai/ideogram-4-nf4",
-        "ideogram-ai/ideogram-4-nf4-diffusers",
-    }
-)
+# Official non-unsloth bases allowed to load as full (non-GGUF) artifacts: safetensors-only, no remote code, exact
+# lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
+from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
+from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+
+_TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
 
 def _is_trusted_diffusion_repo(repo_id: str) -> bool:
@@ -2060,10 +2010,9 @@ def _inplace_torchao_placement(
 
 def _denoiser_hooked(pipe: Any) -> bool:
     """Whether an offload hook moves a denoiser of ``pipe``; a CUDA graph over it would replay stale pointers."""
-    for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
-        module = getattr(pipe, name, None)
-        if module is None:
-            continue
+    from .diffusion_autoopt.targets import hooked_denoisers
+
+    for module in hooked_denoisers(pipe):
         if getattr(module, "_hf_hook", None) is not None:
             return True
         registry = getattr(module, "_diffusers_hook", None)
@@ -2173,25 +2122,20 @@ def _auto_quant_eager_reason(
 
 
 def _uninstall_fused_dit_patches() -> None:
-    """Restore the process-global fused DiT patches so the next load honours its own kill switches."""
+    """Restore the process-global fused DiT patches so the next load honours its own kill switches. The group is the
+    registry's (diffusion_autoopt.patches): every spec registered under it is restored, no hand-kept list."""
     try:
-        from .diffusion_flux2_rope import uninstall as uninstall_flux2_rope
-        from .diffusion_qwenimage_rope import uninstall as uninstall_qwen_real_rope
-        from .diffusion_zimage_fused import uninstall as uninstall_zimage_fused
+        from .diffusion_autoopt.patches import GROUP_FUSED_DIT, uninstall_group
+        uninstall_group(GROUP_FUSED_DIT)
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
-        uninstall_qwen_real_rope()
-        uninstall_zimage_fused()
-        uninstall_flux2_rope()
-    except Exception:  # noqa: BLE001 - teardown is best effort
-        pass
+
+def _uninstall_eager_patches() -> None:
+    """Restore the shared compile-safe and per-arch fusions (the registry's eager group)."""
     try:
-        from .diffusion_qwenimage21_fused import uninstall as uninstall_q21_fused
-        uninstall_q21_fused()
-    except Exception:  # noqa: BLE001 - teardown is best effort
-        pass
-    try:
-        from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
-        uninstall_rocm_fused()
+        from .diffusion_autoopt.patches import GROUP_EAGER, uninstall_group
+        uninstall_group(GROUP_EAGER)
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
 
@@ -7052,6 +6996,7 @@ class DiffusionBackend:
                                 )
                 backend_flags_before = None
                 eager_patched = False
+                load_audit = None
                 compile_ctx = None
                 state_committed = False
                 load_bg_compile = None
@@ -7819,15 +7764,11 @@ class DiffusionBackend:
                             _refuse_pinned_precision()
 
                     self._raise_if_load_cancelled(_load_token)
-                    # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
-                    from .diffusion_eager_patches import (
-                        install_compile_safe_patches,
-                        uninstall_patches,
-                    )
-                    from .diffusion_arch_patches import (
-                        install_arch_patches,
-                        uninstall_arch_patches,
-                    )
+                    # Lazy import (the optimizer's submodules import torch lazily) keeps diffusion.py torch-free to
+                    # import.
+                    from . import diffusion_autoopt as autoopt
+
+                    load_audit = autoopt.new_audit(backend = "image", family = fam)
 
                     # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                     # bit-identical `off`.
@@ -7977,25 +7918,35 @@ class DiffusionBackend:
                     # The dense fast path sets gguf_filename, but its transformer is dense.
                     gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
 
-                    if effective_speed != SPEED_OFF:
-                        install_compile_safe_patches()
-                        # Per-arch compile-safe fusions; neutral under compile, tracked by the same eager_patched
-                        # flag.
-                        install_arch_patches()
-                        eager_patched = True
-                    else:
-                        uninstall_patches()
-                        uninstall_arch_patches()
-                    from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
-
-                    install_q21_fast_step(pipe, logger)
-                    from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
-
-                    install_flux2_rope(pipe, dtype, device, logger)
-                    # ROCm (auto) FLUX.1 / FLUX.2: one-kernel RoPE (bit-identical) and AdaLN modulation.
-                    from .diffusion_rocm_fused import install_for_pipe as install_rocm_fused
-
-                    install_rocm_fused(pipe, dtype, device, logger)
+                    # Registered patches (diffusion_autoopt.patches), in their original order: the shared and per-arch
+                    # compile-safe fusions on a speed tier (uninstalled on `off`, tracked by eager_patched), then the
+                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 fused RoPE, ROCm FLUX.1 / FLUX.2
+                    # one-kernel RoPE + AdaLN).
+                    autoopt.install_patches(
+                        autoopt.STAGE_LOAD_EAGER,
+                        pipe = pipe,
+                        target = target,
+                        family = fam,
+                        dtype = dtype,
+                        device = device,
+                        speed_mode = effective_speed,
+                        backend = "image",
+                        audit = load_audit,
+                        logger = logger,
+                    )
+                    eager_patched = effective_speed != SPEED_OFF
+                    autoopt.install_patches(
+                        autoopt.STAGE_LOAD,
+                        pipe = pipe,
+                        target = target,
+                        family = fam,
+                        dtype = dtype,
+                        device = device,
+                        speed_mode = effective_speed,
+                        backend = "image",
+                        audit = load_audit,
+                        logger = logger,
+                    )
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
@@ -8029,32 +7980,18 @@ class DiffusionBackend:
                             # bundles.
                             quant = "gguf" if gguf_transformer else transformer_quant_engaged,
                             attention_backend = attention_engaged,
-                            compile_kwargs = {
-                                # Mirrors apply_speed_optims' fullgraph decision (a step cache or planned offload
-                                # graph-breaks), so the bundle keys on the same setting.
-                                "fullgraph": not cache_graph_break
+                            # One resolver (diffusion_autoopt.plan) for the kwargs the compile will use: fullgraph
+                            # mirrors apply_speed_optims (a step cache or planned offload graph-breaks), dynamic is
+                            # the value it resolves, and an offloaded denoiser compiling below its hooks keys apart.
+                            compile_kwargs = autoopt.compile_cache_kwargs(
+                                pipe,
+                                speed_mode = effective_speed,
+                                fullgraph = not cache_graph_break
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                # max compiles DiTs with automatic dynamic (None), as does the default tier for
-                                # torchao weights. Key on the value apply_speed_optims resolves, so a bundle from a
-                                # static or explicit-dynamic build is not reused for an automatic-dynamic one.
-                                "dynamic": compile_dynamic(
-                                    getattr(pipe, "transformer", None),
-                                    None if effective_speed == SPEED_MAX else True,
-                                ),
-                                "mode": "max-autotune-no-cudagraphs"
-                                if effective_speed == SPEED_MAX
-                                else "default",
-                                "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
-                                # An offloaded denoiser compiles its blocks below the hooks, a different graph than a
-                                # bundle from the traced-hook compile holds.
-                                **(
-                                    {"below_hooks": True}
-                                    if plan.offload_policy != OFFLOAD_NONE
-                                    and compile_below_hooks_enabled()
-                                    else {}
-                                ),
-                            },
+                                offload_below_hooks = plan.offload_policy != OFFLOAD_NONE
+                                and compile_below_hooks_enabled(),
+                            ),
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
                         )
@@ -8088,18 +8025,31 @@ class DiffusionBackend:
                     ).strip().lower() != SPEED_OFF and enable_fp16_vae_decode(
                         pipe, target, logger = logger
                     )
-                    speed_applied = apply_speed_optims(
+                    # The optimizer's speed layer (diffusion_autoopt): plan, family hooks, the speed primitive below,
+                    # the per-step audit.
+                    speed_applied = autoopt.run_speed_layer(
                         pipe,
                         target,
-                        is_gguf = gguf_transformer,
                         family = fam,
+                        backend = "image",
                         speed_mode = effective_speed,
-                        cache_active = cache_graph_break or cache_may_toggle,
-                        cache_engaged = cache_graph_break,
+                        is_gguf = gguf_transformer,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
-                        denoiser_offloaded = not plan_keeps_transformer_resident(plan),
-                        stream_int8_gemm = True,
+                        audit = load_audit,
                         logger = logger,
+                        apply = lambda family, log: apply_speed_optims(
+                            pipe,
+                            target,
+                            is_gguf = gguf_transformer,
+                            family = family,
+                            speed_mode = effective_speed,
+                            cache_active = cache_graph_break or cache_may_toggle,
+                            cache_engaged = cache_graph_break,
+                            offload_active = plan.offload_policy != OFFLOAD_NONE,
+                            denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                            stream_int8_gemm = True,
+                            logger = log,
+                        ),
                     )
                     if vae_fp16:
                         speed_applied["vae_fp16_decode"] = True
@@ -8380,6 +8330,21 @@ class DiffusionBackend:
                     if transformer_quant_artifact is not None:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
+                    # The optimizer's per-step audit (engaged / declined + reason / failed + error), beside the
+                    # speed_mode entry.
+                    autoopt.record_load_steps(
+                        load_audit,
+                        attention = attention_engaged,
+                        step_cache = cache_engaged,
+                        step_cache_reason = cache_reason,
+                        compile_cache = compile_ctx is not None,
+                        speed_deferred = speed_deferred,
+                    )
+                    autoopt.finalize(
+                        load_audit,
+                        tuple(k for k, v in speed_applied.items() if v),
+                        resolved,
+                    )
                     if gguf_offload_swap and transformer_quant_engaged is not None:
                         from .diffusion_gguf_route import gguf_offload_swap_reason
                         resolved["transformer_quant"]["reason"] = gguf_offload_swap_reason(
@@ -8489,8 +8454,7 @@ class DiffusionBackend:
                             pass
                         _uninstall_fused_dit_patches()
                         if eager_patched:
-                            uninstall_patches()
-                            uninstall_arch_patches()
+                            _uninstall_eager_patches()
                             _uninstall_fused_dit_patches()
                         state = pipe = transformer = None
                         pipe_kwargs.clear()
@@ -10283,12 +10247,20 @@ class DiffusionBackend:
         mutation. The flag is cleared FIRST so a failure never retries per generation; unload
         cleans everything up via the same state fields the load-time path uses."""
         object.__setattr__(state, "speed_deferred", False)
-        from .diffusion_eager_patches import install_compile_safe_patches
-        from .diffusion_arch_patches import install_arch_patches
+        from . import diffusion_autoopt as autoopt
 
         target = self._state_device_target(state)
-        install_compile_safe_patches()
-        install_arch_patches()
+        audit = autoopt.new_audit(backend = "image", family = state.family)
+        autoopt.install_patches(
+            autoopt.STAGE_LOAD_EAGER,
+            pipe = state.pipe,
+            target = target,
+            family = state.family,
+            speed_mode = SPEED_DEFAULT,
+            backend = "image",
+            audit = audit,
+            logger = logger,
+        )
         object.__setattr__(state, "eager_patched", True)
         # Re-run the load-time selection with the caller's ORIGINAL request: auto still upgrades to cuDNN here.
         attention_engaged = apply_attention_backend(
@@ -10317,37 +10289,45 @@ class DiffusionBackend:
                 # Same GGUF-vs-dense graph distinction as the load-time begin().
                 quant = "gguf" if gguf_transformer else state.transformer_quant,
                 attention_backend = attention_engaged,
-                compile_kwargs = {
-                    # Mirrors the load-time fullgraph decision: a step cache or an offload graph-breaks.
-                    "fullgraph": not cache_breaks_graph(state.transformer_cache)
+                # Mirrors the load-time fullgraph decision: a step cache or an offload graph-breaks.
+                compile_kwargs = autoopt.compile_cache_kwargs(
+                    state.pipe,
+                    speed_mode = SPEED_DEFAULT,
+                    deferred = True,
+                    fullgraph = not cache_breaks_graph(state.transformer_cache)
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
-                    "mode": "default",
-                    "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
-                    **(
-                        {"below_hooks": True}
-                        if state.offload_policy != OFFLOAD_NONE and compile_below_hooks_enabled()
-                        else {}
-                    ),
-                },
+                    offload_below_hooks = state.offload_policy != OFFLOAD_NONE
+                    and compile_below_hooks_enabled(),
+                ),
                 logger = logger,
                 reduction_filter = family_filters_reductions(state.family),
             )
             object.__setattr__(state, "compile_cache_ctx", compile_ctx)
-        speed_applied = apply_speed_optims(
+        speed_applied = autoopt.run_speed_layer(
             state.pipe,
             target,
-            is_gguf = gguf_transformer,
             family = state.family,
+            backend = "image",
             speed_mode = SPEED_DEFAULT,
-            cache_active = cache_breaks_graph(state.transformer_cache) or state.cache_auto,
-            cache_engaged = cache_breaks_graph(state.transformer_cache),
+            is_gguf = gguf_transformer,
             offload_active = state.offload_policy != OFFLOAD_NONE,
-            denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
-            and _denoiser_hooked(state.pipe),
-            stream_int8_gemm = True,
+            audit = audit,
             logger = logger,
+            apply = lambda family, log: apply_speed_optims(
+                state.pipe,
+                target,
+                is_gguf = gguf_transformer,
+                family = family,
+                speed_mode = SPEED_DEFAULT,
+                cache_active = cache_breaks_graph(state.transformer_cache) or state.cache_auto,
+                cache_engaged = cache_breaks_graph(state.transformer_cache),
+                offload_active = state.offload_policy != OFFLOAD_NONE,
+                denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
+                and _denoiser_hooked(state.pipe),
+                stream_int8_gemm = True,
+                logger = log,
+            ),
         )
         if denoisers_pinned_resident(state.pipe):
             engage_pinned_denoisers(state.pipe, speed_applied, logger)
@@ -10379,6 +10359,14 @@ class DiffusionBackend:
                 "auto: compiled on the 3rd image this session "
                 "(repeated use amortises the one-time compile)"
             )
+        autoopt.record_load_steps(
+            audit,
+            attention = attention_engaged,
+            step_cache = state.transformer_cache,
+            step_cache_reason = ((state.resolved or {}).get("transformer_cache") or {}).get("reason"),
+            compile_cache = state.compile_cache_ctx is not None,
+        )
+        autoopt.finalize(audit, state.speed_optims, state.resolved)
         att = (state.resolved or {}).get("attention_backend")
         if isinstance(att, dict) and att.get("source") == "auto":
             att["value"] = attention_engaged or "native"
@@ -11049,9 +11037,14 @@ class DiffusionBackend:
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
+                    # Judged against the pipeline that RUNS this call: a from_pipe workflow (FLUX.1 img2img /
+                    # inpaint) shares the denoiser but opens no cache_context, which the FBCache hooks need.
+                    from .diffusion_autoopt.runtime import auto_cache_steps
+
+                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     toggled = maybe_toggle_step_cache(
                         state.pipe,
-                        steps = denoise_steps,
+                        steps = cache_steps,
                         quant_active = state.cache_quant_active,
                         threshold = state.cache_threshold,
                         logger = logger,
@@ -11064,7 +11057,9 @@ class DiffusionBackend:
                         if isinstance(entry, dict):
                             entry["value"] = toggled or "off"
                             entry["reason"] = (
-                                f"auto: {denoise_steps}-step generation "
+                                f"auto: {runner_reason}"
+                                if runner_reason
+                                else f"auto: {denoise_steps}-step generation "
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
@@ -11533,12 +11528,7 @@ class DiffusionBackend:
             pass
         _uninstall_fused_dit_patches()
         if state.eager_patched:
-            # Lazy import to keep diffusion.py torch-free to import.
-            from .diffusion_eager_patches import uninstall_patches
-            from .diffusion_arch_patches import uninstall_arch_patches
-
-            uninstall_patches()
-            uninstall_arch_patches()
+            _uninstall_eager_patches()
             # Again: the deferred profile layers the eager patch over the fused AdaLN.
             _uninstall_fused_dit_patches()
         # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it. Drop

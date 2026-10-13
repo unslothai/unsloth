@@ -24,6 +24,7 @@ import {
   useLinkedFolderNames,
 } from "./linked-folder-groups";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { ProjectSourceChip } from "./project-source-chip";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
   SUPPORTED_SOURCES_HINT,
@@ -289,13 +290,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               );
             })}
             {groups.loose.map((doc) => (
-              <DocumentStatusChip
+              <ProjectSourceChip
                 key={doc.id}
-                filename={doc.filename}
-                status={doc.status}
-                progress={doc.progress}
-                stage={doc.stage}
-                error={doc.error}
+                doc={doc}
                 onRemove={
                   isLinkedFolderManaged(doc) ||
                   (doc.id.startsWith("pending_") && doc.status !== "failed")

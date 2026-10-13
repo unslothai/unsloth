@@ -13,6 +13,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   isAudioCppUmbrellaRepo,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   localAudioRowIsUndecodableGguf,
   speechGgufIsUndecodable,
@@ -360,6 +361,30 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
     pickerSource,
     /communityAudioRowIsRunnable\(\{[\s\S]*macTtsHubRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isTts: c\.task === "text-to-speech",[\s\S]*hasRunnableGgufSibling/,
   );
+});
+
+test("an on-device mlx-audio speech-to-text row is runnable on a Mac only", () => {
+  const row = { isStt: true, isGguf: false, libraryName: "mlx-audio" };
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true }), true);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: false }), false);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, isStt: false }), false);
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, isGguf: true }), false);
+  assert.equal(
+    macMlxSttRowIsRunnable({ ...row, isMac: true, libraryName: "transformers" }),
+    false,
+  );
+  assert.equal(macMlxSttRowIsRunnable({ ...row, isMac: true, libraryName: null }), false);
+  // Only the cached on-device gate admits them: a Hub row cannot be downloaded for this engine.
+  assert.match(
+    pickerSource,
+    /communityAudioRowIsRunnable\(\{[\s\S]*\}\) \|\|\s*macMlxSttRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isStt: c\.task === "automatic-speech-recognition",[\s\S]*libraryName: c\.library_name/,
+  );
+  // The Chat-to-Audio handoff asks the same gate, on the cached row's library.
+  assert.match(
+    pickerSource,
+    /\.\.\.\(hubEvidenceById\.get\(id\) \?\? \{\}\),\s*\}\) &&\s*!macMlxSttRowIsRunnable\(\{[\s\S]*libraryName: cachedModels\.find\(\(c\) => c\.repo_id === id\)\?\.library_name,\s*\}\)\s*\) \{/,
+  );
+  assert.equal(pickerSource.split("macMlxSttRowIsRunnable(").length - 1, 2);
 });
 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
