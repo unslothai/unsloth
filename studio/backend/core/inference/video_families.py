@@ -24,6 +24,7 @@ from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
 from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # num_frames ceiling; VideoGenerateRequest imports it for its `le` so gate and bound cannot drift.
 MAX_VIDEO_NUM_FRAMES = 1024
@@ -262,6 +263,9 @@ class VideoFamily:
     cudnn_benchmark: bool = True
     # Pin one config per reduction (render determinism); off by default as it can be slower.
     filter_reduction_configs: bool = False
+    # Same spelling as DiffusionFamily: pin the filter only on these (major, minor) archs.
+    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
+    # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id); separate from the text encoder.
@@ -294,6 +298,12 @@ class VideoFamily:
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
     supports_cfg: bool = True
+    # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
+    trainable: bool = False
+    # Display label (Train UI); None = the family name.
+    label: Optional[str] = None
+    # Per-family policy data; see family_profile.FamilyProfile.
+    profile: FamilyProfile = field(default_factory = FamilyProfile)
 
 
 # ComfyUI default 864x480: multiples of 32, inside the trained 1:4..4:1 range.
@@ -323,9 +333,77 @@ _HV15_I2V_REFUSAL = (
 )
 
 
+# --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
+
+# int8 small-M exclusions (on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS); baked into the published
+# int8 artifacts, so each moves only with a rebuild and republish.
+# HunyuanVideo-1.5's attention trim shrinks the text / image streams from their padded lengths to the VALID token
+# counts, so every text-stream Linear runs at a tiny M the int8 dynamic path cannot handle. Both failures measured on
+# B200. M = 0 (t2v byt5 / image streams trim to zero tokens): torchao returns the input UNPROJECTED (a quantized 1472
+# -> 2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the 2048-wide cond-type add crashes -- context_embedder_2 /
+# image_embedder. M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm requires M > 16
+# and raises -- the TokenRefiner and every block's context-stream projections. These run at M = text tokens (tens)
+# against the video stream's M ~ 32k+, so bf16 here costs nothing measurable and the video-stream linears keep full
+# int8 coverage. "context_embedder" also matches "context_embedder_2" (substring check).
+_HUNYUAN15_INT8_EXCLUDES = (
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context",
+)
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+# LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 / audio_ff, fed by
+# audio_proj_in) plus the a2v / v2a cross attentions. A video-only run feeds a MINIMAL audio stream -- one token for a
+# still -- so those linears run at M = 1, under the same _int_mm floor of 16. The audio stream is inert on a
+# video-only run (isolated modalities, out of the loss, out of the LoRA targets), so leaving it in bf16 costs nothing
+# while the video-stream linears keep full int8 coverage. One token covers every audio-side name, including
+# video_to_audio_attn, whose keys/values are that same one-token stream.
+# The audio token alone is not enough. LTX-2 also carries LTX2AdaLayerNormSingle projections whose names say nothing
+# about audio -- av_cross_attn_video_scale_shift / av_cross_attn_video_a2v_gate (the cross-modality modulation,
+# computed unconditionally in forward, isolate_modalities or not) and prompt_adaln / audio_prompt_adaln. Each is a
+# Linear over a BATCH-sized input, so M = batch = 1 for a default training run: the same _int_mm floor, reached
+# whatever the audio stream does.
+_LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
+# Untiled decode peaks (video_vae_untiled), measured fp16 on a B200. Wan: per latent pixel (h x w), frame count does not
+# enter (the causal cache decodes one latent frame at a time), plus the (spatial, temporal) RGB output Wan's decode
+# holds about twice (per-frame torch.cat, then clamp); 1021 frames at 1280x704 is 5.2 GiB per fp16 copy. A14B and
+# Wan2.1 share the Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
+_WAN21_VAE_UNTILED = UntiledVae(bytes_per_latent_pixel = 0.6 * 2**20, output_scale = (8, 4))
+# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200). LTX-2.5
+# has the same conv decoder layout (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
+_LTX2_VAE_UNTILED = UntiledVae(bytes_per_frame_latent_pixel = 0.11 * 2**20, temporal_scale = 8)
+
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "minimax-h3",
+        trainable = True,
+        label = "MiniMax-H3",
+        profile = FamilyProfile(
+            # Same small-M story as HunyuanVideo-1.5 with one extra trap: the adaLN projection is ``adaln_proj``,
+            # which no generic token matches ("norm" does not appear in the name). On the DENSE checkpoint it is
+            # Linear(2688 -> 96768), clears min_features = 512, gets quantized, then runs at M = 1 and raises
+            # ``self.size(0) needs to be greater than 16, but got 1`` at the first denoise (the offline builder
+            # happily bakes it, and torch.compile then dies on that module). On the pruned-modulation form it is
+            # Linear(8 -> 96768), under min_features and skipped for free (verified on the fl2va_pruned build: all 51
+            # rejected), so the exclusion makes the DENSE path correct and is a no-op on the pruned one.
+            int8_exclude_tokens = ("adaln_proj",),
+            # H3's OTHER small-M linears (context_embedder + the two token_refiner blocks: 13 Linears, 798 M params,
+            # 0.80 GB bf16, 3.9% of the int8 checkpoint) are row-PADDED to the _int_mm floor instead of excluded:
+            # padding returns the caller's rows bitwise unchanged (per-row activation scales, asserted in
+            # diffusion_quant_pad). Measured on B200, 640x384 x 124 frames (h3_quant/README_int8.md). qwen-image,
+            # qwen-image-edit and hunyuanvideo-1.5 have the same small-M shape but each has a PUBLISHED int8
+            # checkpoint whose metadata bakes its exclusion set, so they move only with a rebuild and republish.
+            int8_pad_tokens = ("context_embedder", "token_refiner"),
+            # The packed sequence runs three modalities through one set of linears, so its activation range is not the
+            # per-family range the fp8 filter was measured against. The trainer refuses both outright; declaring it
+            # here keeps /diffusion/info from advertising a start that is guaranteed to 400.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
+            auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
+        ),
         pipeline_class = "ModularPipeline",
         transformer_class = "MiniMaxH3Transformer3DModel",
         base_repo = "MiniMaxAI/MiniMax-H3",
@@ -392,6 +470,26 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
+        profile = FamilyProfile(
+            # the 2.3 DiT less the video FFN bias
+            int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
+            # Hosted rotated int8 build only: rotation baked into the file (every quantized Linear, group 256) and read
+            # back from its metadata. No runtime ConvRot spec (group 0), so quantizing at load stays plain int8;
+            # default_on only picks the hosted rotated file (the env's ``0`` picks the plain one).
+            int8_convrot = ConvRotSpec(
+                group = 0,
+                suffixes = (),
+                variant_repos = ("unsloth/LTX-2.5-FP8",),
+                default_on = True,
+            ),
+            untiled_vae = _LTX2_VAE_UNTILED,
+            # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
+            compile_static = True,
+            stg_compile_adapter = True,
+            preview_factors = "ltx2",
+            # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
+            trusted_repos = ("lightricks/ltx-2.5",),
+        ),
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
         base_repo = "Lightricks/LTX-2.5-Diffusers",
@@ -428,6 +526,18 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # dev config (40 steps, CFG 4).
     VideoFamily(
         name = "ltx-2",
+        trainable = True,
+        label = "LTX-2",
+        profile = FamilyProfile(
+            int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
+            # 2.3 is the same audiovisual DiT, and builders spell it by its version.
+            quant_names = ("ltx-2.3",),
+            untiled_vae = _LTX2_VAE_UNTILED,
+            compile_static = True,
+            stg_compile_adapter = True,
+            preview_factors = "ltx2",
+            trusted_repos = ("lightricks/ltx-2.3-fp8",),
+        ),
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
         base_repo = "Lightricks/LTX-2",
@@ -458,7 +568,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.2-TI2V-5B (diffusers >= 0.35): VAE temporal compression 4 gives frame counts 4k+1.
     VideoFamily(
         name = "wan2.2-ti2v-5b",
-        comfy_flow_shift = 8.0,
+        profile = FamilyProfile(
+            untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
+            preview_factors = "wan22_5b",
+            auto_static_skip = (
+                ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
+            ),
+        ),
+        comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
@@ -495,7 +612,15 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.2-T2V-A14B dual-expert MoE: low-noise steps go to transformer_2 (cfg2_kwarg).
     VideoFamily(
         name = "wan2.2-t2v-a14b",
-        comfy_flow_shift = 5.0,
+        profile = FamilyProfile(
+            auto_prefer = AutoPrefer(
+                floor = (10, 0),
+                schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
+                backend = "flashinfer",
+            ),
+            untiled_vae = _WAN21_VAE_UNTILED,
+        ),
+        comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
@@ -536,6 +661,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
+        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -556,6 +682,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
     VideoFamily(
         name = "wan2.1-t2v-14b",
+        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
         comfy_flow_shift = 5.0,  # reference 14B workflow shift (the 1.3B uses 8); replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -578,7 +705,18 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # so only the community repacks load.
     VideoFamily(
         name = "hunyuanvideo-1.5",
-        comfy_flow_shift = 7.0,
+        profile = FamilyProfile(
+            int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
+            nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+            preview_factors = "hv15",
+            auto_static_skip = (
+                (
+                    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
+                    (("max", 2), ("steps", 50)),
+                ),
+            ),
+        ),
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -606,7 +744,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # 720p t2v repack: own family so 720p loads default to 720p sizes; full-path alias wins.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
-        comfy_flow_shift = 7.0,
+        profile = FamilyProfile(
+            int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
+            nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+            preview_factors = "hv15",
+        ),
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",

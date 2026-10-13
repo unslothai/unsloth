@@ -733,44 +733,12 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
     return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
-# Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match.
-_TRUSTED_NON_GGUF_REPOS = frozenset(
-    {
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        "stabilityai/sdxl-turbo",
-        "black-forest-labs/flux.1-dev",
-        "black-forest-labs/flux.1-schnell",
-        "black-forest-labs/flux.1-kontext-dev",
-        "black-forest-labs/flux.1-krea-dev",
-        "black-forest-labs/flux.2-dev",
-        "black-forest-labs/flux.2-klein-4b",
-        # Untrusted base_model tags made klein-9B GGUFs resolve to the 4B config.
-        "black-forest-labs/flux.2-klein-9b",
-        "black-forest-labs/flux.2-klein-base-4b",
-        "black-forest-labs/flux.2-klein-base-9b",
-        "tongyi-mai/z-image-turbo",
-        # Base of unsloth/Z-Image-GGUF; untrusted, it fell back to the Turbo companions.
-        "tongyi-mai/z-image",
-        "qwen/qwen-image",
-        "qwen/qwen-image-2512",
-        "qwen/qwen-image-edit-2511",
-        "qwen/qwen-image-layered",
-        "qwen/qwen-image-2.1",
-        "qwen/qwen-image-2.1-turbo",
-        # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
-        "krea/krea-2-turbo",
-        "krea/krea-2-raw",
-        "alpha-vllm/lumina-image-2.0",
-        "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
-        "hidream-ai/hidream-i1-full",
-        "hidream-ai/hidream-i1-dev",
-        "hidream-ai/hidream-i1-fast",
-        # Ideogram 4 ships no bf16; -fp8 stores both DiTs as raw float8.
-        "ideogram-ai/ideogram-4-fp8",
-        "ideogram-ai/ideogram-4-nf4",
-        "ideogram-ai/ideogram-4-nf4-diffusers",
-    }
-)
+# Official non-unsloth bases allowed to load as full (non-GGUF) artifacts: safetensors-only, no remote code, exact
+# lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
+from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
+from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+
+_TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
 
 def _is_trusted_diffusion_repo(repo_id: str) -> bool:

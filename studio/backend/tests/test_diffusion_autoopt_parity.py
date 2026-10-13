@@ -487,7 +487,7 @@ def snapshot(entry: Callable) -> dict:
 def captured() -> dict:
     if not FIXTURE.exists():
         pytest.fail(f"missing parity fixture {FIXTURE}")
-    return json.loads(FIXTURE.read_text())
+    return json.loads(FIXTURE.read_text(encoding = "utf-8"))
 
 
 def test_fixture_covers_every_registered_family(captured):

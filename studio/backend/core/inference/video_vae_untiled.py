@@ -8,31 +8,27 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .family_profile import profile_table as _profile_table
+
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled fp16 decode peak per latent pixel (B200); frame count does not enter (causal cache).
+# Untiled decode peak models per family (``FamilyProfile.untiled_vae`` on the video registry, measured on a B200; the
+# reasoning sits next to the data). Per latent pixel (h x w) + the (spatial, temporal) RGB output for a causal decoder
+# (Wan), or per output frame x latent pixel + the temporal scale for a decoder holding every frame (LTX-2 / 2.3 / 2.5).
+_UNTILED = _profile_table("untiled_vae")
 _BYTES_PER_LATENT_PIXEL = {
-    "wan2.2-ti2v-5b": 2.5 * 2**20,
-    "wan2.2-t2v-a14b": 0.6 * 2**20,
-    "wan2.1-t2v-1.3b": 0.6 * 2**20,
-    "wan2.1-t2v-14b": 0.6 * 2**20,
+    name: m.bytes_per_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_latent_pixel is not None
 }
-# (spatial, temporal) upsampling to RGB; Wan's decode holds that output about twice.
-_OUTPUT_SCALE = {
-    "wan2.2-ti2v-5b": (16, 4),
-    "wan2.2-t2v-a14b": (8, 4),
-    "wan2.1-t2v-1.3b": (8, 4),
-    "wan2.1-t2v-14b": (8, 4),
-}
-# LTX-2 / 2.3 holds every frame: per output frame x latent pixel, 0.102-0.105 MiB bf16 (B200).
+_OUTPUT_SCALE = {name: m.output_scale for name, m in _UNTILED.items() if m.output_scale is not None}
 _BYTES_PER_FRAME_LATENT_PIXEL = {
-    "ltx-2": 0.11 * 2**20,
-    # Same conv decoder layout as 2.3 (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
-    "ltx-2.5": 0.11 * 2**20,
+    name: m.bytes_per_frame_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_frame_latent_pixel is not None
 }
 _TEMPORAL_SCALE = {
-    "ltx-2": 8,
-    "ltx-2.5": 8,
+    name: m.temporal_scale for name, m in _UNTILED.items() if m.temporal_scale is not None
 }
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30

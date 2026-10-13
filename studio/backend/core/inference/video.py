@@ -267,26 +267,12 @@ install_torchao_int_mm_patch()
 
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
-# Exact-match, lowercased, safetensors-only, no remote code.
-_TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
-    {
-        "lightricks/ltx-2",
-        "lightricks/ltx-2.3",
-        "lightricks/ltx-2.3-fp8",
-        # LTX-2.5: the Diffusers pack (safetensors + configs, no remote code) and the split single-file repo.
-        "lightricks/ltx-2.5-diffusers",
-        "lightricks/ltx-2.5",
-        # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
-        "wan-ai/wan2.2-ti2v-5b-diffusers",
-        "wan-ai/wan2.2-t2v-a14b-diffusers",
-        "wan-ai/wan2.1-t2v-1.3b-diffusers",
-        "wan-ai/wan2.1-t2v-14b-diffusers",
-        # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json)
-        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
-        "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
-        "minimaxai/minimax-h3",
-    }
-)
+# Official non-unsloth bases allowed to load as full (non-GGUF) artifacts: safetensors-only, no remote code, exact
+# lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
+from .video_families import _FAMILIES as _VIDEO_REGISTRY  # noqa: E402
+from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+
+_TRUSTED_NON_GGUF_VIDEO_REPOS = _trusted_repo_ids(_VIDEO_REGISTRY)
 
 
 def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[str]) -> str:

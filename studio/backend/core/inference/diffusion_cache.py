@@ -43,19 +43,21 @@ _REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
-# Measured vs no-skip render: default needs mean LPIPS <= 0.05, max <= 0.10. Keyed by upstream id.
-AUTO_STATIC_SKIP: dict = {
-    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 25},
-    "qwen/qwen-image": {"default": 2, "max": 3, "steps": 20},
-    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3, "steps": 28},
-    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3, "steps": 50},
-    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3, "steps": 50},
-    # every 2 is 0.29 LPIPS on a dense-texture prompt, so max only.
-    "black-forest-labs/flux.1-dev": {"max": 3, "steps": 28},
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2, "steps": 50},
-    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2, "steps": 50},
-    "minimaxai/minimax-h3": {"max": 2, "steps": 30},
-}
+
+# Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
+# needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
+# Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
+# The rows are ``FamilyProfile.auto_static_skip`` on the registry; the registries are torch-free, so this stays light.
+def _auto_static_skip_table() -> dict:
+    from .family_profile import profile_table
+    return {
+        repo.strip().lower(): dict(entry)
+        for rows in profile_table("auto_static_skip").values()
+        for repo, entry in rows
+    }
+
+
+AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
 AUTO_STATIC_MIN_STEPS = 20
 

@@ -508,6 +508,8 @@ _ROUTES_WITHOUT_HOST_PATHS = {
     "get_active_downloads": "repo ids and byte counts",
     "delete_impact": "repo ids, byte counts and blockers",
     "delete_cached_model": "status, repo id and variant",
+    "reveal_local_model": "status only",
+    "delete_local_model": "status only",
 }
 
 

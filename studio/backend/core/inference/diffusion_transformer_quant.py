@@ -26,7 +26,6 @@ import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
-from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import is_stubbed, torch_is_rocm
@@ -38,6 +37,8 @@ from .diffusion_nvfp4_flag import (
     without_nvfp4,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .family_profile import AutoPrefer as _AutoPrefer
+from .family_profile import profile_table as _profile_table
 
 # Also runs in the spawned smoke-probe child, which imports only this module.
 install_torchao_int_mm_patch()
@@ -74,53 +75,24 @@ _INT8_EXCLUDE_NAME_TOKENS = (
 )
 
 
-# Qwen-Image text-stream Linears run at M = prompt tokens (unpadded): under _int_mm floor.
-_QWENIMAGE_INT8_EXCLUDES = (
-    "txt_in",
-    "add_q_proj",
-    "add_k_proj",
-    "add_v_proj",
-    "to_add_out",
-    "txt_mlp",
+# int8 PER-FAMILY exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS: ``FamilyProfile.int8_exclude_tokens`` on the
+# registry rows (small-M text / audio streams, measured quality levers; the reasons sit next to the data). Baked into
+# published int8 artifacts and validated at load, so tests/test_diffusion_family_data_freeze.py pins every value.
+_INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "int8_exclude_tokens", quant = True
 )
-# HunyuanVideo-1.5 trims text/image streams to valid tokens: M = 0 or <= 16 breaks int8.
-# "context_embedder" also matches "context_embedder_2" (substring check).
-_HUNYUAN15_INT8_EXCLUDES = (
-    "context_embedder",
-    "image_embedder",
-    "add_q_proj",
-    "add_k_proj",
-    "add_v_proj",
-    "to_add_out",
-    "ff_context",
-)
-# H3 adaln_proj (dense: 2688 -> 96768) runs at M = 1 and no generic token matches it.
-# Other small-M H3 linears are padded instead: see _INT8_FAMILY_PAD_NAME_TOKENS.
-_MINIMAX_H3_INT8_EXCLUDES = ("adaln_proj",)
-# LTX-2 audio stream runs at M = 1 on video-only runs; inert, so leave it bf16.
-# AdaLN cross-modality / prompt_adaln projections run at M = batch: same _int_mm floor.
-_LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
-_INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
-    "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
-    "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,
-    "qwen-image-layered": _QWENIMAGE_INT8_EXCLUDES,
-    # 2.1 is single-stream: list measured, not inherited; ``txt_in`` excluded for quality.
-    "qwen-image-2.1": ("txt_in",),
-    "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
-    "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
-    "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
-    "ltx-2": _LTX2_INT8_EXCLUDES,
-    "ltx-2.3": _LTX2_INT8_EXCLUDES,  # same audiovisual DiT
-    "ltx-2.5": _LTX2_INT8_EXCLUDES,  # the 2.3 DiT less the video FFN bias
-}
+_QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
 
-# Row padding instead of exclusion: pad rows cannot affect output rows (per-row scales).
-# minimax-h3 only: changing other families' exclusions invalidates published checkpoints.
-_MINIMAX_H3_INT8_PAD_TOKENS = ("context_embedder", "token_refiner")
-_INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = {
-    "minimax-h3": _MINIMAX_H3_INT8_PAD_TOKENS,
-}
+# Int8 PER-FAMILY row PADDING (``FamilyProfile.int8_pad_tokens``), the alternative to excluding a small-M Linear.
+# ``_int_mm``'s floor is a GEMM shape constraint, not a numerical one: padding the activation up to 32 rows, running
+# the matmul and slicing the result back returns the caller's rows BITWISE unchanged (torchao's int8 dynamic path
+# scales activations per row, so the pad rows cannot reach them -- see diffusion_quant_pad for why that is asserted
+# rather than assumed). A family with a PUBLISHED int8 checkpoint moves from exclude to pad only with a rebuild and
+# republish, since _validate_checkpoint compares the baked exclusion set against exclude_tokens_for_scheme.
+_INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "int8_pad_tokens", quant = True
+)
 
 
 def pad_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
@@ -154,58 +126,31 @@ def apply_small_m_padding(
     return wrapped
 
 
-# Per-family int8 ConvRot; not an exclusion, so plain artifacts still validate.
+# Per-family int8 ConvRot (``FamilyProfile.int8_convrot``): (group, rotated fqn suffixes); not an exclusion, so plain
+# artifacts still validate.
+_INT8_FAMILY_CONVROT_SPECS = _profile_table("int8_convrot", quant = True)
+# A spec with group 0 (ltx-2.5) only names a HOSTED rotated build: no runtime rotation, so no entry here.
 _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
-    "qwen-image-2.1": (
-        256,
-        (
-            "attn.to_q",
-            "attn.to_k",
-            "attn.to_v",
-            "attn.to_out.0",
-            "img_mlp.gate_layer",
-            "img_mlp.proj",
-            "img_mlp.out",
-        ),
-    ),
-    "z-image": (
-        256,
-        (
-            "attention.to_q",
-            "attention.to_k",
-            "attention.to_v",
-            "attention.to_out.0",
-            "feed_forward.w1",
-            "feed_forward.w2",
-            "feed_forward.w3",
-            "cap_embedder.1",
-        ),
-    ),
+    name: (spec.group, spec.suffixes)
+    for name, spec in _INT8_FAMILY_CONVROT_SPECS.items()
+    if spec.group
 }
-
-
 _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
-    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
-    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors",
+    name: spec.filename for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.filename
 }
 # Only this repo gets the rotated name prepended.
 _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
-    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
-    "z-image": "unsloth/Z-Image-Turbo-FP8",
+    name: spec.repo for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.repo
 }
-
 # Variant repos that also host a rotated build (``<Model>-INT8-ConvRot.safetensors``), listed for the same reason.
 _INT8_FAMILY_CONVROT_VARIANT_REPOS: dict[str, tuple[str, ...]] = {
-    "qwen-image-2.1": ("unsloth/Qwen-Image-2.1-Turbo-FP8",),
-    # Rotation baked into the file (every quantized Linear, group 256) and read back from its metadata. LTX-2.5 has no
-    # runtime ConvRot spec above, so quantizing at load stays plain int8.
-    "ltx-2.5": ("unsloth/LTX-2.5-FP8",),
+    name: spec.variant_repos
+    for name, spec in _INT8_FAMILY_CONVROT_SPECS.items()
+    if spec.variant_repos
 }
-
-# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``). For ltx-2.5 this only
-# picks the hosted rotated file (the env's ``0`` picks the plain one).
+# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
 _INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
-    {"qwen-image-2.1", "z-image", "ltx-2.5"}
+    name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.default_on
 )
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
@@ -316,12 +261,11 @@ def apply_runtime_convrot(
     return rotated
 
 
-# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it.
-_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
-_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
-    "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
-    "hunyuanvideo-1.5-720p": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
-}
+# nvfp4 raises on an empty activation (``FamilyProfile.nvfp4_zero_row_tokens``); HunyuanVideo-1.5's attention trim
+# hits it every t2v render.
+_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "nvfp4_zero_row_tokens", quant = True
+)
 
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
@@ -382,64 +326,32 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((8, 0), (TQ_INT8,)),
 )
 
-# Model-level scheme denials (the smoke probe only proves the GEMM runs); also explicit.
-# qwen-image: mxfp8 / nvfp4 damage images. fp8 is allowed since activation_value_lb.
-_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
-    "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
-    "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),
-    "qwen-image-layered": frozenset({TQ_MXFP8, TQ_NVFP4}),
-}
+# Families whose activation ranges break specific schemes at the MODEL level (``FamilyProfile.scheme_deny``; the smoke
+# probe only proves the GEMM runs). The deny also applies to an EXPLICIT request; a passing NVFP4 gate record lifts an
+# nvfp4 deny per base. Measurements next to the data (qwen-image).
+_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table("scheme_deny", quant = True)
 
 
-@dataclass(frozen = True)
-class _AutoPrefer:
-    """A family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``; off below ``floor`` or on consumer GPUs
-    (unless ``consumer_ok``), and ``gated`` / ``backend`` need a passing record / backend for THIS device."""
-
-    floor: tuple[int, int]
-    schemes: tuple[str, ...]
-    consumer_ok: bool = False
-    gated: bool = False
-    backend: Optional[str] = None
+# ``FamilyProfile.auto_prefer``: a family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``.
+_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quant = True)
 
 
-_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
-    "z-image": _AutoPrefer(
-        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
-    ),
-    "flux.1": _AutoPrefer(floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True),
-    "qwen-image": _AutoPrefer(
-        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
-    ),
-    "qwen-image-2.1": _AutoPrefer(
-        floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
-    ),
-    "wan2.2-t2v-a14b": _AutoPrefer(
-        floor = (10, 0),
-        schemes = (TQ_NVFP4, TQ_INT8, TQ_FP8, TQ_MXFP8),
-        backend = "flashinfer",
-    ),
-}
-
-
-# AUTO keeps bf16 while it fits (INT8 barely faster, failed LPIPS); INT8 when bf16 offloads.
-_FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
-    "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
-    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-}
+# AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
+# INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+_FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
+    "auto_bf16_when_resident", quant = True
+)
 
 
 def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 
-# Training-only denials: fp8 LoRA convergence is unmeasured. Delete once measured.
-_FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
-    "qwen-image": frozenset({TQ_FP8}),
-    "qwen-image-edit": frozenset({TQ_FP8}),
-    # MiniMax-H3 packs three modalities through one set of linears; trainer refuses fp8.
-    "minimax-h3": frozenset({TQ_FP8, TQ_MXFP8}),
-}
+# Schemes denied for TRAINING on top of the inference table (``FamilyProfile.train_scheme_deny``): the inference
+# evidence is rendering evidence, not evidence that a LoRA converges on those frozen linears.
+_FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table(
+    "train_scheme_deny", quant = True
+)
 
 
 def _nvfp4_gate_passed(family, base_repo) -> bool:
