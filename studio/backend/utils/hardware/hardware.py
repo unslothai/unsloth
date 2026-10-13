@@ -468,6 +468,13 @@ _INTEL_XPU_PCI_IDS = frozenset((
 ))  # fmt: skip
 
 
+def _is_intel_xpu_pci_id(device_id: int) -> bool:
+    """Whether an Intel PCI device ID is an XPU-capable family."""
+    return device_id in _INTEL_XPU_PCI_IDS or any(
+        lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+    )
+
+
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
     """Whether the card's PCI device ID is an XPU-capable family; None if unreadable."""
     try:
@@ -475,9 +482,7 @@ def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
             device_id = int(fh.read().strip(), 16)
     except (OSError, ValueError):
         return None
-    return device_id in _INTEL_XPU_PCI_IDS or any(
-        lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
-    )
+    return _is_intel_xpu_pci_id(device_id)
 
 
 def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
