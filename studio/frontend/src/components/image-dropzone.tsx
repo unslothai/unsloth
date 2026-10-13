@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -16,11 +16,7 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
-import {
-  type StagedReferenceImage,
-  stageReferenceImage,
-} from "@/lib/image-crop";
-import { ReferenceImageEditor } from "@/components/image-crop-editor";
+import { useImageCrop } from "@/hooks/use-image-crop";
 import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
@@ -128,23 +124,14 @@ export function ImageDropzone({
     [onChange, maxSide],
   );
 
-  // The crop dialog always starts from the upload, so re-cropping never compounds. Keyed to the
-  // value it opened on, so a replaced or removed image closes it.
-  const [cropFor, setCropFor] = useState<string | null>(null);
-  const [staged, setStaged] = useState<StagedReferenceImage | null>(null);
-  const picture = useMemo(
-    () => (value ? (staged?.dataUrl === value ? staged : stageReferenceImage(value)) : null),
-    [staged, value],
-  );
   const applyCrop = useCallback(
-    (dataUrl: string, crop: StagedReferenceImage["crop"]) => {
-      if (!picture) return;
-      setStaged({ originalDataUrl: picture.originalDataUrl, dataUrl, crop });
+    (dataUrl: string) => {
       selection.current += 1;
       onChange(dataUrl);
     },
-    [onChange, picture],
+    [onChange],
   );
+  const { openCrop, cropDialog } = useImageCrop(value, applyCrop, cropSubject ?? "");
 
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => void readNativePath(paths[0]),
@@ -178,22 +165,14 @@ export function ImageDropzone({
                   size="icon"
                   aria-label={`Crop ${cropSubject.charAt(0).toLowerCase()}${cropSubject.slice(1)}`}
                   className="absolute right-10 top-1.5 size-7"
-                  onClick={() => setCropFor(value)}
+                  onClick={openCrop}
                 >
                   <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Crop</TooltipContent>
             </Tooltip>
-            {cropFor === value && (
-              <ReferenceImageEditor
-                open={true}
-                picture={picture}
-                subject={cropSubject}
-                onOpenChange={(open) => setCropFor(open ? value : null)}
-                onApply={applyCrop}
-              />
-            )}
+            {cropDialog}
           </>
         )}
         <Tooltip>

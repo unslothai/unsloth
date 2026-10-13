@@ -23,6 +23,7 @@ import {
   FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
+  ImageCropIcon,
   InformationCircleIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -32,6 +33,7 @@ import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import { useImageCrop } from "@/hooks/use-image-crop";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
@@ -3098,6 +3100,12 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
+  // Inpaint swaps its picker for the mask canvas, so its crop lives next to Replace image.
+  const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
+    initImage,
+    handleInitChange,
+    "Source image",
+  );
 
   // Downloads go through the Hub download manager like every other model, so the load finds a
   // warm cache. In a ref, so the callback is not a render dep.
@@ -5110,6 +5118,17 @@ export function ImagesPage({
                         <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                         Clear mask
                       </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={openInpaintCrop}
+                      >
+                        <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
+                        Crop
+                      </Button>
+                      {inpaintCropDialog}
                       <Button
                         type="button"
                         variant="secondary"

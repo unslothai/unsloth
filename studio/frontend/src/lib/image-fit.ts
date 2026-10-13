@@ -3,6 +3,8 @@
 
 // decode_b64_image (studio/backend/core/inference/diffusion.py) refuses a source image above this per side.
 export const MAX_UPLOAD_IMAGE_SIDE = 4096;
+// DiffusionGenerateRequest.init_image max_length (studio/backend/models/inference.py).
+const MAX_UPLOAD_DATA_URL_LENGTH = 32 * 1024 * 1024;
 
 /** The size that fits `maxSide` at the same aspect, or null when the image already fits. */
 export function fitWithinMaxSide(
@@ -48,6 +50,11 @@ export async function fitImageDataUrl(dataUrl: string, maxSide: number): Promise
   if (!context) return dataUrl;
   context.imageSmoothingQuality = "high";
   context.drawImage(image, 0, 0, size.width, size.height);
-  const fitted = canvas.toDataURL(fitOutputType(dataUrl), 0.92);
+  const type = fitOutputType(dataUrl);
+  let fitted = canvas.toDataURL(type, 0.92);
+  // A photographic 4096px PNG can pass the request cap; WebP keeps alpha at a fraction of the size.
+  if (type === "image/png" && fitted.length > MAX_UPLOAD_DATA_URL_LENGTH) {
+    fitted = canvas.toDataURL("image/webp", 0.92);
+  }
   return fitted.startsWith("data:image/") ? fitted : dataUrl;
 }

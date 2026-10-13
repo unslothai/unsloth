@@ -101,7 +101,9 @@ export function ReferenceImageEditor({
     message: string;
   } | null>(null);
   const [applying, setApplying] = useState(false);
-  const name = subject ?? `Picture ${pictureNumber ?? 1}`;
+  const name = subject
+    ? subject.charAt(0).toLowerCase() + subject.slice(1)
+    : `Picture ${pictureNumber ?? 1}`;
   const lowerName = name.charAt(0).toLowerCase() + name.slice(1);
   const editorActions = useMemo(
     () => createReferenceImageEditorActions({ onApply, onOpenChange }),
