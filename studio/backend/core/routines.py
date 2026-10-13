@@ -72,12 +72,19 @@ class RoutineSupervisor:
 
     def _request(self) -> Request:
         port = getattr(self.app.state, "server_port", None) or 8888
-        return Request({
-            "type": "http", "app": self.app, "method": "POST",
-            "path": "/api/data-recipe/jobs", "raw_path": b"/api/data-recipe/jobs",
-            "headers": [], "query_string": b"", "scheme": "http",
-            "server": ("127.0.0.1", port),
-        })
+        return Request(
+            {
+                "type": "http",
+                "app": self.app,
+                "method": "POST",
+                "path": "/api/data-recipe/jobs",
+                "raw_path": b"/api/data-recipe/jobs",
+                "headers": [],
+                "query_string": b"",
+                "scheme": "http",
+                "server": ("127.0.0.1", port),
+            }
+        )
 
     def _wait_job(self, kind: str, job_id: str) -> dict:
         while not self.stop_event.wait(2):
@@ -89,6 +96,7 @@ class RoutineSupervisor:
             else:
                 from core.rag.folder_sync import get_job
                 from core.rag.account_db import get_connection as rag_connection
+
                 job = get_job(job_id)
                 if job and job["status"] in {"completed", "failed"}:
                     # A request made during an active folder scan is folded into a successor.
@@ -98,7 +106,8 @@ class RoutineSupervisor:
                     with closing(rag_connection()) as conn:
                         newer = conn.execute(
                             "SELECT id FROM linked_folder_sync_jobs WHERE folder_id=? "
-                            "ORDER BY created_at DESC LIMIT 1", (job["folder_id"],),
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (job["folder_id"],),
                         ).fetchone()
                     if newer is not None and newer["id"] != job_id:
                         job_id = newer["id"]
@@ -112,16 +121,21 @@ class RoutineSupervisor:
         if step["kind"] == "recipe":
             from routes.data_recipe.jobs import create_job
             from utils.account_context import current_account
+
             payload = RecipePayload.model_validate(step["recipe"])
             return create_job(
-                payload, self._request(),
-                credential = (current_account().username, None), via_api_key = False,
+                payload,
+                self._request(),
+                credential = (current_account().username, None),
+                via_api_key = False,
             )["job_id"]
         from core.rag.folder_sync import request_sync
         try:
             return request_sync(step["folder_id"])
         except KeyError as exc:
-            raise RuntimeError("The linked folder was removed. Edit this routine to choose another folder.") from exc
+            raise RuntimeError(
+                "The linked folder was removed. Edit this routine to choose another folder."
+            ) from exc
 
     def _execute(self, account_id: str, run: dict) -> None:
         statuses = [
@@ -134,8 +148,9 @@ class RoutineSupervisor:
                 if self.stop_event.is_set():
                     return
                 statuses[index]["status"] = "running"
-                db.update_run(run["id"], status = "running", current_step = index,
-                              step_statuses = statuses)
+                db.update_run(
+                    run["id"], status = "running", current_step = index, step_statuses = statuses
+                )
                 job_id = self._start_step(step)
                 statuses[index]["job_id"] = job_id
                 db.update_run(run["id"], status = "running", step_statuses = statuses)
@@ -147,20 +162,21 @@ class RoutineSupervisor:
                     statuses[index]["artifact_path"] = result.get("artifact_path")
                 else:
                     statuses[index]["summary"] = {
-                        key: result[key] for key in ("added", "changed", "deleted", "failed")
+                        key: result[key]
+                        for key in ("added", "changed", "deleted", "failed")
                         if key in result
                     }
                 db.update_run(run["id"], status = "running", step_statuses = statuses)
-            db.update_run(run["id"], status = "completed", current_step = len(statuses),
-                          step_statuses = statuses)
+            db.update_run(
+                run["id"], status = "completed", current_step = len(statuses), step_statuses = statuses
+            )
         except Exception as exc:
             logger.exception("Routine run %s failed", run["id"])
             active = next((item for item in statuses if item["status"] == "running"), None)
             if active:
                 active["status"] = "failed"
                 active["error"] = str(exc)[:1000]
-            db.update_run(run["id"], status = "failed", step_statuses = statuses,
-                          error = str(exc)[:1000])
+            db.update_run(run["id"], status = "failed", step_statuses = statuses, error = str(exc)[:1000])
         finally:
             with self._lock:
                 self._active_accounts.discard(account_id)

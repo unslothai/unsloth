@@ -36,7 +36,9 @@ class RoutineStep(BaseModel):
             raise ValueError("A recipe step needs a configured Data Recipe")
         if self.kind == "folder_sync" and not self.folder_id:
             raise ValueError("A folder sync step needs a linked folder")
-        if (self.kind == "recipe" and self.folder_id) or (self.kind == "folder_sync" and self.recipe):
+        if (self.kind == "recipe" and self.folder_id) or (
+            self.kind == "folder_sync" and self.recipe
+        ):
             raise ValueError("Step input does not match its kind")
         return self
 
@@ -75,20 +77,28 @@ def list_routines():
 def create_routine(payload: RoutineInput, via_api_key: ViaApiKey = False):
     _validate_steps(payload, via_api_key)
     return db.save_routine(
-        routine_id = None, name = payload.name.strip(),
+        routine_id = None,
+        name = payload.name.strip(),
         steps = [step.model_dump(exclude_none = True) for step in payload.steps],
-        interval_minutes = payload.interval_minutes, enabled = payload.enabled,
+        interval_minutes = payload.interval_minutes,
+        enabled = payload.enabled,
     )
 
 
 @router.put("/{routine_id}")
-def update_routine(routine_id: str, payload: RoutineInput, via_api_key: ViaApiKey = False):
+def update_routine(
+    routine_id: str,
+    payload: RoutineInput,
+    via_api_key: ViaApiKey = False,
+):
     _validate_steps(payload, via_api_key)
     try:
         return db.save_routine(
-            routine_id = routine_id, name = payload.name.strip(),
+            routine_id = routine_id,
+            name = payload.name.strip(),
             steps = [step.model_dump(exclude_none = True) for step in payload.steps],
-            interval_minutes = payload.interval_minutes, enabled = payload.enabled,
+            interval_minutes = payload.interval_minutes,
+            enabled = payload.enabled,
         )
     except KeyError as exc:
         raise HTTPException(status_code = 404, detail = "Routine not found") from exc

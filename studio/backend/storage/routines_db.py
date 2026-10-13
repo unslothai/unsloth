@@ -72,8 +72,15 @@ def get_routine(routine_id: str) -> dict[str, Any] | None:
         return _routine(row) if row else None
 
 
-def save_routine(*, routine_id: str | None, name: str, steps: list[dict], interval_minutes: int,
-                 enabled: bool, next_run_at: float | None = None) -> dict[str, Any]:
+def save_routine(
+    *,
+    routine_id: str | None,
+    name: str,
+    steps: list[dict],
+    interval_minutes: int,
+    enabled: bool,
+    next_run_at: float | None = None,
+) -> dict[str, Any]:
     now = time.time()
     with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -81,18 +88,35 @@ def save_routine(*, routine_id: str | None, name: str, steps: list[dict], interv
             routine_id = str(uuid.uuid4())
             conn.execute(
                 "INSERT INTO studio_routines VALUES (?,?,?,?,?,?,?,?)",
-                (routine_id, name, json.dumps(steps), interval_minutes,
-                 next_run_at or now + interval_minutes * 60, int(enabled), now, now),
+                (
+                    routine_id,
+                    name,
+                    json.dumps(steps),
+                    interval_minutes,
+                    next_run_at or now + interval_minutes * 60,
+                    int(enabled),
+                    now,
+                    now,
+                ),
             )
         else:
-            old = conn.execute("SELECT id FROM studio_routines WHERE id=?", (routine_id,)).fetchone()
+            old = conn.execute(
+                "SELECT id FROM studio_routines WHERE id=?", (routine_id,)
+            ).fetchone()
             if old is None:
                 raise KeyError(routine_id)
             conn.execute(
                 "UPDATE studio_routines SET name=?, steps_json=?, interval_minutes=?, "
                 "next_run_at=?, enabled=?, updated_at=? WHERE id=?",
-                (name, json.dumps(steps), interval_minutes,
-                 next_run_at or now + interval_minutes * 60, int(enabled), now, routine_id),
+                (
+                    name,
+                    json.dumps(steps),
+                    interval_minutes,
+                    next_run_at or now + interval_minutes * 60,
+                    int(enabled),
+                    now,
+                    routine_id,
+                ),
             )
         conn.commit()
     return get_routine(routine_id)
@@ -164,15 +188,20 @@ def claim_due() -> str | None:
             return None
         routine = conn.execute(
             "SELECT * FROM studio_routines WHERE enabled=1 AND next_run_at<=? "
-            "ORDER BY next_run_at LIMIT 1", (now,)
+            "ORDER BY next_run_at LIMIT 1",
+            (now,),
         ).fetchone()
         if routine is None:
             conn.commit()
             return None
         # Missed occurrences are skipped. One scheduled occurrence is claimed per wake.
         interval = routine["interval_minutes"] * 60
-        next_at = routine["next_run_at"] + ((now - routine["next_run_at"]) // interval + 1) * interval
-        conn.execute("UPDATE studio_routines SET next_run_at=? WHERE id=?", (next_at, routine["id"]))
+        next_at = (
+            routine["next_run_at"] + ((now - routine["next_run_at"]) // interval + 1) * interval
+        )
+        conn.execute(
+            "UPDATE studio_routines SET next_run_at=? WHERE id=?", (next_at, routine["id"])
+        )
         run_id = _create_run(conn, routine, "schedule", now)
         conn.commit()
         return run_id
@@ -195,8 +224,14 @@ def claim_queued_run() -> dict[str, Any] | None:
         return get_run(row["id"])
 
 
-def update_run(run_id: str, *, status: str, current_step: int | None = None,
-               step_statuses: list[dict] | None = None, error: str | None = None) -> None:
+def update_run(
+    run_id: str,
+    *,
+    status: str,
+    current_step: int | None = None,
+    step_statuses: list[dict] | None = None,
+    error: str | None = None,
+) -> None:
     now = time.time()
     with closing(_connect()) as conn:
         conn.execute(
@@ -205,8 +240,17 @@ def update_run(run_id: str, *, status: str, current_step: int | None = None,
             "started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END, "
             "finished_at=CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE finished_at END "
             "WHERE id=?",
-            (status, current_step, json.dumps(step_statuses) if step_statuses is not None else None,
-             error, status, now, status, now, run_id),
+            (
+                status,
+                current_step,
+                json.dumps(step_statuses) if step_statuses is not None else None,
+                error,
+                status,
+                now,
+                status,
+                now,
+                run_id,
+            ),
         )
         conn.commit()
 
@@ -215,6 +259,7 @@ def fail_interrupted_runs() -> None:
     with closing(_connect()) as conn:
         conn.execute(
             "UPDATE studio_routine_runs SET status='failed', error='Studio stopped during this run', "
-            "finished_at=? WHERE status IN ('queued','running')", (time.time(),)
+            "finished_at=? WHERE status IN ('queued','running')",
+            (time.time(),),
         )
         conn.commit()
