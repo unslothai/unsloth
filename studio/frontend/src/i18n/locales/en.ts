@@ -484,7 +484,7 @@ export const en = {
     gpuMemoryHelp: "The most of each selected GPU the engine may use. Automatic uses what is free; lower it to leave room for other programs.",
     seed: "Seed",
     seedPlaceholder: "Engine default",
-    seedHelp: "Fixes the engine's random seed so sampled replies repeat across loads.",
+    seedHelp: "Sets the engine's random seed. Concurrent chats can still change sampled replies.",
     default: "Default",
     installRequired: "install required",
     ownerRequired: "Ask the Studio owner to install this engine.",

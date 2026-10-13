@@ -519,7 +519,7 @@ export const sv = {
       "Det mesta av varje vald GPU som motorn får använda. Automatisk använder det som är ledigt; sänk den för att lämna plats åt andra program.",
     seed: "Seed",
     seedPlaceholder: "Motorns standard",
-    seedHelp: "Låser motorns slumpfrö så att samplade svar upprepas mellan inläsningar.",
+    seedHelp: "Anger motorns slumpfrö. Samtidiga chattar kan fortfarande ändra samplade svar.",
     default: "Standard",
     installRequired: "installation krävs",
     ownerRequired: "Be Studio-ägaren att installera den här motorn.",
