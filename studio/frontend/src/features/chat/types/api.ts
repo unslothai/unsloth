@@ -827,6 +827,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
+    // true while the checkpoint in force was started by /compact
+    manual?: boolean;
     // true when the provider summarized earlier turns instead of Unsloth dropping them
     summarized?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt
