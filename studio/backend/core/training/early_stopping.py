@@ -62,8 +62,8 @@ def create_early_stopping_callback(patience: int):
             if loss is None:
                 return
             loss = float(loss)
-            # NaN compares False, so a diverged eval counts against patience instead of becoming the best.
-            if self.best_loss is None or loss < self.best_loss:
+            # A diverged (NaN / inf) eval counts against patience and never becomes the best.
+            if math.isfinite(loss) and (self.best_loss is None or loss < self.best_loss):
                 self.best_loss = loss
                 self.best_step = state.global_step
                 self.bad_evals = 0
@@ -75,7 +75,7 @@ def create_early_stopping_callback(patience: int):
                 control.should_training_stop = True
                 logger.info(
                     f"Early stopping at step {state.global_step}: eval loss has not improved for "
-                    f"{self.bad_evals} evaluations (best {self.best_loss:.4f} at step {self.best_step})\n"
+                    f"{self.bad_evals} evaluations (best {self.best_loss} at step {self.best_step})\n"
                 )
 
         def on_train_end(
@@ -87,8 +87,10 @@ def create_early_stopping_callback(patience: int):
             **kwargs,
         ):
             # bad_evals == 0 means the last evaluation was the best, so the final weights already are. A run that
-            # ends on its own after worse evaluations restores too, as MLX's load_best_model_at_end does.
-            if self.bad_evals == 0 or self._best_weights is None or model is None:
+            # ends on its own after worse evaluations restores too, as MLX's load_best_model_at_end does. A user
+            # stop does not: stop-and-save writes a resume checkpoint, whose optimizer state is the current step's.
+            finished = self.stopped_at is not None or state.global_step >= state.max_steps
+            if not finished or self.bad_evals == 0 or self._best_weights is None or model is None:
                 return
             try:
                 import torch

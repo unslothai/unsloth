@@ -149,9 +149,7 @@ def test_off_or_without_evaluation_adds_nothing(tmp_path):
         assert trainer.callback_handler.callbacks == before
 
 
-def test_nan_eval_loss_counts_against_patience():
-    callback = es.create_early_stopping_callback(2)
-
+def _feed(callback, losses):
     class _State:
         global_step = 0
 
@@ -159,11 +157,45 @@ def test_nan_eval_loss_counts_against_patience():
         should_training_stop = False
 
     state, control = _State(), _Control()
-    for step, loss in enumerate([1.0, float("nan"), float("nan")], start = 1):
+    for step, loss in enumerate(losses, start = 1):
         state.global_step = step
         callback.on_evaluate(None, state, control, metrics = {"eval_loss": loss})
+    return control
+
+
+def test_nan_eval_loss_counts_against_patience():
+    callback = es.create_early_stopping_callback(2)
+    control = _feed(callback, [1.0, float("nan"), float("nan")])
     assert control.should_training_stop and callback.best_loss == 1.0 and callback.stopped_at == 3
+
+
+def test_a_nan_first_eval_never_becomes_the_best():
+    callback = es.create_early_stopping_callback(2)
+    control = _feed(callback, [float("nan"), 0.9, 0.8])
+    assert not control.should_training_stop
+    assert callback.best_loss == 0.8 and callback.best_step == 3 and callback.bad_evals == 0
     assert not math.isnan(callback.best_loss)
+
+
+def test_a_user_stop_keeps_the_current_weights(tmp_path):
+    # Stop-and-save writes a resume checkpoint with this step's optimizer state, so the weights must match it.
+    from transformers import TrainerCallback
+
+    class _UserStop(TrainerCallback):
+        def on_evaluate(self, args, state, control, **kwargs):
+            if state.global_step == 2:
+                control.should_training_stop = True
+
+    trainer = _trainer(tmp_path)
+    callback = attach_early_stopping(trainer, 5)
+    trainer.add_callback(_UserStop())
+    trainer.train()
+
+    assert (
+        trainer.state.global_step == 2 and callback.bad_evals == 1 and callback.stopped_at is None
+    )
+    assert not callback.restored
+    assert trainer.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 2))
 
 
 def test_too_large_to_copy_still_stops_with_the_final_weights(tmp_path, monkeypatch):

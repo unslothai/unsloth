@@ -1659,7 +1659,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainingMethodEditGeneration += 1;
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = selections.selectedModel;
-          setUserEdit({ ...hyperparameters, ...selections });
+          // Not a model default (switching models keeps it), so it is not in the patch above.
+          const patience = Number(config.early_stopping_patience);
+          setUserEdit({
+            ...hyperparameters,
+            ...selections,
+            earlyStoppingPatience:
+              Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0,
+          });
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {
             applyTrainingDefaults: false,
