@@ -554,7 +554,6 @@ export const ru = {
     queueingHintShared: "Очередь сохраняется.",
   },
   rewind: {
-    menuItem: "Откатить…",
     title: "Откатить",
     pickDescription: "Выберите сообщение, к которому нужно вернуться.",
     pickEmpty: "Пока нет сообщений, к которым можно вернуться.",

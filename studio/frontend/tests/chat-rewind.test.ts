@@ -96,5 +96,5 @@ test("the composer opens the rewind picker instead of sending /rewind", () => {
   assert.ok(intercept > 0);
   assert.ok(intercept < submit.indexOf("if (disabled || shouldBlockSend())"));
   assert.ok(intercept < submit.indexOf("interceptSend(event)"));
-  assert.match(thread, /<RewindMessageMenuItem \/>\s*<DeleteMessageMenuItem \/>/);
+  assert.match(thread, /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>/);
 });

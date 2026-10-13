@@ -554,7 +554,6 @@ export const hi = {
     queueingHintShared: "कतार बनी रहती है।",
   },
   rewind: {
-    menuItem: "रिवाइंड करें…",
     title: "रिवाइंड करें",
     pickDescription: "वह संदेश चुनें जिस पर वापस जाना है।",
     pickEmpty: "अभी वापस जाने के लिए कोई संदेश नहीं है।",

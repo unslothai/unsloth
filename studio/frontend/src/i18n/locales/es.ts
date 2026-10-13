@@ -554,7 +554,6 @@ export const es = {
     queueingHintShared: "La cola se conserva.",
   },
   rewind: {
-    menuItem: "Rebobinar…",
     title: "Rebobinar",
     pickDescription: "Elige un mensaje al que volver.",
     pickEmpty: "Todavía no hay mensajes a los que volver.",

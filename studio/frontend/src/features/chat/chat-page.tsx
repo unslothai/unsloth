@@ -2798,6 +2798,7 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
@@ -4715,6 +4716,7 @@ export function ChatPage({
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}
+                activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
                 configRequest={modelConfigRequest}

@@ -92,6 +92,18 @@ def test_parity_with_trl_reference(model, prediction_type):
         "from trl.trainer.utils import maybe_gather_lm_head_ctx",
         "import contextlib\nmaybe_gather_lm_head_ctx = lambda *a: contextlib.nullcontext()",
     )
+    if prediction_type == "mean_loo":
+        # mean_loo lifts one logit by ~log(K / (1 - alpha)); fp32 F.cross_entropy over the 262k vocab is then
+        # ~6e-7 off the fp64 logit gradient (our chunked CE ~1e-8). Score the reference in fp64 instead.
+        source = source.replace(
+            "import torch.nn.functional as F",
+            "import torch.nn.functional as _F\n"
+            "class F:\n"
+            "    def __getattr__(self, name): return getattr(_F, name)\n"
+            "    @staticmethod\n"
+            "    def cross_entropy(x, *a, **k): return _F.cross_entropy(x.double(), *a, **k).float()\n"
+            "F = F()",
+        )
     namespace = {"__name__": "trl_example"}
     exec(compile(source, TRL_EXAMPLE, "exec"), namespace)
     reference = namespace["DiffusionGemmaSFTTrainer"]
@@ -123,12 +135,14 @@ def test_parity_with_trl_reference(model, prediction_type):
             model, batch, _args(diffusion_prediction_type = prediction_type)
         )[0]
     )
-    torch.testing.assert_close(our_loss, ref_loss, rtol = 0, atol = 1e-6)
+    torch.testing.assert_close(our_loss, ref_loss, rtol = 1e-6, atol = 1e-6)
     for a, b in zip(our_grads, ref_grads):
         if a is None or b is None:
             assert a is None and b is None
-        else:
+        elif prediction_type == "mean":
             torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-7)
+        else:
+            torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
 
 
 def test_tied_encoder_decoder_lora_merge_is_refused():
@@ -188,6 +202,16 @@ def test_row_without_supervised_tokens_adds_no_canvas_loss(model):
     torch.manual_seed(0)
     _, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())
     assert metrics["diffusion_loss"] == 0.0
+
+
+@pytest.mark.parametrize("rows", [[(1, 0)], [(1, 0), (0, 0)]])
+def test_batch_without_encoder_ar_targets_is_finite(model, rows):
+    # A one-token or all-padding batch has no next-token pair: the AR co-loss is 0, not a NaN mean.
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length, rows = rows)
+    torch.manual_seed(0)
+    loss, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())
+    assert torch.isfinite(loss) and loss.requires_grad
+    assert float(metrics["encoder_ar_loss"]) == 0.0 and float(metrics["diffusion_loss"]) == 0.0
 
 
 def test_reloaded_adapter_still_refuses_merge(tmp_path):

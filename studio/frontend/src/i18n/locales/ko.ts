@@ -554,7 +554,6 @@ export const ko = {
     queueingHintShared: "대기열은 유지됩니다.",
   },
   rewind: {
-    menuItem: "되감기…",
     title: "되감기",
     pickDescription: "되돌아갈 메시지를 선택하세요.",
     pickEmpty: "아직 되돌아갈 메시지가 없습니다.",

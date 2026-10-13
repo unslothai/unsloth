@@ -2493,6 +2493,7 @@ class InferenceOrchestrator:
                     "tensor_parallel": len(gpu_ids or [0]) > 1
                     and (options or {}).get("parallelism", "tensor") == "tensor",
                     "supports_tools": bool((options or {}).get("tool_parser")),
+                    "reasoning_flags": (options or {}).get("reasoning_flags"),
                 }
                 self.active_model_name = model
                 self.load_generation += 1
@@ -2704,7 +2705,14 @@ class InferenceOrchestrator:
         nowhere."""
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
-            return managed.count_tokens(messages, system_prompt, tools = tools)
+            return managed.count_tokens(
+                messages,
+                system_prompt,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+            )
         if not self._gen_lock.acquire(blocking = False):
             raise RuntimeError("Cannot count tokens while a generation is in progress")
         with self._mailbox_lock:
@@ -2782,7 +2790,7 @@ class InferenceOrchestrator:
         live_branch: Optional[list] = None,
         force_reset: bool = False,
     ) -> dict:
-        """Fit one MLX prompt into the served window under the policy GGUF uses.
+        """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
         A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
         one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
@@ -2800,7 +2808,7 @@ class InferenceOrchestrator:
         context_length = int(model_info.get("context_length") or 0)
         if (
             context_overflow != "truncate_oldest"
-            or not model_info.get("is_mlx")
+            or not (model_info.get("is_mlx") or model_info.get("engine") in ("vllm", "sglang"))
             or context_length <= 1
         ):
             return unchanged
@@ -2942,7 +2950,7 @@ class InferenceOrchestrator:
                 "boundary_applied": True,
             }
         except Exception as exc:
-            logger.warning("Could not preflight the MLX context window: %s", exc)
+            logger.warning("Could not preflight the context window: %s", exc)
             return unchanged
 
     def generate_chat_response(

@@ -555,7 +555,6 @@ export const ja = {
     queueingHintShared: "キューは保持されます。",
   },
   rewind: {
-    menuItem: "巻き戻す…",
     title: "巻き戻す",
     pickDescription: "巻き戻す先のメッセージを選択してください。",
     pickEmpty: "巻き戻せるメッセージはまだありません。",

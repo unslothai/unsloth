@@ -2607,11 +2607,6 @@
         "kind": "def",
         "signature": "content: str"
       },
-      "admission_room_refused_message": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
-      },
       "blocked_bare_json_chain_may_continue": {
         "decorators": [],
         "kind": "def",
