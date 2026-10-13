@@ -497,30 +497,35 @@ def deactivate_flash_attention_impl():
             pass
 
 
-def _mean_document_length(dataset, rows = 128):
-    """Mean tokens per document over evenly spaced rows (TRL's BFD packing puts the longest documents first):
-    TRL's packed ``seq_lengths``, else one document per row."""
+def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
+    """Mean tokens per document over rows spread across the whole dataset (TRL's BFD packing puts the longest
+    documents first): the packed lengths column, else that row's ``input_ids`` as one document, like the collators."""
     try:
         total = len(dataset)
         if total <= 0:
             return None
         columns = set(dataset.column_names)
-        key = "seq_lengths" if "seq_lengths" in columns else "input_ids"
-        if key not in columns:
+        wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
+        if not wanted:
             return None
-        step = max(1, total // rows)
-        head = dataset.select_columns([key]).select(range(0, total, step)[:rows])[key]
-        if key == "seq_lengths":
-            lengths = [int(x) for row in head for x in row]
-        else:
-            lengths = [len(row) for row in head]
+        n = min(rows, total)
+        sample = dataset.select_columns(wanted).select(sorted({i * total // n for i in range(n)}))
+        lengths = []
+        for row in sample:
+            per_document = row.get(key)
+            if per_document is None:
+                ids = row.get("input_ids")
+                if ids is None:
+                    continue
+                per_document = [len(ids)]
+            lengths.extend(int(x) for x in per_document)
     except Exception:
         return None
     lengths = [x for x in lengths if x > 0]
     return sum(lengths) / len(lengths) if lengths else None
 
 
-def scope_flash_attention_impl_to_train(trainer, model) -> None:
+def scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key = "seq_lengths") -> None:
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
@@ -536,7 +541,9 @@ def scope_flash_attention_impl_to_train(trainer, model) -> None:
         try:
             activated = maybe_activate_flash_attention_impl(
                 getattr(trainer, "model", None) or model,
-                mean_document_length = _mean_document_length(getattr(trainer, "train_dataset", None)),
+                mean_document_length = _mean_document_length(
+                    getattr(trainer, "train_dataset", None), key = sequence_lengths_key
+                ),
             )
         except Exception as exc:
             FLASH_IMPL_STATE["reason"] = f"activation error ({type(exc).__name__}: {exc})"
