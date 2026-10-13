@@ -33,14 +33,15 @@ _AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
 _AUTH_END = r"""(?=[\s,;"'`)\]}>”’]|$)"""
 _AUTH_QUOTED = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’)"""
 # ";" stays inside a value (AWS SignedHeaders=host;x-amz-date) unless it starts another assignment.
-_AUTH_BARE = r"""[^\s,"`:;=()<>\[\]{}]+(?:;[^\s,"`:;=()<>\[\]{}]+(?![ \t]*=))*=*"""
+_AUTH_BARE = r"""[^\s,"`:;=()<>\[\]{}]+(?:;(?!(?:basic|bearer|digest|token)[ \t])[^\s,"`:;=()<>\[\]{}]+(?![ \t]*=))*=*"""
 # Spaces around "=" only before a quoted value, so padded token68 cannot read as a parameter.
 _AUTH_PARAM = (
     rf"{_AUTH_TOKEN}(?:=(?:{_AUTH_QUOTED}|{_AUTH_BARE}{_AUTH_END})|[ \t]*=[ \t]*{_AUTH_QUOTED})"
 )
 _AUTH_NOT_A_LABEL = r"""(?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
     |client[\s_-]?secret|private[\s_-]?key|refresh[\s_-]?token|session[\s_-]?token
-    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)"""
+    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:
+    |(?:passport|driver(?:'s)?[\s_-]?licen[cs]e|national[\s_-]?id|tax[\s_-]?id|account[\s_-]?(?:number|no))\b)"""
 # A token68 cannot be a scheme word or the start of a spaced assignment.
 _AUTH_TOKEN68 = rf"""(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*{_AUTH_END}(?![ \t]*=)"""
 # Base64 can end in "key=" too; when it reads like a label, its value goes with it.
