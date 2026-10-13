@@ -135,8 +135,7 @@ def _rms_layernorm_backward(
     Fast RMS Layernorm kernel for the backward pass
     Inspiration from a Triton tutorial:
     https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-    TRAIN_W: persistent programs each sum dW over their rows into one fp32 partial
-    (fla-org/flash-linear-attention layer_norm_bwd_kernel_row); off compiles to one row per program.
+    TRAIN_W: per-program fp32 dW partials (fla-org/flash-linear-attention layer_norm_bwd_kernel_row).
     """
     pid = tl.program_id(0)
     if LONG_INDEXING:
@@ -602,7 +601,6 @@ def _rms_forward(
     return Y, r
 
 
-# Persistent programs per SM for the trainable-weight backward; partials are programs x n_cols fp32.
 _DW_PROGRAMS_PER_SM = 4
 
 
@@ -615,7 +613,6 @@ def _sm_count(device):
 
 
 def _dw_launch(units, device):
-    # units = rows (one-row kernel) or row blocks (multirow); returns (programs, units per program).
     # Empty input: one program, no rows, a zero partial.
     per_program = max(
         1, triton.cdiv(units, max(1, min(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)))
@@ -636,7 +633,6 @@ def _rms_backward(
     train_w = False,
 ):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
-    # train_w: also returns dL/dW (W.dtype); else None and the kernels compile without it.
     n_rows, n_cols = dY.shape
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
@@ -836,7 +832,7 @@ if _TRACEABLE:
                 _traced_kernel,
                 train_w = train_w,
             )
-        # An op returns tensors only: an empty dW stands for "frozen".
+        # Ops return tensors only: empty dW = frozen.
         return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):

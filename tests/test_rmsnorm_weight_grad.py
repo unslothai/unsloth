@@ -4,7 +4,7 @@
 import pytest
 from real_accelerator import (
     has_real_cuda,
-)  # tests/_shared, on sys.path via tests/conftest.py
+)
 import torch
 
 pytestmark = [
@@ -54,7 +54,6 @@ def _fast(
 
 
 # Issue #3014: a trainable norm weight (full finetuning without full_finetuning=True) got no grad.
-# 128 columns run the multi-row kernel, 384 the one-row kernel; 3 rows < programs, 9000 rows > them.
 @pytest.mark.parametrize("path", ["eager", "traced"])
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -81,8 +80,7 @@ def test_rmsnorm_trainable_weight_gets_grad(path, gemma, dtype, rows, cols):
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("cols", [128, 384])
 def test_rmsnorm_trainable_weight_dx_matches_frozen(gemma, cols):
-    """Training the weight must not change dX: same per-row math, only the grid differs.
-    Gemma's (W + 1) may contract differently inside the row loop: a few elements 1 bf16 ulp apart."""
+    """Gemma's (W + 1) may contract differently in the row loop: a few elements 1 bf16 ulp apart."""
     torch.manual_seed(3407)
     inputs = torch.randn(777, cols, device = "cuda", dtype = torch.bfloat16)
     weights = torch.rand(cols, device = "cuda", dtype = torch.bfloat16)
