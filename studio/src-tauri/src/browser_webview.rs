@@ -1708,21 +1708,17 @@ pub async fn browser_view_agent<R: Runtime>(
 // body of an async function the installed agent runs and keeps the outcome of for the panel to
 // poll. Spliced in like the agent code so a CSP without 'unsafe-eval' can't block it; a syntax
 // error fails the whole script, so the page never sees half of it. Spliced source can close any
-// wrapper around it, so the document check runs as a script of its own first (EVAL_CHECK_SCRIPT).
+// wrapper around it, so the document check is a statement of its own ahead of it, in the same
+// evaluation: a throw at the top level ends the script before any of the approved text runs.
 const EVAL_SCRIPT: &str = r#"(() => {
   const agent = window[Symbol.for("unsloth.agent")];
-  if (!agent || typeof agent.evaluate !== "function") return JSON.stringify({ installed: false, result: null });
-  return JSON.stringify({ installed: true, result: agent.evaluate(__ID__, __DOC__, async () => {
+  if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
+})();
+JSON.stringify({ installed: true, result: window[Symbol.for("unsloth.agent")].evaluate(__ID__, __DOC__, async () => {
 __CODE__
-}) });
-})()"#;
+}) });"#;
 // browser_agent.py allows 8000 characters, of up to 4 bytes each.
 const MAX_EVAL_CODE: usize = 32_000;
-const EVAL_CHECK_SCRIPT: &str = r#"(() => {
-  const agent = window[Symbol.for("unsloth.agent")];
-  if (!agent || typeof agent.owns !== "function") return JSON.stringify(false);
-  return JSON.stringify(agent.owns(__DOC__) === true);
-})()"#;
 
 fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
     // The agent's ref for the approved document, as `r` and digits.
@@ -1744,12 +1740,22 @@ fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
     if code.len() > MAX_EVAL_CODE {
         return Err("script too large".into());
     }
-    let (head, rest) = EVAL_SCRIPT.split_once("__ID__").ok_or("bad eval script")?;
-    let (between, rest) = rest.split_once("__DOC__").ok_or("bad eval script")?;
-    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad eval script")?;
-    Ok(format!(
-        "{head}\"{id}\"{between}\"{doc}\"{middle}{code}{tail}"
-    ))
+    // Single pass over the template, so the code can't inject a placeholder.
+    let mut out = String::with_capacity(EVAL_SCRIPT.len() + code.len() + 96);
+    let mut rest = EVAL_SCRIPT;
+    for (marker, value) in [
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__ID__", format!("\"{id}\"")),
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__CODE__", code.to_string()),
+    ] {
+        let (head, tail) = rest.split_once(marker).ok_or("bad eval script")?;
+        out.push_str(head);
+        out.push_str(&value);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 /// Starts a browser_evaluate script in a tab's page; the agent's `evaluated` command reads how it ended.
@@ -1764,11 +1770,6 @@ pub async fn browser_view_eval<R: Runtime>(
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
     let script = eval_script(&id, &doc, &code)?;
-    // Not the approved document: the script is never sent.
-    let check = EVAL_CHECK_SCRIPT.replacen("__DOC__", &format!("\"{doc}\""), 1);
-    if eval_json(&page, check).await? != serde_json::Value::Bool(true) {
-        return Ok(serde_json::json!({ "installed": false, "result": null }));
-    }
     eval_json(&page, script).await
 }
 
@@ -2408,7 +2409,14 @@ mod tests {
     #[test]
     fn eval_code_is_spliced_once_and_ids_are_plain() {
         let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
-        assert!(script.contains(r#"agent.evaluate("s1-a_B", "r100001", async () => {"#));
+        // The check comes first, as its own statement.
+        let check = script
+            .find(r#"agent.owns("r100001") !== true) throw"#)
+            .unwrap();
+        let run = script
+            .find(r#".evaluate("s1-a_B", "r100001", async () => {"#)
+            .unwrap();
+        assert!(check < run && script[check..run].contains("})();"));
         assert!(script.contains("return '__ID__' + '__DOC__';"));
         assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
         assert!(eval_script("", "r1", "").is_err());

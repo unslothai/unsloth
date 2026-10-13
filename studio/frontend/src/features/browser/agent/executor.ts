@@ -549,7 +549,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   // Acting on an element: what it is decides whether the user is asked first.
   const ref = action.ref ?? "";
-  const point = action.op === "click" ? pagePoint(ready, action.x, action.y) : null;
+  const point = action.op === "click" ? await pagePoint(ready, action.x, action.y) : null;
+  if (typeof point === "string") return { ok: false, error: point };
   const described = await pageCall(ready, {
     op: "describe",
     ref,
@@ -607,6 +608,13 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
+  // A point's control can be relabelled or rewired around the same leaf while the user decides.
+  if (point && gates.some((gate) => gate.kind === "ask")) {
+    const again = await pageCall(ready, { op: "describe", ref: "", ...point });
+    if (!again.ok || again.hit !== described.hit || JSON.stringify(again.info) !== JSON.stringify(info)) {
+      return { ok: false, error: "the page changed under that point; take a screenshot to see it again." };
+    }
+  }
   if (formGate) admit(formAction, formGate);
   if (linkGate) admit(info.href, linkGate);
 
@@ -662,15 +670,22 @@ async function afterward(tab: BrowserTab, before: string, action: BrowserAction,
 }
 
 // CSS pixels per pixel of the agent's last screenshot of each tab: the model reads x and y off that
-// picture (browser_agent.py _POINT_NOTE). 1 until it takes one.
-const pointScale = new Map<string, number>();
+// picture (browser_agent.py _POINT_NOTE). 1 until it takes one. Kept with the page and viewport it
+// was taken of: on another, the picture's x and y point at nothing it showed.
+const pointScale = new Map<string, { scale: number; url: string; width: number; height: number }>();
 const MAX_SHOT_EDGE = 1024;
 
-function pagePoint(tab: BrowserTab, x?: number, y?: number): { x: number; y: number } | null {
+async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: number; y: number } | string | null> {
   if (x === undefined || y === undefined) return null;
-  const scale = pointScale.get(tab.id) ?? 1;
-  return { x: x * scale, y: y * scale };
+  const shot = pointScale.get(tab.id);
+  if (!shot) return { x, y };
+  if (tabUrl(tab) !== shot.url) return STALE_SHOT;
+  const status = await pageCall(tab, { op: "status" });
+  if (status.width !== shot.width || status.height !== shot.height) return STALE_SHOT;
+  return { x: x * shot.scale, y: y * shot.scale };
 }
+
+const STALE_SHOT = "the page changed since the screenshot those x and y come from; take a new one.";
 
 /** A ref's centre or the model's point, in CSS pixels of the visible page; else why not. */
 async function onScreen(
@@ -680,7 +695,7 @@ async function onScreen(
   y?: number,
   scroll = true,
 ): Promise<{ x: number; y: number } | string> {
-  const point = pagePoint(tab, x, y);
+  const point = await pagePoint(tab, x, y);
   if (point) return point;
   const found = await pageCall(tab, { op: "locate", ref: ref ?? "", scroll });
   if (!found.ok) return found.error ?? `${ref} could not be found.`;
@@ -796,7 +811,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
   } else {
     started = await pageCall(tab, { op: "evaluate", id, doc, script });
   }
-  if (!started) return { ok: false, error: "the script did not start; check it for a syntax error." };
+  if (!started) return { ok: false, error: "the script did not run: the page changed while the user was asked, or it has a syntax error." };
   if (!started.ok) return { ok: false, error: started.error };
   let outcome = `Still running after ${SCRIPT_WAIT_MS / 1000} s; its result is lost.`;
   const until = Date.now() + SCRIPT_WAIT_MS;
@@ -923,14 +938,15 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
     const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(cssWidth, cssHeight));
     const width = Math.max(1, Math.round(cssWidth * fit));
     const height = Math.max(1, Math.round(cssHeight * fit));
-    pointScale.set(tab.id, cssWidth / bitmap.width);
+    const at = { url: tabUrl(tab), width: cssWidth, height: cssHeight };
+    pointScale.set(tab.id, { ...at, scale: cssWidth / bitmap.width });
     if (width === bitmap.width && height === bitmap.height) return blob;
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
     const scaled = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (scaled) pointScale.set(tab.id, cssWidth / width);
+    if (scaled) pointScale.set(tab.id, { ...at, scale: cssWidth / width });
     return scaled ?? blob;
   } finally {
     bitmap.close();

@@ -693,6 +693,8 @@ export function installPageAgent(): PageAgent {
   /** No overlay check: a point gets whatever is drawn on top there, as a real click would. */
   const clickAt = (at: Point, directLinks: boolean, expect: unknown): Record<string, unknown> => {
     const el = stillAt(at, expect);
+    // As a real click: a disabled control takes none, and a dispatched one would still reach its listeners.
+    if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
     const navigate = linkOut(el, directLinks);
     if (navigate) return { ok: true, navigate };
     pressAt(el, at);
