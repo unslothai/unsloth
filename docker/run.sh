@@ -43,6 +43,7 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
+#   UNSLOTH_WORKSPACE_VOLUME=unsloth-workspace  named volume for /workspace; empty to skip it
 #   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
 #                                           checkpoint on docker stop; --stop-timeout is
 #                                           set 30s above it
@@ -185,6 +186,11 @@ STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
 STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then
     STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
+WORKSPACE_VOLUME="${UNSLOTH_WORKSPACE_VOLUME-unsloth-workspace}"
+WORKSPACE_MOUNT=()
+if [ -n "$WORKSPACE_VOLUME" ]; then
+    WORKSPACE_MOUNT=(-v "$WORKSPACE_VOLUME":/workspace)
 fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
@@ -540,6 +546,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
+    ${WORKSPACE_MOUNT[@]+"${WORKSPACE_MOUNT[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
