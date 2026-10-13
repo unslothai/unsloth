@@ -2258,6 +2258,7 @@ fn main() {
             browser_webview::browser_view_find,
             browser_webview::browser_view_annotate,
             browser_webview::browser_view_agent,
+            browser_webview::browser_view_eval,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
@@ -2396,6 +2397,19 @@ fn main() {
             setup_unix_termination_signals(app)?;
             Ok(())
         })
+        .on_webview_event(|webview, event| {
+            // The multi-webview runtime delivers OS drops to the webview, not the window.
+            // Browser page drops must not authorize paths for Studio's native intake.
+            if webview.label() == "main" {
+                if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
+                    event
+                {
+                    webview
+                        .state::<native_intents::NativeIntakeState>()
+                        .note_dropped_paths(paths);
+                }
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
@@ -2407,13 +2421,6 @@ fn main() {
                     }
                     _ => {}
                 }
-            }
-            // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed to the native intake commands.
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                window
-                    .state::<native_intents::NativeIntakeState>()
-                    .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
