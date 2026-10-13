@@ -30,13 +30,12 @@ export function isRtfAttachmentName(filename: string): boolean {
   return filename.toLowerCase().endsWith(RTF_ATTACHMENT_EXTENSIONS);
 }
 
-// RAG_DOCUMENT_UPLOAD_ACCEPT minus what the browser reads itself (.xlsx/.xlsm/.pptx, .odt/.ods, .rtf,
-// .eml as text). Spelled out: an import would stop this module being a leaf of the chat barrel.
+// RAG_DOCUMENT_UPLOAD_ACCEPT minus browser-read types; spelled out so this module stays a chat-barrel leaf.
 export const SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS = [
   ".doc,.docm,.dotx,.dotm,.xls,.xltx,.xltm,.ppt,.pptm,.potx,.potm,.ppsx,.ppsm",
   ".odp,.ott,.ots,.otp,.msg,.mht,.mhtml,.epub,.xhtml,.xht",
 ].join(",");
-// RAG's MAX_UPLOAD_BYTES; the browser readers stop at 50 MB, so larger documents go here too.
+// RAG's MAX_UPLOAD_BYTES.
 export const MAX_SERVER_DOCUMENT_BYTES = 200 * 1024 * 1024;
 
 export function isServerDocumentAttachmentName(name: string): boolean {
