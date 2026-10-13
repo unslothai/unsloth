@@ -49,6 +49,8 @@ _idle_timer: threading.Timer | None = None
 _fallback_reason: str | None = None
 # A Clef a training run unloaded, reloading once the run ends; an unload cancels it instead of waiting.
 _reloading: Checkpoint | None = None
+# Why the reload's load was stopped ("training" or "gpu"), recorded when it happens: a short run can be over by the join.
+_reload_stopped_by: str | None = None
 TRAINING_POLL_S = 2.0
 # A llama.cpp decision server unloads after this long without a request.
 IDLE_UNLOAD_S = 300.0
@@ -1029,10 +1031,10 @@ def _load_checkpoint(checkpoint: Checkpoint):
         unloads = _unloads
         agent = ClefAgent(
             root,
-            cancelled = lambda: _training_active() or _unloads != unloads or _reload_lost_gpu(),
+            cancelled = lambda: _clef_preempted() or _unloads != unloads,
         )
         # Training may have started while this loaded, and Clef has no CPU fallback.
-        if _training_active() or _reload_lost_gpu():
+        if _clef_preempted():
             agent.close()
             raise ClefWorkerError(
                 f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
@@ -2326,14 +2328,24 @@ def unload(reload_after_training: bool = False) -> bool:
     return was_loaded
 
 
-def _reload_lost_gpu() -> bool:
-    # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
+def _clef_preempted() -> bool:
+    global _reload_stopped_by
     from core.inference.gpu_arbiter import current_owner
-    return _reloading is not None and current_owner() is not None
+
+    if _training_active():
+        reason = "training"
+    elif _reloading is not None and current_owner() is not None:
+        # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
+        reason = "gpu"
+    else:
+        return False
+    if _reloading is not None:
+        _reload_stopped_by = reason
+    return True
 
 
 def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
-    global _reloading, _failure
+    global _reloading, _reload_stopped_by, _failure
     from core.inference.gpu_arbiter import current_owner
 
     while True:
@@ -2348,6 +2360,7 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
             ):
                 return
             _reloading = checkpoint
+            _reload_stopped_by = None
         try:
             loader = _ensure_loading(checkpoint, unloads)
             if loader is not None:
@@ -2357,8 +2370,8 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
         finally:
             with _state_lock:
                 _reloading = None
-        training = _training_active()
-        if training or current_owner() is not None:
+        training = _reload_stopped_by == "training" or _training_active()
+        if training or _reload_stopped_by == "gpu" or current_owner() is not None:
             # Another run, or a chat, image or video model, took the GPU while this loaded: not a failure to report.
             with _state_lock:
                 if _failure is not None and _failure[0] == checkpoint:
@@ -2371,14 +2384,19 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
 
         # The first decision builds the GPU kernels; done now, a request does not wait for it.
         try:
-            agent.decide("ready", {"ready": {"type": "noul"}})
+            if current_owner() is None:
+                agent.decide("ready", {"ready": {"type": "noul"}})
         except ClefWorkerError:
             logger.info(
                 "Retiring %s: its worker failed the warm-up", checkpoint.name, exc_info = True
             )
             _evict_agent(agent)
+            return
         except Exception:
             logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
+        if current_owner() is not None:
+            logger.info("Retiring %s: another model took the GPU as it reloaded", checkpoint.name)
+            _evict_agent(agent)
 
 
 def shutdown() -> None:
