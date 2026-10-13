@@ -6070,13 +6070,13 @@ def _skill_tool_tip(
     create_tip = (
         " To create a skill, read skill-creator and then call create_skill." if can_create else ""
     )
-    # code-off mentions and hosted Code can read skills but cannot run bundled local scripts
+    # tools-off mentions and hosted Tools can read skills but cannot run bundled local scripts
     scripts_tip = (
         ""
         if can_run_scripts
         else " No local python or terminal tool is available, so a skill's bundled scripts cannot "
         "run: follow its written instructions, never claim to have run a script, and when a step "
-        "needs one, tell the user it needs Unsloth Studio's local Code tool."
+        "needs one, tell the user it needs Unsloth Studio's local Tools."
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
@@ -23548,7 +23548,6 @@ async def _run_music_workflow(
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
-        cpu = model_info.get("audio_cpp_backend") == "cpu"
         music = {
             "mode": body.mode,
             "text": body.text,
@@ -23557,7 +23556,9 @@ async def _run_music_workflow(
             "duration_s": seconds,
             "variations": variations,
             "edit": body.edit.model_dump() if body.edit is not None else None,
-            "timeout_s": timeout_seconds(family, work_s, variations, cpu),
+            "timeout_s": timeout_seconds(
+                family, work_s, variations, model_info.get("audio_cpp_backend")
+            ),
         }
         run_dir.mkdir(parents = True, exist_ok = True)
         payload = ChatCompletionRequest(

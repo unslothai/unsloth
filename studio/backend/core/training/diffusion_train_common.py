@@ -713,7 +713,7 @@ def xpu_native_bf16_probe() -> Optional[bool]:
     if not callable(fn):
         return None
     try:
-        return bool(fn(including_emulation = False))
+        return bool(fn(including_emulation = False)) or _xpu_is_known_bf16_part(torch)
     except TypeError:
         # A torch predating the including_emulation parameter: its answer is the only one there is.
         try:
@@ -722,6 +722,25 @@ def xpu_native_bf16_probe() -> Optional[bool]:
             return None
     except Exception:  # noqa: BLE001 -- unprobeable
         return None
+
+
+def _xpu_is_known_bf16_part(torch) -> bool:
+    """Whether the current XPU is an Arc / Data Center part, read from its PCI id. Never raises.
+
+    The SYCL runtime answers ``has_bfloat16_conversions`` through libocloc (the intel-ocloc
+    package, which the torch-xpu wheels do not ship), so without it the strict probe is False on
+    every device, BMG and PVC included; with it, True on every device. The PCI id does not depend
+    on the install."""
+    try:
+        props = torch.xpu.get_device_properties()
+        device_id = getattr(props, "device_id", None)
+        if isinstance(device_id, int) and device_id > 0:
+            from utils.hardware.hardware import _is_intel_xpu_pci_id
+            return _is_intel_xpu_pci_id(device_id)
+        # A torch without device_id: the marketing name is the only signal left.
+        return bool(re.search(r"\bArc\b|Data Center GPU", str(getattr(props, "name", "") or "")))
+    except Exception:  # noqa: BLE001 -- unprobeable keeps the strict answer
+        return False
 
 
 def native_bf16_supported_xpu() -> bool:
