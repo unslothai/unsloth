@@ -406,7 +406,7 @@ function BrowserOverlay(): ReactElement {
   };
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 sm:p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           useBrowserStore.getState().closePanel();

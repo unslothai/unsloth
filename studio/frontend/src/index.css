@@ -29,8 +29,6 @@
 		z-index: 90;
 		pointer-events: none;
 		background: rgb(0 0 0 / 30%);
-		-webkit-backdrop-filter: blur(2px);
-		backdrop-filter: blur(2px);
 		opacity: 0;
 		transition: opacity 100ms;
 	}
