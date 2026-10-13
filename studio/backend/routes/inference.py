@@ -18509,11 +18509,6 @@ async def _load_model_impl(
     _lora_base_before_this_load = _lora_base_already_in_the_hub_cache(request.model_path)
     from core.inference.llama_cpp import GpuMemoryShortError, LlamaServerNotFoundError
 
-    if not spark_planned:
-        # Paired DGX Spark only, and a no-op with nothing attached.
-        from core.inference import spark_serving
-        await spark_serving.reconcile_internal_load()
-
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
@@ -19039,6 +19034,12 @@ async def _load_model_impl(
         cancel_pending = (
             serving and on_reload_confirmed is not None and bool(request.force_cancel_active)
         )
+        if not spark_planned:
+            # Paired DGX Spark only, and a no-op with nothing attached. After resolution, dedupe and
+            # the active-generation gate: tearing a split down first left a refused load's resident
+            # model loaded without its remote layers.
+            from core.inference import spark_serving
+            await spark_serving.reconcile_internal_load()
 
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(

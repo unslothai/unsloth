@@ -2558,8 +2558,7 @@ class SparkServing:
         if busy:
             return _fall_back(f"layer split needs the peer GPU but {busy}")
         if running is not None:
-            backend = self.attached_backend
-            self._retired_split = (backend, getattr(backend, "_process", None))
+            self._note_retired_split(running)
             await self.detach()
 
         # Both bundles must speak the same RPC protocol and nothing stale may sit on the port.
@@ -2653,6 +2652,13 @@ class SparkServing:
             self.split_config_reason,
         ) = state
         return True
+
+    def _note_retired_split(self, running: Any) -> None:
+        """Remember the primary whose remote layers go with ``running``, for load_failed; only a
+        split's primary has any, a replica's primary is a whole model."""
+        if getattr(running, "name", "") == "ggml-rpc-server":
+            backend = self.attached_backend
+            self._retired_split = (backend, getattr(backend, "_process", None))
 
     async def load_failed(self) -> None:
         self.load_in_progress = False
@@ -3111,16 +3117,18 @@ class SparkServing:
         port = getattr(backend, "_port", None)
         if port and port != self.attached_port and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
-            self.attached_port = int(port)
-            await self._sync_replica(backend)
+            # Committed only once the replica is in step, so a failed key copy is retried next pass.
+            if await self._sync_replica(backend):
+                self.attached_port = int(port)
 
-    async def _sync_replica(self, backend: Any) -> None:
+    async def _sync_replica(self, backend: Any) -> bool:
         """Bring the replica in line with a primary that was relaunched without a load request: a
         respawn rewrites the key file with a new key (the replica would answer 401), and the MTP
-        crash fallback drops the speculative flags (the replica would keep crashing on them)."""
+        crash fallback drops the speculative flags (the replica would keep crashing on them). False
+        when it could not be brought in step and should be retried."""
         process, peer = self.peer_process, self.peer
         if process is None or not peer or self.topology != "replicas" or not self.replica_binary:
-            return
+            return True
         argv = list(getattr(getattr(backend, "_process", None), "args", None) or [])
         rebuilt = process.argv
         if argv:
@@ -3132,14 +3140,14 @@ class SparkServing:
             )
         keys = _read_keys(list(self.peer_keys))
         if rebuilt == process.argv and keys == self.peer_keys:
-            return
+            return True
         if keys != self.peer_keys:
             failed = await replicate_secret_files(peer, list(keys))
             if failed:
                 logger.warning(
                     "spark serving: the new llama-server key could not reach %s: %s", peer, failed
                 )
-                return
+                return False
             self.peer_keys = keys
         process.argv = rebuilt
         try:
@@ -3147,6 +3155,8 @@ class SparkServing:
             await process.start()
         except Exception as exc:
             logger.warning("spark serving: peer restart for the new key failed: %s", exc)
+            return False
+        return True
 
     def _argv_names_our_peer(self, argv: Sequence[str]) -> bool:
         """Whether an ``--rpc`` in *argv* points at the rpc-server this module launched."""

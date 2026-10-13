@@ -4461,3 +4461,70 @@ def test_an_uncached_repo_keeps_pipeline_groups_off_until_vision_is():
     with it, which --pipeline-groups refuses."""
     assert "fetches this repo" in ss.projector_blocks_pipeline_groups(None)
     assert ss.projector_blocks_pipeline_groups(None, disable_vision = True) is None
+
+
+def test_a_failed_replica_sync_is_retried_on_the_next_pass(monkeypatch, tmp_path):
+    """Committing the new port before the key copy succeeded meant the supervisor never tried
+    again, and the replica answered every routed request 401."""
+    monkeypatch.chdir(tmp_path)
+    key = tmp_path / "llama_api_key_0123"
+    key.write_bytes(b"old")
+    primary = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--api-key-file", str(key)]
+    state, events = _replica_state(
+        ss.replica_argv(primary, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081)
+    )
+    state.peer_keys = {str(key): b"old"}
+    moved = []
+
+    async def _address(name, host, port):
+        moved.append(port)
+
+    state.router = SimpleNamespace(set_backend_address = _address)
+    state.attached_port = 9000
+    outcomes = iter(["ssh: connection reset", None])
+
+    async def copy(peer, files):
+        return next(outcomes)
+
+    monkeypatch.setattr(ss, "replicate_secret_files", copy)
+    key.write_bytes(b"new")
+    respawned = _primary(primary[:4] + ["9100"] + primary[5:])
+    respawned._port, respawned._healthy = 9100, True
+    run(state._repoint_primary(respawned))
+    assert state.attached_port == 9000, "a failed sync must stay pending"
+    run(state._repoint_primary(respawned))
+    assert state.attached_port == 9100 and state.peer_keys == {str(key): b"new"}
+    assert moved == [9100, 9100]
+
+
+def test_retiring_a_replica_topology_never_unloads_the_primary():
+    """A replica's primary is a whole model; only a split's primary loses remote layers."""
+    import asyncio
+
+    state = ss.SparkServing()
+    unloaded = []
+    backend = SimpleNamespace(
+        is_loaded = True, _process = object(), unload_model = lambda: unloaded.append(True)
+    )
+    state.attached_backend = backend
+    state._note_retired_split(SimpleNamespace(name = "llama-server"))
+    asyncio.run(state.load_failed())
+    assert unloaded == []
+
+    state.attached_backend = backend
+    state._note_retired_split(SimpleNamespace(name = "ggml-rpc-server"))
+    asyncio.run(state.load_failed())
+    assert unloaded == [True]
+
+
+def test_an_internal_load_reconciles_only_after_its_refusal_gates():
+    """Preview and auto-switch loads tore the split down before model resolution and the
+    active-generation gate, so a refused load left the resident model without remote layers."""
+    from pathlib import Path as _P
+
+    source = (_P(ss.__file__).parents[2] / "routes" / "inference.py").read_text(encoding = "utf-8")
+    body = source.split("async def _load_model_impl(", 1)[1]
+    assert body.index("reconcile_internal_load()") > body.index(
+        "on_reload_confirmed(cancel = False)"
+    )
+    assert body.index("reconcile_internal_load()") > body.index("require_idle_other_accounts()")
