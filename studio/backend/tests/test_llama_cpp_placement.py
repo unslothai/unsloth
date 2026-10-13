@@ -4643,24 +4643,6 @@ def test_the_spill_raise_keeps_the_resident_experts(before, after, kept):
 
 
 @pytest.mark.parametrize(
-    "before, after, kept",
-    [
-        # The cache follows: the raise must also leave it at least half the experts.
-        (0.23, 0.197, False),
-        (0.527, 0.494, False),
-        (0.55, 0.52, True),
-        (0.70, 0.66, True),
-        (None, None, True),
-    ],
-)
-def test_the_spill_raise_with_the_cache_needs_half_the_experts(before, after, kept):
-    keeps = llama_cpp_module._moe_spill_raise_keeps_experts
-
-    assert keeps(before, after, cache_follows = True) is kept
-    assert keeps(before, after, cache_follows = True, switch = "on") is True
-
-
-@pytest.mark.parametrize(
     "raw, switch",
     [
         (None, "auto"),
@@ -4835,46 +4817,22 @@ def test_the_spill_raise_is_priced_against_the_resident_experts(
 
 
 @pytest.mark.parametrize(
-    "cache_switch, raised, cached",
-    # ~51% resident, raise costs ~5% but leaves 48% < 50% with the cache: no raise.
-    [("auto", False, True), ("off", True, False)],
-    ids = ["cache_keeps_default_ubatch", "split_takes_the_raise"],
+    "cache_switch, cached",
+    # ~51% resident, and the raise costs ~5% of those experts (under the 10% rule): the
+    # raise stays whether or not the cache follows it.
+    [("auto", True), ("off", False)],
+    ids = ["cache_takes_the_raise", "split_takes_the_raise"],
 )
-def test_the_raise_is_dropped_when_it_would_leave_the_cache_under_half(
-    tmp_path, _moe_cache_host, monkeypatch, cache_switch, raised, cached
+def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
+    tmp_path, _moe_cache_host, monkeypatch, cache_switch, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 0.4)
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", cache_switch)
     backend, cmd = _cache_launch(tmp_path, memory = [(0, 15_000, 32_000)])
 
-    assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
-    assert _has_moe_cache(cmd) is cached, cmd
-
-
-@pytest.mark.parametrize(
-    "cell, kwargs",
-    [
-        # Refused in the fit: 15 GiB of experts + the prompt cache cannot be pinned.
-        ("ram", dict(ram_gib = 24)),
-        # Refused at launch: the user's mmap load is not pinned.
-        ("user_mmap", dict(load_mode = "mmap")),
-        ("user_mmap_extra", dict(extra_args = ["--load-mode", "mmap"])),
-    ],
-    ids = lambda v: v if isinstance(v, str) else "",
-)
-def test_a_raise_held_for_the_cache_comes_back_when_the_cache_is_refused(
-    tmp_path, _moe_cache_host, monkeypatch, cell, kwargs
-):
-    # Same launch as cache_keeps_default_ubatch above, minus one cache gate.
-    _ubatch_sized_compute_buffer(monkeypatch, 0.4)
-    backend, cmd = _cache_launch(tmp_path, memory = [(0, 15_000, 32_000)], **kwargs)
-
-    assert not _has_moe_cache(cmd), (cell, cmd)
-    assert _ubatch_values(cmd) == ["2048"], (cell, cmd)
+    assert _ubatch_values(cmd) == ["2048"], cmd
     assert backend._moe_spill_batch_restore is not None
-    # The CPU replay still hands back the pre-raise pair.
-    assert _ubatch_values(backend._undo_moe_spill_batch(cmd)) == [], cmd
-    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _has_moe_cache(cmd) is cached, cmd
 
 
 @pytest.mark.parametrize(
