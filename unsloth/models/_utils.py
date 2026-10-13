@@ -7480,39 +7480,73 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     return torch.inference_mode()
 
 
+_HF_TOKEN_LOAD_LOCK = threading.RLock()
+
+
 def hf_login(token: Optional[str] = None) -> Optional[str]:
-    if token is False:
-        return token
-    try:
-        from huggingface_hub import get_token
-        saved_token = get_token()
-    except:
-        saved_token = None
-    if token is None:
-        return saved_token
-    if saved_token is None:
+    with _HF_TOKEN_LOAD_LOCK:
+        if token is False:
+            return token
+        oidc_keys = ("HF_OIDC_RESOURCE", "HF_OIDC_ID_TOKEN")
+        old_oidc = {key: os.environ.get(key) for key in oidc_keys}
+        present_oidc = {key for key in oidc_keys if key in os.environ}
+        if token is not None:
+            for key in oidc_keys:
+                os.environ.pop(key, None)
         try:
-            from huggingface_hub import login
-            login(token = token)
-        except Exception as e:
-            logger.info(f"Failed to login to huggingface using token with error: {e}")
-    return token
+            try:
+                from huggingface_hub import get_token
+                saved_token = get_token()
+            except:
+                saved_token = None
+            if token is None:
+                return saved_token
+            if saved_token is None:
+                try:
+                    from huggingface_hub import login
+                    login(token = token)
+                except Exception as e:
+                    logger.info(f"Failed to login to huggingface using token with error: {e}")
+            return token
+        finally:
+            for key in oidc_keys:
+                if key in present_oidc:
+                    os.environ[key] = old_oidc[key]
+                else:
+                    os.environ.pop(key, None)
 
 
 @contextlib.contextmanager
 def hf_token_env(token):
-    if not isinstance(token, str) or not token:
-        yield
-        return
-    old = os.environ.get("HF_TOKEN")
-    os.environ["HF_TOKEN"] = token
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop("HF_TOKEN", None)
-        else:
-            os.environ["HF_TOKEN"] = old
+    with _HF_TOKEN_LOAD_LOCK:
+        if not isinstance(token, str) or not token:
+            yield
+            return
+        keys = (
+            "HF_TOKEN",
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN",
+            "HF_OIDC_RESOURCE",
+            "HF_OIDC_ID_TOKEN",
+        )
+        old = {key: os.environ.get(key) for key in keys}
+        present = {key for key in keys if key in os.environ}
+        os.environ["HF_TOKEN"] = token
+        os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+        os.environ.pop("HF_OIDC_RESOURCE", None)
+        os.environ.pop("HF_OIDC_ID_TOKEN", None)
+        from huggingface_hub import constants as hf_constants
+
+        old_disable_implicit = hf_constants.HF_HUB_DISABLE_IMPLICIT_TOKEN
+        hf_constants.HF_HUB_DISABLE_IMPLICIT_TOKEN = False
+        try:
+            yield
+        finally:
+            hf_constants.HF_HUB_DISABLE_IMPLICIT_TOKEN = old_disable_implicit
+            for key in keys:
+                if key in present:
+                    os.environ[key] = old[key]
+                else:
+                    os.environ.pop(key, None)
 
 
 def hf_token_for_load(from_pretrained):
@@ -7527,10 +7561,11 @@ def hf_token_for_load(from_pretrained):
                 )
             except TypeError:
                 token = None
-        if not isinstance(token, str) or not token:
-            return from_pretrained(*args, **kwargs)
-        with hf_token_env(hf_login(token)):
-            return from_pretrained(*args, **kwargs)
+        with _HF_TOKEN_LOAD_LOCK:
+            if not isinstance(token, str) or not token:
+                return from_pretrained(*args, **kwargs)
+            with hf_token_env(hf_login(token)):
+                return from_pretrained(*args, **kwargs)
 
     return wrapper
 
