@@ -1,19 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The Qwen3.5 fused layer / GatedDeltaNet patches must fall back to the stock forward,
-with the caller's kwargs, wherever they do not apply.
+"""Qwen3.5 fused decoder layer (unsloth/models/_qwen3_5_layer.py).
 
-transformers >= 5.15 passes extra kwargs (`use_cache`, packing lengths) to
-`Qwen3_5GatedDeltaNet.forward`, calls a module-level fla kernel instead of
-`self.chunk_gated_delta_rule`, and drops `Qwen3_5DecoderLayer.layer_type`; the patched
-forward raised `TypeError: unexpected keyword argument 'use_cache'` on every forward there.
+CPU: the version probes resolve on the installed transformers (< 5.15 `layer_type` and a bound
+`chunk_gated_delta_rule`, >= 5.15 `block_type` and a module-level kernel), and every fallback
+returns the stock forward's output with the caller's kwargs.
+GPU: the fused path matches the stock path to bf16 rounding, LoRA on every projection included.
 """
 
 import importlib.util
 import os
 import sys
-import types
 
 import pytest
 
@@ -21,108 +19,169 @@ torch = pytest.importorskip("torch")
 modeling = pytest.importorskip("transformers.models.qwen3_5.modeling_qwen3_5")
 from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig  # noqa: E402
 
-_MODELS = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models")
+_PATH = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models", "_qwen3_5_layer.py")
 
 
 def _load():
     # By file path: importing the unsloth package needs an accelerator.
-    pkg = types.ModuleType("_u35")
-    pkg.__path__ = [_MODELS]
-    sys.modules.setdefault("_u35", pkg)
-    mods = []
-    for name in ("_gated_delta_net", "_qwen3_5_layer"):
-        spec = importlib.util.spec_from_file_location(
-            f"_u35.{name}", os.path.join(_MODELS, f"{name}.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
-        mods.append(mod)
-    return mods
+    spec = importlib.util.spec_from_file_location("_u35_layer", _PATH)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _config():
-    return Qwen3_5TextConfig(
+    cfg = Qwen3_5TextConfig(
         vocab_size = 64,
-        hidden_size = 32,
-        intermediate_size = 64,
+        hidden_size = 64,
+        intermediate_size = 128,
         num_hidden_layers = 2,
         num_attention_heads = 2,
         num_key_value_heads = 1,
-        head_dim = 16,
+        head_dim = 32,
         linear_num_key_heads = 2,
-        linear_num_value_heads = 2,
-        linear_key_head_dim = 16,
-        linear_value_head_dim = 16,
+        linear_num_value_heads = 4,
+        linear_key_head_dim = 32,
+        linear_value_head_dim = 32,
         layer_types = ["linear_attention", "full_attention"],
     )
+    cfg._attn_implementation = "sdpa"
+    return cfg
 
 
-def _restore(*classes):
-    for cls in classes:
-        orig = cls.__dict__.get("_unsloth_original_forward")
-        if orig is not None:
-            cls.forward = orig
-            del cls._unsloth_original_forward
-
-
-def test_gdn_forward_matches_stock_with_extra_kwargs():
-    gdn_mod, layer_mod = _load()
-    torch.manual_seed(0)
-    gdn = modeling.Qwen3_5GatedDeltaNet(_config(), layer_idx = 0).eval()
-    x = torch.randn(1, 8, 32)
-    with torch.no_grad():
-        ref = gdn(x)
-    try:
-        gdn_mod.patch_gated_delta_net_fast_forward(torch.nn.Sequential(gdn))
-        engages = callable(getattr(gdn, "chunk_gated_delta_rule", None))
-        if engages and gdn._unsloth_gdn_fast_ok and not torch.cuda.is_available():
-            pytest.skip("fast path engages on this transformers; its compiled region needs a GPU")
-        with torch.no_grad():
-            out = gdn(x, use_cache = False)
-    finally:
-        _restore(type(gdn))
-    torch.testing.assert_close(out, ref)
-
-
-def test_fast_path_off_without_chunk_kernel_attribute():
-    gdn_mod, _ = _load()
-    gdn = modeling.Qwen3_5GatedDeltaNet(_config(), layer_idx = 0)
-    if callable(getattr(gdn, "chunk_gated_delta_rule", None)):
-        gdn.chunk_gated_delta_rule = None
-    assert gdn_mod._fast_path_applicable(gdn) is False
-
-
-def test_packed_kwargs_take_the_stock_path():
-    gdn_mod, _ = _load()
-    assert gdn_mod._is_packed({"cu_seq_lens_q": torch.tensor([0, 4, 8])})
-    assert gdn_mod._is_packed({"seq_idx": torch.zeros(1, 8, dtype = torch.int32)})
-    assert not gdn_mod._is_packed({"use_cache": False, "cu_seq_lens_q": None})
-
-
-def test_decoder_layer_falls_back_when_not_applicable():
-    gdn_mod, layer_mod = _load()
+def _layers(dtype = torch.float32, device = "cpu"):
     torch.manual_seed(0)
     cfg = _config()
-    layer = modeling.Qwen3_5DecoderLayer(cfg, layer_idx = 0).eval()
-    rotary = modeling.Qwen3_5TextRotaryEmbedding(cfg)
-    x = torch.randn(1, 8, 32)
-    pos = torch.arange(8)[None, None].expand(3, 1, 8)
-    pe = rotary(x, pos)
+    layers = [modeling.Qwen3_5DecoderLayer(cfg, layer_idx = i).to(device, dtype) for i in range(2)]
     with torch.no_grad():
-        ref = layer(x, position_embeddings = pe, position_ids = pos)
-    ref = ref[0] if isinstance(ref, tuple) else ref
+        for layer in layers:
+            for p in layer.parameters():
+                p.add_(torch.randn_like(p) * 0.02)
+    rotary = modeling.Qwen3_5TextRotaryEmbedding(cfg).to(device)
+    return cfg, layers, rotary
+
+
+def _inputs(
+    rotary,
+    dtype,
+    device,
+    L = 24,
+):
+    x = torch.randn(2, L, 64, device = device, dtype = dtype)
+    pos = torch.arange(L, device = device)[None, None].expand(3, 2, L)
+    return x, pos, rotary(x, pos)
+
+
+def _restore():
+    cls = modeling.Qwen3_5DecoderLayer
+    orig = cls.__dict__.get("_unsloth_original_forward")
+    if orig is not None:
+        cls.forward = orig
+        del cls._unsloth_original_forward
+
+
+def _run(layer, x, pe, pos, **kw):
+    out = layer(x, position_embeddings = pe, position_ids = pos, **kw)
+    return out[0] if isinstance(out, tuple) else out
+
+
+def test_version_probes_resolve():
+    M = _load()
+    _, layers, _ = _layers()
+    assert M._block_type(layers[0]) == "linear_attention"
+    assert M._block_type(layers[1]) == "full_attention"
+    assert callable(M._chunk_kernel(layers[0].linear_attn))
+    assert M._masks_any_batch(layers[0].linear_attn) in (True, False)
+    assert M._layer_static_ok(layers[0]) and M._layer_static_ok(layers[1])
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"output_attentions": True},
+        {"cu_seq_lens_q": "packed"},
+        {"seq_idx": "packed"},
+    ],
+)
+def test_fallback_matches_stock(kw):
+    M = _load()
+    # With a GPU visible the stock GDN dispatches to a Triton kernel, which needs CUDA tensors.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _, layers, rotary = _layers(device = device)
+    x, pos, pe = _inputs(rotary, torch.float32, device)
+    with torch.no_grad():
+        ref = [_run(layer, x, pe, pos) for layer in layers]
+    calls = []
     try:
-        layer_mod.patch_qwen3_5_decoder_layers(torch.nn.Sequential(layer))
-        gdn_mod.patch_gated_delta_net_fast_forward(torch.nn.Sequential(layer))
-        engages = getattr(layer, "layer_type", None) is not None or callable(
-            getattr(layer.linear_attn, "chunk_gated_delta_rule", None)
-        )
-        if engages and not torch.cuda.is_available():
-            pytest.skip("fused path engages on this transformers; its compiled regions need a GPU")
+        M.patch_qwen3_5_decoder_layers(torch.nn.ModuleList(layers))
+        orig = modeling.Qwen3_5DecoderLayer._unsloth_original_forward
+
+        def spy(self, *a, **k):
+            calls.append(k)
+            k = {
+                n: v
+                for n, v in k.items()
+                if n not in ("cu_seq_lens_q", "seq_idx", "output_attentions")
+            }
+            return orig(self, *a, **k)
+
+        modeling.Qwen3_5DecoderLayer._unsloth_original_forward = spy
         with torch.no_grad():
-            out = layer(x, position_embeddings = pe, position_ids = pos, use_cache = False)
+            out = [_run(layer, x, pe, pos, use_cache = False, **kw) for layer in layers]
     finally:
-        _restore(type(layer), type(layer.linear_attn))
-    out = out[0] if isinstance(out, tuple) else out
-    torch.testing.assert_close(out, ref)
+        _restore()
+    assert len(calls) == 2 and all(set(kw) <= set(c) and c["use_cache"] is False for c in calls)
+    for o, r in zip(out, ref):
+        torch.testing.assert_close(o, r)
+
+
+def test_quantized_or_biased_projection_falls_back():
+    M = _load()
+    assert M._lora_params(torch.nn.Linear(4, 4, bias = True)) is None
+    assert M._lora_params(torch.nn.Linear(4, 4, bias = False))[1] is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "compiled regions need a GPU")
+@pytest.mark.parametrize("padded", [False, True])
+def test_fused_matches_stock_with_lora_everywhere(padded):
+    peft = pytest.importorskip("peft")
+    M = _load()
+    cfg, layers, rotary = _layers(torch.bfloat16, "cuda")
+    model = torch.nn.ModuleList(layers)
+    targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    targets += ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj"]
+    peft.inject_adapter_in_model(peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = targets), model)
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if "lora_B" in n:
+                p.copy_(torch.randn_like(p) * 0.05)
+    x, pos, pe = _inputs(rotary, torch.bfloat16, "cuda")
+    mask = None
+    if padded:
+        mask = torch.ones(2, x.shape[1], dtype = torch.long, device = "cuda")
+        mask[1, :5] = 0
+
+    def step():
+        xi = x.clone().requires_grad_()
+        out = _run(layers[0], xi, pe, pos, attention_mask = mask)
+        out = _run(layers[1], out, pe, pos, attention_mask = None)
+        out.float().pow(2).mean().backward()
+        grads = {
+            n: p.grad.float().clone() for n, p in model.named_parameters() if p.grad is not None
+        }
+        model.zero_grad(set_to_none = True)
+        return out.detach().float(), grads
+
+    ref_out, ref_g = step()
+    try:
+        assert M.patch_qwen3_5_decoder_layers(model) == 2
+        out, g = step()
+    finally:
+        _restore()
+    assert set(g) == set(ref_g) and any("in_proj_qkv.lora_B" in n for n in g)
+    rel = (out - ref_out).norm() / ref_out.norm()
+    assert rel < 2e-2, rel
+    for n in ref_g:
+        rel = (g[n] - ref_g[n]).norm() / ref_g[n].norm().clamp_min(1e-12)
+        assert rel < 5e-2, (n, float(rel))

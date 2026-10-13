@@ -1,71 +1,59 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Three compiled regions per Qwen3.5 decoder layer for training.
+"""Fused training forward for Qwen3.5 decoder layers.
 
-Per layer the stock path runs ~6 separately compiled regions (input norm, mixer pieces,
-post-attention norm, an MLP that breaks into three graphs around the LoRA linears) plus
-eager residual adds, out_proj and reshapes. Every region call costs ~100 us of guard and
-wrapper time on the CPU while the GPU sits idle, and there are 32 layers x forward,
-recompute and backward per micro-step. Here a layer is:
+The stock layer issues its norms, projections, conv, gates and residual adds as dozens of
+eager ops and small compiled regions, so a LoRA step is CPU launch bound. Here a layer is
 
-    pre  = compiled( input_layernorm -> mixer input projections [-> q/k norms, RoPE] )
-    mixer core, eager and unchanged: fla chunk_gated_delta_rule + gated RMSNorm, or SDPA
-    mid  = compiled( out_proj [attention gate] -> residual add -> post_attention_layernorm )
-    mlp  = compiled( LoRA MLP -> residual add )
+    pre  = compiled( input_layernorm -> mixer input projections [-> conv, gates | q/k norms] )
+    mixer kernel, eager and unchanged: fla chunk_gated_delta_rule + gated RMSNorm, or attention
+    [rope = compiled( RoPE ), attention layers]
+    mid  = compiled( output projection -> residual add -> post_attention_layernorm )
+    mlp  = compiled( MLP -> residual add )
 
-Weights are inputs, so one graph per region kind serves every layer. Every op keeps its
-original dtype boundaries, so the numbers match the stock path. Training path only
-(`past_key_values is None`); vanilla single-adapter LoRA or plain Linear; anything else
-falls back to the original layer forward.
+Weights are inputs, so one graph per region serves every layer. Training / no-cache path
+only, with plain nn.Linear or vanilla single-adapter LoRA projections; anything else
+(cache, packed batches, quantized or merged layers, DoRA, dropout) runs the stock forward.
 """
+
+import sys
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._gated_delta_net import (
-    _fast_path_applicable as _gdn_applicable,
-    _is_packed,
-    _projections_plain,
-)
-
 __all__ = ["patch_qwen3_5_decoder_layers"]
 
 _BASE_OPTIONS = {
-    # C++ wrapper: kernel launches, allocations and extern GEMM calls issued from generated C++
-    # instead of Python; roughly halves the CPU time per region call (another ~11% off the step
-    # here). Off by default: in a real training process its GEMM outputs differ from the Python
-    # wrapper's at the bf16 rounding level (~1e-5 per projection, ~2% on the final hidden states
-    # after 32 layers), so it does not reproduce the stock path bit for bit. Flip to True when
-    # rounding-level differences are acceptable.
-    "cpp_wrapper": False,
     "epilogue_fusion": True,
     "max_autotune": False,
     "shape_padding": True,
-    "trace.enabled": False,
     "triton.cudagraphs": False,
 }
-# The stock path rounds to bf16 wherever an eager op or a graph boundary materialises a
-# tensor, and keeps fp32 inside its one compiled MLP graph. To reproduce its numbers, the
-# regions that replace eager ops (projections, norms, RoPE, residual adds) round like eager
-# (`emulate_precision_casts`), and the MLP region is compiled like the stock MLP graph.
+# Regions replacing eager ops round every bf16 intermediate like eager does; the MLP and RoPE
+# regions replace compiled graphs, so they keep inductor's defaults.
 _EAGER_LIKE_OPTIONS = dict(_BASE_OPTIONS, emulate_precision_casts = True)
-_MLP_OPTIONS = dict(_BASE_OPTIONS)
+_COMPILED_LIKE_OPTIONS = dict(_BASE_OPTIONS)
+# dynamic=True fails in inductor value-range analysis on torch 2.13; automatic dynamic marks
+# only the sequence dim after the first recompile.
+_DYNAMIC = None
+
+# Packed batches: the stock forward hands these to the conv and the fla kernel.
+_PACKED_KWARGS = ("cu_seq_lens_q", "cu_seqlens", "seq_idx")
 
 
-# ----------------------------------------------------------------------------- pieces
 def _rmsnorm(x, weight, eps: float):
-    # Qwen3_5RMSNorm: (x * rsqrt(mean(x^2) + eps)) * (1 + w), computed in fp32, cast back
+    # Qwen3_5RMSNorm: fp32 math, (1 + w) scale, cast back
     xf = x.float()
     out = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim = True) + eps)
     out = out * (1.0 + weight.float())
     return out.type_as(x)
 
 
-def _linear(x, W, A, B, scaling: float):
-    """peft lora.Linear as unsloth's generated `Linear_peft_forward` computes it (vanilla LoRA,
-    no dropout, no bias), or a plain F.linear when A is None."""
+def _linear(x, p):
+    """nn.Linear, or peft lora.Linear as unsloth's generated `Linear_peft_forward` computes it."""
+    W, A, B, scaling = p
     if A is None:
         return F.linear(x, W)
     autocast = torch.is_autocast_enabled()
@@ -94,30 +82,16 @@ def _rotate_half(x):
     return torch.cat((-x2, x1), dim = -1)
 
 
-def _apply_rotary_pos_emb(q, k, cos, sin):
-    cos = cos.unsqueeze(1)
-    sin = sin.unsqueeze(1)
-    rotary_dim = cos.shape[-1]
-    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
-    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
-    q_embed = (q_rot * cos) + (_rotate_half(q_rot) * sin)
-    k_embed = (k_rot * cos) + (_rotate_half(k_rot) * sin)
-    q_embed = torch.cat([q_embed, q_pass], dim = -1)
-    k_embed = torch.cat([k_embed, k_pass], dim = -1)
-    return q_embed, k_embed
-
-
-# ----------------------------------------------------------------------------- regions
-@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
 def _gdn_pre(
     hidden_states,
     norm_w,
     eps: float,
-    attention_mask,
-    w_qkv,
-    w_z,
-    w_b,
-    w_a,
+    mask,
+    p_qkv,
+    p_z,
+    p_b,
+    p_a,
     conv_weight,
     A_log,
     dt_bias,
@@ -129,22 +103,20 @@ def _gdn_pre(
     conv_padding: int,
     n_rep: int,
 ):
-    if attention_mask is not None:
-        # apply_mask_to_padding_states, moved in front of the norm: RMSNorm(0) == 0 and the mask
-        # is 0/1, so the result is the stock `norm(x) * mask` bit for bit, without leaving the
-        # norm output's rounding to the fuser.
-        hidden_states = (hidden_states * attention_mask[:, :, None]).to(hidden_states.dtype)
-    hidden_states = _rmsnorm(hidden_states, norm_w, eps)
-    batch_size, seq_len, _ = hidden_states.shape
+    if mask is not None:
+        # The stock path masks after the norm; RMSNorm(0) == 0 and the mask is 0/1, so masking
+        # first is the same result.
+        hidden_states = (hidden_states * mask[:, :, None]).to(hidden_states.dtype)
+    x = _rmsnorm(hidden_states, norm_w, eps)
+    batch_size, seq_len, _ = x.shape
 
-    mixed_qkv = F.linear(hidden_states, w_qkv).transpose(1, 2)
-    z = F.linear(hidden_states, w_z).reshape(batch_size, seq_len, -1, head_v_dim)
-    b = F.linear(hidden_states, w_b)
-    a = F.linear(hidden_states, w_a)
+    mixed_qkv = _linear(x, p_qkv).transpose(1, 2)
+    z = _linear(x, p_z).reshape(batch_size, seq_len, -1, head_v_dim)
+    b = _linear(x, p_b)
+    a = _linear(x, p_a)
 
     mixed_qkv = F.conv1d(mixed_qkv, conv_weight, None, 1, conv_padding, 1, conv_dim)[:, :, :seq_len]
-    mixed_qkv = F.silu(mixed_qkv)
-    mixed_qkv = mixed_qkv.transpose(1, 2)
+    mixed_qkv = F.silu(mixed_qkv).transpose(1, 2)
     query, key, value = torch.split(mixed_qkv, [key_dim, key_dim, value_dim], dim = -1)
     query = query.reshape(batch_size, seq_len, -1, head_k_dim)
     key = key.reshape(batch_size, seq_len, -1, head_k_dim)
@@ -158,83 +130,58 @@ def _gdn_pre(
     return query, key, value, g, beta, z
 
 
-@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
-def _gdn_mid(core_attn_out, residual, w_out, norm_w, eps: float):
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
+def _gdn_mid(core_attn_out, residual, p_out, norm_w, eps: float):
     batch_size, seq_len, _ = residual.shape
-    out = F.linear(core_attn_out.reshape(batch_size, seq_len, -1), w_out)
-    hidden = residual + out
+    hidden = residual + _linear(core_attn_out.reshape(batch_size, seq_len, -1), p_out)
     return hidden, _rmsnorm(hidden, norm_w, eps)
 
 
-@torch.compile(fullgraph = True, dynamic = None, options = _MLP_OPTIONS)
-def _mlp_block(x, hidden, Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float, Wd, Ad, Bd, sd: float):
-    mlp = _linear(F.silu(_linear(x, Wg, Ag, Bg, sg)) * _linear(x, Wu, Au, Bu, su), Wd, Ad, Bd, sd)
-    return hidden + mlp
-
-
-@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
-def _attn_pre(
-    hidden_states,
-    norm_w,
-    eps: float,
-    Wq,
-    Aq,
-    Bq,
-    sq: float,
-    Wk,
-    Ak,
-    Bk,
-    sk: float,
-    Wv,
-    Av,
-    Bv,
-    sv: float,
-    qn_w,
-    kn_w,
-    head_dim: int,
-):
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
+def _attn_pre(hidden_states, norm_w, eps: float, p_q, p_k, p_v, qn_w, kn_w, head_dim: int):
     x = _rmsnorm(hidden_states, norm_w, eps)
     input_shape = x.shape[:-1]
     hidden_shape = (*input_shape, -1, head_dim)
-
     query_states, gate = torch.chunk(
-        _linear(x, Wq, Aq, Bq, sq).view(*input_shape, -1, head_dim * 2), 2, dim = -1
+        _linear(x, p_q).view(*input_shape, -1, head_dim * 2), 2, dim = -1
     )
     gate = gate.reshape(*input_shape, -1)
     query_states = _rmsnorm(query_states.view(hidden_shape), qn_w, eps).transpose(1, 2)
-    key_states = _rmsnorm(_linear(x, Wk, Ak, Bk, sk).view(hidden_shape), kn_w, eps).transpose(1, 2)
-    value_states = _linear(x, Wv, Av, Bv, sv).view(hidden_shape).transpose(1, 2)
+    key_states = _rmsnorm(_linear(x, p_k).view(hidden_shape), kn_w, eps).transpose(1, 2)
+    value_states = _linear(x, p_v).view(hidden_shape).transpose(1, 2)
     return query_states, key_states, value_states, gate
 
 
-# The stock RoPE is its own compiled graph with inductor defaults (products kept in fp32 until
-# the final cast), so it is reproduced by the same: a separate region without emulated casts.
-@torch.compile(fullgraph = True, dynamic = None, options = _MLP_OPTIONS)
-def _attn_rope(query_states, key_states, value_states, cos, sin):
-    query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
-    if value_states.dtype != query_states.dtype:
-        value_states = value_states.to(query_states.dtype)
-    return query_states, key_states, value_states
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _COMPILED_LIKE_OPTIONS)
+def _attn_rope(q, k, v, cos, sin):
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+    q = torch.cat([(q_rot * cos) + (_rotate_half(q_rot) * sin), q_pass], dim = -1)
+    k = torch.cat([(k_rot * cos) + (_rotate_half(k_rot) * sin), k_pass], dim = -1)
+    if v.dtype != q.dtype:
+        v = v.to(q.dtype)
+    return q, k, v
 
 
-@torch.compile(fullgraph = True, dynamic = None, options = _EAGER_LIKE_OPTIONS)
-def _attn_mid(attn_output, gate, residual, Wo, Ao, Bo, so: float, norm_w, eps: float):
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _EAGER_LIKE_OPTIONS)
+def _attn_mid(attn_output, gate, residual, p_o, norm_w, eps: float):
     input_shape = residual.shape[:-1]
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-    attn_output = attn_output * torch.sigmoid(gate)
-    out = _linear(attn_output, Wo, Ao, Bo, so)
-    hidden = residual + out
+    hidden = residual + _linear(attn_output * torch.sigmoid(gate), p_o)
     return hidden, _rmsnorm(hidden, norm_w, eps)
 
 
-# ----------------------------------------------------------------------------- module glue
-def _lora_params(m):
-    """(W, A, B, scaling) for a plain nn.Linear or a vanilla single-adapter peft lora.Linear in
-    its normal state; None when the module is anything else right now.
+@torch.compile(fullgraph = True, dynamic = _DYNAMIC, options = _COMPILED_LIKE_OPTIONS)
+def _mlp_block(x, hidden, p_g, p_u, p_d):
+    return hidden + _linear(F.silu(_linear(x, p_g)) * _linear(x, p_u), p_d)
 
-    The full inspection costs ~15 attribute reads per module, x7 modules per layer, per call.
-    The answer only changes when an adapter is added, merged, disabled or swapped, so it is
-    cached on the module and re-validated with the three flags that can flip at run time."""
+
+def _lora_params(m):
+    """(W, A, B, scaling) for a plain nn.Linear or a vanilla single-adapter peft lora.Linear;
+    None for anything else. Cached per module, re-validated on the flags that flip at run time."""
     cached = m.__dict__.get("_unsloth_lora_params_cache")
     if cached is not None:
         params, adapters = cached
@@ -248,9 +195,7 @@ def _lora_params(m):
 
 def _lora_params_uncached(m):
     if type(m) is nn.Linear:
-        if m.bias is not None:
-            return None
-        return (m.weight, None, None, 1.0)
+        return None if m.bias is not None else (m.weight, None, None, 1.0)
     base = getattr(m, "base_layer", None)
     if type(base) is not nn.Linear or base.bias is not None:
         return None
@@ -272,6 +217,29 @@ def _lora_params_uncached(m):
     return (base.weight, lora_A.weight, lora_B.weight, float(m.scaling[name]))
 
 
+def _block_type(layer):
+    # transformers < 5.15 `layer_type`, >= 5.15 `block_type`
+    return getattr(layer, "layer_type", None) or getattr(layer, "block_type", None)
+
+
+def _chunk_kernel(gdn):
+    # transformers < 5.15 binds the kernel on the module; >= 5.15 calls a module-level function.
+    fn = getattr(gdn, "chunk_gated_delta_rule", None)
+    if callable(fn):
+        return fn
+    fn = getattr(sys.modules.get(type(gdn).__module__), "torch_chunk_gated_delta_rule", None)
+    return fn if callable(fn) else None
+
+
+def _masks_any_batch(gdn):
+    # transformers < 5.15 masks only when batch > 1 and seq > 1; >= 5.15 whenever a mask is given.
+    fn = getattr(sys.modules.get(type(gdn).__module__), "apply_mask_to_padding_states", None)
+    if fn is None:
+        return None
+    out = fn(torch.ones(1, 2, 1), torch.zeros(1, 2, dtype = torch.long))
+    return bool((out == 0).all())
+
+
 def _is_rmsnorm(m):
     return (
         type(m).__name__ == "Qwen3_5RMSNorm"
@@ -284,38 +252,48 @@ def _layer_static_ok(layer):
     if not (_is_rmsnorm(layer.input_layernorm) and _is_rmsnorm(layer.post_attention_layernorm)):
         return False
     mlp = getattr(layer, "mlp", None)
-    if mlp is None or type(mlp).__name__ != "Qwen3_5MLP":
-        return False
     act = getattr(mlp, "act_fn", None)
-    # nn.SiLU, transformers' SiLUActivation (forward = F.silu) or F.silu itself
-    if not (
+    if type(mlp).__name__ != "Qwen3_5MLP" or not (
         isinstance(act, nn.SiLU)
         or type(act).__name__ in ("SiLU", "SiLUActivation")
         or act is F.silu
     ):
         return False
-    if layer.layer_type == "linear_attention":
+    kind = _block_type(layer)
+    if kind == "linear_attention":
         gdn = getattr(layer, "linear_attn", None)
-        if gdn is None or type(gdn).__name__ != "Qwen3_5GatedDeltaNet" or not _gdn_applicable(gdn):
+        if type(gdn).__name__ != "Qwen3_5GatedDeltaNet" or _chunk_kernel(gdn) is None:
             return False
-        if type(gdn.out_proj) is not nn.Linear or gdn.out_proj.bias is not None:
+        if getattr(gdn, "activation", "silu") not in ("silu", "swish"):
             return False
-        return True
-    if layer.layer_type == "full_attention":
+        conv = getattr(gdn, "conv1d", None)
+        if type(conv) is not nn.Conv1d or conv.bias is not None or conv.groups != conv.in_channels:
+            return False
+        if (
+            conv.stride != (1,)
+            or conv.dilation != (1,)
+            or conv.padding != (gdn.conv_kernel_size - 1,)
+        ):
+            return False
+        masks_any = _masks_any_batch(gdn)
+        if masks_any is None:
+            return False
+        layer._unsloth_masks_any_batch = masks_any
+        return isinstance(getattr(gdn, "A_log", None), torch.Tensor) and isinstance(
+            getattr(gdn, "dt_bias", None), torch.Tensor
+        )
+    if kind == "full_attention":
         attn = getattr(layer, "self_attn", None)
-        if attn is None or type(attn).__name__ != "Qwen3_5Attention":
+        if type(attn).__name__ != "Qwen3_5Attention":
             return False
         if not (_is_rmsnorm(attn.q_norm) and _is_rmsnorm(attn.k_norm)):
             return False
         impl = getattr(attn.config, "_attn_implementation", "eager")
         if impl == "eager":
             return False
-        try:
-            from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-            ALL_ATTENTION_FUNCTIONS[impl]
-        except Exception:
-            return False
-        return True
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+        return impl in ALL_ATTENTION_FUNCTIONS
     return False
 
 
@@ -328,11 +306,27 @@ def _fused_decoder_layer_forward(
     past_key_values = None,
     **kwargs,
 ):
+    params = None
     if (
-        past_key_values is not None
-        or not getattr(self, "_unsloth_fused_ok", False)
-        or kwargs.get("output_attentions", False)
+        past_key_values is None
+        and getattr(self, "_unsloth_fused_ok", False)
+        and not kwargs.get("output_attentions", False)
+        and not any(kwargs.get(k) is not None for k in _PACKED_KWARGS)
     ):
+        is_gdn = _block_type(self) == "linear_attention"
+        mixer = self.linear_attn if is_gdn else self.self_attn
+        names = (
+            ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+            if is_gdn
+            else ("q_proj", "k_proj", "v_proj", "o_proj")
+        )
+        params = [_lora_params(getattr(mixer, n)) for n in names]
+        params += [
+            _lora_params(getattr(self.mlp, n)) for n in ("gate_proj", "up_proj", "down_proj")
+        ]
+        if any(p is None for p in params):
+            params = None
+    if params is None:
         return self._unsloth_original_forward(
             hidden_states,
             position_embeddings = position_embeddings,
@@ -341,42 +335,28 @@ def _fused_decoder_layer_forward(
             past_key_values = past_key_values,
             **kwargs,
         )
-    mlp = self.mlp
-    pg, pu, pd = _lora_params(mlp.gate_proj), _lora_params(mlp.up_proj), _lora_params(mlp.down_proj)
-    norm2 = self.post_attention_layernorm
-    norm1 = self.input_layernorm
+    *mixer_params, p_g, p_u, p_d = params
+    norm1, norm2 = self.input_layernorm, self.post_attention_layernorm
     residual = hidden_states
 
-    if self.layer_type == "linear_attention":
-        gdn = self.linear_attn
-        if (
-            pg is None
-            or pu is None
-            or pd is None
-            or _is_packed(kwargs)
-            or not _projections_plain(gdn)
-            or type(gdn.out_proj) is not nn.Linear
-        ):
-            return self._unsloth_original_forward(
-                hidden_states,
-                position_embeddings = position_embeddings,
-                attention_mask = attention_mask,
-                position_ids = position_ids,
-                past_key_values = past_key_values,
-                **kwargs,
-            )
+    if is_gdn:
+        gdn = mixer
+        p_qkv, p_z, p_b, p_a, p_out = mixer_params
         mask = attention_mask
-        if mask is not None and not (mask.shape[1] > 1 and mask.shape[0] > 1):
+        if mask is not None and mask.dim() != 2:
             mask = None
+        if mask is not None and not self._unsloth_masks_any_batch:
+            if not (mask.shape[1] > 1 and mask.shape[0] > 1):
+                mask = None
         query, key, value, g, beta, z = _gdn_pre(
             hidden_states,
             norm1.weight,
             norm1.eps,
             mask,
-            gdn.in_proj_qkv.weight,
-            gdn.in_proj_z.weight,
-            gdn.in_proj_b.weight,
-            gdn.in_proj_a.weight,
+            p_qkv,
+            p_z,
+            p_b,
+            p_a,
             gdn.conv1d.weight,
             gdn.A_log,
             gdn.dt_bias,
@@ -388,7 +368,7 @@ def _fused_decoder_layer_forward(
             gdn.conv_kernel_size - 1,
             gdn.num_v_heads // gdn.num_k_heads,
         )
-        core_attn_out, _ = gdn.chunk_gated_delta_rule(
+        core_attn_out, _ = _chunk_kernel(gdn)(
             query,
             key,
             value,
@@ -401,76 +381,29 @@ def _fused_decoder_layer_forward(
         core_attn_out = gdn.norm(
             core_attn_out.reshape(-1, gdn.head_v_dim), z.reshape(-1, gdn.head_v_dim)
         )
-        hidden, x = _gdn_mid(core_attn_out, residual, gdn.out_proj.weight, norm2.weight, norm2.eps)
-        return _mlp_block(
-            x,
-            hidden,
-            pg[0],
-            pg[1],
-            pg[2],
-            pg[3],
-            pu[0],
-            pu[1],
-            pu[2],
-            pu[3],
-            pd[0],
-            pd[1],
-            pd[2],
-            pd[3],
-        )
+        hidden, x = _gdn_mid(core_attn_out, residual, p_out, norm2.weight, norm2.eps)
+        return _mlp_block(x, hidden, p_g, p_u, p_d)
 
-    attn = self.self_attn
-    pq, pk, pv, po = (
-        _lora_params(attn.q_proj),
-        _lora_params(attn.k_proj),
-        _lora_params(attn.v_proj),
-        _lora_params(attn.o_proj),
-    )
-    if (
-        pg is None
-        or pu is None
-        or pd is None
-        or pq is None
-        or pk is None
-        or pv is None
-        or po is None
-    ):
-        return self._unsloth_original_forward(
-            hidden_states,
-            position_embeddings = position_embeddings,
-            attention_mask = attention_mask,
-            position_ids = position_ids,
-            past_key_values = past_key_values,
-            **kwargs,
-        )
-    cos, sin = position_embeddings
+    attn = mixer
+    p_q, p_k, p_v, p_o = mixer_params
     query_states, key_states, value_states, gate = _attn_pre(
         hidden_states,
         norm1.weight,
         norm1.eps,
-        pq[0],
-        pq[1],
-        pq[2],
-        pq[3],
-        pk[0],
-        pk[1],
-        pk[2],
-        pk[3],
-        pv[0],
-        pv[1],
-        pv[2],
-        pv[3],
+        p_q,
+        p_k,
+        p_v,
         attn.q_norm.weight,
         attn.k_norm.weight,
         attn.head_dim,
     )
+    cos, sin = position_embeddings
     query_states, key_states, value_states = _attn_rope(
         query_states, key_states, value_states, cos, sin
     )
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-    attention_interface = ALL_ATTENTION_FUNCTIONS[attn.config._attn_implementation]
-    attn_output, _ = attention_interface(
+    attn_output, _ = ALL_ATTENTION_FUNCTIONS[attn.config._attn_implementation](
         attn,
         query_states,
         key_states,
@@ -481,46 +414,26 @@ def _fused_decoder_layer_forward(
         position_ids = position_ids,
         **kwargs,
     )
-    hidden, x = _attn_mid(
-        attn_output, gate, residual, po[0], po[1], po[2], po[3], norm2.weight, norm2.eps
-    )
-    return _mlp_block(
-        x,
-        hidden,
-        pg[0],
-        pg[1],
-        pg[2],
-        pg[3],
-        pu[0],
-        pu[1],
-        pu[2],
-        pu[3],
-        pd[0],
-        pd[1],
-        pd[2],
-        pd[3],
-    )
+    hidden, x = _attn_mid(attn_output, gate, residual, p_o, norm2.weight, norm2.eps)
+    return _mlp_block(x, hidden, p_g, p_u, p_d)
 
 
 def patch_qwen3_5_decoder_layers(model):
-    """Install the fused two-region forward on every Qwen3_5DecoderLayer in `model`.
-    Returns the number of layers that will take it."""
-    n = 0
+    """Install the fused forward on every Qwen3_5DecoderLayer; returns how many layers take it."""
+    n = layers = 0
     for module in model.modules():
         cls = type(module)
         if cls.__name__ != "Qwen3_5DecoderLayer":
             continue
-        if not hasattr(cls, "_unsloth_original_forward"):
+        layers += 1
+        if "_unsloth_original_forward" not in cls.__dict__:
             cls._unsloth_original_forward = cls.forward
             cls.forward = _fused_decoder_layer_forward
         try:
             module._unsloth_fused_ok = _layer_static_ok(module)
         except Exception:
             module._unsloth_fused_ok = False
-        n += int(module._unsloth_fused_ok)
-    layers = sum(1 for m in model.modules() if type(m).__name__ == "Qwen3_5DecoderLayer")
+        n += module._unsloth_fused_ok
     if layers:
-        print(
-            f"Unsloth: Qwen3.5 fused layer forward on {n}/{layers} decoder layers (cpp_wrapper={_BASE_OPTIONS['cpp_wrapper']})."
-        )
+        print(f"Unsloth: Qwen3.5 fused layer forward on {n}/{layers} decoder layers.")
     return n
