@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import struct
 import subprocess
@@ -1107,6 +1108,369 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     # keeps the resolved path so a repeat Apply dedupes instead of relaunching.
     assert backend.spec_drafter_kind == "dspark"
     assert backend.mtp_draft_path == str(sidecar)
+
+
+def _per_slot_mtp_backend(tmp_path: Path, *, gb_per_slot: float):
+    """The tight card with an embedded head whose reserve is all per-slot state."""
+    gb = 1024**3
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = read_metadata
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            gb_per_slot * gb * int(_np or n_parallel or 1)
+        )
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+    return backend, gguf
+
+
+def _launch_default_slots(
+    backend,
+    gguf,
+    *,
+    n_parallel = 4,
+    **kwargs,
+):
+    return _launch_auto_8k(
+        backend, gguf, n_ctx = 0, n_parallel = n_parallel, n_parallel_from_default = True, **kwargs
+    )
+
+
+def _launched(result, flag: str) -> Optional[str]:
+    cmd = result["cmd"]
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+@pytest.mark.parametrize("gb_per_slot, slots", [(1.5, "3"), (2.0, "2"), (5.0, "1")])
+def test_auto_drops_serving_slots_before_the_drafter(tmp_path, gb_per_slot, slots):
+    """#8872: the largest slot count that holds the drafter at the same context."""
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = gb_per_slot)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == slots
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("n_parallel", [4, 1])
+def test_auto_drops_the_drafter_when_one_slot_cannot_hold_it(tmp_path, n_parallel):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 7.0)
+
+    result = _launch_default_slots(backend, gguf, n_parallel = n_parallel)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == str(n_parallel)
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, n_parallel = 4)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_wider_subset_holding_the_drafter_does_not_justify_the_cut(tmp_path):
+    """Fewer slots fit the drafter at full context only across both cards, but the walk
+    takes the first card that holds it at any context, here a few hundred tokens."""
+    gb, mib = 1024**3, 1024 * 1024
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    def fit(
+        requested,
+        budget_mib,
+        base,
+        *args,
+        mtp_engaged = False,
+        mtp_overhead_fn = None,
+        **kw,
+    ):
+        ctx = requested
+        while ctx > 0:
+            drafter = mtp_overhead_fn(ctx) if mtp_engaged and mtp_overhead_fn else 0
+            if (base + gb + drafter) / mib <= budget_mib:
+                return ctx
+            ctx -= 256
+        return 0
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 16 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: gb
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            1.5 * gb * int(_np or n_parallel or 1) + 24 * gb * n_ctx / 8192
+        )
+    )
+    backend._fit_context_to_vram = fit
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+@pytest.mark.parametrize("extras", [["--parallel", "4"], ["-np=4"]])
+def test_a_slot_count_in_the_extras_is_kept(tmp_path, extras):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf, extra_args = extras)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def _launch_with_failing_drafter(
+    backend,
+    gguf,
+    *,
+    refuses_unified_kv = False,
+    n_ctx = 0,
+):
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        if "draft-mtp" in cmds[-1]:
+            return False
+        return not (refuses_unified_kv and "--kv-unified" in cmds[-1])
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = n_ctx,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+    return cmds
+
+
+def test_a_drafterless_retry_that_fails_at_the_restored_slots_runs_as_cut(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 5.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = True)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["1", "4", "1"]
+    assert "--kv-unified" not in cmds[-1] and "draft-mtp" not in cmds[-1]
+    assert backend.effective_parallel_slots == 1
+
+
+@pytest.mark.parametrize(
+    "refuses_unified_kv, ctxs", [(False, ["7424", "8192"]), (True, ["7424", "8192", "7424"])]
+)
+def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unified_kv, ctxs):
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, 7424) if mtp_engaged else requested
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = refuses_unified_kv)
+
+    assert [c[c.index("-c") + 1] for c in cmds] == ctxs
+    assert backend._effective_context_length == int(ctxs[-1])
+    if not refuses_unified_kv:
+        assert backend._max_context_length == 8192
+
+
+def test_the_restored_slots_reprice_the_published_plan(tmp_path):
+    """Other loads place against this plan, so it is the restored count's, not the cut's."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    backend._estimate_kv_cache_bytes = lambda *args, n_parallel = 1, **kwargs: (
+        gb // 4 * int(n_parallel or 1)
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert sum(backend._planned_vram_mib.values()) == (16 * gb + gb) // (1024 * 1024)
+
+
+def test_an_explicit_context_restores_its_ceiling(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, n_ctx = 8192)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert [c[c.index("-c") + 1] for c in cmds] == ["8192", "8192"]
+    assert backend._max_context_length == backend._effective_context_length == 8192
+
+
+def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):
+    """The launch scrubs LLAMA_ARG_N_PARALLEL, so it never reaches the server."""
+    monkeypatch.setenv("LLAMA_ARG_N_PARALLEL", "4")
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == "2"
+
+
+def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        return "draft-mtp" not in cmds[-1]
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+
+    first, retry = cmds[0], cmds[-1]
+    assert first[first.index("--parallel") + 1] == "2"
+    assert "draft-mtp" not in retry and "--spec-default" in retry
+    assert retry[retry.index("--parallel") + 1] == "4"
+    assert "--kv-unified" in retry
+    assert backend.effective_parallel_slots == 4
+
+
+def test_a_placement_abandoned_after_the_cut_gives_the_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("placement bug")
+
+    backend._fit_derived_load_mode = boom
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--fit") == "on"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    result = _launch_default_slots(backend, gguf)
+    assert _launched(result, "--parallel") == "2"
+
+    chosen = GgufLoadIntent(
+        gguf_path = str(gguf),
+        model_identifier = "test",
+        n_ctx = 0,
+        n_parallel = 4,
+        speculative_type = "auto",
+    )
+    default = dataclasses.replace(chosen, n_parallel_from_default = True)
+    assert backend._runtime_matches_intent(default, None)
+    assert not backend._runtime_matches_intent(chosen, None)
+    # A diffusion runtime that replaced it ignores slot counts altogether.
+    backend._is_diffusion = True
+    assert backend._runtime_matches_intent(chosen, None) == backend._runtime_matches_intent(
+        default, None
+    )
+
+
+@pytest.mark.parametrize("ctx_with_drafter, keeps", [(7424, True), (6144, False)])
+def test_one_slot_may_trim_a_little_auto_context(tmp_path, ctx_with_drafter, keeps):
+    """Draft KV grows with context, so one slot can still need a few percent of it."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, ctx_with_drafter) if mtp_engaged else requested
+    )
+
+    result = _launch_default_slots(backend, gguf)
+
+    if keeps:
+        assert _launched(result, "--spec-type") == "draft-mtp"
+        assert _launched(result, "--parallel") == "1"
+        assert _launched(result, "-c") == str(ctx_with_drafter)
+    else:
+        assert _launched(result, "--spec-type") != "draft-mtp"
+        assert _launched(result, "--parallel") == "4"
+        assert _launched(result, "-c") == "8192"
 
 
 def test_auto_keeps_a_drafter_that_fits(tmp_path):
