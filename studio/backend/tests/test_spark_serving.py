@@ -4412,6 +4412,12 @@ def test_a_model_loaded_alongside_leaves_the_primary_split_alone(monkeypatch):
     run(ss.load_failed())
     assert calls == []
 
+    # An explicit engine is not a llama.cpp launch: nothing to plan, nothing to detach.
+    vllm = SimpleNamespace(alongside = False, force_alongside = False, engine = "vllm")
+    run(ss.before_load(vllm, 4))
+    run(ss.load_failed())
+    assert calls == []
+
     primary = SimpleNamespace(alongside = False, force_alongside = False)
     run(ss.before_load(primary, 4))
     run(ss.after_load(object(), 4))

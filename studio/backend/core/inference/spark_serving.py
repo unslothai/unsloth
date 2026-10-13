@@ -3314,8 +3314,11 @@ async def before_load(
     st = state()
     # A model kept alongside lands in an extra slot of its own, while this state describes the
     # primary's topology: planning it would detach the split the primary is still serving through.
-    st._passthrough = bool(getattr(request, "alongside", False)) or bool(
-        getattr(request, "force_alongside", False)
+    # An explicit engine (vLLM, SGLang) is not a llama.cpp launch, so there is no split to plan.
+    st._passthrough = (
+        bool(getattr(request, "alongside", False))
+        or bool(getattr(request, "force_alongside", False))
+        or str(getattr(request, "engine", "auto") or "auto") != "auto"
     )
     if st._passthrough:
         return request
