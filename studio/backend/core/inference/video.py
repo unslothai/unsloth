@@ -1998,6 +1998,7 @@ def _video_seed_stays_resident(
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
     hf_token: Optional[str] = None,
+    ltx25_dev: bool = False,
 ) -> bool:
     """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
 
@@ -2005,7 +2006,9 @@ def _video_seed_stays_resident(
     ``_auto_keeps_resident_bf16``)."""
     from .diffusion_component_sizes import video_components_gb
 
-    components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token)
+    components = video_components_gb(
+        fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev
+    )
     if not components:
         return scheme is not None
     import torch
@@ -2524,7 +2527,8 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 # low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
 def _calibration_revision(state: Any) -> Optional[str]:
-    """The exact weights this pipeline holds (cache snapshot commit / local fingerprint), read once per pipeline."""
+    """The exact weights this pipeline holds (cache snapshot commit / local fingerprint, plus the companion base for a
+    GGUF / single-file load), read once per pipeline."""
     pipe = getattr(state, "pipe", None)
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
@@ -2534,6 +2538,10 @@ def _calibration_revision(state: Any) -> Optional[str]:
     revision = checkpoint_fingerprint(
         getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
     )
+    if getattr(state, "kind", "pipeline") != "pipeline":
+        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
+        base = getattr(state, "base_repo", None)
+        revision = f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}" if base else revision
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001
@@ -3408,6 +3416,7 @@ class VideoBackend:
                 text_encoder_quant = kwargs.get("text_encoder_quant"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 hf_token = kwargs.get("hf_token"),
+                ltx25_dev = ltx25_dev,
             )
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
@@ -4585,6 +4594,7 @@ class VideoBackend:
         text_encoder_quant: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
         hf_token: Optional[str] = None,
+        ltx25_dev: bool = False,
     ) -> Optional[str]:
         """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
         try:
@@ -4628,6 +4638,7 @@ class VideoBackend:
                     base_repo = base,
                     reclaimable_mib = reclaimable,
                     hf_token = hf_token,
+                    ltx25_dev = ltx25_dev,
                 ):
                     # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
                     return None
@@ -4643,6 +4654,7 @@ class VideoBackend:
                         ordinal = _target_ordinal(target),
                     ),
                     hf_token = hf_token,
+                    ltx25_dev = ltx25_dev,
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
@@ -5411,6 +5423,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             hf_token = hf_token,
+            ltx25_dev = ltx25_dev,
         )
         if video_planned == DENOISER_SEED_DECLINED:
             video_planned = None
@@ -6346,7 +6359,9 @@ class VideoBackend:
 
         components = video_components_gb(
             fam,
-            repo_id if kind == "pipeline" else None,
+            # a GGUF / single-file load takes its companions from the resolved base (a caller-supplied base_repo
+            # included), not the family default
+            repo_id if kind == "pipeline" else base,
             allow_hub = not local_files_only,
             token = hf_token,
             # a dev (single-stage) LTX-2.5 load attaches no latent upsampler, so it is not a loaded role

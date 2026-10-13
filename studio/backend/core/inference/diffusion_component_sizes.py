@@ -129,6 +129,9 @@ class ComponentSizes:
     manifest: Optional[frozenset] = None
     # Folders holding weights whose size could not be read (a .bin checkpoint, an unreadable header or index).
     unknown: frozenset = frozenset()
+    # Stored bytes of the weight files in each ``unknown`` folder (an upper bound of its bf16-resident size for any
+    # checkpoint stored at >= 2 bytes per parameter), when known.
+    unknown_bytes: tuple = ()
 
     def get(self, name: str) -> Optional[ComponentSize]:
         return self.components.get(name)
@@ -219,7 +222,9 @@ _TRANSFORMERS_FOLDER_RE = re.compile(r"^(?:text_encoder|image_encoder|prompt_enh
 def _stem_order(folder: str) -> tuple[str, ...]:
     """LTX-2's text_encoder/ ships both stems; only the preferred one loads. ``pytorch_model`` is the legacy stem."""
     if _TRANSFORMERS_FOLDER_RE.match(folder or ""):
-        return ("model", "diffusion_pytorch_model", "pytorch_model")
+        # transformers' PreTrainedModel.from_pretrained reads model.safetensors / its index, else pytorch_model.bin
+        # (not sized here, so the folder is unknown); never diffusion_pytorch_model.* or pytorch_model.safetensors
+        return ("model",)
     return ("diffusion_pytorch_model", "model", "pytorch_model")
 
 
@@ -245,6 +250,10 @@ def select_weight_files(
 
 
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".safetensors.index.json", ".bin.index.json")
+
+
+def _is_weight_file(name: str) -> bool:
+    return str(name).endswith(_WEIGHT_SUFFIXES) and not str(name).endswith(".index.json")
 
 
 def _holds_weights(names: Iterable[str]) -> bool:
@@ -307,6 +316,7 @@ def local_component_sizes(
         wanted = set(components) if components is not None else None
         out: dict[str, ComponentSize] = {}
         unknown: set = set()
+        unknown_bytes: dict = {}
         for sub in sorted(p for p in base.iterdir() if p.is_dir()):
             if wanted is not None and sub.name not in wanted:
                 continue
@@ -323,10 +333,17 @@ def local_component_sizes(
                 out[sub.name] = size
             elif _holds_weights(names):
                 unknown.add(sub.name)
+                unknown_bytes[sub.name] = sum(
+                    (sub / n).stat().st_size for n in names if _is_weight_file(n)
+                )
         if not out:
             return None
         return ComponentSizes(
-            out, source="local", manifest=_manifest_names(base), unknown=frozenset(unknown)
+            out,
+            source="local",
+            manifest=_manifest_names(base),
+            unknown=frozenset(unknown),
+            unknown_bytes=tuple(sorted(unknown_bytes.items())),
         )
     except Exception:  # noqa: BLE001
         return None
@@ -680,6 +697,7 @@ def _read_hub_sizes(
             manifest = None
     out: dict[str, ComponentSize] = {}
     unknown: set = set()
+    unknown_bytes: dict = {}
     try:
         for folder, files in sorted(by_folder.items()):
             # Studio-attached extras are never in the manifest; the caller only asks for them when attached
@@ -704,6 +722,7 @@ def _read_hub_sizes(
                     return None  # safetensors weights this read cannot select (index unreadable / incomplete)
                 if _holds_weights(files):
                     unknown.add(folder)  # a loaded .bin component: its term is unknown, never smaller
+                    unknown_bytes[folder] = sum(b for n, b in files.items() if _is_weight_file(n))
                 continue
             size = _accumulate(
                 folder,
@@ -726,7 +745,12 @@ def _read_hub_sizes(
     if not out:
         return None
     return ComponentSizes(
-        out, source="hub", revision=commit, manifest=manifest, unknown=frozenset(unknown)
+        out,
+        source="hub",
+        revision=commit,
+        manifest=manifest,
+        unknown=frozenset(unknown),
+        unknown_bytes=tuple(sorted(unknown_bytes.items())),
     )
 
 
@@ -903,6 +927,53 @@ def video_header_parts(
     )
 
 
+def video_header_missing(
+    fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Per term, the folders the load reads whose size is not known (unreadable or absent)."""
+    loaded = set(video_loaded_roles(fam, sizes, dev))
+    primary = getattr(fam, "denoiser_attr", None) or "transformer"
+
+    def _missing(names: Iterable[str]) -> tuple[str, ...]:
+        return tuple(
+            n
+            for n in dict.fromkeys(names)
+            if n in loaded and (sizes is None or sizes.get(n) is None)
+        )
+
+    return (
+        _missing((primary, "transformer_2")),
+        _missing(VIDEO_ROLE_TEXT),
+        _missing(VIDEO_ROLE_VAE + attached_extras(fam, dev)),
+    )
+
+
+def _term_lower_bound(
+    known: Optional[float],
+    missing: tuple[str, ...],
+    sizes: Optional[ComponentSizes],
+    table_term: Optional[float],
+) -> Optional[float]:
+    """An incomplete term: the known part plus an allowance per unknown loaded folder, its stored file bytes when
+    readable (an upper bound at bf16), else its own table constant (a Studio-attached extra); folders with neither
+    share ONE whole table term between them. Never a smaller total than what is loaded; None without a table."""
+    if table_term is None or sizes is None:
+        return None
+    on_disk = dict(sizes.unknown_bytes)
+    allowance = 0.0
+    unestimated = False
+    for n in missing:
+        if on_disk.get(n):
+            allowance += on_disk[n] / _GB
+        elif _extra_table_gb(n):
+            allowance += _extra_table_gb(n)
+        else:
+            unestimated = True
+    if unestimated:
+        allowance += float(table_term)
+    return (known or 0.0) + allowance
+
+
 def video_header_terms(
     fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
 ) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -1031,13 +1102,19 @@ def video_components_gb(
         )
         table = _table_for_load(fam, table, dev)
         parts = video_header_parts(fam, sizes, dev)
+        missing = video_header_missing(fam, sizes, dev)
         header = tuple(v if complete else None for v, complete in parts)
         result = reconcile_with_table(
             header,
             table,
             is_base=is_base,
             key=(getattr(fam, "name", None), str(target)),
-            lower=tuple(v if not complete else None for v, complete in parts),
+            lower=tuple(
+                _term_lower_bound(v, missing[i], sizes, table[i] if table else None)
+                if not complete
+                else None
+                for i, (v, complete) in enumerate(parts)
+            ),
         )
         if details is not None and result is not None:
             sources = tuple(

@@ -1200,8 +1200,13 @@ def test_snapshot_missing_a_loaded_role_is_incomplete(tmp_path, monkeypatch):
         monkeypatch.setattr(dcs, "resolve_ref", lambda *a, root = root, **k: root.name)
         calls = []
         monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: calls.append(repo))
-        assert dcs.video_components_gb(fam, "o/variant", allow_hub = True) == fam.bf16_components_gb
+        got = dcs.video_components_gb(fam, "o/variant", allow_hub = True)
         assert calls == ["o/variant"], name  # incomplete local snapshot: the Hub is probed
+        # the Hub failed too: the known part plus an allowance for the absent folder, never below the table
+        known = dcs.video_header_parts(fam, dcs.local_component_sizes(root))[term][0]
+        allowance = 1.0 if folder == "latent_upsampler" else fam.bf16_components_gb[term]
+        assert got[term] == max(fam.bf16_components_gb[term], round(known + allowance, 1)), name
+        assert got[term] >= fam.bf16_components_gb[term]
     # a manifest-loaded extra counts too
     wan = _fam("wan2.2-ti2v-5b")
     w = tmp_path / "wan"
@@ -1500,3 +1505,92 @@ def test_retagged_peak_is_recorded_under_the_mode_that_ran(monkeypatch):
     ran = vsr.with_extra(predicted, "transformer_cache", None)
     assert vsr.measured_extra_mib(ran, 64) == 500
     assert vsr.measured_extra_mib(predicted, 64) is None
+
+
+# ---- review round 11 ----
+
+
+def test_pre_download_plan_threads_the_dev_flag():
+    import inspect
+
+    from core.inference import video
+
+    seed = inspect.getsource(video._video_seed_stays_resident)
+    assert "dev = ltx25_dev" in seed
+    planned = inspect.getsource(video.VideoBackend._video_planned_auto_denoiser_scheme)
+    assert planned.count("ltx25_dev = ltx25_dev,") == 2  # both seed checks
+    for caller in (video.VideoBackend._run_load, video.VideoBackend.download_plan):
+        src = inspect.getsource(caller)
+        call = src[src.index("_video_planned_auto_denoiser_scheme(") :]
+        assert "ltx25_dev = ltx25_dev" in call[: call.index("DENOISER_SEED_DECLINED")], caller.__name__
+
+
+def test_unknown_loaded_folder_gets_an_allowance(tmp_path, monkeypatch):
+    import shutil
+
+    ltx = _fam("ltx-2")
+    _stub_for_table(tmp_path, ltx)
+    _component(tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0)  # known siblings above the table term
+    shutil.rmtree(tmp_path / "vocoder")
+    (tmp_path / "vocoder").mkdir()
+    (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 300_000_000)  # 0.3 GB on disk
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert dict(sizes.unknown_bytes)["vocoder"] == 300_000_000
+    known = dcs.video_header_parts(ltx, sizes)[2][0]
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: None)
+    got = dcs.video_components_gb(ltx, "o/variant", allow_hub = True)
+    assert got[2] == round(known + 0.3, 1)  # the .bin's stored bytes are its allowance, not dropped
+    # no file and no own constant: one whole table term for the unestimated folders
+    assert dcs._term_lower_bound(2.0, ("a", "b"), sizes, 5.0) == 7.0
+    assert dcs._term_lower_bound(2.0, ("vocoder",), sizes, 5.0) == pytest.approx(2.3)
+    assert dcs._term_lower_bound(2.0, ("latent_upsampler",), sizes, 5.0) == pytest.approx(3.0)
+    assert dcs._term_lower_bound(2.0, ("a",), sizes, None) is None
+
+
+def test_single_file_loads_size_companions_from_the_resolved_base():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend.load_pipeline)
+    call = src[src.index("components = video_components_gb(") :]
+    call = call[: call.index("\n        )")]
+    assert 'repo_id if kind == "pipeline" else base,' in call
+
+
+def test_calibration_revision_includes_the_companion_base(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference import video
+
+    fps = {"u/ltx-gguf": "g" * 40, "Lightricks/LTX-2": "b" * 40, "someone/ltx2-base": "c" * 40}
+    monkeypatch.setattr(dcs, "checkpoint_fingerprint", lambda repo, filename = None: fps.get(repo))
+
+    def rev(kind, base):
+        state = SimpleNamespace(pipe = SimpleNamespace(), repo_id = "u/ltx-gguf", gguf_filename = "x.gguf", kind = kind, base_repo = base)
+        return video._calibration_revision(state)
+
+    assert rev("pipeline", "Lightricks/LTX-2") == "g" * 40
+    gguf_default = rev("gguf", "Lightricks/LTX-2")
+    assert gguf_default == f"{'g' * 40}|base=Lightricks/LTX-2@{'b' * 40}"
+    assert rev("gguf", "someone/ltx2-base") != gguf_default
+
+
+def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
+    for name in (
+        "diffusion_pytorch_model.safetensors",
+        "pytorch_model.safetensors",
+    ):
+        assert dcs._pick_files([name], lambda n: "", "text_encoder") == [], name
+        assert dcs._pick_files([name], lambda n: "", "transformer") == [name], name
+    assert dcs._pick_files(["model.safetensors"], lambda n: "", "image_encoder") == ["model.safetensors"]
+    # pytorch_model.bin: what transformers reads next, not sized here -> unknown, with its bytes as the allowance
+    te = tmp_path / "text_encoder"
+    te.mkdir()
+    (te / "pytorch_model.bin").write_bytes(b"\0" * 1000)
+    _write_header(te / "diffusion_pytorch_model.safetensors", {"x": ("BF16", 10)})
+    _component(tmp_path, "vae", 0.1)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert sizes.get("text_encoder") is None and "text_encoder" in sizes.unknown
