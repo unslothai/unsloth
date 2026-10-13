@@ -147,7 +147,15 @@ def test_the_kill_switch_restores_the_old_flags():
     assert fit.flags == AUTO and fit.refusal is None
 
 
-def _card(root, card, slot, *, total, used = None, vendor = "0x1002"):
+def _card(
+    root,
+    card,
+    slot,
+    *,
+    total,
+    used = None,
+    vendor = "0x1002",
+):
     dev = root / "class" / "drm" / card / "device"
     dev.mkdir(parents = True)
     (dev / "vendor").write_text(vendor + "\n", encoding = "utf-8")
@@ -200,9 +208,12 @@ OFFLOADED_FIT = AUTO + ("--clip-on-cpu", "--backend", "diffusion=Vulkan0,te=cpu,
 
 def test_a_resident_auto_render_drops_nothing_and_adds_no_encoder_move():
     resident = ["--diffusion-fa", "--max-vram", "-1"]
-    assert h3_native_offloaded_render_flags(
-        resident, render_resident = True, offloaded_flags = OFFLOADED_FIT, offload_refusal = "no"
-    ) == resident
+    assert (
+        h3_native_offloaded_render_flags(
+            resident, render_resident = True, offloaded_flags = OFFLOADED_FIT, offload_refusal = "no"
+        )
+        == resident
+    )
 
 
 def test_an_offloaded_auto_render_takes_the_fitted_flags():
@@ -217,13 +228,20 @@ def test_an_offloaded_auto_render_takes_the_fitted_flags():
 def test_an_offloaded_auto_render_that_cannot_fit_is_refused_with_its_reason():
     with pytest.raises(H3NativeMemoryRefusal) as caught:
         h3_native_offloaded_render_flags(
-            list(AUTO), render_resident = False, offloaded_flags = None, offload_refusal = "too big for GTT"
+            list(AUTO),
+            render_resident = False,
+            offloaded_flags = None,
+            offload_refusal = "too big for GTT",
         )
     detail = video_failure_detail(caught.value)
     assert detail.endswith("too big for GTT")
 
 
-def _cgroup(tmp_path, files, proc = "0::/user.slice/app.scope\n"):
+def _cgroup(
+    tmp_path,
+    files,
+    proc = "0::/user.slice/app.scope\n",
+):
     root = tmp_path / "cg"
     for rel, value in files.items():
         path = root / rel
@@ -364,7 +382,9 @@ def test_unreadable_membership_with_a_root_ram_limit_admits_no_swap(tmp_path):
     root.mkdir()
     (root / "memory.max").write_text(str(48 * GIB) + "\n", encoding = "utf-8")
     missing = str(tmp_path / "no-such-proc-self-cgroup")
-    assert cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 0
+    assert (
+        cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 0
+    )
 
 
 def test_unreadable_membership_reads_the_root_swap_files(tmp_path):
@@ -377,14 +397,20 @@ def test_unreadable_membership_reads_the_root_swap_files(tmp_path):
     ):
         (root / name).write_text(value + "\n", encoding = "utf-8")
     missing = str(tmp_path / "no-such-proc-self-cgroup")
-    assert cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 5 * GIB
+    assert (
+        cgroup_swap_allowance_bytes(64 * GIB, cgroup_root = str(root), proc_self_cgroup = missing)
+        == 5 * GIB
+    )
 
 
 def test_unreadable_membership_without_any_limit_keeps_host_swap(tmp_path):
     root = tmp_path / "cg"
     root.mkdir()
     missing = str(tmp_path / "no-such-proc-self-cgroup")
-    assert cgroup_swap_allowance_bytes(8 * GIB, cgroup_root = str(root), proc_self_cgroup = missing) == 8 * GIB
+    assert (
+        cgroup_swap_allowance_bytes(8 * GIB, cgroup_root = str(root), proc_self_cgroup = missing)
+        == 8 * GIB
+    )
 
 
 def test_cgroup_v1_swap_is_measured_against_the_ram_the_fit_actually_budgets(tmp_path):
@@ -406,7 +432,6 @@ def test_cgroup_v1_swap_is_measured_against_the_ram_the_fit_actually_budgets(tmp
 
 def test_cgroup_v1_memsw_headroom_is_the_tightest_level(tmp_path):
     from utils.host_memory import cgroup_v1_memsw_headroom_bytes
-
     paths = _cgroup(
         tmp_path,
         {
@@ -494,14 +519,24 @@ def test_a_slot_matching_no_amdgpu_card_falls_back_to_the_tightest_card(monkeypa
     from core.inference import video_minimax_h3
     from core.inference.video_minimax_h3 import H3NativeFitInputs, h3_native_live_fit
 
-    def reading(slot = None, *a, **k):
+    def reading(
+        slot = None,
+        *a,
+        **k,
+    ):
         return (None, True) if slot else (0, True)
 
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", reading)
     monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (1 << 50, 0))
     inputs = H3NativeFitInputs(
-        base_flags = AUTO, accelerator = "vulkan", check_gtt = True, gtt_pci_slot = "0000:81:00",
-        dit_bytes = GIB, te_bytes = GIB, vae_bytes = GIB, device_name = "Vulkan0",
+        base_flags = AUTO,
+        accelerator = "vulkan",
+        check_gtt = True,
+        gtt_pci_slot = "0000:81:00",
+        dit_bytes = GIB,
+        te_bytes = GIB,
+        vae_bytes = GIB,
+        device_name = "Vulkan0",
     )
     assert "GTT" in h3_native_live_fit(inputs, "auto").refusal
 
@@ -512,7 +547,14 @@ class _FakeServer:
     def __init__(self, binary):
         self.alive = False
 
-    def start(self, files, *, offload, env = None, extra_args = None):
+    def start(
+        self,
+        files,
+        *,
+        offload,
+        env = None,
+        extra_args = None,
+    ):
         self.started.append(tuple(offload))
         self.alive = True
 
@@ -630,7 +672,9 @@ def test_a_transiently_unreadable_listing_keeps_the_last_good_one(tmp_path, monk
     binary = tmp_path / "sd-cli"
     binary.write_bytes(b"x")
     monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
-    sd_cpp_backend._remember_device_listing(str(binary), "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n")
+    sd_cpp_backend._remember_device_listing(
+        str(binary), "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
+    )
     sd_cpp_backend._remember_device_listing(str(binary), None)
     assert sd_cpp_backend.sd_cpp_listed_device(str(binary), probe = False) == (
         "vulkan",
@@ -686,9 +730,14 @@ def test_rocm_runtime_check_is_unknown_on_windows(monkeypatch):
 
 
 def test_the_listed_device_names_an_unowned_build(monkeypatch):
-    listing = "CPU\tAMD Ryzen 9\nVulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\nVulkan1\tIntel(R) UHD\n"
+    listing = (
+        "CPU\tAMD Ryzen 9\nVulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\nVulkan1\tIntel(R) UHD\n"
+    )
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: listing)
-    assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli") == ("vulkan", "AMD Radeon RX 7800 XT (RADV NAVI32)")
+    assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli") == (
+        "vulkan",
+        "AMD Radeon RX 7800 XT (RADV NAVI32)",
+    )
     assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli", "Vulkan1") == ("vulkan", "Intel(R) UHD")
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: "CPU\tAMD Ryzen 9\n")
     assert sd_cpp_backend.sd_cpp_listed_device("/x/sd-cli") == (None, None)

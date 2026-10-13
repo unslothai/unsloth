@@ -4254,7 +4254,12 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
 _AMD_VULKAN = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
 
 
-def _tiny_gtt(monkeypatch, *, encoder_fits: bool, free_vram = 1):
+def _tiny_gtt(
+    monkeypatch,
+    *,
+    encoder_fits: bool,
+    free_vram = 1,
+):
     """A GTT pool sized against the harness's one-byte files: denoiser 1 + VAEs 2 + encoder 1 bytes past the
     1 GiB margin. ``encoder_fits=False`` holds everything but the encoder. ``free_vram`` is what the card reports,
     1 byte by default so Auto can never render resident."""
@@ -4266,7 +4271,9 @@ def _tiny_gtt(monkeypatch, *, encoder_fits: bool, free_vram = 1):
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
 
 
-def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(monkeypatch, tmp_path):
+def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(
+    monkeypatch, tmp_path
+):
     """radv keeps every GPU-run module of an offloaded H3 in GTT (31.35 GiB at Q4, measured), past half of a 48 GB
     host: the render dies on "Not enough memory for command submission". Auto runs the encoder on the CPU, but
     only for a render that is offloaded: the committed flags stay the ones a resident render is derived from."""
@@ -4330,7 +4337,9 @@ def _no_gtt_room(monkeypatch, free_vram):
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
 
 
-def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(monkeypatch, tmp_path):
+def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(
+    monkeypatch, tmp_path
+):
     _no_gtt_room(monkeypatch, free_vram = 1)
     with pytest.raises(RuntimeError, match = "GTT"):
         _load_h3_native_offload(
@@ -4418,7 +4427,9 @@ class _ReleasableSlot:
         pass
 
 
-def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(monkeypatch, tmp_path):
+def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(
+    monkeypatch, tmp_path
+):
     """A cached H3 model's sd-server in its keepalive window holds the GTT this load measures; the teardown would free
     it, so the load releases it and measures again instead of refusing until the idle timer fires."""
     from core.inference import video as video_mod
@@ -4474,9 +4485,13 @@ def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, t
     assert slot.released and len(readings) == 1
 
 
-def _render_runtime(*, base = ("--offload-to-cpu", "--diffusion-fa"), slot = None, snapshot_refusal = None):
+def _render_runtime(
+    *,
+    base = ("--offload-to-cpu", "--diffusion-fa"),
+    slot = None,
+    snapshot_refusal = None,
+):
     from core.inference.video_minimax_h3 import H3NativeFitInputs
-
     inputs = H3NativeFitInputs(
         base_flags = base,
         accelerator = "vulkan",
@@ -4511,7 +4526,10 @@ def test_an_offloaded_auto_render_catches_pressure_since_the_load(monkeypatch):
     _live_gtt(monkeypatch, 0)
     with pytest.raises(H3NativeMemoryRefusal, match = "GTT"):
         _h3_offloaded_render_flags(
-            _render_runtime(), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+            _render_runtime(),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
         )
 
 
@@ -4542,7 +4560,10 @@ def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
     running = ("--offload-to-cpu", "--diffusion-fa", "--clip-on-cpu")
     slot = types.SimpleNamespace(alive_signature = lambda: ("bin", (), running, ()))
     assert _h3_offloaded_render_flags(
-        _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+        _render_runtime(slot = slot),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
     ) == list(running)
 
 
@@ -4578,7 +4599,10 @@ def test_an_offloaded_render_frees_an_idle_resident_server_before_its_reading(mo
         video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0 if slot.alive else roomy, True)
     )
     flags = _h3_offloaded_render_flags(
-        _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+        _render_runtime(slot = slot),
+        ["--offload-to-cpu", "--diffusion-fa"],
+        render_resident = False,
+        memory_mode = "auto",
     )
     assert slot.released and "--clip-on-cpu" not in flags
 
@@ -4591,7 +4615,10 @@ def test_an_offloaded_render_behind_a_busy_resident_server_says_a_render_is_runn
     _live_gtt(monkeypatch, 0)
     with pytest.raises(H3NativeMemoryRefusal, match = "still running"):
         _h3_offloaded_render_flags(
-            _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
+            _render_runtime(slot = slot),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
         )
     assert slot.released
 
@@ -4629,10 +4656,17 @@ def test_the_one_shot_sd_cli_launch_is_fitted_afresh():
 
     source = inspect.getsource(video_mod.VideoBackend._generate_h3_native)
     fallback = source[source.index("if generated is None:") :]
-    assert fallback.index("reuse_live_server = False") < fallback.index("runtime.engine.generate_video(")
+    assert fallback.index("reuse_live_server = False") < fallback.index(
+        "runtime.engine.generate_video("
+    )
 
 
-BALANCED_FLAGS = ["--offload-to-cpu", "--diffusion-fa", "--backend", "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0"]
+BALANCED_FLAGS = [
+    "--offload-to-cpu",
+    "--diffusion-fa",
+    "--backend",
+    "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0",
+]
 
 
 def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypatch):
@@ -4642,13 +4676,18 @@ def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypat
 
     runtime = _render_runtime()
     _live_gtt(monkeypatch, 1 << 50)
-    assert _h3_offloaded_render_flags(
-        runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
-    ) == BALANCED_FLAGS
+    assert (
+        _h3_offloaded_render_flags(
+            runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
+        )
+        == BALANCED_FLAGS
+    )
     # Room for the encoder-on-CPU set only: Auto would move it, an explicit mode is refused instead.
     _live_gtt(monkeypatch, video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 3)
     with pytest.raises(H3NativeMemoryRefusal, match = "Low VRAM"):
-        _h3_offloaded_render_flags(runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced")
+        _h3_offloaded_render_flags(
+            runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
+        )
 
 
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
@@ -4657,9 +4696,12 @@ def test_a_resident_render_is_never_re_fitted(monkeypatch):
 
     monkeypatch.setattr(video_minimax_h3, "h3_native_live_fit", lambda *a, **k: 1 / 0)
     resident = ["--diffusion-fa", "--max-vram", "-1"]
-    assert _h3_offloaded_render_flags(
-        _render_runtime(), resident, render_resident = True, memory_mode = "auto"
-    ) == resident
+    assert (
+        _h3_offloaded_render_flags(
+            _render_runtime(), resident, render_resident = True, memory_mode = "auto"
+        )
+        == resident
+    )
 
 
 def test_h3_native_keeps_the_outgoing_server_when_the_load_fits(monkeypatch, tmp_path):
@@ -4709,7 +4751,9 @@ def test_h3_native_names_no_gtt_slot_when_the_vulkan_pin_did_not_resolve(monkeyp
     assert state.pipe.fit_inputs.gtt_pci_slot is None
 
 
-def test_h3_native_replacing_an_in_process_model_defers_the_refusal_to_the_launch(monkeypatch, tmp_path):
+def test_h3_native_replacing_an_in_process_model_defers_the_refusal_to_the_launch(
+    monkeypatch, tmp_path
+):
     """The outgoing diffusers model's memory is freed by the commit's teardown, before any native process starts;
     the load does not refuse on a reading that still counts it, and the pre-launch live fit decides."""
     from core.inference import video as video_mod

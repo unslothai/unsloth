@@ -1113,7 +1113,10 @@ _LISTED_DEVICE_CLASSES: dict[str, str] = {
 
 
 def sd_cpp_listed_device(
-    binary: Optional[str], device_name: Optional[str] = None, *, probe: bool = True
+    binary: Optional[str],
+    device_name: Optional[str] = None,
+    *,
+    probe: bool = True,
 ) -> "tuple[Optional[str], Optional[str]]":
     """``(accelerator class, description)`` of the device ``binary`` renders on, from its own ``--list-devices``:
     ``device_name`` when pinned, else the first non-CPU device (sd.cpp's own default). ``(None, None)`` when the

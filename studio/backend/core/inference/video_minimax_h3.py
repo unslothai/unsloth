@@ -1430,7 +1430,9 @@ def amdgpu_gtt_reading(
     return best, known
 
 
-def amdgpu_gtt_free_bytes(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> Optional[int]:
+def amdgpu_gtt_free_bytes(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> Optional[int]:
     return amdgpu_gtt_reading(pci_slot, sysfs_root)[0]
 
 
@@ -1657,7 +1659,6 @@ def h3_native_host_budgets() -> "tuple[Optional[int], int]":
         ram = min(ram, combined)
     try:
         import psutil
-
         free_swap = int(psutil.swap_memory().free)
     except Exception:  # noqa: BLE001 - no swap reading: count none, keep the RAM check
         free_swap = 0
@@ -1671,7 +1672,9 @@ def h3_native_host_budgets() -> "tuple[Optional[int], int]":
 def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
     """``h3_native_memory_fit`` on live RAM, swap and GTT readings: /proc, cgroup and sysfs files only."""
     ram, swap = h3_native_host_budgets()
-    gtt_free, gtt_known = amdgpu_gtt_reading(inputs.gtt_pci_slot) if inputs.check_gtt else (None, True)
+    gtt_free, gtt_known = (
+        amdgpu_gtt_reading(inputs.gtt_pci_slot) if inputs.check_gtt else (None, True)
+    )
     if inputs.check_gtt and gtt_free is None and inputs.gtt_pci_slot:
         # The device is AMD but its slot matched no amdgpu card: read the tightest card rather than skip the check.
         gtt_free, gtt_known = amdgpu_gtt_reading(None)
@@ -1689,9 +1692,7 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
     )
 
 
-H3_NATIVE_RENDER_RUNNING_HINT = (
-    " A render on the model being replaced is still running and holds that memory; try again after it finishes."
-)
+H3_NATIVE_RENDER_RUNNING_HINT = " A render on the model being replaced is still running and holds that memory; try again after it finishes."
 
 
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:

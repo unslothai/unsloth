@@ -164,7 +164,10 @@ def cgroup_swap_allowance_bytes(
             raw = _first_line(os.path.join(directory, "memory.swap.max"))
             if raw is None:
                 # No swap accounting here: a RAM limit at this level makes the swap it leaves unknowable.
-                if _integer(_first_line(os.path.join(directory, "memory.max")), limit = True) is not None:
+                if (
+                    _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
+                    is not None
+                ):
                     return 0
                 continue
             limit = _integer(raw, limit = True)

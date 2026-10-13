@@ -1455,7 +1455,11 @@ def _h3_offloaded_render_flags(
 
 
 def _h3_launch_flags(
-    runtime: Any, render_flags: "list[str]", memory_mode: Optional[str], *, hint: str = ""
+    runtime: Any,
+    render_flags: "list[str]",
+    memory_mode: Optional[str],
+    *,
+    hint: str = "",
 ) -> list[str]:
     """The live fit for one process launch, with no server-slot calls (it also runs under the slot's lock, from
     ``H3NativeServerSlot.get``'s ``pre_spawn``). Auto may move the encoder; an explicit mode runs exactly its flags
@@ -1484,7 +1488,6 @@ def _torch_pci_slot(ordinal: Optional[int]) -> Optional[str]:
         return None
     try:
         import torch
-
         props = torch.cuda.get_device_properties(int(ordinal))
         return f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}"
     except Exception:  # noqa: BLE001 - unknown means every amdgpu card is a candidate
@@ -4296,7 +4299,9 @@ class VideoBackend:
             release_pending = False
             if fit.refusal or fit.note:
                 # Free the replaced model's idle sd-server (it respawns on demand) and re-measure.
-                released = self._release_native_server("a new MiniMax-H3 load is measuring host memory")
+                released = self._release_native_server(
+                    "a new MiniMax-H3 load is measuring host memory"
+                )
                 if released == "stopped":
                     fit = h3_native_live_fit(native_fit_inputs, requested_mode)
                 release_pending = released == "pending"
@@ -4307,7 +4312,9 @@ class VideoBackend:
             # process, so a refusal is not raised here: the pre-launch live fit, taken after the teardown, decides.
             with self._lock:
                 outgoing = self._state
-            outgoing_in_process = outgoing is not None and getattr(outgoing, "engine", None) != "sd_cpp"
+            outgoing_in_process = (
+                outgoing is not None and getattr(outgoing, "engine", None) != "sd_cpp"
+            )
             if fit.refusal and outgoing_in_process:
                 logger.warning(
                     "video.h3_native_memory_fit: deferred to the first render, after the outgoing in-process "
@@ -4347,7 +4354,9 @@ class VideoBackend:
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
         if native_fit_flags is not None:
-            native_fit_flags += tuple(device_backend_flags(native_device_name, list(native_fit_flags)))
+            native_fit_flags += tuple(
+                device_backend_flags(native_device_name, list(native_fit_flags))
+            )
         from .video_minimax_h3 import (
             H3NativeServerSlot,
             MiniMaxH3NativeRuntime,
@@ -11369,7 +11378,9 @@ class VideoBackend:
         stop at the render's end, "none" when there was no server. Never waits on a render."""
         with self._lock:
             state = self._state
-        return _release_h3_server_slot(getattr(getattr(state, "pipe", None), "server_slot", None), reason)
+        return _release_h3_server_slot(
+            getattr(getattr(state, "pipe", None), "server_slot", None), reason
+        )
 
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation
