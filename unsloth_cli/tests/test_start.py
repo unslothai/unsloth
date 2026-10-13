@@ -5023,7 +5023,14 @@ def test_resolve_model_kept_model_quant_and_context_warns_of_the_reload(monkeypa
     ]
 
 
-@pytest.mark.parametrize("pending", ["spec_probe_retry_pending", "audio_probe_pending"])
+@pytest.mark.parametrize(
+    "pending",
+    [
+        {"spec_probe_retry_pending": True},
+        {"audio_probe_pending": True},
+        {"spec_fallback_reason": "drafter_not_found"},
+    ],
+)
 def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch, pending):
     models = [
         {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
@@ -5032,7 +5039,7 @@ def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch, 
     payloads = []
 
     def status(url):
-        return {**_kept_model_status(url), pending: True}
+        return {**_kept_model_status(url), **pending}
 
     def load(base, key, model, load, payload):
         payloads.append(payload)
@@ -5047,6 +5054,31 @@ def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch, 
     )
 
     assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}]
+
+
+def test_resolve_model_kept_model_without_a_dspark_sidecar_reuses_it(monkeypatch):
+    models = [
+        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
+        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
+    ]
+
+    def status(url):
+        return {
+            **_kept_model_status(url),
+            "spec_fallback_reason": "drafter_not_found",
+            "spec_dspark_sidecar_absent": True,
+        }
+
+    def load(*args, **kwargs):
+        raise AssertionError("an absent DSpark sidecar is permanent, so nothing to retry")
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: status(url))
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(
+        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
+    )
 
 
 def test_resolve_model_kept_model_at_the_same_settings_does_not_warn(monkeypatch, capsys):
