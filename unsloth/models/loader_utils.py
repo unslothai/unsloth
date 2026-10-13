@@ -199,7 +199,7 @@ def prepare_device_map():
 
 def deepspeed_zero3_device_map(device_map):
     """None under DeepSpeed ZeRO-3 init: transformers refuses any device_map there, since ZeRO-3 places the
-    weights itself (#225). Only placements we picked are dropped; a caller's explicit map still raises."""
+    weights itself (#225). Only a placement left to us is dropped; a map the caller chose still raises."""
     try:
         from transformers.integrations import is_deepspeed_zero3_enabled
         zero3 = is_deepspeed_zero3_enabled()
@@ -207,13 +207,7 @@ def deepspeed_zero3_device_map(device_map):
         zero3 = False
     if not zero3:
         return device_map
-    if (
-        device_map is None
-        or is_automatic_device_map(device_map)
-        or (isinstance(device_map, dict) and set(device_map) == {""})
-    ):
-        return None
-    return device_map
+    return None if is_automatic_device_map(device_map) else device_map
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"
