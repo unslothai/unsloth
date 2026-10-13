@@ -200,9 +200,9 @@ export function useTranscription({
         ? { model: sttLoadedModel, engine: sttLoadedEngine }
         : null,
     );
-    // Nothing is busy during that read, so an Eject or a pick made meanwhile wins; a
+    // Nothing is busy during that read, so an Eject, a pick or leaving the page meanwhile wins; a
     // status refresh that cleared the selection (nothing resident yet) does not.
-    if (sttLoadGeneration.current !== generation) return null;
+    if (sttLoadGeneration.current !== generation || !activeRef.current) return null;
     const current = selectedSttRepoRef.current;
     if (current !== null && current !== repo) return null;
     if (current === null) {

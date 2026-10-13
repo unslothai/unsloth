@@ -293,6 +293,14 @@ test("the resident engine is adopted even when the repo id is unchanged", () => 
 test("a pick made while Transcribe reads residency is not overridden by the old run", () => {
   assert.match(
     source,
-    /const generation = sttLoadGeneration\.current;[\s\S]*?await readSttResidency\(engine\)[\s\S]*?if \(sttLoadGeneration\.current !== generation\) return null;\s*const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
+    /const generation = sttLoadGeneration\.current;[\s\S]*?await readSttResidency\(engine\)[\s\S]*?if \(sttLoadGeneration\.current !== generation \|\| !activeRef\.current\) return null;\s*const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
+  );
+});
+
+test("leaving Audio during the residency read skips the transcription load", () => {
+  // The hidden page has no load to abort yet, so ensureSttLoaded would still post /stt/load.
+  assert.match(
+    source,
+    /await readSttResidency\(engine\)[\s\S]{0,400}?\|\| !activeRef\.current\) return null;[\s\S]*?await ensureSttLoaded\(repo, model, engine\)/,
   );
 });
