@@ -29,14 +29,18 @@ def _identity(raw: str | os.PathLike) -> str:
     return os.path.normcase(os.path.realpath(os.path.expanduser(str(raw))))
 
 
-async def _listed_row(path: str, sources: frozenset[str]) -> LocalModelInfo:
+async def _listed_row(
+    path: str, sources: frozenset[str], row_id: str | None = None
+) -> LocalModelInfo:
     if not path or not path.strip():
         raise HTTPException(status_code = 400, detail = "path is required")
     wanted = _identity(path)
     listing = await local_inventory.list_local_models_response()
     for row in listing.models:
         if row.source in sources and row.path and _identity(row.path) == wanted:
-            return row
+            # Ollama tags aliasing one blob share a path; the row id tells them apart.
+            if row_id is None or row_id in (row.id, row.load_id):
+                return row
     raise HTTPException(status_code = 404, detail = "Model not found on device")
 
 
@@ -109,14 +113,30 @@ def _load_state_blocks_delete(paths: tuple[str, ...]) -> str | None:
         detail = deletion._diffusion_blocks_delete(path) or deletion._video_blocks_delete(path)
         if detail:
             return detail
+        if _dictation_holds(path):
+            return "Unload the audio model before deleting"
     return None
 
 
-async def reveal_local_model_response(path: str) -> dict:
+def _dictation_holds(path: str) -> bool:
+    try:
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+        sidecar = get_audio_cpp_stt_sidecar()
+    except Exception as e:  # noqa: BLE001 -- unavailable is not "in use", as in deletion.py
+        logger.debug("Dictation sidecar unavailable during a local delete guard: %s", e)
+        return False
+    return any(
+        isinstance(name, str) and deletion._loaded_id_matches_repo(name, path)
+        for name in (sidecar.loaded_model, sidecar.loading_model)
+    )
+
+
+async def reveal_local_model_response(path: str, row_id: str | None = None) -> dict:
     account_access.require_installation_owner()
     from utils.paths.path_utils import reveal_in_file_manager
 
-    row = await _listed_row(path, LOCAL_SOURCES)
+    row = await _listed_row(path, LOCAL_SOURCES, row_id)
     target = Path(row.path)
     try:
         await asyncio.to_thread(reveal_in_file_manager, target)
@@ -128,9 +148,9 @@ async def reveal_local_model_response(path: str) -> dict:
     return {"status": "ok"}
 
 
-async def delete_local_model_response(path: str) -> dict:
+async def delete_local_model_response(path: str, row_id: str | None = None) -> dict:
     account_access.require_installation_owner()
-    row = await _listed_row(path, LOCAL_SOURCES)
+    row = await _listed_row(path, LOCAL_SOURCES, row_id)
     target = Path(row.path)
     ollama_ref = await asyncio.to_thread(_ollama_ref, row) if row.source == "ollama" else None
     # Loaded ids are whatever the load was given: the listed and resolved path, and for Ollama the

@@ -27,15 +27,15 @@ test("local reveal and delete go through the path-checked hub routes", () => {
 });
 
 test("picker local rows reveal by path and offer delete only for deletable sources", () => {
-  assert.match(PICKERS, /onReveal=\{\(\) => revealLocalModel\(m\.path\)\}/);
+  assert.match(PICKERS, /onReveal=\{\(\) => revealLocalModel\(m\.path, m\.id\)\}/);
   assert.match(PICKERS, /DELETABLE_LOCAL_SOURCES\.has\(m\.source\)\s*\?/);
-  assert.match(PICKERS, /onConfirm: \(\) => deleteLocalModel\(m\.path\)/);
+  assert.match(PICKERS, /onConfirm: \(\) => deleteLocalModel\(m\.path, m\.id\)/);
 });
 
 test("hub rows and the on-device card act on non-cache rows by path", () => {
   assert.match(HUB_ROWS, /row\.source !== "hf_cache" &&\s*row\.path/);
-  assert.match(HUB_ROWS, /onReveal=\{\(\) => revealLocalModel\(localActionPath\)\}/);
-  assert.match(CARD, /await deleteLocalModel\(path\)/);
+  assert.match(HUB_ROWS, /onReveal=\{\(\) => revealLocalModel\(localActionPath, row\.loadId\)\}/);
+  assert.match(CARD, /await deleteLocalModel\(path, modelId\)/);
   assert.match(CARD, /DELETABLE_LOCAL_SOURCES\.has\(source\) && !!path/);
-  assert.match(CARD, /: revealLocalModel\(path\)/);
+  assert.match(CARD, /: revealLocalModel\(path, modelId\)/);
 });

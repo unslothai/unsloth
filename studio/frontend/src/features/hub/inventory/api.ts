@@ -442,21 +442,22 @@ export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "omlx",
 ]);
 
-/** Reveal an on-device model outside the HF cache; the server only accepts a path it lists. */
-export async function revealLocalModel(path: string): Promise<void> {
+/** Reveal an on-device model outside the HF cache; the server only accepts a path it lists.
+ *  `id` (the row's load id) picks one of several rows sharing a path, e.g. Ollama tag aliases. */
+export async function revealLocalModel(path: string, id?: string): Promise<void> {
   const response = await authFetch("/api/hub/local/reveal", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, id }),
   });
   await throwIfNotOk(response);
 }
 
-export async function deleteLocalModel(path: string): Promise<void> {
+export async function deleteLocalModel(path: string, id?: string): Promise<void> {
   const response = await authFetch("/api/hub/local/delete", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, id }),
   });
   try {
     await throwIfNotOk(response);

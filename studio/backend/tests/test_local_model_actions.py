@@ -182,3 +182,37 @@ def test_reveal_accepts_listed_ollama_row_and_rejects_hf_cache(lm_root, tmp_path
     with pytest.raises(HTTPException) as caught:
         asyncio.run(actions.reveal_local_model_response(str(tmp_path / "hf" / "models--a--b")))
     assert caught.value.status_code == 404
+
+
+def test_ollama_alias_tags_sharing_a_blob_delete_the_chosen_tag(lm_root, tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    store, gone_ref = _ollama_store(tmp_path, monkeypatch)
+    library = store / "manifests" / "registry.ollama.ai" / "library"
+    kept_ref = ollama._ollama_manifest_ref(Path(os.path.realpath(library / "kept" / "latest")))
+    blob = store / "blobs" / "sha256-shared"
+    rows = [
+        LocalModelInfo(id = kept_ref, load_id = kept_ref, display_name = "kept", path = str(blob), source = "ollama"),
+        LocalModelInfo(id = gone_ref, load_id = gone_ref, display_name = "gone", path = str(blob), source = "ollama"),
+    ]
+
+    async def listing(models_dir: str = "./models"):
+        return LocalModelListResponse(models_dir = "", hf_cache_dir = "", models = rows)
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
+    asyncio.run(actions.delete_local_model_response(str(blob), gone_ref))
+    assert not (library / "gone").exists()
+    assert (library / "kept" / "latest").is_file()
+
+
+def test_dictation_sidecar_holding_the_model_blocks_delete(lm_root, monkeypatch):
+    import types
+
+    import core.inference.stt_audiocpp_sidecar as sidecar_module
+
+    _, model, _ = lm_root
+    sidecar = types.SimpleNamespace(loaded_model = str(model / "gemma-Q4.gguf"), loading_model = None)
+    monkeypatch.setattr(sidecar_module, "get_audio_cpp_stt_sidecar", lambda: sidecar)
+    assert actions._dictation_holds(str(model))
+    sidecar.loaded_model = None
+    assert not actions._dictation_holds(str(model))

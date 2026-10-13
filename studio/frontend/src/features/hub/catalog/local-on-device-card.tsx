@@ -295,7 +295,7 @@ export function LocalOnDeviceCard({
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!isCacheRow) {
-        await deleteLocalModel(path);
+        await deleteLocalModel(path, modelId);
         return;
       }
       if (!repoId) return;
@@ -623,7 +623,7 @@ export function LocalOnDeviceCard({
                   onReveal={() =>
                     isCacheRow && repoId
                       ? revealCachedModel(repoId)
-                      : revealLocalModel(path)
+                      : revealLocalModel(path, modelId)
                   }
                 />
               )}

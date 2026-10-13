@@ -814,7 +814,7 @@ export const InventoryRow = memo(function InventoryRow({
         ariaLabel={`More options for ${rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
-        onReveal={() => revealLocalModel(localActionPath)}
+        onReveal={() => revealLocalModel(localActionPath, row.loadId)}
         del={
           DELETABLE_LOCAL_SOURCES.has(row.source)
             ? {
@@ -831,7 +831,7 @@ export const InventoryRow = memo(function InventoryRow({
                   </>
                 ),
                 successMessage: `Deleted ${title}`,
-                onConfirm: () => deleteLocalModel(localActionPath),
+                onConfirm: () => deleteLocalModel(localActionPath, row.loadId),
                 onDeleted: onChange,
               }
             : undefined

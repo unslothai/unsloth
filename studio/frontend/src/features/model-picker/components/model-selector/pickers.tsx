@@ -6840,7 +6840,7 @@ export function HubModelPicker({
     return (
       <ModelRowMenu
         ariaLabel={`More options for ${name}`}
-        onReveal={() => revealLocalModel(m.path)}
+        onReveal={() => revealLocalModel(m.path, m.id)}
         del={
           DELETABLE_LOCAL_SOURCES.has(m.source)
             ? {
@@ -6855,7 +6855,7 @@ export function HubModelPicker({
                 ),
                 successMessage: `Deleted ${name}`,
                 disabled: deleteDisabled,
-                onConfirm: () => deleteLocalModel(m.path),
+                onConfirm: () => deleteLocalModel(m.path, m.id),
                 onDeleted: refreshLocalModelsList,
               }
             : undefined
