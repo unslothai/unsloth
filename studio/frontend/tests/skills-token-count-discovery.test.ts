@@ -81,7 +81,7 @@ test("a sign-out drops the module-level skills snapshot", () => {
   assert.ok(SKILLS_API_SOURCE.includes("publish(EMPTY_SNAPSHOT)"));
 });
 
-test("the count passes the counted history so a Code-off @mention is priced like the send", () => {
+test("the count passes the counted history so a Tools-off @mention is priced like the send", () => {
   const refresh = readFileSync(
     new URL("../src/features/chat/utils/refresh-context-usage.ts", import.meta.url),
     "utf8",

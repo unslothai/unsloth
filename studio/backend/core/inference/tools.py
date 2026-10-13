@@ -36,11 +36,13 @@ import sys
 import tempfile
 import contextlib
 import threading
+import zlib
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -12514,6 +12516,28 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     return None
 
 
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -12770,7 +12794,28 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    history: dict = {}
+    try:
+        text = _defuse_sentinels(
+            _edit_file_apply(arguments, session_id, disable_sandbox, created, history)
+        )
+    finally:
+        _history_end_file(history)
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict,
+    session_id: "str | None",
+    disable_sandbox: bool,
+    created: "list[str]",
+    history: "dict | None" = None,
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -12789,6 +12834,8 @@ def _edit_file(
         os.path.realpath(target)
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+    if history is not None:
+        history.update(_history_begin_file(session_id, target))
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -12799,13 +12846,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -16143,6 +16193,80 @@ class _HTMLBodyLocator(HTMLParser):
         self.handle_entityref("#" + name)
 
 
+# What _ContentDecoder undoes, and what the fetcher's Accept-Encoding names: with none, any coding is
+# acceptable (RFC 9110 12.5.3), brotli and zstd included.
+_DECODED_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _ContentDecoder:
+    """Undoes a gzip or deflate Content-Encoding as the body is read. Servers send one unasked (python.org
+    does even for ``Accept-Encoding: identity``). Output is bounded per read and input by ``wire_limit``,
+    so a small compressed body can't expand past the caller's budget."""
+
+    def __init__(self, coding):
+        self.gzip = coding != "deflate"
+        self.inflater = None
+        # Before the first byte, or between gzip members: an end of input here is a complete body.
+        self.at_boundary = True
+        self.members = 0
+        self.unread = b""
+        self.wire = 0
+        self.wire_limit = 0
+        self.finished = False
+
+    def read(self, read_wire, size):
+        """At most ``size`` decoded bytes. ``b""`` before ``finished`` means only input was consumed: call again."""
+        if self.finished:
+            return b""
+        data, self.unread = self.unread, b""
+        draining = False
+        if len(data) < 2 and (self.inflater is None or not data):
+            more = read_wire(65536)
+            self.wire += len(more)
+            if self.wire > self.wire_limit:
+                raise ValueError("compressed response exceeds the byte limit")
+            if not more:
+                # An empty coded body (a 204, or Content-Length: 0) has nothing to decode; after a member, a
+                # stray byte is padding.
+                if self.at_boundary and (not data or self.members):
+                    self.finished = True
+                    return b""
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
+            data += more
+            if self.inflater is None and len(data) < 2:
+                self.unread = data
+                return b""
+        if self.inflater is None:
+            if self.gzip:
+                if self.members and not data.startswith(b"\x1f\x8b"):
+                    # Bytes after the last member are padding, which browsers ignore too.
+                    self.finished = True
+                    return b""
+                # Concatenated gzip members are one body (RFC 1952 2.2).
+                self.inflater = zlib.decompressobj(31)
+            else:
+                # "deflate" is meant to be zlib-wrapped (RFC 9110 8.4.1.2); some servers send it raw.
+                wrapped = data[0] & 0x0F == 8 and (data[0] << 8 | data[1]) % 31 == 0
+                self.inflater = zlib.decompressobj(15 if wrapped else -15)
+            self.at_boundary = False
+        out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
+        if not self.inflater.eof:
+            self.unread = self.inflater.unconsumed_tail
+        elif self.gzip:
+            self.members += 1
+            self.unread = self.inflater.unused_data
+            self.inflater = None
+            self.at_boundary = True
+        else:
+            self.finished = True
+        return out
+
+
 def _read_capped_body(
     resp,
     max_bytes,
@@ -16151,13 +16275,18 @@ def _read_capped_body(
     cancel_event,
     body_window = None,
     charset = None,
+    decoder = None,
 ):
-    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    """read at most ``max_bytes`` (decoded, with a ``decoder``), and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
     # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
+    if decoder is not None:
+        read_wire = read
+        decoder.wire_limit = decoder.wire + max_bytes + 65536
+        read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
     body_at = None
@@ -16175,8 +16304,18 @@ def _read_capped_body(
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = read(min(65536, remaining))
+        try:
+            chunk = read(min(65536, remaining))
+        except (ValueError, zlib.error) as exc:
+            if decoder is None:
+                raise
+            if decoder.wire > decoder.wire_limit:
+                return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
+            return f"Failed to decode the compressed response: {exc}", b""
         if not chunk:
+            # Checks the budget between compressed chunks that decode to nothing yet.
+            if decoder is not None and not decoder.finished:
+                continue
             break
         chunks.append(chunk)
         remaining -= len(chunk)
@@ -16366,6 +16505,7 @@ def _fetch_url_raw(
             headers = {
                 "User-Agent": ua,
                 "Host": validated_netloc,
+                "Accept-Encoding": "gzip, deflate",
             }
             if extra_headers:
                 headers.update(extra_headers)
@@ -16408,6 +16548,11 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
+            coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+            if coding not in ("", "identity", *_DECODED_CODINGS):
+                return f"Failed to fetch URL: unsupported Content-Encoding {coding[:40]!r}.", "", ""
+            decoder = _ContentDecoder(coding) if coding in _DECODED_CODINGS else None
+
             # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
@@ -16436,6 +16581,7 @@ def _fetch_url_raw(
                 cancel_event,
                 body_window = max_bytes if declared_html else None,
                 charset = resp.headers.get_content_charset() if declared_html else None,
+                decoder = decoder,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16459,6 +16605,7 @@ def _fetch_url_raw(
                     timeout,
                     deadline,
                     cancel_event,
+                    decoder = decoder,
                 )
                 if tail_error is not None:
                     return tail_error, "", ""
@@ -16707,9 +16854,11 @@ def _tool_result_char_budget() -> int:
     return _result_char_budget(cap)
 
 
-def _other_tool_result_char_budget() -> int:
-    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
-    page back through."""
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -21262,10 +21411,15 @@ def _fit_result_to_room(text, name = None):
     notice and no paging hint.
 
     With no priced room (external providers, the hosted path, any loop that does not measure its own
-    conversation) the text is returned untouched.
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
     """
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text:
         return text
+    if _request_result_room() is None:
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
     # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
     # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
@@ -21274,7 +21428,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body, _other_tool_result_char_budget())
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 
@@ -21525,6 +21679,14 @@ _DIR_FD_WRITES = (
 )
 
 
+# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
+# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
+# follow a symlink source, and os.link there takes no such flag.
+_LINK_NOFOLLOW = (
+    {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
+)
+
+
 def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
@@ -21559,7 +21721,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
-            os.link(tmp, installed)
+            os.link(tmp, installed, **_LINK_NOFOLLOW)
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
@@ -21576,7 +21738,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on POSIX, and the name may have
         # been taken since the caller looked. link fails with EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd, **_LINK_NOFOLLOW)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever the name resolves to by the
         # time this returns.
@@ -21702,7 +21864,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, os.path.join(target, name))
+                os.link(tmp, os.path.join(target, name), **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp)
         return
@@ -21722,7 +21884,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1], **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp, dir_fd = fds[-1])
     finally:
@@ -21798,7 +21960,7 @@ def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrit
         if not existed:
             try:
                 # link, not rename: it fails when a tool took the name since the check.
-                os.link(tmp, dest, **pair)
+                os.link(tmp, dest, **pair, **_LINK_NOFOLLOW)
                 return False
             except FileExistsError:
                 if not overwrite:
@@ -22200,7 +22362,7 @@ def _restore_pruned_path(private: str, path: str) -> None:
     last resort is to leave the data under the private name and say where it went, rather than
     unlink it."""
     try:
-        os.link(private, path)
+        os.link(private, path, **_LINK_NOFOLLOW)
         _quiet_unlink(private)
         return
     except OSError:
@@ -22600,6 +22762,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -22617,7 +22789,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
-            return snapshot
+            return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
@@ -22630,6 +22802,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
             ]
         )
         for name in names:
@@ -22654,8 +22827,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return snapshot
+                return _CappedSnapshot(snapshot)
     return snapshot
+
+
+class _CappedSnapshot(dict):
+    """A walk cut short by a cap: a file missing from it is not known to be gone."""
 
 
 # Scratch scripts of calls running right now. Chats in one project share a workdir and each snapshots all of it, so
@@ -22688,6 +22865,9 @@ def _call_finished(token: "dict | None") -> None:
     """Drop a call's registration. Its token keeps whatever it learned."""
     if not token or not token.get("workdir"):
         return
+    if token.get("history") is not None and not token["history"].done:
+        # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
+        _history_end(token, _snapshot_workdir_files(token["workdir"]))
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -22698,6 +22878,98 @@ def _call_finished(token: "dict | None") -> None:
             pass
         if not running:
             _workdir_calls.pop(token["workdir"], None)
+
+
+def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+    """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
+    says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    with _scratch_lock:
+        scratch = set(_active_scratch)
+    kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
+    return kept, not isinstance(snap, _CappedSnapshot)
+
+
+def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+    if file_history.current_turn() is None:
+        return
+    snap, complete = _history_snapshot(before)
+    call_token["history"] = file_history.begin_call(
+        session_id, call_token.get("workdir"), snap, complete = complete
+    )
+
+
+def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+    if not call_token or call_token.get("history") is None:
+        return
+    if call_token.get("shared"):
+        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
+        call_token["history"].ambiguous = True
+    snap, complete = _history_snapshot(after)
+    file_history.end_call(call_token["history"], snap, complete = complete)
+
+
+def _walk_lists(workdir: str, rel: str) -> bool:
+    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
+    taken for a deletion by the next python or terminal walk."""
+    parts = rel.split("/")
+    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
+        map(_servable_segment, parts)
+    ):
+        return False
+    base = workdir
+    for part in parts[:-1]:
+        if part.startswith(".") or _snapshot_skips_dir(base, part):
+            return False
+        base = os.path.join(base, part)
+    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
+
+
+def _history_begin_file(session_id: "str | None", target: str) -> dict:
+    """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
+    if file_history.current_turn() is None or not session_id:
+        return {}
+    workdir = os.path.realpath(_get_workdir(session_id))
+    try:
+        rel = os.path.relpath(os.path.realpath(target), workdir)
+    except ValueError:  # Windows: another drive, so outside the folder
+        return {}
+    if rel.startswith(os.pardir) or os.path.isabs(rel):
+        return {}
+    rel = rel.replace(os.sep, "/")
+    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+        return {}
+    try:
+        baseline = file_history.store().needs_baseline(workdir)
+    except Exception:
+        # History is an extra: an index it cannot open must not stop the edit.
+        logger.warning("file history: could not open the index", exc_info = True)
+        return {}
+    if baseline:
+        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
+        snap = {**_history_file_snapshot(workdir, rel), **snap}
+    else:
+        snap, complete = _history_file_snapshot(workdir, rel), True
+    token = file_history.begin_call(session_id, workdir, snap, paths = {rel}, complete = complete)
+    return {"token": token, "workdir": workdir, "rel": rel} if token is not None else {}
+
+
+def _history_file_snapshot(workdir: str, rel: str) -> dict:
+    try:
+        info = os.lstat(os.path.join(workdir, rel))
+    except OSError:
+        return {}
+    return {rel: (info.st_mtime_ns, info.st_size, None)} if S_ISREG(info.st_mode) else {}
+
+
+def _history_end_file(history: dict) -> None:
+    if history.get("token") is None:
+        return
+    file_history.end_call(
+        history["token"],
+        _history_file_snapshot(history["workdir"], history["rel"]),
+        paths = {history["rel"]},
+    )
 
 
 def _snapshot_differs(before: tuple, after: tuple) -> bool:
@@ -22719,11 +22991,12 @@ def _created_file_sentinels(
     """Sentinels naming the files this call created or overwrote. ``__IMAGES__`` renders inline as
     before; ``__FILES__`` carries every file with its size so the UI can offer a download. Both
     are stripped before the model sees the result."""
-    if token is not None and token.get("shared"):
+    if token is not None and token.get("shared") and token.get("history") is None:
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
+    _history_end(token, after)
     if token is not None and token.get("shared"):
         # A call that started while that walk was running. What it wrote is in `after` and cannot be told apart from
         # ours, so the same rule applies: the check above only saves the walk when the sharing was already known.
@@ -22863,6 +23136,7 @@ def _python_exec(
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
+    _history_begin(call_token, session_id, _before)
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's helper.py stays importable and __file__
         # resolves inside the sandbox.
@@ -23129,6 +23403,7 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
+        _history_begin(call_token, session_id, _before)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox

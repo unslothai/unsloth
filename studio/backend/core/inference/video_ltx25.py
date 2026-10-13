@@ -767,6 +767,13 @@ class Ltx25TextEncoderClient:
             run_without_native_path_secret,
         )
 
+        from utils.process_lifetime import is_process_shutting_down
+
+        # A quit during an LTX-2.5 load must not start an encoder worker the shutdown sweep has already passed.
+        if is_process_shutting_down():
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; not starting the LTX-2.5 text encoder worker."
+            )
         ctx = mp.get_context("spawn")
         cache_env = get_hf_cache_paths().child_env({})
         with child_environment_for_spawn(cache_env), native_path_secret_removed_for_child_start():
@@ -790,6 +797,24 @@ class Ltx25TextEncoderClient:
             adopt_pid(proc.pid)
         except Exception:  # noqa: BLE001 -- the daemon flag still ties it to this process
             pass
+        # Recheck once the pid is recorded: the latch can be set between the gate above and the record.
+        if is_process_shutting_down():
+            logger.info(
+                "video.ltx25_te: shutdown began during the spawn; reaping the encoder worker"
+            )
+            self._proc = None
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(5)
+            except Exception:  # noqa: BLE001 -- the reap is best-effort
+                pass
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; stopped the LTX-2.5 text encoder worker it had just started."
+            )
         logger.info("video.ltx25_te: started the Gemma 4 encoder worker (pid %s)", proc.pid)
 
     def alive(self) -> bool:
@@ -871,12 +896,16 @@ class Ltx25TextEncoderClient:
         prompts: list[str],
         max_sequence_length: int,
         cancel: Optional[threading.Event] = None,
+        *,
+        copy: bool = True,
     ) -> tuple[Any, Any]:
+        """``copy=False`` returns the cached host tensors themselves, for a caller that only reads them: a 385 MB host
+        clone per call is ~40 ms on a B200 host."""
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
             for cached_key, value in self._cache:
                 if cached_key == key:
-                    return value[0].clone(), value[1].clone()
+                    return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():
                 logger.warning("video.ltx25_te: encoder worker not running; restarting it")
                 self.start()
@@ -907,7 +936,7 @@ class Ltx25TextEncoderClient:
             )
             self._cache.append((key, (embeds, mask)))
             del self._cache[: -self._CACHE_ENTRIES]
-            return embeds.clone(), mask.clone()
+            return (embeds.clone(), mask.clone()) if copy else (embeds, mask)
 
 
 def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> None:
@@ -933,7 +962,8 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
-            embeds, mask = client.encode(texts, max_sequence_length)
+            # The client's own cached tensors (read only): every op below returns a new tensor.
+            embeds, mask = client.encode(texts, max_sequence_length, copy = False)
             batch = embeds.shape[0]
             embeds = embeds.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
@@ -1193,18 +1223,33 @@ def render(
     upsampler: Any = None,
     on_step: Optional[Callable[..., Any]] = None,
     cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
 ) -> Any:
     """Run one LTX-2.5 request. ``kwargs`` is the generic video call (prompt, size, frames, steps, guidance,
-    frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``)."""
+    frame_rate, generator, negative_prompt, callback); returns the final pipeline output (``.frames`` / ``.audio``).
+    ``on_stage(width, height)`` runs before each denoise stage with the size that stage denoises at (live previews
+    unpack the packed latents with it)."""
+    failed = False
     try:
         return _render(
-            pipe, kwargs, dev = dev, image = image, upsampler = upsampler, on_step = on_step, cancel = cancel
+            pipe,
+            kwargs,
+            dev = dev,
+            image = image,
+            upsampler = upsampler,
+            on_step = on_step,
+            cancel = cancel,
+            on_stage = on_stage,
         )
+    except BaseException:
+        failed = True
+        raise
     finally:
-        if image is not None:
+        if image is not None or failed:
             # The condition pipeline shares pipe's modules but not its offload-hook list, so on every exit (dev,
             # single stage, two stage, cancel) pipe's own hooks are reset here, or its last onloaded module stays on
-            # the card.
+            # the card. A text render that stops between its stages (cancel, error) may hold the DiT stage 1
+            # onloaded (diffusion_multistage.hold_denoiser_between_calls): reset it too.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:
@@ -1222,6 +1267,7 @@ def _render(
     upsampler: Any = None,
     on_step: Optional[Callable[..., Any]] = None,
     cancel: Optional[threading.Event] = None,
+    on_stage: Optional[Callable[[int, int], Any]] = None,
 ) -> Any:
     import inspect
 
@@ -1288,6 +1334,11 @@ def _render(
         }
 
     def _keep(stage_width: int, stage_height: int, frames: int) -> None:
+        if on_stage is not None:
+            try:
+                on_stage(stage_width, stage_height)
+            except Exception:  # noqa: BLE001 -- a preview hint must never fail a render
+                pass
         if not hasattr(scheduler, "keep_tokens"):
             return
         if image is None:
@@ -1330,60 +1381,65 @@ def _render(
             "LTX-2.5's two-stage recipe needs the latent upsampler (latent_upsampler/ of the base pack), which "
             "is not loaded."
         )
-    half_w, half_h = width // 2, height // 2
-    stage1 = dict(
-        base,
-        width = half_w,
-        height = half_h,
-        output_type = "latent",
-        return_dict = False,
-        **guidance_off,
-    )
-    if distilled_sigmas:
-        stage1["sigmas"] = list(LTX25_STAGE1_SIGMAS)
-    else:
-        stage1["num_inference_steps"] = steps
-    stage1.update(_conditions(LTX25_STAGE1_IMAGE_STRENGTH))
-    cb = _callback(0)
-    if cb is not None:
-        stage1["callback_on_step_end"] = cb
-    _keep(half_w, half_h, frames)
-    with ltx23_verbatim_sigmas(pipe):
-        video_latents, audio_latents = runner(**stage1)
-    if cancel is not None and cancel.is_set():
-        from .video_families import VIDEO_CANCELLED_MSG
-        raise RuntimeError(VIDEO_CANCELLED_MSG)
+    from .diffusion_multistage import encode_once, hold_denoiser_between_calls
 
-    with torch.inference_mode() if torch.is_inference_mode_enabled() else torch.no_grad():
-        param = next(upsampler.parameters())
-        # Saved before the move: Module.to() swaps the parameter's storage in place, so param.device follows it.
-        home = param.device
-        moved = home != video_latents.device
-        if moved:
-            upsampler.to(video_latents.device)
-        try:
-            upsampled = upsampler(video_latents.to(param.dtype))
-        finally:
+    with encode_once(runner):
+        half_w, half_h = width // 2, height // 2
+        stage1 = dict(
+            base,
+            width = half_w,
+            height = half_h,
+            output_type = "latent",
+            return_dict = False,
+            **guidance_off,
+        )
+        if distilled_sigmas:
+            stage1["sigmas"] = list(LTX25_STAGE1_SIGMAS)
+        else:
+            stage1["num_inference_steps"] = steps
+        stage1.update(_conditions(LTX25_STAGE1_IMAGE_STRENGTH))
+        cb = _callback(0)
+        if cb is not None:
+            stage1["callback_on_step_end"] = cb
+        _keep(half_w, half_h, frames)
+        # The connectors and the upsampler run before the DiT is needed again.
+        companions = (getattr(pipe, "connectors", None), upsampler)
+        with ltx23_verbatim_sigmas(pipe), hold_denoiser_between_calls(pipe, runner, companions):
+            video_latents, audio_latents = runner(**stage1)
+        if cancel is not None and cancel.is_set():
+            from .video_families import VIDEO_CANCELLED_MSG
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+
+        with torch.inference_mode() if torch.is_inference_mode_enabled() else torch.no_grad():
+            param = next(upsampler.parameters())
+            # Saved before the move: Module.to() swaps the parameter's storage in place, so param.device follows it.
+            home = param.device
+            moved = home != video_latents.device
             if moved:
-                upsampler.to(home)
-    if cancel is not None and cancel.is_set():
-        from .video_families import VIDEO_CANCELLED_MSG
-        raise RuntimeError(VIDEO_CANCELLED_MSG)
+                upsampler.to(video_latents.device)
+            try:
+                upsampled = upsampler(video_latents.to(param.dtype))
+            finally:
+                if moved:
+                    upsampler.to(home)
+        if cancel is not None and cancel.is_set():
+            from .video_families import VIDEO_CANCELLED_MSG
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-    stage2 = dict(
-        base,
-        width = half_w * 2,
-        height = half_h * 2,
-        latents = upsampled,
-        audio_latents = audio_latents,
-        sigmas = list(LTX25_STAGE2_SIGMAS),
-        noise_scale = LTX25_STAGE2_SIGMAS[0],
-        **guidance_off,
-    )
-    stage2.update(_conditions(LTX25_STAGE2_IMAGE_STRENGTH))
-    cb = _callback(steps)
-    if cb is not None:
-        stage2["callback_on_step_end"] = cb
-    _keep(half_w * 2, half_h * 2, frames)
-    with ltx23_verbatim_sigmas(pipe):
-        return runner(**stage2)
+        stage2 = dict(
+            base,
+            width = half_w * 2,
+            height = half_h * 2,
+            latents = upsampled,
+            audio_latents = audio_latents,
+            sigmas = list(LTX25_STAGE2_SIGMAS),
+            noise_scale = LTX25_STAGE2_SIGMAS[0],
+            **guidance_off,
+        )
+        stage2.update(_conditions(LTX25_STAGE2_IMAGE_STRENGTH))
+        cb = _callback(steps)
+        if cb is not None:
+            stage2["callback_on_step_end"] = cb
+        _keep(half_w * 2, half_h * 2, frames)
+        with ltx23_verbatim_sigmas(pipe):
+            return runner(**stage2)
