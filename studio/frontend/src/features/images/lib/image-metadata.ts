@@ -501,6 +501,8 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     else if (key === "cfg scale" && Number.isFinite(num)) out.guidance = num;
     else if (key === "seed" && Number.isSafeInteger(num)) out.seed = num;
     else if (key === "model" && value) out.model = value;
+    else if (key === "denoising strength" && Number.isFinite(num))
+      out.strength = num;
     else if (key === "size") {
       const size = SIZE.exec(value);
       if (size) {
@@ -598,8 +600,9 @@ export function recipeSettings(
     negative_prompt: str(r.negative_prompt) ?? null,
     width: width && width > 0 ? width : d.width,
     height: height && height > 0 ? height : d.height,
-    steps: int(r.steps) ?? d.steps,
-    guidance: num(r.guidance) ?? d.guidance,
+    // Clamped to the request's bounds: other tools allow more (AUTOMATIC1111 goes to 150 steps).
+    steps: clamp(int(r.steps), 1, 100) ?? d.steps,
+    guidance: clamp(num(r.guidance), 0, 20) ?? d.guidance,
     seed: int(r.seed) ?? null,
     batch_seed: int(r.batch_seed) ?? null,
     batch_size: Math.max(1, int(r.batch_size) ?? 1),
@@ -608,7 +611,7 @@ export function recipeSettings(
     loras: Array.isArray(r.loras)
       ? r.loras.filter((x): x is string => typeof x === "string")
       : [],
-    strength: num(r.strength),
+    strength: clamp(num(r.strength), 0, 1),
     upscale: num(r.upscale),
     // The request caps reference images at 9; restore builds an array of this length.
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),

@@ -486,3 +486,19 @@ test("a file drop on the preview is always claimed before the image filter", () 
     /useNativeDropTarget\(\{ onDrop: \(paths\) => void importNativePath\(paths\[0\]\) \}\)/,
   );
 });
+
+test("imported steps, CFG and strength land inside the request bounds; A1111 strength is read", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const parsed = parseA1111Parameters(
+    "a cat\nSteps: 150, CFG scale: 30, Seed: 5, Size: 512x512, Denoising strength: 0.45",
+  );
+  assert.equal(parsed?.strength, 0.45);
+  const settings = recipeSettings(parsed ?? { prompt: "" }, defaults);
+  assert.equal(settings.steps, 100);
+  assert.equal(settings.guidance, 20);
+  assert.equal(settings.strength, 0.45);
+  assert.equal(
+    recipeSettings({ prompt: "p", strength: 3 }, defaults).strength,
+    1,
+  );
+});
