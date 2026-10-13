@@ -2543,6 +2543,15 @@ def _fused_lora_skip_reason(
     )
 
 
+def _resolve_all_linear(model, target_modules):
+    try:
+        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+    except ImportError:
+        return target_modules
+    config = LoraConfig(target_modules = target_modules)
+    return _maybe_include_all_linear_layers(config, model.get_base_model()).target_modules
+
+
 _DEFAULT_TARGET_MODULES = [
     "q_proj",
     "k_proj",
@@ -3959,6 +3968,10 @@ class FastLlamaModel:
                 requested_modules_to_save,
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
+            if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
+                # PEFT rewrote the stored "all-linear" into the modules it resolved to; resolve this request the
+                # same way, or re-running the same call reads as a different adapter.
+                requested_targets = _resolve_all_linear(model, requested_targets)
             new_target_modules = _as_list(requested_targets) + list(requested_saved or [])
             if isinstance(model, PeftModelForSequenceClassification):
                 # PeftModelForSequenceClassification.__init__ extends modules_to_save with these

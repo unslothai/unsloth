@@ -94,3 +94,33 @@ def test_add_moe_target_modules_keeps_each_form():
     assert re.fullmatch(combined, "model.layers.0.self_attn.q_proj")
     assert re.fullmatch(combined, "model.layers.3.mlp.experts.down_projs.7")
     assert not re.fullmatch(combined, "model.layers.0.mlp.experts.router")
+
+
+def _prewrapped(target_modules):
+    from peft import LoraConfig
+    config = LoraConfig(r = 16, lora_alpha = 16, target_modules = target_modules, task_type = "CAUSAL_LM")
+    return get_peft_model(_tiny_llama(), config)
+
+
+REGEX = r".*\.layers\.0\.self_attn\.q_proj"
+
+
+@pytest.mark.parametrize("target_modules", ["all-linear", REGEX], ids = ["all_linear", "regex"])
+def test_repeat_call_with_same_str_keeps_the_adapter(target_modules):
+    model = _prewrapped(target_modules)
+    again = FastLlamaModel.get_peft_model(
+        model, r = 16, target_modules = target_modules, use_gradient_checkpointing = False
+    )
+    assert again is model
+
+
+@pytest.mark.parametrize(
+    "stored, requested",
+    [(["q_proj", "v_proj"], "all-linear"), (REGEX, r".*\.layers\.1\.self_attn\.q_proj")],
+    ids = ["narrower_then_all_linear", "other_regex"],
+)
+def test_repeat_call_with_different_str_is_refused(stored, requested):
+    with pytest.raises(TypeError, match = "new parameters are different"):
+        FastLlamaModel.get_peft_model(
+            _prewrapped(stored), r = 16, target_modules = requested, use_gradient_checkpointing = False
+        )
