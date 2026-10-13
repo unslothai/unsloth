@@ -454,7 +454,6 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
-# Sources outside the HF cache that /api/hub/local/delete removes (local_model_actions.py).
 LOCAL_DELETE_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
 
 

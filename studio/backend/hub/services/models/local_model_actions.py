@@ -47,8 +47,7 @@ async def _listed_row(
         # Ollama tags aliasing one blob share a path; the row id tells them apart.
         and (row_id is None or row_id in (row.id, row.load_id))
     ]
-    # Format rows of one mixed directory share the path and act on it alike; only distinct Ollama
-    # tags over one blob would delete different things.
+    # Only distinct Ollama tags over one blob differ; mixed-format rows of one dir act alike.
     targets = {(row.load_id or row.id) if row.source == "ollama" else None for row in matches}
     if len(targets) > 1:
         raise HTTPException(status_code = 400, detail = "Several models share this path; pass its id")
@@ -84,16 +83,14 @@ def _delete_blocking(target: Path, protected: set[str]) -> None:
         if is_link
         else _identity(target)
     )
-    # A custom folder can reach into an HF cache; those files go through delete-cached, which
-    # coordinates with downloads and the shared blobs.
+    # HF cache files go through delete-cached, which coordinates downloads and shared blobs.
     for root in _hf_cache_roots():
         if resolved.startswith(root.rstrip(os.sep) + os.sep):
             raise HTTPException(
                 status_code = 400,
                 detail = "This model is in the Hugging Face cache; delete it from there",
             )
-    # A row whose path IS a scan root (a custom folder holding one model) would take the
-    # folder itself, and an ancestor of a root takes everything under it.
+    # A scan root (or its ancestor) as a row would take the whole scanned folder.
     for root in protected:
         if resolved == root or root.startswith(resolved.rstrip(os.sep) + os.sep):
             raise HTTPException(
@@ -105,8 +102,7 @@ def _delete_blocking(target: Path, protected: set[str]) -> None:
     elif is_link or target.exists():
         from utils.models.model_config import colocated_split_shards
 
-        # A split GGUF row names its first shard; llama.cpp needs the rest, so they go too.
-        # unlink() on a symlinked shard removes the alias, never its target.
+        # A split GGUF row names its first shard; unlink() leaves a symlinked shard's target.
         shards, _ = colocated_split_shards(target)
         for shard in shards or [target]:
             shard.unlink(missing_ok = True)
@@ -194,8 +190,7 @@ async def delete_local_model_response(path: str, row_id: str | None = None) -> d
     row = await _listed_row(path, LOCAL_SOURCES, row_id)
     target = Path(row.path)
     ollama_ref = await asyncio.to_thread(_ollama_ref, row) if row.source == "ollama" else None
-    # Loaded ids are whatever the load was given: the listed and resolved path, and for Ollama the
-    # manifest reference and the directories its .gguf links live in.
+    # A load may name the listed or resolved path, or Ollama's manifest ref or link dirs.
     spellings = [row.path, os.path.realpath(row.path)]
     if ollama_ref:
         spellings.append(ollama_ref)
@@ -209,8 +204,7 @@ async def delete_local_model_response(path: str, row_id: str | None = None) -> d
     if blocks:
         raise HTTPException(status_code = 400, detail = blocks)
 
-    # Not _load_custom_folders, which reads a failure as "no folders": that would drop a scan
-    # root from the protected set and let its own row rmtree the folder.
+    # Not _load_custom_folders: it reads a failure as "no folders", unprotecting every scan root.
     try:
         custom_folders = await asyncio.to_thread(local_inventory.list_scan_folders)
     except Exception as e:  # noqa: BLE001 -- fail closed on any read error

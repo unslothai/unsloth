@@ -132,9 +132,7 @@ test("the parameter chip leads its column, so the modality gap is the cluster's 
     PICKERS,
     /alignMeta === "hub"\n\s*\? cn\("justify-end", META_COLUMN\.paramWide\)\n\s*: cn\("justify-start", META_COLUMN\.param\)/,
   );
-  // Every On Device section ends its rows at one inset, so chips line up across sections. The
-  // custom folder, LM Studio and ./models rows share the downloaded rows' button and shell, so
-  // their hover spans the actions gutter too.
+  // Local rows share the downloaded rows' button and shell: same inset, full-width hover.
   assert.match(PICKERS, /downloadedRowButtonClassName =\s*"bg-transparent pr-1/);
   assert.equal(PICKERS.split('className="pr-1"').length - 1, 0);
   assert.equal(PICKERS.split("{renderLocalRowMenu(m)}").length - 1, 3);

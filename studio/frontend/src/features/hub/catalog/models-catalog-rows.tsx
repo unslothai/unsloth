@@ -630,7 +630,6 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
-  // On-device rows outside the HF cache act on their path through /api/hub/local/*.
   const localActionPath =
     !isDataset &&
     row.kind === "local" &&

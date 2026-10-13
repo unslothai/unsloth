@@ -432,7 +432,6 @@ export async function deleteCachedModel(
   }
 }
 
-/** Sources `/api/hub/local/delete` accepts: everything detected outside the HF cache. */
 export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
@@ -442,8 +441,7 @@ export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "omlx",
 ]);
 
-/** Reveal an on-device model outside the HF cache; the server only accepts a path it lists.
- *  `id` (the row's load id) picks one of several rows sharing a path, e.g. Ollama tag aliases. */
+/** `id` (the row's load id) picks between Ollama tags that share one blob path. */
 export async function revealLocalModel(path: string, id?: string): Promise<void> {
   const response = await authFetch("/api/hub/local/reveal", {
     method: "POST",

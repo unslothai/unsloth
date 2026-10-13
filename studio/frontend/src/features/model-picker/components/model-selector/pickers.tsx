@@ -6834,7 +6834,6 @@ export function HubModelPicker({
     );
   };
 
-  // LM Studio, custom-folder and ./models rows: reveal any, delete only what the server allows.
   const renderLocalRowMenu = (m: LocalModelInfo) => {
     const name = m.model_id ?? m.display_name;
     return (
