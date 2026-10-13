@@ -47,7 +47,6 @@ export function useAlignerDownload(
     (timestamps: boolean, run: () => void) => {
       const entry = alignerDownloadEntry(caps, timestamps);
       if (!entry) {
-        // A run without timestamps supersedes one still waiting on the aligner.
         pendingRun.current = null;
         run();
         return;

@@ -1371,8 +1371,7 @@ export function AudioPage({
     const source = useAudioTranscribeStore.getState().source;
     if (!source) return;
     alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
-      // The aligner download can outlast the click: run with the page as it is now, and only while
-      // Transcribe is still showing the same audio.
+      // The download can outlast the click: run only while Transcribe still shows the same audio.
       if (
         !activeRef.current ||
         modeRef.current !== "transcribe" ||
