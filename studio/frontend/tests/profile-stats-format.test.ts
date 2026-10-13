@@ -16,6 +16,7 @@ import {
   heatLevel,
   parseDayKey,
   seriesForMode,
+  weekChartPoints,
   windowBaseline,
 } from "../src/features/profile/utils/stats-format.ts";
 
@@ -316,4 +317,51 @@ test("only cumulative rebases: daily and weekly are already per-window", () => {
   const values = [10, 20, 5];
   assert.equal(windowBaseline(values, 2, "daily"), 0);
   assert.equal(windowBaseline(values, 2, "weekly"), 0);
+});
+
+test("week chart points carry the week total and the running total", () => {
+  // Monday 2026-09-07 through Wednesday 2026-09-16, two partial-free weeks.
+  const daily = [
+    { date: "2026-09-07", tokens: 100 },
+    { date: "2026-09-08", tokens: 0 },
+    { date: "2026-09-09", tokens: 50 },
+    { date: "2026-09-10", tokens: 0 },
+    { date: "2026-09-11", tokens: 0 },
+    { date: "2026-09-12", tokens: 0 },
+    { date: "2026-09-13", tokens: 25 },
+    { date: "2026-09-14", tokens: 10 },
+    { date: "2026-09-15", tokens: 0 },
+    { date: "2026-09-16", tokens: 5 },
+  ];
+  const columns = (values: number[]) => [
+    daily.slice(0, 7).map((day, index) => ({ day, value: values[index] ?? 0 })),
+    [
+      ...daily
+        .slice(7)
+        .map((day, index) => ({ day, value: values[7 + index] ?? 0 })),
+      { day: null, value: 0 },
+    ],
+  ];
+  assert.deepEqual(weekChartPoints(columns(seriesForMode(daily, "weekly"))), [
+    { week: "2026-09-07", tokens: 175 },
+    { week: "2026-09-14", tokens: 15 },
+  ]);
+  assert.deepEqual(
+    weekChartPoints(columns(seriesForMode(daily, "cumulative"))),
+    [
+      { week: "2026-09-07", tokens: 175 },
+      { week: "2026-09-14", tokens: 190 },
+    ],
+  );
+  // Leading pad cells before the first shown day do not create a point.
+  assert.deepEqual(
+    weekChartPoints([
+      [
+        { day: null, value: 0 },
+        { day: { date: "2026-09-16" }, value: 7 },
+      ],
+      [{ day: null, value: 0 }],
+    ]),
+    [{ week: "2026-09-16", tokens: 7 }],
+  );
 });
