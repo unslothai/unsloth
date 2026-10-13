@@ -28761,16 +28761,17 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
-                    # Nor are the slots Auto cut for a drafter this plan no longer proves.
+                    # Nor are the slots Auto cut for a drafter this plan no longer proves:
+                    # back to the requested count without the drafter, as before the cut.
                     if _mtp_slots_asked is not None:
                         n_parallel = _mtp_slots_asked
                         _mtp_slots_asked = _mtp_slots_target_ctx = None
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
-                        if mtp_overhead_fn is not None:
-                            mtp_overhead_fn = functools.partial(
-                                mtp_overhead_fn, _np = n_parallel, _n_ubatch = _effective_ubatch
-                            )
+                        _spec_dropped_no_vram = True
+                        _mtp_will_engage = False
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
 
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
@@ -33024,6 +33025,7 @@ class LlamaCppBackend:
                             fallback_cmd,
                             n_parallel,
                             effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         )
@@ -33042,6 +33044,10 @@ class LlamaCppBackend:
                         if _mtp_slots_target_ctx and "-c" in fallback_cmd:
                             effective_ctx = _mtp_slots_target_ctx
                             fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
+                            self._effective_context_length = effective_ctx
+                            self._max_context_length = max(
+                                self._max_context_length or 0, effective_ctx
+                            )
                         # The checkpoint cap is per slot; same re-decide as the single-seq rung.
                         if _auto_ckpt_emitted:
                             fallback_cmd = self._without_flag_pairs(
@@ -33068,6 +33074,7 @@ class LlamaCppBackend:
                             fallback_cmd,
                             _fb_slots,
                             effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         ) = _fb_cut

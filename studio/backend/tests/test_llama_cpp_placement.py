@@ -1325,6 +1325,7 @@ def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unif
     cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = refuses_unified_kv)
 
     assert [c[c.index("-c") + 1] for c in cmds] == ctxs
+    assert backend._effective_context_length == int(ctxs[-1])
 
 
 def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):
@@ -1395,6 +1396,8 @@ def test_a_placement_abandoned_after_the_cut_gives_the_slots_back(tmp_path):
 
     assert _launched(result, "--fit") == "on"
     assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
 
 
 def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_path):
