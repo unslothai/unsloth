@@ -3296,9 +3296,20 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
                    ) AS last_activity_at
             FROM chat_projects p
             LEFT JOIN (
-                SELECT project_id, MAX({_SIDEBAR_ACTIVITY_SQL}) AS last_chat_at
-                FROM chat_threads
-                WHERE COALESCE(archived, 0) = 0 AND project_id IS NOT NULL
+                -- one row per sidebar row, as the sidebar groups it: a compare pair's activity is its
+                -- newest pane's and counts for that pane's project only
+                SELECT project_id, MAX(row_activity) AS last_chat_at
+                FROM (
+                    SELECT NULLIF(project_id, '') AS project_id,
+                           MAX({_SIDEBAR_ACTIVITY_SQL}) OVER (PARTITION BY {_SIDEBAR_ROW_ID_SQL}) AS row_activity,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                               ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                           ) AS member_rank
+                    FROM chat_threads
+                    WHERE COALESCE(archived, 0) = 0
+                )
+                WHERE member_rank = 1 AND project_id IS NOT NULL
                 GROUP BY project_id
             ) chats ON chats.project_id = p.id
             {where}

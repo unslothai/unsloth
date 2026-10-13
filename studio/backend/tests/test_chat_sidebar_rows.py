@@ -389,6 +389,30 @@ def test_projects_last_activity(client, db):
     assert [p["id"] for p in data["projects"]] == ["b", "c", "a"]
 
 
+def test_projects_last_activity_follows_the_pair_grouping(client, db):
+    # a pair split across two projects belongs to its newest pane's project, as the sidebar row does
+    _insert_project("old", created_at = 1, updated_at = 1)
+    _insert_project("new", created_at = 1, updated_at = 1)
+    _insert_threads(
+        [
+            {
+                "id": "pa",
+                "pair_id": "pair",
+                "project_id": "old",
+                "created_at": 5,
+                "updated_at": 900,
+            },
+            {"id": "pb", "pair_id": "pair", "project_id": "new", "created_at": 5, "updated_at": 50},
+        ]
+    )
+    by_id = {
+        p["id"]: p["lastActivityAt"] for p in client.get("/api/chat/projects").json()["projects"]
+    }
+    rows = client.post("/api/chat/sidebar/rows", json = {"limit": 5}).json()["rows"]
+    assert rows[0]["projectId"] == "old"
+    assert by_id == {"old": 900, "new": 1}
+
+
 def test_thread_rows_lookup(client):
     _insert_threads(
         [
