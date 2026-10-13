@@ -1286,6 +1286,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
 
 @pytest.mark.parametrize("fits", [True, False])
 def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
+    pytest.importorskip("diffusers")  # the image path builds diffusers' LTX2VideoCondition
     # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
     # when stage 2 would not fit beside the DiT.
     monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
