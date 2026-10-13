@@ -47,7 +47,10 @@ async def _listed_row(
         # Ollama tags aliasing one blob share a path; the row id tells them apart.
         and (row_id is None or row_id in (row.id, row.load_id))
     ]
-    if len(matches) > 1:
+    # Format rows of one mixed directory share the path and act on it alike; only distinct Ollama
+    # tags over one blob would delete different things.
+    targets = {(row.load_id or row.id) if row.source == "ollama" else None for row in matches}
+    if len(targets) > 1:
         raise HTTPException(status_code = 400, detail = "Several models share this path; pass its id")
     if not matches:
         raise HTTPException(status_code = 404, detail = "Model not found on device")

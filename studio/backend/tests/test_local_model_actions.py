@@ -288,13 +288,25 @@ def test_local_sources_advertise_can_delete():
         assert _capabilities_for_format("gguf", source).can_delete
 
 
-def test_path_shared_by_several_rows_needs_an_id(lm_root, monkeypatch):
+def test_ollama_tags_sharing_a_blob_need_an_id(lm_root, tmp_path, monkeypatch):
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"x")
+    rows = [
+        LocalModelInfo(id = ref, load_id = ref, display_name = ref, path = str(blob), source = "ollama")
+        for ref in ("ollama-manifest:a", "ollama-manifest:b")
+    ]
+    _listing_of(monkeypatch, *rows)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(actions.delete_local_model_response(str(blob)))
+    assert caught.value.status_code == 400
+    assert blob.is_file()
+
+
+def test_format_rows_of_one_mixed_directory_still_delete(lm_root, monkeypatch):
     _, model, _ = lm_root
     _listing_of(monkeypatch, _row(model, "lmstudio"), _row(model, "lmstudio"))
-    with pytest.raises(HTTPException) as caught:
-        asyncio.run(actions.delete_local_model_response(str(model)))
-    assert caught.value.status_code == 400
-    assert model.is_dir()
+    asyncio.run(actions.delete_local_model_response(str(model), str(model)))
+    assert not model.exists()
 
 
 def test_unreadable_scan_folders_fail_closed(lm_root, monkeypatch):
