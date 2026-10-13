@@ -111,8 +111,14 @@ def test_every_slot_is_reported(monkeypatch):
                 "id": "unsloth/Llama-3.2-1B-Instruct-GGUF",
                 "display_name": "Llama 3.2 1B",
                 "is_gguf": True,
+                "audio_options": None,
             },
-            {"id": "unsloth/Qwen3-0.6B", "display_name": None, "is_gguf": None},
+            {
+                "id": "unsloth/Qwen3-0.6B",
+                "display_name": None,
+                "is_gguf": None,
+                "audio_options": None,
+            },
         ],
         "loading": ["unsloth/gemma-3-1b-it"],
     }
@@ -201,6 +207,47 @@ def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
     assert status["embedder"] == {"available": False, "loaded": False, "model": None}
     assert status["image"]["generating"] is True
     assert status["chat"]["loaded"]
+
+
+def test_the_active_audio_model_lists_its_options(monkeypatch):
+    tts = "unsloth/Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"
+    voice = {
+        "name": "voice",
+        "type": "enum",
+        "description": "Built-in speaker.",
+        "required": False,
+        "default": "vivian",
+        "min": None,
+        "max": None,
+        "values": ["vivian", "ryan"],
+    }
+    chat = {
+        "model_identifier": tts,
+        "loaded": [tts],
+        "audio_options": [voice, {"name": "temperature", "type": "float", "default": 0.9}, "x"],
+    }
+    overrides = {("GET", "/api/inference/status"): chat}
+    (model,) = _status(monkeypatch, overrides)[0]["structuredContent"]["chat"]["loaded"]
+    assert model["audio_options"] == [
+        {
+            "name": "voice",
+            "type": "enum",
+            "description": "Built-in speaker.",
+            "default": "vivian",
+            "min": None,
+            "max": None,
+            "values": ["vivian", "ryan"],
+        },
+        {
+            "name": "temperature",
+            "type": "float",
+            "description": None,
+            "default": 0.9,
+            "min": None,
+            "max": None,
+            "values": [],
+        },
+    ]
 
 
 def test_unloaded_slots_name_no_model(monkeypatch):

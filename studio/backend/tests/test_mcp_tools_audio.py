@@ -141,6 +141,31 @@ def test_each_workflow_sends_a_body_the_route_accepts(monkeypatch, workflow, arg
     assert expect is None or expect(body, result)
 
 
+VOICE = {"name": "voice", "type": "enum", "values": ["vivian", "ryan"], "default": "vivian"}
+CUSTOM_VOICE = {"audio_options": [VOICE, {"name": "temperature", "type": "float"}]}
+
+
+# The route drops an enum value it does not list, so "Ryan" would speak in the default voice.
+@pytest.mark.parametrize(
+    "voice,sent,refusal",
+    [
+        ("Ryan", "ryan", None),
+        ("ryan", "ryan", None),
+        ("Bob", None, "'Bob' is not one of: vivian, ryan"),
+    ],
+)
+def test_an_enum_option_is_sent_as_the_model_lists_it(monkeypatch, voice, sent, refusal):
+    args = {"workflow": "speak", "text": "Hi", "options": {"voice": voice, "temperature": 0.7}}
+    routes = {("GET", "/api/inference/status"): CUSTOM_VOICE}
+    result, studio = _generate(monkeypatch, args, routes = routes)
+    if refusal:
+        assert result["isError"] is True and refusal in result["content"][0]["text"]
+        assert bodies(studio, "/v1/audio/run") == []
+    else:
+        (body,) = bodies(studio, "/v1/audio/run")
+        assert body["options"] == {"voice": sent, "temperature": 0.7}
+
+
 def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatch):
     long_clip = _clip("long-1", duration_s = 600.0, sample_rate = 44100)
     fetched = []

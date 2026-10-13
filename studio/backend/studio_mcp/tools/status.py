@@ -27,6 +27,7 @@ from studio_mcp.outputs import (
     SttSlot,
     TrainingSlot,
     VideoSlot,
+    audio_options,
 )
 from studio_mcp.tools import READ_ONLY, as_dict, integer, leaf_name, number, opt_text, try_json
 
@@ -47,11 +48,13 @@ STT_ENGINES = ("transformers", "mtmd", "gguf", "audiocpp")
 
 def _chat(payload: dict) -> ChatSlot:
     active = payload.get("model_identifier")
+    options = audio_options(payload.get("audio_options"))
     loaded = [
         ChatModel(
             id = model_id,
             display_name = opt_text(payload.get("active_model")) if model_id == active else None,
             is_gguf = bool(payload.get("is_gguf")) if model_id == active else None,
+            audio_options = options if model_id == active else None,
         )
         for model_id in payload.get("loaded") or []
         if isinstance(model_id, str)
@@ -176,7 +179,7 @@ async def _generating(caller: Caller, slot: str) -> bool:
 
 
 async def studio_status() -> StudioStatus:
-    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the LLM and image (diffusion) training jobs, the export job and GPU use. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
+    """What Unsloth Studio is doing right now: the loaded chat, image, video, speech-to-text and embedding models, any model still loading or downloading, whether an image or video is generating, the LLM and image (diffusion) training jobs, the export job and GPU use. A loaded audio model lists its ``audio_options`` for generate_audio, such as its built-in voices. Call this before loading a model or starting GPU work. The embedding model is managed by Unsloth Studio and unload_model does not unload it. A slot that could not be read is listed under ``unavailable`` with the reason."""
     caller = current_caller()
     slots = list(SLOT_ROUTES)
     results, generating = await asyncio.gather(

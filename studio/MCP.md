@@ -287,6 +287,11 @@ YouTube link is not supported. `timestamps` needs a speech-to-text model that
 times segments, such as Qwen3-ASR (audio.cpp) or Parakeet-TDT; other models
 refuse it, and translation never has timestamps.
 
+`studio_status` lists the loaded audio model's `audio_options`, such as its
+built-in voices. Pass them to `generate_audio` in `options`. A voice or other
+listed value is matched without regard to case, and a value the model does not
+list is refused.
+
 Tool results never contain paths on the Unsloth Studio computer. Checkpoints are named
 `<run folder>` or `<run folder>/checkpoint-N`. Exports are named relative to
 Unsloth Studio's exports folder, and `export_model` takes only a relative

@@ -56,10 +56,35 @@ def _route_value(annotation: Any, value: Any) -> Any:
     return rule(value) if rule else None
 
 
+class AudioOption(ToolOutput):
+    name: RouteText
+    # bool, int, float, string or enum.
+    type: Optional[RouteText] = None
+    description: Optional[RouteText] = None
+    default: Optional[Union[StrictBool, StrictInt, StrictFloat, RouteText]] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    # An enum's accepted values, such as the model's built-in voices.
+    values: list[RouteText] = []
+
+
+def audio_options(rows: Any) -> Optional[list[AudioOption]]:
+    """The options an audio model reports, or None when it reports none."""
+    options = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]:
+            default = row.get("default")
+            scalar = isinstance(default, (bool, int, float, str))
+            options.append(AudioOption.from_route(row, default = default if scalar else None))
+    return options or None
+
+
 class ChatModel(ToolOutput):
     id: RouteText
     display_name: Optional[RouteText] = None
     is_gguf: Optional[bool] = None
+    # The active audio model's options for generate_audio, built-in voices included.
+    audio_options: Optional[list[AudioOption]] = None
 
 
 class ChatSlot(ToolOutput):

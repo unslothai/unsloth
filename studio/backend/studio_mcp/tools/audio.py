@@ -27,7 +27,7 @@ from studio_mcp.media import (
     resource_link,
 )
 from studio_mcp.outputs import AudioClip, AudioResult, TranscriptResult, TranscriptSegment
-from studio_mcp.tools import WRITES, opt_text, present, route_json, try_json
+from studio_mcp.tools import WRITES, opt_text, present, route_json, strings, try_json
 
 LOAD_AUDIO_HINT = "Load a text-to-speech or music model with load_model(kind='tts') first."
 NOT_LOADED = "No model loaded"
@@ -44,6 +44,36 @@ async def _clip_contents(caller: Caller, clip: AudioClip) -> list[Any]:
             mime = response.headers.get("content-type", "audio/wav").split(";")[0]
             return [audio_content(response.content, mime)]
     return [resource_link(clip.url, f"{clip.id}.wav", "audio/wav")]
+
+
+async def _checked_options(
+    caller: Caller, workflow: str, options: dict[str, Any]
+) -> dict[str, Any]:
+    """``options`` with each enum value spelled as the loaded model lists it; the route drops a value it does not list, so that is refused here instead."""
+    status = await try_json(caller, "/api/inference/status")
+    if not isinstance(status, dict):
+        return options
+    by_workflow = status.get("audio_options_by_workflow")
+    schema = (by_workflow.get(workflow) if isinstance(by_workflow, dict) else None) or status.get(
+        "audio_options"
+    )
+    checked = dict(options)
+    for option in schema if isinstance(schema, list) else []:
+        if not isinstance(option, dict) or option.get("type") != "enum":
+            continue
+        name, values = option.get("name"), strings(option.get("values"))
+        if not isinstance(name, str) or checked.get(name) is None or not values:
+            continue
+        value = str(checked[name])
+        match = (
+            value
+            if value in values
+            else next((v for v in values if v.casefold() == value.casefold()), None)
+        )
+        if match is None:
+            raise ToolError(f"options.{name} '{value}' is not one of: {', '.join(values)}.")
+        checked[name] = match
+    return checked
 
 
 async def generate_audio(
@@ -69,7 +99,7 @@ async def generate_audio(
     max_tokens: Optional[int] = None,
     options: Optional[dict[str, Any]] = None,
 ) -> ToolResult:
-    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
+    """Run an Audio page workflow with the audio model loaded in Unsloth Studio; clips are saved to Audio history and returned inline when small, else as links. clone: speak ``text`` in the voice of ``reference`` (a clip, or a saved voice as voice_id; ``reference_text`` is its transcript). speak: ``text`` in the loaded model's default voice, or a saved voice via ``reference``. edit: change the words or delivery of ``source`` per ``edit``. convert: make ``source`` sound like ``target``. music: ``mode`` song or sfx from ``text`` (the style) and ``lyrics``; ``variations`` up to 4 share a group_id. separate: split ``source`` into stems. ``options`` are the loaded model's ``audio_options`` that studio_status lists, such as a built-in ``voice``. Audio inputs are an Unsloth Studio id, inline base64 with a filename, or a path on the Unsloth Studio computer."""
     caller = current_caller()
     inputs: dict[str, Any] = {}
     for key, audio in (
@@ -81,6 +111,8 @@ async def generate_audio(
         if audio is not None:
             inputs[key] = await audio_ref(caller, audio)
     inputs.update(present(reference_text = reference_text, source_text = source_text))
+    if options:
+        options = await _checked_options(caller, workflow, options)
     body: dict[str, Any] = {"workflow": workflow, "inputs": inputs}
     body.update(
         present(
