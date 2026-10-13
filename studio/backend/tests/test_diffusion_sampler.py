@@ -109,6 +109,23 @@ def test_zero_snr_automatic_avoids_exponential():
     assert build_scheduler(vpred, "dpmpp_2m_sde", "exponential")[1] == "exponential"
 
 
+@pytest.mark.parametrize("sampler", ["dpmpp_2m", "dpmpp_2m_sde"])
+def test_zero_snr_karras_runs_every_step_without_a_pipeline_begin_index(sampler):
+    # The SDXL ControlNet pipeline never calls set_begin_index; the duplicate first timestep overran.
+    torch = pytest.importorskip("torch")
+    vpred = _sdxl(
+        prediction_type = "v_prediction", rescale_betas_zero_snr = True, timestep_spacing = "trailing"
+    )
+    built, _ = build_scheduler(vpred, sampler, "karras")
+    built.set_timesteps(28)
+    assert built.timesteps[0] == built.timesteps[1]
+    sample = torch.randn(1, 4, 8, 8)
+    generator = torch.Generator().manual_seed(0)
+    for t in built.timesteps:
+        sample = built.step(torch.zeros_like(sample), t, sample, generator = generator).prev_sample
+    assert torch.isfinite(sample).all()
+
+
 def test_unavailable_choices_are_refused():
     with pytest.raises(ValueError, match = "does not apply"):
         build_scheduler(_sdxl(), "euler_a", "karras")

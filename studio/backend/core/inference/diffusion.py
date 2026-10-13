@@ -10743,8 +10743,7 @@ class DiffusionBackend:
                     # reconciles.
                     self._make_vae_encode_dtype_safe(pipe)
 
-                # Per request on the pipe that runs, restored in the finally so the next request starts from the
-                # shipped scheduler.
+                # Per request on the pipe that runs; the finally restores the shipped scheduler.
                 swapped, resolved_schedule = build_scheduler(pipe.scheduler, sampler, schedule_type)
                 if swapped is not None:
                     restore_scheduler = (pipe, pipe.scheduler)

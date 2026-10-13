@@ -1960,21 +1960,23 @@ export function ImagesPage({
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
   const negativeCapable = status?.supports_negative_prompt !== false;
   const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
-  const samplerChoice = normalizeSamplerChoice(samplerOptions, samplerChoices[residentDefaults]);
+  // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
+  const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
+  const samplerChoice = normalizeSamplerChoice(samplerOptions, samplerChoices[samplerModelKey]);
   const changeSamplerChoice = useCallback(
     (next: Partial<SamplerChoice>) => {
       setSamplerChoices((all) =>
         withSamplerChoice(
           all,
-          residentDefaults,
+          samplerModelKey,
           normalizeSamplerChoice(samplerOptions, {
-            ...normalizeSamplerChoice(samplerOptions, all[residentDefaults]),
+            ...normalizeSamplerChoice(samplerOptions, all[samplerModelKey]),
             ...next,
           }),
         ),
       );
     },
-    [residentDefaults, samplerOptions],
+    [samplerModelKey, samplerOptions],
   );
   useEffect(() => {
     if (!controlnetCapable) {

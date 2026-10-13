@@ -7,7 +7,7 @@ scheduler overview table. No torch/diffusers imports at module level."""
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any, Optional
 
 DEFAULT_SAMPLER = "default"
@@ -150,7 +150,22 @@ def build_scheduler(
         for name in _SIGMA_FLAGS:
             if name in params:
                 overrides[name] = name == flag
-    return cls.from_config(resident.config, **overrides), resolved
+    built = cls.from_config(resident.config, **overrides)
+    set_begin_index = getattr(built, "set_begin_index", None)
+    if callable(set_begin_index):
+        # Zero-SNR Karras grids repeat their first timestep ([999, 999, 998, ...]); without a begin index DPM++
+        # starts at the second 999 and overruns its sigmas. SDXL txt2img sets it, the ControlNet pipeline does
+        # not. img2img / inpaint set their own start after set_timesteps, which this leaves alone.
+        set_timesteps = built.set_timesteps
+
+        @wraps(set_timesteps)
+        def _set_timesteps(*args: Any, **kwargs: Any) -> Any:
+            out = set_timesteps(*args, **kwargs)
+            set_begin_index(0)
+            return out
+
+        built.set_timesteps = _set_timesteps
+    return built, resolved
 
 
 def sampler_label(sampler: Optional[str]) -> Optional[str]:
