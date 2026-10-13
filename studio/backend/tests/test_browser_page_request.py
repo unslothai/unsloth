@@ -147,6 +147,19 @@ def test_a_put_carries_its_body_type_and_origin(monkeypatch):
     assert hop["headers"]["content-type"] == "application/json"
 
 
+def test_an_ipv6_pages_origin_is_bracketed(monkeypatch):
+    sent = _serve(monkeypatch, {"[2606:4700:4700::1111]:8443/api": (200, b"ok", {})})
+    browser_mod._page_request(
+        browser_mod.BrowserPageRequest(
+            page = "https://[2606:4700:4700::1111]:8443/",
+            url = "https://[2606:4700:4700::1111]:8443/api",
+            method = "POST",
+        ),
+        threading.Event(),
+    )
+    assert sent[0]["headers"]["origin"] == "https://[2606:4700:4700::1111]:8443"
+
+
 @pytest.mark.parametrize(
     "url",
     [

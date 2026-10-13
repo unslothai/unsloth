@@ -1668,7 +1668,8 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
-    serialized_origin = f"{scheme}://{host}" + ("" if port == default_port else f":{port}")
+    serialized_origin = f"{scheme}://" + (f"[{host}]" if ":" in host else host)
+    serialized_origin += "" if port == default_port else f":{port}"
     if method not in ("GET", "HEAD"):
         added["Origin"] = serialized_origin
     if "accept" not in named:
