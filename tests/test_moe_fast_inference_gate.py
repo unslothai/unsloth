@@ -60,31 +60,99 @@ def test_a_config_without_text_config_is_read_directly():
     assert is_moe(SimpleNamespace()) is False
 
 
-def test_dense_gemma4_is_refused_at_the_gate():
-    """Dense Gemma-4 shares the gemma4 model type, so the allowlist alone would admit it."""
-    assert set(_module_constant("VLLM_MOE_ONLY_VLM")) == {"gemma4", "gemma4_text"}
-    gate, parents = _gate("not the dense ones yet")
+def test_dense_gemma4_needs_the_audio_off_zoo():
+    """Dense Gemma-4 runs with fast_inference once the zoo turns vLLM's audio tower off."""
+    assert set(_module_constant("VLLM_DENSE_NEEDS_ZOO_VLM")) == {"gemma4", "gemma4_text"}
+    assert "VLLM_MOE_ONLY_VLM" not in VISION_PATH.read_text(encoding = "utf-8")
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_dense_gemma4_fast_inference")
     # text_only = True sets is_vlm_config False, so the gate must not sit under it.
     assert not any("is_vlm_config" in test for test in parents)
-    only_moe = {"VLLM_MOE_ONLY_VLM": _module_constant("VLLM_MOE_ONLY_VLM"), "fast_inference": True}
-    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **only_moe)
-    assert _evaluate(
-        gate,
-        model_types = ["gemma4_text", "gemma4"],
-        auto_config = GEMMA4_DENSE.text_config,
-        **only_moe,
-    )
-    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **only_moe)
+    names = {
+        "VLLM_DENSE_NEEDS_ZOO_VLM": _module_constant("VLLM_DENSE_NEEDS_ZOO_VLM"),
+        "fast_inference": True,
+    }
+    old_zoo, new_zoo = (lambda: False), (lambda: True)
+    for model_types, config in (
+        (["gemma4"], GEMMA4_DENSE),
+        (["gemma4_text", "gemma4"], GEMMA4_DENSE.text_config),
+    ):
+        assert _evaluate(
+            gate,
+            model_types = model_types,
+            auto_config = config,
+            _zoo_supports_dense_gemma4_fast_inference = old_zoo,
+            **names,
+        )
+        assert not _evaluate(
+            gate,
+            model_types = model_types,
+            auto_config = config,
+            _zoo_supports_dense_gemma4_fast_inference = new_zoo,
+            **names,
+        )
+    # MoE Gemma-4 and other models never reach this gate.
+    for model_types, config in ((["gemma4"], GEMMA4_MOE), (["qwen3_5"], QWEN3_5_DENSE)):
+        assert not _evaluate(
+            gate,
+            model_types = model_types,
+            auto_config = config,
+            _zoo_supports_dense_gemma4_fast_inference = old_zoo,
+            **names,
+        )
     assert not _evaluate(
-        gate, model_types = ["gemma4_text"], auto_config = GEMMA4_MOE.text_config, **only_moe
-    )
-    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **only_moe)
-    assert not _evaluate(
         gate,
-        **{**only_moe, "fast_inference": False},
         model_types = ["gemma4"],
         auto_config = GEMMA4_DENSE,
+        _zoo_supports_dense_gemma4_fast_inference = old_zoo,
+        **{**names, "fast_inference": False},
     )
+
+
+def test_the_zoo_probe_names_the_audio_off_helpers():
+    source = VISION_PATH.read_text(encoding = "utf-8")
+    probe = source[source.index("def _zoo_supports_dense_gemma4_fast_inference") :]
+    probe = probe[: probe.index("\ndef ", 1)]
+    assert "_get_multimodal_engine_args" in probe
+    assert "_load_gemma4_audio_from_checkpoint" in probe
+
+
+def test_dense_gemma4_bnb_is_refused():
+    gate, _ = _gate("is only verified in 16-bit")
+
+    def refused(
+        load_in_4bit,
+        model_name,
+        method,
+        config = GEMMA4_DENSE,
+        model_types = ("gemma4",),
+        load_in_8bit = False,
+    ):
+        is_bnb_load = _is_bnb_load(
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            model_name = model_name,
+            get_quant_type = lambda config: method,
+            model_config = config,
+        )
+        return bool(
+            _evaluate(
+                gate,
+                is_bnb_load = is_bnb_load,
+                model_config = config,
+                model_types = list(model_types),
+                VLLM_DENSE_NEEDS_ZOO_VLM = _module_constant("VLLM_DENSE_NEEDS_ZOO_VLM"),
+            )
+        )
+
+    assert refused(True, "google/gemma-4-E2B-it", None)
+    assert refused(False, "google/gemma-4-E2B-it", None, load_in_8bit = True)
+    assert refused(False, "unsloth/gemma-4-E2B-it-unsloth-bnb-4bit", None)
+    assert refused(
+        False, "someone/gemma-4-e4b", "bitsandbytes", GEMMA4_DENSE.text_config, ("gemma4_text",)
+    )
+    assert not refused(False, "google/gemma-4-E2B-it", None)
+    assert not refused(True, "google/gemma-4-26B-A4B-it", None, GEMMA4_MOE)
+    assert not refused(True, "Qwen/Qwen3.5-2B", None, QWEN3_5_DENSE, ("qwen3_5",))
 
 
 def test_the_4bit_refusal_uses_the_same_moe_test():
@@ -168,6 +236,18 @@ def test_the_zoo_gate_covers_text_only_moe_loads():
     )
 
 
+def _is_bnb_load(**names):
+    """Evaluate vision.py's own `is_bnb_load = ...` expression."""
+    for node in ast.walk(TREE):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "is_bnb_load" for t in node.targets
+        ):
+            return eval(
+                compile(ast.Expression(node.value), str(VISION_PATH), "eval"), {"str": str, **names}
+            )
+    raise AssertionError("is_bnb_load not found")
+
+
 def test_bnb_moe_loads_are_refused_without_load_in_4bit():
     gate, _ = _gate("does not support bitsandbytes weights")
 
@@ -185,10 +265,13 @@ def test_bnb_moe_loads_are_refused_without_load_in_4bit():
         return bool(
             _evaluate(
                 gate,
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                model_name = model_name,
-                get_quant_type = quant_type(method),
+                is_bnb_load = _is_bnb_load(
+                    load_in_4bit = load_in_4bit,
+                    load_in_8bit = load_in_8bit,
+                    model_name = model_name,
+                    get_quant_type = quant_type(method),
+                    model_config = config,
+                ),
                 model_config = config,
                 model_types = list(model_types),
             )
