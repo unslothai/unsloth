@@ -282,6 +282,54 @@ def test_a_torch_oom_keeps_its_old_text():
     assert "smaller resolution, fewer frames, or fewer steps" in detail
 
 
+def test_nested_cgroup_v1_pairs_the_tightest_combined_and_ram_headroom(tmp_path):
+    """Child: 2 GiB RAM room, 12 GiB RAM+swap room. Parent: 20 GiB RAM room, 21 GiB RAM+swap room. The process can
+    use min(12, 21) - min(2, 20) = 10 GiB of swap; per-level differences would say min(10, 1) = 1."""
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/p/memory.limit_in_bytes": str(30 * GIB),
+            "memory/p/memory.usage_in_bytes": str(10 * GIB),
+            "memory/p/memory.memsw.limit_in_bytes": str(40 * GIB),
+            "memory/p/memory.memsw.usage_in_bytes": str(19 * GIB),
+            "memory/p/c/memory.limit_in_bytes": str(8 * GIB),
+            "memory/p/c/memory.usage_in_bytes": str(6 * GIB),
+            "memory/p/c/memory.memsw.limit_in_bytes": str(20 * GIB),
+            "memory/p/c/memory.memsw.usage_in_bytes": str(8 * GIB),
+        },
+        proc = "4:memory:/p/c\n",
+    )
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 10 * GIB
+
+
+def test_cgroup_v1_ram_only_levels_still_bound_the_ram_side(tmp_path):
+    paths = _cgroup(
+        tmp_path,
+        {
+            "memory/p/memory.limit_in_bytes": str(4 * GIB),
+            "memory/p/memory.usage_in_bytes": str(1 * GIB),
+            "memory/p/memory.memsw.limit_in_bytes": str(1 << 62),
+            "memory/p/memory.memsw.usage_in_bytes": str(1 * GIB),
+            "memory/p/c/memory.limit_in_bytes": str(16 * GIB),
+            "memory/p/c/memory.usage_in_bytes": str(1 * GIB),
+            "memory/p/c/memory.memsw.limit_in_bytes": str(20 * GIB),
+            "memory/p/c/memory.memsw.usage_in_bytes": str(1 * GIB),
+        },
+        proc = "4:memory:/p/c\n",
+    )
+    # RAM room min(3, 15) = 3 GiB, combined room 19 GiB: 16 GiB of swap.
+    assert cgroup_swap_allowance_bytes(64 * GIB, **paths) == 16 * GIB
+
+
+def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda: 30 * 1024)
+    monkeypatch.setattr(video_minimax_h3, "h3_process_held_host_bytes", lambda: 40 * GIB)
+    assert video_minimax_h3.h3_native_host_available_bytes() == 30 * GIB
+
+
 def test_the_fallback_reason_names_the_missing_rocm_libraries(monkeypatch):
     import ctypes
 

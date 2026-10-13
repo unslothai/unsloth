@@ -4177,7 +4177,7 @@ class VideoBackend:
 
             from .video_minimax_h3 import (
                 amdgpu_gtt_free_bytes,
-                h3_host_capacity_bytes,
+                h3_native_host_available_bytes,
                 h3_native_memory_fit,
                 h3_native_render_flags,
                 h3_native_resident_bytes,
@@ -4193,8 +4193,9 @@ class VideoBackend:
             try:
                 import psutil
 
+                # The render is a separate process, so Studio's own RSS is not reused (unlike the diffusers guard).
                 # Swap counts, as far as this cgroup may use it: only the pinned half cannot page out.
-                host_available = h3_host_capacity_bytes() + cgroup_swap_allowance_bytes(
+                host_available = h3_native_host_available_bytes() + cgroup_swap_allowance_bytes(
                     int(psutil.swap_memory().free)
                 )
             except Exception:  # noqa: BLE001 - an unreadable reading skips the host check

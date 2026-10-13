@@ -4367,6 +4367,19 @@ def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatc
         )
 
 
+def test_h3_native_host_ram_check_ignores_studios_own_rss(monkeypatch, tmp_path):
+    """sd-cli is its own process: the diffusers guard's add-back of Studio's RssAnon / RssShmem must not admit it."""
+    from core.inference import video_minimax_h3
+    from utils import host_memory
+
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda: 1)
+    monkeypatch.setattr(host_memory, "cgroup_swap_allowance_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(video_minimax_h3, "h3_process_held_host_bytes", lambda: 1 << 50)
+    with pytest.raises(RuntimeError, match = "system RAM"):
+        _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+
+
 def test_h3_native_gtt_pool_is_not_a_cuda_build_concern(monkeypatch, tmp_path):
     _tiny_gtt(monkeypatch, encoder_fits = False)
     state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)

@@ -176,6 +176,18 @@ def _proc_status_kb(fields: tuple[str, ...]) -> Optional[dict[str, int]]:
     return found if len(found) == len(fields) else None
 
 
+def h3_native_host_available_bytes() -> int:
+    """Host RAM a native (sd-cli / sd-server) render can still take: available RAM, cgroup-capped. Unlike
+    ``h3_host_capacity_bytes`` nothing this process holds is added back: the render is a separate process and
+    reuses none of it."""
+    from utils import host_memory
+
+    usable_mib = host_memory.usable_host_ram_mib()
+    if usable_mib is None:
+        raise RuntimeError("available host RAM could not be read")
+    return max(int(usable_mib), 0) << 20
+
+
 def h3_process_held_host_bytes() -> int:
     """Host bytes this process holds that a render reuses: RssAnon + RssShmem (pinned copies are shmem). File-backed
     pages are left out: MemAvailable already counts them as reclaimable. Off Linux, the whole RSS."""

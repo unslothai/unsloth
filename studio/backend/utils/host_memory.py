@@ -128,8 +128,9 @@ def cgroup_swap_allowance_bytes(
     proc_self_cgroup: Optional[str] = None,
 ) -> int:
     """How much of the host's ``free_swap`` this process may still use: bounded by every enforcing cgroup swap
-    limit (v2 ``memory.swap.max`` minus ``memory.swap.current``; v1 ``memsw`` headroom minus memory headroom) on
-    this cgroup and its ancestors. 0 when a memory limit is enforced but its swap allowance cannot be read."""
+    limit on this cgroup and its ancestors: v2 ``memory.swap.max`` minus ``memory.swap.current`` per level (a
+    swap-only counter, so the per-level minimum is exact); v1 the tightest ``memsw`` headroom minus the tightest
+    RAM headroom. 0 when a memory limit is enforced but its swap allowance cannot be read."""
     free_swap = max(int(free_swap or 0), 0)
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
@@ -164,27 +165,37 @@ def cgroup_swap_allowance_bytes(
             v1_relative = parts[2]
             break
     if v1_relative is not None:
+        # v1 counts RAM+swap together (memsw), so a level's swap room is not a quantity of its own: the swap this
+        # process can use is the tightest COMBINED headroom minus the tightest RAM headroom, each taken over every
+        # level, never the per-level differences (a tight child RAM limit under a tight parent memsw limit would
+        # otherwise subtract the parent's large RAM room and understate the swap).
         v1_root = os.path.join(cgroup_root, "memory")
+        ram_room: Optional[int] = None
+        combined_room: Optional[int] = None
         for directory in _directories(v1_root, v1_relative):
             mem_limit = _integer(
                 _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
             )
             if mem_limit is None:
                 continue
+            mem_used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
             raw_memsw = _first_line(os.path.join(directory, "memory.memsw.limit_in_bytes"))
-            if raw_memsw is None:
-                return 0  # a RAM limit without swap accounting: the swap it leaves is unknown
+            if raw_memsw is None or mem_used is None:
+                return 0  # a RAM limit without swap accounting (or usage): the swap it leaves is unknown
+            room = mem_limit - mem_used
+            ram_room = room if ram_room is None else min(ram_room, room)
             memsw_limit = _integer(raw_memsw, limit = True)
             if memsw_limit is None:
-                continue  # RAM+swap unlimited at this level
-            mem_used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+                continue  # RAM+swap unlimited at this level: it bounds RAM only
             memsw_used = _integer(
                 _first_line(os.path.join(directory, "memory.memsw.usage_in_bytes"))
             )
-            if mem_used is None or memsw_used is None:
+            if memsw_used is None:
                 return 0
-            swap_room = (memsw_limit - memsw_used) - (mem_limit - mem_used)
-            allowance = min(allowance, max(swap_room, 0))
+            room = memsw_limit - memsw_used
+            combined_room = room if combined_room is None else min(combined_room, room)
+        if combined_room is not None:
+            allowance = min(allowance, max(combined_room - max(ram_room or 0, 0), 0))
     return allowance
 
 
