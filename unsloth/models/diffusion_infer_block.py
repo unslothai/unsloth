@@ -311,6 +311,7 @@ def cached_block_sample(
     on_frame = None,
     check_stop = None,
     progress = None,
+    cuda_graphs = True,
 ):
     from transformers import DynamicCache
 
@@ -325,7 +326,11 @@ def cached_block_sample(
     graph = None
     if family == "llada2":
         dtype = next(base.parameters()).dtype
-        graph = _llada2_graph(base, input_ids.shape[0], block_length, total_length, dtype, device)
+        graph = (
+            _llada2_graph(base, input_ids.shape[0], block_length, total_length, dtype, device)
+            if cuda_graphs
+            else None
+        )
         attention = torch.zeros(allowed.shape, dtype = dtype, device = device).masked_fill(
             ~allowed, torch.finfo(dtype).min
         )

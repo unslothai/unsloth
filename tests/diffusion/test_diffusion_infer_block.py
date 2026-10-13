@@ -252,6 +252,33 @@ def test_llada2_graph_only_on_cuda_without_adapters(monkeypatch):
     assert _llada2_graph(base, 1, 4, 16, torch.float32, torch.device("cuda")) is None
 
 
+@pytest.mark.parametrize(
+    "compile_mode, expected", [("graphs", True), (None, False), ("default", False)]
+)
+def test_llada2_graph_follows_generate_text_compile(monkeypatch, compile_mode, expected):
+    from unsloth.models import diffusion_infer_block, diffusion_samplers, remote_moe_shims
+
+    seen = {}
+    monkeypatch.setattr(remote_moe_shims, "prepare_remote_moe_for_inference", lambda base: None)
+    monkeypatch.setattr(
+        diffusion_infer_block, "cached_block_sample", lambda base, ids, **kw: seen.update(kw)
+    )
+    diffusion_samplers._llada2_sample(
+        None,
+        None,
+        torch.zeros(1, 3, dtype = torch.long),
+        None,
+        steps = None,
+        block_length = None,
+        max_new_tokens = 4,
+        temperature = 0.0,
+        mask_id = MASK_ID,
+        eos_ids = [],
+        compile_mode = compile_mode,
+    )
+    assert seen["cuda_graphs"] is expected and "compile_mode" not in seen
+
+
 def test_frames_throttle_and_stop():
     seen, stops = [], []
     frames = _Frames(seen.append, lambda: stops.append(1), interval = 3600)

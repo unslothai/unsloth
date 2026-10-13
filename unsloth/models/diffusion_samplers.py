@@ -405,6 +405,8 @@ def _llada2_sample(
         family = "llada2",
         steps = int(steps or 32),
         block_length = int(block_length or 32),
+        # generate_text's compile: "auto" / True replay the block forward from a CUDA Graph, False stays eager.
+        cuda_graphs = kwargs.get("compile_mode", "graphs") == "graphs",
         **{k: v for k, v in kwargs.items() if k in _CACHED_BLOCK_KWARGS},
     )
 
