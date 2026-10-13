@@ -25,12 +25,10 @@ globalThis.fetch = (async (_input: string, init?: RequestInit) => {
   });
 }) as typeof fetch;
 
-const { apiStart } = await import(
-  "../src/features/hub/download-manager/download-api-adapter.ts"
-);
-const { DOWNLOAD_DIR_STORAGE_KEY } = await import(
-  "../src/features/hub/download-manager/download-location.ts"
-);
+const { apiStart } =
+  await import("../src/features/hub/download-manager/download-api-adapter.ts");
+const { DOWNLOAD_DIR_STORAGE_KEY } =
+  await import("../src/features/hub/download-manager/download-location.ts");
 
 const model = {
   kind: "model" as const,
@@ -57,7 +55,11 @@ test("a chosen folder rides on the model download", async () => {
 test("datasets never carry the folder", async () => {
   storage.setItem(DOWNLOAD_DIR_STORAGE_KEY, "/mnt/e/AI/Models");
   bodies.length = 0;
-  await apiStart({ ...model, kind: "dataset" as const, variant: null }, false, null);
+  await apiStart(
+    { ...model, kind: "dataset" as const, variant: null },
+    false,
+    null,
+  );
   assert.equal("download_dir" in bodies[0], false);
 });
 
@@ -68,4 +70,36 @@ test("a folder pinned on the request wins over a later choice", async () => {
   await apiStart({ ...model, downloadDir: null }, false, null);
   assert.equal(bodies[0].download_dir, "/mnt/a/Models");
   assert.equal("download_dir" in bodies[1], false);
+});
+
+test("Resume after a cancel keeps the folder; a failed start takes the new choice", async () => {
+  const { withDownloadDir } =
+    await import("../src/features/hub/download-manager/transport-conflict.ts");
+  const { putJob, jobKeyOf } =
+    await import("../src/features/hub/download-manager/download-manager-state.ts");
+  storage.setItem(DOWNLOAD_DIR_STORAGE_KEY, "/mnt/b/Models");
+  const base = {
+    key: jobKeyOf("model", model.repoId, model.variant),
+    kind: "model" as const,
+    repoId: model.repoId,
+    variant: model.variant,
+    downloadedBytes: 0,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 0,
+    fraction: 0,
+    bytesPerSec: 0,
+    etaSeconds: 0,
+    error: null,
+    startedAt: 1,
+    downloadDir: "/mnt/a/Models",
+  };
+  putJob({ ...base, state: "cancelled" });
+  assert.equal(withDownloadDir(model).downloadDir, "/mnt/a/Models");
+  putJob({
+    ...base,
+    state: "error",
+    error: "The parent folder does not exist.",
+  });
+  assert.equal(withDownloadDir(model).downloadDir, "/mnt/b/Models");
 });
