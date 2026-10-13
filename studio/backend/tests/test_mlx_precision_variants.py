@@ -443,3 +443,40 @@ def test_the_root_duplicate_is_found_by_content_not_size(monkeypatch):
     _fake_hub(monkeypatch, sizes = sizes, content = lambda name: name)
     response = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response
     assert response.default_variant is None
+
+
+def test_a_resumed_folder_download_rebuilds_its_plan_from_the_manifest():
+    # With the Hub unreachable the worker resumes from the saved manifest; a plan with no main
+    # hashes made it refuse the partial download instead of resuming it.
+    from hub.utils.gguf_plan import plan_from_expected_files, resolve_variant_plan
+
+    siblings = _siblings({"m-Q4_K_M.gguf": 5 * GB, **_SIZES})
+    folder = resolve_variant_plan(siblings, "6-bit")
+    resumed = plan_from_expected_files("6-bit", folder.expected_files)
+    assert resumed.main_hashes == folder.main_hashes != frozenset()
+    assert resumed.target_filenames == folder.target_filenames
+    gguf = resolve_variant_plan(siblings, "Q4_K_M")
+    assert plan_from_expected_files("Q4_K_M", gguf.expected_files) == gguf
+
+
+def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
+    from routes import inference as ri
+
+    folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [str(tmp_path / "hub")])
+    config = SimpleNamespace(
+        path = _REPO, identifier = _REPO, is_local = False, is_lora = False, is_gguf = False
+    )
+    # Only 6-bit/ is on disk: the root alone is not downloaded, the pick is.
+    assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = None)) is None
+    assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
+        folder
+    )
+    # With the root checkpoint there too, the pick still prices its own folder.
+    (folder.parent / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder.parent / "model.safetensors").write_bytes(b"x")
+    assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
+        folder
+    )

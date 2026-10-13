@@ -15185,9 +15185,16 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             return False
         return _complete(directory, shards)
 
+    # A precision folder pick (6-bit/) loads that folder, never the root checkpoint.
+    folder = None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
+
+    def _pick(path) -> Optional[str]:
+        target = Path(path) / folder if folder else Path(path)
+        return str(target) if _usable(target) else None
+
     candidate = getattr(config, "path", None)
-    if candidate and _usable(candidate):
-        return str(candidate)
+    if candidate and (found := _pick(candidate)):
+        return found
     identifier = candidate or getattr(config, "identifier", None)
     if not identifier or getattr(config, "is_local", False):
         return None
@@ -15206,8 +15213,8 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             except Exception:
                 continue
             for snapshot in _the_revision_that_loads(list(snapshots)):
-                if _usable(snapshot):
-                    return str(snapshot)
+                if found := _pick(snapshot):
+                    return found
     return None
 
 
