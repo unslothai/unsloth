@@ -1943,3 +1943,31 @@ def test_a_configured_pair_is_two_nodes_even_when_mdns_sees_the_peer_on_its_lan(
     )
     lan = [{"hostname": "spark-b.local", "address": "10.0.0.5", "source": "mdns"}]
     assert len(sc.merge_peers(lan)) == 1
+
+
+@_POSIX_ONLY
+def test_spark_up_is_not_ready_when_ssh_cannot_check_the_peer(monkeypatch) -> None:
+    """Provisioning, doctor and every remote launch need ssh; an unverified peer is not ready."""
+    from typer.testing import CliRunner
+
+    from unsloth_cli.commands import spark as S
+
+    sit = {
+        "cable": True,
+        "state": "configured",
+        "peer_ip": "192.168.200.13",
+        "peers": [],
+        "seen": 2,
+    }
+    monkeypatch.setattr(S, "_cluster_or_none", lambda: _fake_spark_cluster({}))
+    monkeypatch.setattr(S, "_on_spark", lambda sc: True)
+    monkeypatch.setattr(S, "_situation", lambda sc: sit)
+    monkeypatch.setattr(S, "_report_inventory", lambda sc, s: None)
+    monkeypatch.setattr(S, "_kernel_state", lambda: {})
+    monkeypatch.setattr(S, "_peer_reachable", lambda peer: True)
+    monkeypatch.setattr(S, "_peer_has_venv", lambda peer: None)
+    result = CliRunner().invoke(S.spark_app, ["up"])
+    assert result.exit_code == 1, result.output
+    assert "Ready" not in result.output
+    monkeypatch.setattr(S, "_peer_has_venv", lambda peer: True)
+    assert "Ready" in CliRunner().invoke(S.spark_app, ["up"]).output

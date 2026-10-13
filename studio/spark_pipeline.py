@@ -1171,6 +1171,8 @@ def stage_module_cls():
                     f"rather than supporting these models."
                 )
             self.embed_tokens = embed if is_first else None
+            # GPT-NeoX applies hidden_dropout between the embedding and the first layer.
+            self.embed_dropout = getattr(owner, "emb_dropout", None) if is_first else None
             self.norm = norm if is_last else None
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
             self.config = getattr(top, "config", None)
@@ -1231,6 +1233,8 @@ def stage_module_cls():
 
         def forward(self, x):
             h = _scale_embeddings(self.embed_tokens(x), self.embed_scale) if self.is_first else x
+            if self.embed_dropout is not None:
+                h = self.embed_dropout(h)
             if self.sliding_window is not None and h.shape[1] > self.sliding_window:
                 raise RuntimeError(
                     f"this model attends over a {self.sliding_window}-token sliding window and "
@@ -1268,17 +1272,30 @@ def stage_module_cls():
     return _STAGE_MODULE_CLS
 
 
+# Valid target tokens in this step's whole batch over the microbatch count, set by the training
+# loop. Each microbatch then divides its summed loss by it, so after the 1/M grad scaling the step
+# optimises the full-batch token mean: a per-microbatch mean weighs a short padded row like a long
+# one (the gradient-accumulation bug). None falls back to a plain mean.
+_PP_TOKENS_PER_MICROBATCH = [None]
+
+
+def set_pp_batch_tokens(labels, microbatches: int) -> None:
+    _PP_TOKENS_PER_MICROBATCH[0] = max(1, int((labels[:, 1:] != -100).sum())) / microbatches
+
+
 def pp_loss_fn(logits, target):
-    """Next-token cross entropy, MEAN-reduced."""
+    """Next-token cross entropy, token-mean over the whole step's batch."""
     import torch.nn.functional as F
-    return F.cross_entropy(
-        logits[:, :-1].reshape(-1, logits.size(-1)).float(),
-        target[:, 1:].reshape(-1),
-        ignore_index = -100,
-    )
+
+    logits = logits[:, :-1].reshape(-1, logits.size(-1)).float()
+    target = target[:, 1:].reshape(-1)
+    per_microbatch = _PP_TOKENS_PER_MICROBATCH[0]
+    if per_microbatch is None:
+        return F.cross_entropy(logits, target, ignore_index = -100)
+    return F.cross_entropy(logits, target, ignore_index = -100, reduction = "sum") / per_microbatch
 
 
-# `pp_loss_fn` mean-reduces, so gradients must be divided by the microbatch count.
+# `pp_loss_fn` returns M times a microbatch's share, so gradients must be divided by M.
 PP_SCALE_GRADS = True
 
 
@@ -1910,6 +1927,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # Only the rank holding stage 0 may supply positional inputs; every other stage's input
             # is the wire.
             step_args = (whole,) if rank == plan["first_rank"] else ()
+            set_pp_batch_tokens(whole_labels, args.microbatches)
             pp_schedule.step(*step_args, target = whole_labels, losses = losses, **pp_step_kw)
             pp_scale_grads()
             loss = (sum(losses) / len(losses)) if losses else None
