@@ -1155,8 +1155,7 @@ test("the model picker chord opens without the tour's pin", async () => {
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// Every way to rename a sidebar chat opens the Rename chat dialog: the chord, the row's menu,
-// its right-click menu and a double-click. There is no in-row editor to need the row on screen.
+// The chord, the row menus and a double-click all open the Rename chat dialog; there is no in-row editor.
 test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
