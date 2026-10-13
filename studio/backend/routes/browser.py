@@ -1663,10 +1663,22 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     if "accept-language" not in named:
         added["Accept-Language"] = "en-US,en;q=0.9"
     page_headers = {**added, **own}
+    # Whether every hop so far stayed on the page's origin. Once one leaves it, the page's headers
+    # (Authorization among them) are not sent again, as Fetch strips them on an origin change.
+    hops = {"same_origin": True}
+
+    def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
+        if _origin(url) == origin and hops["same_origin"]:
+            return None
+        hops["same_origin"] = False
+        # A browser preflights anything but a bare GET or HEAD to another origin; this can't, so a
+        # write is refused before it is sent rather than after it reached the other site.
+        if hop_method not in ("GET", "HEAD") or has_body:
+            return "Redirected a write to another site."
+        return None
 
     def host_headers(current_host: str) -> dict:
-        # The page's headers go to its own host only, not to another a redirect leads to.
-        return {**_studio_headers(current_host), **(page_headers if current_host == host else {})}
+        return {**_studio_headers(current_host), **(page_headers if hops["same_origin"] else {})}
 
     meta: dict = {}
     error, raw, _content_type = _fetch_url_raw(
@@ -1681,6 +1693,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         host_headers = host_headers,
         method = method,
         any_status = True,
+        on_redirect = on_redirect,
     )
     status = meta.get("status")
     if not isinstance(status, int) or not isinstance(raw, bytes):

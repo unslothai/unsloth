@@ -225,6 +225,54 @@ def test_a_redirect_to_a_site_that_allows_any_origin_is_read(monkeypatch):
     assert base64.b64decode(answer["body"]) == b"public"
 
 
+@pytest.mark.parametrize("target", ["https://site.test:8443/data", "http://site.test/data"])
+def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, target):
+    # Same host, another port or scheme: another origin, so Authorization is not forwarded.
+    host_path = target.split("://", 1)[1]
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": target}),
+            host_path: (200, b"public", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    _request(url = "https://site.test/go", headers = [["Authorization", "Bearer page"]])
+    assert sent[0]["headers"]["authorization"] == "Bearer page"
+    assert "authorization" not in sent[1]["headers"]
+    assert "referer" not in sent[1]["headers"]
+
+
+@pytest.mark.parametrize("status, method", [(307, "DELETE"), (308, "PUT"), (307, "POST")])
+def test_a_write_redirected_to_another_site_is_never_sent_there(monkeypatch, status, method):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/api": (status, b"", {"Location": "https://other.test/api"}),
+            "other.test/api": (200, b"", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    with pytest.raises(HTTPException) as raised:
+        _request(url = "https://site.test/api", method = method, body = base64.b64encode(b"x").decode())
+    assert raised.value.status_code == 502
+    assert [hop["url"] for hop in sent] == ["site.test/api"]
+
+
+def test_a_post_redirected_as_a_get_may_go_to_another_site(monkeypatch):
+    # 303 turns it into a bodiless GET, which a browser sends to another site without a preflight.
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/upload": (303, b"", {"Location": "https://cdn.test/result"}),
+            "cdn.test/result": (200, b"done", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    answer = _request(
+        url = "https://site.test/upload", method = "POST", body = base64.b64encode(b"x").decode()
+    )
+    assert base64.b64decode(answer["body"]) == b"done"
+    assert sent[1]["method"] == "GET" and sent[1]["data"] is None
+
+
 @pytest.mark.parametrize(
     "status, method, kept",
     [
