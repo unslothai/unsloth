@@ -562,3 +562,12 @@ def test_a_folder_variant_names_only_what_it_says(hub, variant, picks):
     _add_snapshot(hub, "a" * 40, {f"{k}.gguf": "moonshine_asr" for k in keys.values()}, main = True)
     acm.forget()
     assert acm.cached_folder_target(moon, variant) == (AUDIO_CPP_REPO, [keys[p] for p in picks])
+
+
+def test_cached_path_of_a_folder_skips_a_newer_snapshot_with_only_metadata(hub):
+    newer = _add_snapshot(hub, "c" * 40, {}, main = True)
+    (newer / "Qwen3-TTS-12Hz-0.6B-Base-GGUF").mkdir(parents = True)
+    (newer / "Qwen3-TTS-12Hz-0.6B-Base-GGUF" / "README.md").write_text("card")
+    acm.forget()
+    got = _path(QWEN, "")
+    assert Path(got["path"]) == hub / SNAPSHOT / "Qwen3-TTS-12Hz-0.6B-Base-GGUF"
