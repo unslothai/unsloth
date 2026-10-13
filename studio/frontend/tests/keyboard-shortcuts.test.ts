@@ -1171,6 +1171,11 @@ test("every sidebar chat rename opens the dialog", () => {
   assert.match(APP_SIDEBAR, /open=\{renamingTarget !== null\}/);
   assert.doesNotMatch(APP_SIDEBAR, /isRenamingThis|handleInlineRename|renamingTarget\.inline/);
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
+  // The title opens selected, and focus still resets the IME state.
+  assert.match(
+    APP_SIDEBAR,
+    /onFocus=\{\(event\) => \{\s*resetInputIme\(renameImeRef\.current\);\s*event\.currentTarget\.select\(\);/,
+  );
 });
 
 // Bare Escape has more than one owner. The sidebar answers it while rows are

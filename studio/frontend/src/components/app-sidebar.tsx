@@ -218,6 +218,7 @@ import {
   imeOwnsInputKeydown,
   inputImeHandlers,
   newInputImeState,
+  resetInputIme,
 } from "@/features/chat/utils/composer-preferences";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -6303,6 +6304,11 @@ export function AppSidebar() {
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
           {...inputImeHandlers(renameImeRef.current)}
+          // Selected on open, so typing replaces the title; still ends any lost composition (#5546).
+          onFocus={(event) => {
+            resetInputIme(renameImeRef.current);
+            event.currentTarget.select();
+          }}
           onKeyDown={(event) => {
             if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
             if (event.key === "Enter") {
