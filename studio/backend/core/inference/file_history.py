@@ -43,6 +43,7 @@ MAX_FILE_BYTES = 16 << 20
 BASELINE_BUDGET_BYTES = 256 << 20
 CHAT_CAP_CHECKPOINTS = 500
 GLOBAL_CAP_BYTES = 2 << 30
+GC_AFTER_BYTES = 128 << 20
 # Studio's own trees inside a chat folder: content addressed copies, the scratch dir, spilled output.
 _SKIP_PREFIXES = (".unsloth_attachments/", "unsloth-tmp/", ".unsloth_tool_output/")
 
@@ -157,6 +158,7 @@ class FileHistory:
         self._active: dict = {}  # workdir -> [CallToken]
         self._restoring: set = set()
         self._since_gc = 0
+        self._added = 0  # bytes stored since the last gc
 
     # Blobs
 
@@ -166,7 +168,16 @@ class FileHistory:
     def _put_blob(self, data: bytes) -> str:
         digest = hashlib.sha256(data).hexdigest()
         path = self._blob_path(digest)
-        if os.path.exists(path):
+        try:
+            stored = os.path.getsize(path)
+        except OSError:
+            stored = None
+        if stored is not None:
+            # The row too: one lost to a crash or a rolled-back call would leave the file uncounted.
+            self._db.execute(
+                "INSERT OR IGNORE INTO blobs VALUES(?,?,?,?)",
+                (digest, len(data), stored, time.time()),
+            )
             return digest
         probe = data[: 64 << 10]
         if _ZSTD_C is not None:
@@ -187,6 +198,7 @@ class FileHistory:
             "INSERT OR IGNORE INTO blobs VALUES(?,?,?,?)",
             (digest, len(data), len(payload), time.time()),
         )
+        self._added += len(payload)
         return digest
 
     def _get_blob(self, digest: str) -> bytes:
@@ -572,8 +584,9 @@ class FileHistory:
                     (chat_id, count - CHAT_CAP_CHECKPOINTS),
                 )
             self._since_gc += 1
-            if self._since_gc >= 50:
-                self._since_gc = 0
+            # By count, or sooner by bytes: a few calls rewriting large files can pass the cap alone.
+            if self._since_gc >= 50 or self._added >= GC_AFTER_BYTES:
+                self._since_gc = self._added = 0
                 self.gc()
 
     def delete_chat(self, chat_id) -> None:
@@ -718,6 +731,17 @@ def _safe_unlink(workdir: str, rel: str) -> None:
 
 _stores: dict = {}
 _stores_lock = threading.Lock()
+
+
+def close_store(root) -> None:
+    """Drop and close an account's history before its folders are moved, since an open
+    index blocks the rename on Windows."""
+    root = str(root)
+    with _stores_lock:
+        found = _stores.pop(root, None)
+    if found is not None:
+        with found._lock:
+            found._db.close()
 
 
 def store() -> FileHistory:

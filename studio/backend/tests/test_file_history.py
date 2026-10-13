@@ -316,3 +316,34 @@ def test_an_edit_missed_by_a_capped_first_walk_restores_the_original(chat, monke
     report = _rewind(history, ["u1"])
     assert report.restored == ["z/keep.txt"] and report.deleted == []
     assert (workdir / "z" / "keep.txt").read_text(encoding = "utf-8") == "original\n"
+
+
+def test_a_blob_file_without_its_row_gets_the_row_back(chat):
+    _workdir, history = chat
+    digest = history._put_blob(b"hello" * 100)
+    history._db.execute("DELETE FROM blobs WHERE hash=?", (digest,))
+    history._put_blob(b"hello" * 100)
+    assert (
+        history._db.execute("SELECT COUNT(*) FROM blobs WHERE hash=?", (digest,)).fetchone()[0] == 1
+    )
+
+
+def test_retention_runs_once_enough_bytes_are_stored(chat, monkeypatch):
+    _workdir, history = chat
+    monkeypatch.setattr(file_history, "GC_AFTER_BYTES", 1)
+    ran = []
+    monkeypatch.setattr(history, "gc", lambda: ran.append(1))
+    file_history.set_turn("chat-1", "u1")
+    _edit("a.txt", "", "first\n")
+    _edit("a.txt", "first", "second")
+    assert ran
+
+
+def test_close_store_releases_the_index(tmp_path, monkeypatch):
+    root = tmp_path / "file_history"
+    history = file_history.FileHistory(str(root))
+    monkeypatch.setitem(file_history._stores, str(root), history)
+    file_history.close_store(root)
+    assert str(root) not in file_history._stores
+    with pytest.raises(Exception):
+        history._db.execute("SELECT 1")
