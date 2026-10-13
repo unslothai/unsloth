@@ -4465,3 +4465,14 @@ def test_a_projector_set_only_in_the_environment_is_charged_to_the_node(
     request.llama_extra_args = ["--mmproj", str(projector)]
     run(ss.before_load(request, 4))
     assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 8192
+
+
+def test_is_spark_skips_the_cluster_import_off_aarch64_linux(monkeypatch):
+    """Every Studio load asks is_spark(); off aarch64 Linux it must answer without loading
+    spark_cluster (about 70 ms the first time on an x86 host)."""
+    monkeypatch.setattr(ss, "_CLUSTER", None)
+    monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", False)
+    monkeypatch.setattr(ss.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(ss, "_cluster", lambda: pytest.fail("spark_cluster was loaded"))
+    assert ss.is_spark() is False
+    assert ss.enabled() is False

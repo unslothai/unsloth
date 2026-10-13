@@ -24725,9 +24725,9 @@ class LlamaCppBackend:
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
                 return False
-            # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             # What the child runs with after every scrub; the Spark replica relaunches from it.
             self._launched_env = dict(env)
+            # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             _spawned = _spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
                     cmd,

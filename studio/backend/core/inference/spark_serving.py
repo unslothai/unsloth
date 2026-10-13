@@ -28,6 +28,7 @@ import importlib.util
 import logging
 import os
 import os.path as osp
+import platform
 import re
 import shlex
 import socket
@@ -216,6 +217,11 @@ def _cluster():
 
 
 def is_spark() -> bool:
+    # Every Studio load asks; off aarch64 Linux the answer needs no 5k-line module import.
+    if not _CLUSTER_LOOKED_UP and (
+        platform.system() != "Linux" or platform.machine() not in ("aarch64", "arm64")
+    ):
+        return False
     sc = _cluster()
     try:
         return bool(sc is not None and sc.is_dgx_spark())
