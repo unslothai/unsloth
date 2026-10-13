@@ -96,9 +96,15 @@ def test_add_moe_target_modules_keeps_each_form():
     assert not re.fullmatch(combined, "model.layers.0.mlp.experts.router")
 
 
-def _prewrapped(target_modules, layers = 2):
+def _prewrapped(
+    target_modules,
+    layers = 2,
+    **extra,
+):
     from peft import LoraConfig
-    config = LoraConfig(r = 16, lora_alpha = 16, target_modules = target_modules, task_type = "CAUSAL_LM")
+    config = LoraConfig(
+        r = 16, lora_alpha = 16, target_modules = target_modules, task_type = "CAUSAL_LM", **extra
+    )
     return get_peft_model(_tiny_llama(layers), config)
 
 
@@ -143,3 +149,19 @@ def test_all_linear_matches_an_adapter_on_every_linear():
         model, r = 16, target_modules = "all-linear", use_gradient_checkpointing = False
     )
     assert again is model
+
+
+def test_all_linear_repeat_honours_exclude_modules():
+    model = _prewrapped("all-linear", 4, exclude_modules = ["down_proj"])
+    again = FastLlamaModel.get_peft_model(
+        model,
+        r = 16,
+        target_modules = "all-linear",
+        exclude_modules = ["down_proj"],
+        use_gradient_checkpointing = False,
+    )
+    assert again is model
+    with pytest.raises(TypeError, match = "new parameters are different"):
+        FastLlamaModel.get_peft_model(
+            model, r = 16, target_modules = "all-linear", use_gradient_checkpointing = False
+        )

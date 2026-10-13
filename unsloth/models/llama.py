@@ -2543,19 +2543,31 @@ def _fused_lora_skip_reason(
     )
 
 
-def _resolve_all_linear(model, target_modules):
+def _resolve_all_linear(
+    model,
+    target_modules,
+    exclude_modules = None,
+):
     """(modules "all-linear" resolves to, modules the adapter wraps) on a wrapped model, both as full paths."""
     try:
-        from peft.tuners.tuners_utils import BaseTunerLayer, _maybe_include_all_linear_layers
+        from peft.tuners.tuners_utils import (
+            BaseTunerLayer,
+            _ExcludedModule,
+            _maybe_include_all_linear_layers,
+            check_target_module_exists,
+        )
     except ImportError:
         return None
     base = model.get_base_model()
-    config = _maybe_include_all_linear_layers(LoraConfig(target_modules = target_modules), base)
+    config = LoraConfig(target_modules = target_modules, exclude_modules = exclude_modules)
+    config = _maybe_include_all_linear_layers(config, base)
     # A trained lm_head sits in a modules_to_save wrapper whose copies are Linear too; PEFT excluded it at creation.
     resolved = {
         name
         for name in config.target_modules
-        if ".original_module" not in name and ".modules_to_save." not in name
+        if ".original_module" not in name
+        and ".modules_to_save." not in name
+        and not isinstance(check_target_module_exists(config, name), _ExcludedModule)
     }
     wrapped = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
     return resolved, wrapped
@@ -3976,7 +3988,9 @@ class FastLlamaModel:
             if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
                 # PEFT stores "all-linear" expanded and, past 20 modules, compacted to suffixes: compare the
                 # modules it resolves to with the modules the adapter wraps instead.
-                resolved = _resolve_all_linear(model, requested_targets)
+                resolved = _resolve_all_linear(
+                    model, requested_targets, kwargs.get("exclude_modules")
+                )
                 if resolved is not None:
                     requested_targets, stored_targets = resolved
 
