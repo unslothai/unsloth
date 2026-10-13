@@ -2063,10 +2063,28 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             flat = torch.cat([g.reshape(-1) for g in chunk])
             dist.all_reduce(flat, group = group)
             flat.div_(world_size)
-            offset = 0
-            for g in chunk:
-                g.copy_(flat[offset : offset + g.numel()].view_as(g))
-                offset += g.numel()
+            # One fused copy back: a per-tensor copy_ loop costs a launch per LoRA tensor (500+ for an 8B model).
+            pieces = [
+                x.view_as(g) for x, g in zip(torch.split(flat, [g.numel() for g in chunk]), chunk)
+            ]
+            # The fused route needs matching strides (one mismatch slows the whole list), so mismatched grads go alone.
+            dst, src = [], []
+            for g, x in zip(chunk, pieces):
+                if g.stride() == x.stride():
+                    dst.append(g)
+                    src.append(x)
+                else:
+                    g.copy_(x)
+            foreach_copy = getattr(torch, "_foreach_copy_", None)
+            try:
+                if foreach_copy is None:
+                    raise NotImplementedError
+                if dst:
+                    foreach_copy(dst, src)
+            except (RuntimeError, NotImplementedError, TypeError):
+                # Private op: fall back to the per-tensor copy if a torch build lacks or rejects it (idempotent).
+                for g, x in zip(dst, src):
+                    g.copy_(x)
             start = stop
 
 
