@@ -1417,6 +1417,11 @@ def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_pa
     default = dataclasses.replace(chosen, n_parallel_from_default = True)
     assert backend._runtime_matches_intent(default, None)
     assert not backend._runtime_matches_intent(chosen, None)
+    # A diffusion runtime that replaced it ignores slot counts altogether.
+    backend._is_diffusion = True
+    assert backend._runtime_matches_intent(chosen, None) == backend._runtime_matches_intent(
+        default, None
+    )
 
 
 @pytest.mark.parametrize("ctx_with_drafter, keeps", [(7424, True), (6144, False)])

@@ -9201,7 +9201,11 @@ class LlamaCppBackend:
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
             return False
         # The same count chosen rather than defaulted is one Auto may not cut.
-        if self._slots_cut_for_drafter and not intent.n_parallel_from_default:
+        if (
+            not self._is_diffusion
+            and self._slots_cut_for_drafter
+            and not intent.n_parallel_from_default
+        ):
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
