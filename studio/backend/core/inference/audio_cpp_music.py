@@ -26,7 +26,9 @@ logger = get_logger(__name__)
 
 _TIMEOUT_FLOOR = 300.0
 _TIMEOUT_CEILING = 4 * 3600.0
-_CPU_FACTOR = 10.0
+# Spec rtf values are CUDA timings. MiniMax Music 3 Q8 runs at RTF 0.83 on an RTX 5090 but 14 to
+# 24 on an M3 Max over Metal (#13510), so Metal and Vulkan get CPU's headroom.
+_BACKEND_FACTOR = {"cpu": 10.0, "metal": 10.0, "vulkan": 10.0}
 # MiDashengLM's spec caps seeds at 2**31 - 1.
 _SEED_LIMIT = 2**31 - 1
 
@@ -50,10 +52,13 @@ def seconds_text(value: float) -> str:
     return f"{float(value):.3f}".rstrip("0").rstrip(".")
 
 
-def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu: bool) -> float:
+def timeout_seconds(
+    family: Optional[str], seconds: float, variations: int, backend: Optional[str]
+) -> float:
     music = MUSIC_SPECS.get(str(family or ""))
     rtf = music.rtf * music.overrun if music is not None else 4.0
-    work = rtf * max(0.0, float(seconds)) * max(1, int(variations)) * (_CPU_FACTOR if cpu else 1.0)
+    rtf *= _BACKEND_FACTOR.get(str(backend or "").lower(), 1.0)
+    work = rtf * max(0.0, float(seconds)) * max(1, int(variations))
     return max(_TIMEOUT_FLOOR, min(_TIMEOUT_CEILING, _TIMEOUT_FLOOR + work))
 
 

@@ -556,6 +556,23 @@ def _music(client, **body):
     return client.post("/api/inference/audio/run", json = payload)
 
 
+def test_music_wait_scales_with_the_runtime_backend(stub):
+    # #13510: Metal ran MiniMax Music 3 far slower than the CUDA-timed rtf allowed.
+    from core.inference.audio_cpp_music import timeout_seconds
+
+    waits = {}
+    for runtime in ("cuda", "metal"):
+        info = {**_music_info(), "audio_cpp_backend": runtime}
+        backend = stub["use"](STABLE_AUDIO, info)
+        backend.__class__ = _MusicBackend
+        backend.takes, backend.run_dirs = 1, []
+        with _client(ALICE) as client:
+            assert _music(client, duration_s = 30).status_code == 200
+        waits[runtime] = backend.calls[-1]["music"]["timeout_s"]
+    assert waits == {r: timeout_seconds("stable_audio", 30.0, 1, r) for r in waits}
+    assert waits["metal"] > waits["cuda"]
+
+
 def test_music_variations_are_saved_as_one_group(stub, tmp_path):
     backend = stub["use"](STABLE_AUDIO, _music_info())
     backend.__class__ = _MusicBackend
