@@ -230,10 +230,6 @@ def test_reconcile_rules(monkeypatch):
     # a variant the table does not describe: the larger of its headers and the table, per term
     assert dcs.reconcile_with_table((12.04, 11.4, 2.8), table, is_base = False) == (12.0, 11.4, 2.8)
     assert dcs.reconcile_with_table((8.0, 12.0, 1.0), table, is_base = False) == (10.0, 12.0, 2.8)
-    assert dcs.reconcile_scalar(0.9957, 1.0, is_base = True) == 1.0
-    assert dcs.reconcile_scalar(None, 1.0, is_base = True) == 1.0
-    assert dcs.reconcile_scalar(1.5, 1.0, is_base = False) == 1.5
-    assert dcs.reconcile_scalar(0.5, 1.0, is_base = False) == 1.0
 
 
 def _stub_for_table(root: Path, fam) -> None:
@@ -310,17 +306,35 @@ def test_hub_reads_are_disabled_offline(monkeypatch):
     assert dcs.hub_component_sizes("Wan-AI/Wan2.2-TI2V-5B-Diffusers") is None
 
 
-def test_ltx25_latent_upsampler_from_header(monkeypatch, tmp_path):
-    from core.inference.video_ltx25 import LTX25_LATENT_UPSAMPLER_GB, ltx25_latent_upsampler_gb
+def test_ltx25_upsampler_share_comes_from_the_same_answer(monkeypatch, tmp_path):
+    from core.inference.video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
 
+    fam = _fam("ltx-2.5")
+    # table answer (base repo, nothing cached): the table's constant
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
-    assert ltx25_latent_upsampler_gb() == LTX25_LATENT_UPSAMPLER_GB
-    _component(tmp_path, "latent_upsampler", 0.995743320)  # the pack's 995,743,320 bytes
-    assert ltx25_latent_upsampler_gb(str(tmp_path)) == LTX25_LATENT_UPSAMPLER_GB
+    detail: dict = {}
+    assert dcs.video_components_gb(fam, details = detail) == fam.bf16_components_gb
+    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == LTX25_LATENT_UPSAMPLER_GB
+    # header answer for a variant with a larger companion term: the upsampler from that same snapshot
+    _stub_for_table(tmp_path, fam)
+    _component(tmp_path, "connectors", 6.0)
     _component(tmp_path, "latent_upsampler", 1.6)
-    assert ltx25_latent_upsampler_gb(str(tmp_path)) == pytest.approx(1.6)
-    _component(tmp_path, "latent_upsampler", 0.4)
-    assert ltx25_latent_upsampler_gb(str(tmp_path)) == LTX25_LATENT_UPSAMPLER_GB
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
+    detail = {}
+    got = dcs.video_components_gb(fam, "o/ltx-variant", allow_hub = True, details = detail)
+    assert detail["sources"][2] == "header" and got[2] > fam.bf16_components_gb[2]
+    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == pytest.approx(1.6)
+
+
+def test_video_plan_reads_the_upsampler_from_the_resolved_answer():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend.load_pipeline)
+    assert "details = components_detail" in src
+    assert "term_part_gb(" in src and "ltx25_latent_upsampler_gb" not in src
 
 
 
@@ -741,6 +755,13 @@ class _Resp:
     def close(self):
         self.closed = True
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
 
 class _Session:
     def __init__(self, resp):
@@ -749,6 +770,30 @@ class _Session:
     def get(self, url, **kwargs):
         self.kwargs = kwargs
         return self.resp
+
+
+class _HttpxClient:
+    """huggingface_hub 1.x: an httpx Client streams via ``Client.stream`` and has no ``stream=`` keyword."""
+
+    def __init__(self, resp):
+        self.resp, self.args = resp, None
+
+    def stream(self, method, url, **kwargs):
+        self.args = (method, kwargs)
+        return self.resp
+
+    def get(self, url, **kwargs):
+        if "stream" in kwargs:
+            raise TypeError("Client.get() got an unexpected keyword argument 'stream'")
+        return self.resp
+
+
+def test_index_fetch_works_on_the_httpx_client():
+    resp = _Resp([b'{"a"', b": 1}"])
+    resp.iter_bytes = resp.iter_content
+    client = _HttpxClient(resp)
+    assert dcs._fetch_capped_text(client, "u", {}, 1.0, float("inf")) == '{"a": 1}'
+    assert client.args[0] == "GET" and client.args[1]["follow_redirects"] is True and resp.closed
 
 
 def test_index_fetch_is_streamed_under_the_cap():
@@ -1072,3 +1117,84 @@ def test_same_stem_order_follows_the_loader(tmp_path):
     # transformers folder: the unsharded file first; diffusers folder: the index first
     assert sizes.get("text_encoder").files == ("model.safetensors",)
     assert sizes.get("transformer").files == ("diffusion_pytorch_model-00001-of-00001.safetensors",)
+
+
+# ---- review round 6 ----
+
+
+def test_hub_skips_folders_the_manifest_does_not_load(monkeypatch):
+    files = [
+        "model_index.json",
+        "transformer/diffusion_pytorch_model.safetensors",
+        "text_encoder/model.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+        "connectors/diffusion_pytorch_model.safetensors",
+        "vocoder/diffusion_pytorch_model.safetensors",
+        "latent_upsampler/diffusion_pytorch_model.safetensors",
+    ]
+    ok = {"__metadata__": {}, "w": {"dtype": "BF16", "shape": [10], "data_offsets": [0, 20]}}
+    # vocoder is null in the manifest and its header fails: not loaded, so not fatal
+    _hub_with(monkeypatch, files, lambda f: None if f.startswith("vocoder/") else ok)
+    manifest = json.dumps(
+        {"transformer": ["d", "T"], "text_encoder": ["t", "E"], "vae": ["d", "V"], "connectors": ["l", "C"], "vocoder": [None, None]}
+    )
+    monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: manifest)
+    sizes = dcs.hub_component_sizes("o/r")
+    # latent_upsampler is attached by Studio outside the manifest, so it is still read
+    assert sizes is not None and sizes.names() == ("connectors", "latent_upsampler", "text_encoder", "transformer", "vae")
+    # a LOADED folder that fails stays fatal
+    _hub_with(monkeypatch, files, lambda f: None if f.startswith("connectors/") else ok)
+    monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: manifest)
+    assert dcs.hub_component_sizes("o/r") is None
+
+
+def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monkeypatch):
+    ltx = _fam("ltx-2")  # loads connectors and vocoder
+    _stub_for_table(tmp_path, ltx)
+    _component(tmp_path, "connectors", 1.0)
+    (tmp_path / "vocoder").mkdir()
+    (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 8)
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert "vocoder" in sizes.unknown
+    assert dcs.video_header_terms(ltx, sizes)[2] is None  # not the remaining folders summed
+    # a loaded extra text encoder stored as .bin: the text term is unknown
+    hv = _fam("hunyuanvideo-1.5")
+    root = tmp_path / "hv"
+    _stub_for_table(root, hv)
+    (root / "text_encoder_2").mkdir()
+    (root / "text_encoder_2" / "pytorch_model.bin").write_bytes(b"\0" * 8)
+    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] is None
+    # an unloaded leftover .bin folder changes nothing
+    wan = _fam("wan2.2-ti2v-5b")
+    w = tmp_path / "wan"
+    _stub_for_table(w, wan)
+    (w / "vocoder").mkdir()
+    (w / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 8)
+    assert None not in dcs.video_header_terms(wan, dcs.local_component_sizes(w))
+    # end to end: a variant whose loaded companion is unknown takes the table for that term
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: None)
+    assert dcs.video_components_gb(ltx, "o/ltx2-variant", allow_hub = True)[2] == ltx.bf16_components_gb[2]
+
+
+def test_no_index_fallback_takes_only_loader_names(tmp_path):
+    for name in ("adapter_model.safetensors", "weights.safetensors", "diffusion_pytorch_model.fp16.safetensors"):
+        assert dcs.select_weight_files([name], folder = "transformer") == []
+    _write_header(tmp_path / "transformer" / "adapter_model.safetensors", {"a": ("BF16", 10)})
+    assert dcs.local_component_sizes(tmp_path) is None
+    for stem in ("diffusion_pytorch_model", "model", "pytorch_model"):
+        assert dcs.select_weight_files([f"{stem}.safetensors", "adapter_model.safetensors"]) == [f"{stem}.safetensors"]
+
+
+def test_local_index_read_is_capped(tmp_path, monkeypatch):
+    t = tmp_path / "transformer"
+    _write_header(t / "diffusion_pytorch_model-00001-of-00001.safetensors", {"a": ("BF16", 10)})
+    _index(t / "diffusion_pytorch_model.safetensors.index.json", ["diffusion_pytorch_model-00001-of-00001.safetensors"])
+    assert dcs.local_component_sizes(tmp_path) is not None
+    monkeypatch.setattr(dcs, "MAX_INDEX_BYTES", 8)  # the index is now over the cap: never read, unknown
+    reads = []
+    real = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: reads.append(self.name) or real(self, *a, **k))
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert sizes is None and "diffusion_pytorch_model.safetensors.index.json" not in reads

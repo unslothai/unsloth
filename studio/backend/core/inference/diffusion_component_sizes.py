@@ -118,6 +118,8 @@ class ComponentSizes:
     revision: Optional[str] = None
     # Component names model_index.json declares (None when it was not read).
     manifest: Optional[frozenset] = None
+    # Folders holding weights whose size could not be read (a .bin checkpoint, an unreadable header or index).
+    unknown: frozenset = frozenset()
 
     def get(self, name: str) -> Optional[ComponentSize]:
         return self.components.get(name)
@@ -208,10 +210,22 @@ def select_weight_files(
             return [f"{stem}.safetensors"]
         if any(_SHARD_RE.match(n) and n.startswith(stem + "-") for n in names):
             return []
-    if any(_SHARD_RE.match(n) for n in names):
-        return []
-    plain = sorted(n for n in names if "." not in n[: -len(".safetensors")])
-    return plain
+    # Nothing else is selected: from_pretrained reads only these stems (Studio passes no variant, so a
+    # diffusion_pytorch_model.fp16.safetensors twin is not read either), never e.g. adapter_model.safetensors.
+    return []
+
+
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".safetensors.index.json", ".bin.index.json")
+
+
+def _holds_weights(names: Iterable[str]) -> bool:
+    return any(str(n).endswith(_WEIGHT_SUFFIXES) for n in names)
+
+
+def _read_capped_file(path: Path, cap: int) -> str:
+    if path.stat().st_size > cap:
+        raise ValueError(f"{path.name} is larger than {cap} bytes")
+    return path.read_text(encoding="utf-8")
 
 
 def _index_shards(text: str) -> Optional[list[str]]:
@@ -263,19 +277,28 @@ def local_component_sizes(
             return None
         wanted = set(components) if components is not None else None
         out: dict[str, ComponentSize] = {}
+        unknown: set = set()
         for sub in sorted(p for p in base.iterdir() if p.is_dir()):
             if wanted is not None and sub.name not in wanted:
                 continue
             names = [p.name for p in sub.iterdir() if p.is_file()]
             files = _pick_files(
-                names, lambda n, sub=sub: (sub / n).read_text(encoding="utf-8"), sub.name
+                names, lambda n, sub=sub: _read_capped_file(sub / n, MAX_INDEX_BYTES), sub.name
             )
-            if not files:
-                continue
-            size = _accumulate(sub.name, ((f, read_safetensors_header(sub / f)) for f in files))
+            size = (
+                _accumulate(sub.name, ((f, read_safetensors_header(sub / f)) for f in files))
+                if files
+                else None
+            )
             if size is not None:
                 out[sub.name] = size
-        return ComponentSizes(out, source="local", manifest=_manifest_names(base)) if out else None
+            elif _holds_weights(names):
+                unknown.add(sub.name)
+        if not out:
+            return None
+        return ComponentSizes(
+            out, source="local", manifest=_manifest_names(base), unknown=frozenset(unknown)
+        )
     except Exception:  # noqa: BLE001
         return None
 
@@ -298,7 +321,7 @@ def _manifest_names(root: Path) -> Optional[frozenset]:
     """Components ``model_index.json`` loads (an entry set to null is not loaded)."""
     try:
         path = root / "model_index.json"
-        if not path.is_file() or path.stat().st_size > 1 << 20:
+        if not path.is_file() or path.stat().st_size > MAX_MANIFEST_BYTES:
             return None
         return _manifest_from_text(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -395,6 +418,7 @@ def _hub_header(
 
 
 MAX_INDEX_BYTES = 64 * 1024 * 1024
+MAX_MANIFEST_BYTES = 1 << 20
 
 
 def _fetch_capped_text(
@@ -405,11 +429,20 @@ def _fetch_capped_text(
     deadline: float,
     cap: int = MAX_INDEX_BYTES,
 ) -> str:
-    """Refuses past ``cap`` while streaming, so an oversized (or lying) index is never buffered whole."""
+    """Refuses past ``cap`` while streaming, so an oversized (or lying) index is never buffered whole. Works on
+    both clients huggingface_hub ships: httpx (1.x, ``Client.stream``, redirects followed to the CDN) and requests
+    (0.x, ``stream=True``); see ``diffusion_compat._ranged_stream``."""
     import time
 
-    response = session.get(url, headers=headers, timeout=timeout, stream=True)
-    try:
+    from .diffusion_compat import _iter_body
+
+    if callable(getattr(session, "stream", None)):
+        opened = session.stream(
+            "GET", url, headers=headers, timeout=timeout, follow_redirects=True
+        )
+    else:
+        opened = session.get(url, headers=headers, timeout=timeout, stream=True)
+    with opened as response:
         response.raise_for_status()
         declared = (
             response.headers.get("Content-Length") if getattr(response, "headers", None) else None
@@ -417,18 +450,13 @@ def _fetch_capped_text(
         if declared is not None and int(declared) > cap:
             raise ValueError("index too large")
         body = bytearray()
-        for chunk in response.iter_content(chunk_size=65536):
+        for chunk in _iter_body(response, 65536):
             body.extend(chunk)
             if len(body) > cap:
                 raise ValueError("index too large")
             if time.monotonic() > deadline:
                 raise TimeoutError("index read deadline")
         return body.decode("utf-8")
-    finally:
-        try:
-            response.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 _REF_CACHE: dict = {}
@@ -568,9 +596,28 @@ def _read_hub_sizes(
         if wanted is not None and parts[0] not in wanted:
             continue
         by_folder.setdefault(parts[0], {})[parts[1]] = int(getattr(sib, "size", 0) or 0)
+    # The manifest first: a folder model_index.json omits or sets to null is not loaded, so its failure is not ours.
+    manifest = None
+    if any(str(getattr(s, "rfilename", "")) == "model_index.json" for s in info.siblings or ()):
+        try:
+            manifest = _manifest_from_text(
+                _fetch_capped_text(
+                    get_session(),
+                    hf_hub_url(repo_id, "model_index.json", revision=commit),
+                    dict(build_hf_headers(token=token)),
+                    max(1.0, deadline - time.monotonic()),
+                    deadline,
+                    cap=MAX_MANIFEST_BYTES,
+                )
+            )
+        except Exception:  # noqa: BLE001 - no manifest: every folder counts as loaded
+            manifest = None
     out: dict[str, ComponentSize] = {}
+    unknown: set = set()
     try:
         for folder, files in sorted(by_folder.items()):
+            if manifest is not None and folder not in manifest and folder not in _LOADED_OUTSIDE_MANIFEST:
+                continue
 
             def _read_index(n: str, folder: str = folder) -> str:
                 # never from the HF cache: a stray index there would read as a started download
@@ -588,6 +635,8 @@ def _read_hub_sizes(
             if not picked:
                 if any(n.endswith(".safetensors") or _INDEX_RE.match(n) for n in files):
                     return None  # safetensors weights this read cannot select (index unreadable / incomplete)
+                if _holds_weights(files):
+                    unknown.add(folder)  # a loaded .bin component: its term is unknown, never smaller
                 continue
             size = _accumulate(
                 folder,
@@ -602,29 +651,16 @@ def _read_hub_sizes(
                 ),
             )
             if size is None:
-                # any failed header voids the answer: a partial one would be cached as a smaller total
+                # any failed header of a loaded folder voids the answer: a partial one would be cached smaller
                 return None
             out[folder] = size
     except Exception:  # noqa: BLE001
         return None
     if not out:
         return None
-    manifest = None
-    if any(str(getattr(s, "rfilename", "")) == "model_index.json" for s in info.siblings or ()):
-        try:
-            manifest = _manifest_from_text(
-                _fetch_capped_text(
-                    get_session(),
-                    hf_hub_url(repo_id, "model_index.json", revision=commit),
-                    dict(build_hf_headers(token=token)),
-                    max(1.0, deadline - time.monotonic()),
-                    deadline,
-                    cap=1 << 20,
-                )
-            )
-        except Exception:  # noqa: BLE001 - no manifest: family roles alone decide
-            manifest = None
-    return ComponentSizes(out, source="hub", revision=commit, manifest=manifest)
+    return ComponentSizes(
+        out, source="hub", revision=commit, manifest=manifest, unknown=frozenset(unknown)
+    )
 
 
 def component_sizes(
@@ -670,6 +706,8 @@ VIDEO_ROLE_DENOISER = ("transformer", "transformer_2")
 VIDEO_ROLE_TEXT = ("text_encoder", "text_encoder_2", "text_encoder_3")
 VIDEO_ROLE_VAE = ("vae", "audio_vae", "vocoder", "connectors")
 VIDEO_EXTRA_VAE_ROLE: dict[str, tuple[str, ...]] = {"ltx-2.5": ("latent_upsampler",)}
+# Studio attaches these itself, so model_index.json never names them (LTX-2.5's latent_upsampler/).
+_LOADED_OUTSIDE_MANIFEST = frozenset(f for roles in VIDEO_EXTRA_VAE_ROLE.values() for f in roles)
 # Companion folders and when a family loads them; one that is present is counted only when its family rule says so
 # or model_index.json names it (a leftover folder in a repo is not a loaded component).
 VIDEO_COMPANION_RULES: dict[str, Callable[[Any], bool]] = {
@@ -727,6 +765,10 @@ def video_header_terms(
         if all(sizes.get(n) is not None for n in denoiser_names)
         else None
     )
+    def _loaded_unknown(names: Iterable[str]) -> bool:
+        # a folder the family / manifest loads whose size did not read: the term is unknown, never the rest summed
+        return any(n in sizes.unknown and _companion_loaded(fam, sizes, n) for n in names)
+
     text = (
         sizes.resident_gb(
             [
@@ -735,12 +777,14 @@ def video_header_terms(
                 if sizes.get(n) is not None and _companion_loaded(fam, sizes, n)
             ]
         )
-        if sizes.get("text_encoder") is not None
+        if sizes.get("text_encoder") is not None and not _loaded_unknown(VIDEO_ROLE_TEXT)
         else None
     )
     vae_names = VIDEO_ROLE_VAE + VIDEO_EXTRA_VAE_ROLE.get(name, ())
-    vae_ok = sizes.get("vae") is not None and (
-        not bool(getattr(fam, "has_audio", False)) or sizes.get("audio_vae") is not None
+    vae_ok = (
+        sizes.get("vae") is not None
+        and (not bool(getattr(fam, "has_audio", False)) or sizes.get("audio_vae") is not None)
+        and not _loaded_unknown(vae_names)
     )
     vae = None
     if vae_ok:
@@ -773,7 +817,12 @@ def image_header_components_gb(
     if sizes is None:
         return None
     denoisers = [n for n in IMAGE_ROLE_DENOISER if sizes.get(n) is not None]
-    text = [n for n in sizes.names() if re.match(r"^text_encoder(?:_\d+)?$", n)]
+    text = [
+        n
+        for n in sizes.names()
+        if re.match(r"^text_encoder(?:_\d+)?$", n)
+        and (n == "text_encoder" or sizes.manifest is None or n in sizes.manifest)
+    ]
     if not denoisers or not text or sizes.get("vae") is None:
         return None
     return (sizes.resident_gb(denoisers), sizes.resident_gb(text), sizes.resident_gb(("vae",)))
@@ -813,24 +862,20 @@ def reconcile_with_table(
     return tuple(max(float(h), float(t)) for h, t in zip(rounded, table))  # type: ignore[return-value]
 
 
-def reconcile_scalar(
-    header: Optional[float], table: float, *, is_base: bool, key: Any = None
-) -> float:
-    out = reconcile_with_table(
-        None if header is None else (float(header),), (float(table),), is_base=is_base, key=key
-    )
-    return float(out[0]) if out else float(table)
-
-
 def video_components_gb(
     fam: Any,
     repo: Any = None,
     *,
     allow_hub: bool = False,
     token: Any = None,
+    details: Optional[dict] = None,
 ) -> Optional[tuple[float, float, float]]:
-    """Header sizes reconciled with ``fam.bf16_components_gb``. Never raises; None when neither answers."""
+    """Header sizes reconciled with ``fam.bf16_components_gb``. Never raises; None when neither answers.
+    ``details`` (filled when given): ``sizes`` (the snapshot the answer came from) and ``sources``, per term
+    "header" or "table", so a caller pricing a part of a term reads it from the same answer."""
     table = getattr(fam, "bf16_components_gb", None)
+    if details is not None:
+        details.update(sizes=None, sources=("table",) * 3)
     try:
         base = getattr(fam, "base_repo", None)
         target = repo or base
@@ -852,19 +897,29 @@ def video_components_gb(
             token=token,
         )
         header = video_header_terms(fam, sizes)
-        return reconcile_with_table(
+        result = reconcile_with_table(
             header, table, is_base=is_base, key=(getattr(fam, "name", None), str(target))
         )
+        if details is not None and result is not None:
+            sources = tuple(
+                "table" if table is not None and float(r) == float(t) else "header"
+                for r, t in zip(result, table or (None,) * 3)
+            )
+            details.update(sizes=sizes, sources=sources)
+        return result
     except Exception:  # noqa: BLE001 - sizing aid: the table stands
         return table
 
 
-def component_gb(
-    repo: Any, component: str, *, itemsize: int = 2, default: Optional[float] = None
-) -> Optional[float]:
+def term_part_gb(details: Optional[dict], term: int, folder: str, table_gb: float) -> float:
+    """The share of term ``term`` that ``folder`` holds, from the SAME answer the term came from: its header size
+    when the term is header-derived, else the table's constant for it."""
     try:
-        sizes = component_sizes(repo, components=(component,))
-        size = sizes.get(component) if sizes is not None else None
-        return size.resident_gb(itemsize) if size is not None else default
+        if details and details.get("sources", ())[term] == "header":
+            size = details["sizes"].get(folder) if details.get("sizes") is not None else None
+            if size is not None:
+                return size.resident_gb(2)
     except Exception:  # noqa: BLE001
-        return default
+        pass
+    return float(table_gb)
+

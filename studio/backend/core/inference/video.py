@@ -6326,9 +6326,11 @@ class VideoBackend:
         device_memory = settled_snapshot_device_memory(target)
         from .diffusion_component_sizes import video_components_gb
 
+        components_detail: dict = {}
         components = video_components_gb(
             fam,
             repo_id if kind == "pipeline" else None,
+            details = components_detail,
             allow_hub = not local_files_only,
             token = hf_token,
         )
@@ -6491,8 +6493,13 @@ class VideoBackend:
                 if not ltx25_uses_upsampler(
                     _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
                 ):
-                    from .video_ltx25 import ltx25_latent_upsampler_gb
-                    vae_gb -= ltx25_latent_upsampler_gb(repo_id if kind == "pipeline" else None)
+                    from .diffusion_component_sizes import term_part_gb
+                    from .video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
+
+                    # from the same answer components[2] came from (header snapshot, or the table's constant)
+                    vae_gb -= term_part_gb(
+                        components_detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
+                    )
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
