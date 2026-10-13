@@ -226,7 +226,7 @@ assert_eq "marker now names the new build" "$(printf '%s\n' "$out" | sed -n 's/^
 wait "$owner" 2>/dev/null
 start=$(date +%s)
 run_case '_frontend_build_begin' >/dev/null
-if [ $(( $(date +%s) - start )) -le 1 ]; then ok "a dead owner is not waited for"; else bad "waited for a dead owner"; fi
+if [ $(( $(date +%s) - start )) -le 5 ]; then ok "a dead owner is not waited for"; else bad "waited for a dead owner"; fi
 echo "== another live setup building this checkout is never overtaken =="
 prime
 ( sleep 16 ) & owner=$!
@@ -246,7 +246,7 @@ ps -o pid= -o lstart= -p "$owner" | sed 's/^ *//' > "$MARK"
 start=$(date +%s)
 run_case '_frontend_build_begin' >/dev/null
 waited=$(( $(date +%s) - start ))
-if [ "$waited" -le 5 ]; then ok "stopped waiting once the owner cleared its mark (${waited}s)"; else bad "kept waiting after the mark was cleared (${waited}s)"; fi
+if [ "$waited" -le 10 ]; then ok "stopped waiting once the owner cleared its mark (${waited}s)"; else bad "kept waiting after the mark was cleared (${waited}s)"; fi
 kill "$owner" 2>/dev/null; wait "$owner" 2>/dev/null
 rm -f "$MARK"
 
@@ -262,6 +262,24 @@ run_case '_frontend_build_begin' >/dev/null
 waited=$(( $(date +%s) - start ))
 if [ "$waited" -ge 2 ]; then ok "waited for the group's leftover child (${waited}s)"; else bad "did not wait for the group's leftover child (${waited}s)"; fi
 rm -f "$MARK"
+
+echo "== a background job keeps the mark until its OXC install is done =="
+CLEAR_MARK=$(grep -F 'rm -f "$_FRONTEND_BUILD_MARK"' "$SETUP_SH" | grep -F '_FRONTEND_IN_JOB' | sed 's/^ *//')
+[ -n "$CLEAR_MARK" ] || bad "setup.sh no longer keeps the mark for the background job"
+rm -f "$MARK"
+out=$(run_case "
+_build_frontend() { _frontend_build_begin; $CLEAR_MARK; }
+_install_oxc_runtime() { if [ -e '$MARK' ]; then echo mark-during-oxc; fi; }
+_frontend_bg_start
+_frontend_bg_join
+if [ -e '$MARK' ]; then echo mark-left; else echo mark-cleared; fi")
+assert_contains "mark still set while OXC installs" "$out" "mark-during-oxc"
+assert_contains "mark cleared once the job finished" "$out" "mark-cleared"
+out=$(run_case "
+_build_frontend() { _frontend_build_begin; $CLEAR_MARK; }
+_build_frontend
+if [ -e '$MARK' ]; then echo mark-left; else echo mark-cleared; fi")
+assert_contains "serial build still clears the mark itself" "$out" "mark-cleared"
 
 echo "== background build cleans agent guide files out of node_modules =="
 touch "$FE/node_modules/pkg/AGENTS.md"

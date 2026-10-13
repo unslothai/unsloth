@@ -229,8 +229,10 @@ _frontend_bg_start() {
             _frontend_bg_stop "$_fbs_leader"
         ) </dev/null >/dev/null 2>&1 &
         trap 'exit 143' TERM
+        _FRONTEND_IN_JOB=1
         _build_frontend
         _install_oxc_runtime
+        rm -f "$_FRONTEND_BUILD_MARK"
         _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
         _remove_agent_instruction_files "$_OXC_DIR/node_modules"
     ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
@@ -2630,7 +2632,8 @@ run_quiet "npm run build" npm run build
 
 _restore_gitignores
 trap - EXIT
-rm -f "$_FRONTEND_BUILD_MARK"
+# The background job keeps the mark until the OXC install it runs next is done too.
+[ -n "${_FRONTEND_IN_JOB:-}" ] || rm -f "$_FRONTEND_BUILD_MARK"
 
 _MAX_CSS=$(find "$SCRIPT_DIR/frontend/dist/assets" -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$_MAX_CSS" ]; then
