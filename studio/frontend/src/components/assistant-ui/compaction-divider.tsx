@@ -9,10 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  type ContextTruncation,
-  promptWasShortened,
-} from "@/features/chat/utils/context-truncation";
+import { type ContextTruncation, promptWasShortened } from "@/features/chat";
 
 const DetailRow: FC<{ label: string; value: ReactNode }> = ({
   label,

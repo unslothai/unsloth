@@ -27,7 +27,6 @@ import {
   compactionDividerRows,
   memoOnArrayByKey,
 } from "@/components/assistant-ui/message-derived";
-import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import {
   MarkdownText,
@@ -97,6 +96,7 @@ import {
   type ComposerSendShortcut,
   type ComposerSubmitIntent,
   type ComposerFollowUpBehavior,
+  type ContextTruncation,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
   isPastedTextFile,

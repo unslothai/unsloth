@@ -231,7 +231,10 @@ test("each compaction draws one divider, above the prompt whose request compacte
   assert.equal(compactionNoticeMessageIds(messages).size, rows.size);
   assert.equal(compactionDividerRows(messages), rows);
   // A thread that never compacted shares one empty result rather than building one per token.
-  const plain = [{ id: "u", role: "user" }, { id: "a", role: "assistant" }];
+  const plain = [
+    { id: "u", role: "user" },
+    { id: "a", role: "assistant" },
+  ];
   assert.equal(compactionDividerRows(plain), compactionDividerRows([...plain]));
 });
 
