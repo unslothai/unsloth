@@ -208,6 +208,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "LoRAInfo",
         "ModelListResponse",
         "LoadCheckpointRequest",
+        "ExportCancelRequest",
         "ExportStatusResponse",
         "ExportOperationResponse",
         "ExportMergedModelRequest",

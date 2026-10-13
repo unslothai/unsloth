@@ -10,7 +10,7 @@ import { type AgentPermissions, patternMatches, ruleFor } from "./permissions";
 
 /** `prompt` is for the model; `ask`, `host` and `name` let the panel say it in the reader's language. */
 export type Question = {
-  ask: "open" | "signIn" | "submit" | "click" | "history";
+  ask: "open" | "signIn" | "submit" | "click" | "history" | "script" | "pointer";
   host: string;
   name: string;
   detail: string;
@@ -206,20 +206,23 @@ export function gateElement(
     if (blocked) return { kind: "block", reason: blocked };
   }
   if (ruleFor(pageUrl, permissions).rule.actions === "allow") return ALLOW;
-  if (submits && info.formHasPassword) {
+  // Only a filled password makes it a sign-in; with the field empty, it still asks as any form send.
+  if (submits && info.formHasPassword && info.formPasswordFilled) {
     return { kind: "ask", ask: "signIn", host, name: "", prompt: `Sign in on ${host}?`, detail: describe(info) };
   }
-  if (submits && info.formMethod === "post") {
+  if (submits && (info.formHasPassword || info.formMethod === "post")) {
     return { kind: "ask", ask: "submit", host, name: "", prompt: `Submit this form on ${host}?`, detail: describe(info) };
   }
   // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.
-  const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(info.name) || LOCALIZED.test(info.name);
+  // Enter in a field presses the form's default button: its words count as a click on it would.
+  const label = action === "submit" && info.submitter ? info.submitter : info.name;
+  const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(label) || LOCALIZED.test(label);
   // Selecting a checkbox, radio or switch is a click on it.
   // A select is a click: on a checkbox, its name; on a dropdown, the option chosen (the executor
   // passes it as the name), since a page can act on the change event.
   const clicks = action === "click" || submits || action === "select";
   if (clicks && consequential) {
-    return { kind: "ask", ask: "click", host, name: clip(info.name), prompt: `Click “${clip(info.name)}” on ${host}?`, detail: describe(info) };
+    return { kind: "ask", ask: "click", host, name: clip(label), prompt: `Click “${clip(label)}” on ${host}?`, detail: describe(info) };
   }
   return ALLOW;
 }

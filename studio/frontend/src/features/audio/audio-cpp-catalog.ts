@@ -333,6 +333,14 @@ export function audioCppDisplayName(id: string): string {
   return trimmed.split("/").pop() || trimmed;
 }
 
+/** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */
+export function audioCppHubPath(id: string): string | null {
+  if (!isAudioCppFolderId(id)) {
+    return null;
+  }
+  return `${AUDIO_CPP_REPO}/tree/main/${audioCppDisplayName(id)}`;
+}
+
 export function audioCppModelFor(id: string | null | undefined): AudioCppModel | null {
   return BY_ID.get(normalizedId(id)) ?? null;
 }

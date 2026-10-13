@@ -496,12 +496,7 @@ def prepare_for_training_mode(f):
         # Restore previous mode when possible
         if hasattr(self, 'model') and hasattr(self.model, "for_inference"):
             if _was_training is False:
-                # Mode only: a UNSLOTH_RETURN_LOGITS=1 set before the next train() must survive (#3071).
-                _logits_env = [(_k, os.environ.get(_k)) for _k in ("UNSLOTH_RETURN_LOGITS", "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE")]
                 self.model.for_inference()
-                for _k, _v in _logits_env:
-                    if _v is None: os.environ.pop(_k, None)
-                    else: os.environ[_k] = _v
             elif _was_training is True and hasattr(self.model, "for_training"):
                 self.model.for_training(use_gradient_checkpointing=use_gc)
         # Reset gradient checkpointing buffers to free memory while staying ready for next run
@@ -608,12 +603,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             model.for_training(use_gradient_checkpointing=_use_gc)
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
-            # Mode switch only: a UNSLOTH_RETURN_LOGITS=1 set between here and train() must survive (#3071).
-            _unsloth_logits_env = [(_unsloth_k, os.environ.get(_unsloth_k)) for _unsloth_k in ("UNSLOTH_RETURN_LOGITS", "_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE")]
             model.for_inference()
-            for _unsloth_k, _unsloth_v in _unsloth_logits_env:
-                if _unsloth_v is None: os.environ.pop(_unsloth_k, None)
-                else: os.environ[_unsloth_k] = _unsloth_v
 {RLTrainer_post}
 pass
 '''
@@ -2369,6 +2359,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 v = re.escape("\n")
             if v is EMPTY:
                 arguments.append(k)
+            elif type(v) is str and v != re.escape("\n") and ("\n" in v or "'" in v):
+                # A newline or quote ends the bare '...' literal early (SDFT's teacher_prompt_template).
+                arguments.append(f"{k} = {v!r}")
             elif type(v) is str:
                 arguments.append(f"{k} = '{v}'")
             elif type(v) in types:
@@ -2517,17 +2510,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
 
     if "model" in call_args:
-        logits_check = (
-            "_output_logits = False\n"
-            "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"
-            "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"
-            "if _output_logits:\n"
-            # Recorded like for_inference()'s "1" so for_training() undoes it and only a user's "1" persists (#3071).
-            "    _unsloth_rl = os.environ.get('UNSLOTH_RETURN_LOGITS', '0')\n"
-            "    if _unsloth_rl != '1': os.environ['_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE'] = _unsloth_rl\n"
-            "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
-        )
-        extra_args += logits_check
+        # No UNSLOTH_RETURN_LOGITS=1 for compute_metrics here: prediction_step forces it per eval call; here it leaked into training (#3071).
         warnings_issued_check = (
             "if model is not None:\n"
             "    _warnings_issued = getattr(model, 'warnings_issued', None)\n"
@@ -3098,6 +3081,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_steps"] = 0.1
     else:
         replacements["warmup_ratio"] = 0.1
+    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group.
+    if trainer_file == "gold_trainer":
+        replacements.pop("num_generations")
+    # SDFT needs the eval batch divisible by num_generations (8).
+    if trainer_file == "sdft_trainer":
+        replacements.pop("per_device_eval_batch_size")
 
     for k, v in replacements.items():
         x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
@@ -3310,7 +3299,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
+    # GOLD: TRL already checks generation_batch_size * num_generations == batch * grad accum.
+    elif (
+        "per_device_train_batch_size" in call_args
+        and "num_generations" in call_args
+        and trainer_file != "gold_trainer"
+    ):
         if "steps_per_generation" not in call_args:
             print(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
         if "generation_batch_size" not in call_args:
@@ -3623,6 +3617,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
 
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
+    # The generated module has no package: make function-level relative imports (ServerDistillationTrainer.__init__) absolute.
+    _source_package = getattr(inspect.getmodule(RLTrainer), "__package__", None)
+    if _source_package:
+        RLTrainer_source = re.sub(
+            r"^([ \t]*from[ \t]+)(\.+[\w.]*)([ \t]+import[ \t])",
+            lambda m: m.group(1)
+            + importlib.util.resolve_name(m.group(2), _source_package)
+            + m.group(3),
+            RLTrainer_source,
+            flags = re.MULTILINE,
+        )
 
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
@@ -4071,15 +4077,19 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
 
 # TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+# Not async_distillation: it loads the student from a model name, so an Unsloth model never reaches it.
 _TRL_EXPERIMENTAL_TRAINERS = (
     "bco",
     "cpo",
     "gkd",
+    "gold",
     "nash_md",
     "online_dpo",
     "orpo",
     "ppo",
     "prm",
+    "sdft",
+    "server_distillation",
     "xpo",
 )
 

@@ -936,21 +936,6 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
-def _offload_embedding_unsupported_platform():
-    # Offloaded embeddings do not work on Windows or WSL.
-    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-        return "WSL"
-    if os.name == "nt":
-        return "Windows"
-    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
-    try:
-        if "microsoft" in os.uname().release.lower():
-            return "WSL"
-    except Exception:
-        pass
-    return None
-
-
 def _embedding_dispatch_device(input_embeddings):
     # accelerate's hook re-sends the ids to the device it recorded, after our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
     hook = getattr(input_embeddings, "_hf_hook", None)
@@ -996,9 +981,6 @@ def _resolve_offload_embedding(
 
     if not automatic and not offload_embedding:
         return False
-    platform_name = _offload_embedding_unsupported_platform()
-    if platform_name is not None:
-        return _decline(f"offloading is unsupported on {platform_name}.")
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
@@ -1092,7 +1074,7 @@ def offload_spare_embeddings(model, require_frozen = True):
     """offload_embedding = "auto" under memory pressure: move every input-side embedding that
     lm_head does not share (and, after get_peft_model, that is frozen) to host RAM. A tied input
     embedding stays, but Gemma 3n / 4 per-layer tables still go. Returns the bytes moved."""
-    if _offload_embedding_unsupported_platform() is not None or is_distributed():
+    if is_distributed():
         return 0
     try:
         found, out_embed = _input_side_embeddings(model)
@@ -2948,7 +2930,7 @@ class FastBaseModel:
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
-        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        # planner options apply only when device_map = "unsloth".
         device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
@@ -3486,9 +3468,7 @@ class FastBaseModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
-                offload_embedding = bool(offload_embedding)
-                and _offload_embedding_unsupported_platform() is None,
+                offload_embedding = bool(offload_embedding),
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 placement = "spread",
                 skip_reason = _planner_skip_reason
@@ -3921,8 +3901,23 @@ class FastBaseModel:
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
+                _vllm_model_name = resolve_vllm_model_path(
+                    model_name,
+                    token,
+                    revision = _revision,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = local_files_only,
+                    force_download = kwargs.get("force_download", False),
+                    use_safetensors = kwargs.get("use_safetensors"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
+                    subfolder = kwargs.get("subfolder"),
+                    weights_at_root = True,
+                    variant = kwargs.get("variant"),
+                    gguf_file = kwargs.get("gguf_file"),
+                )
                 load_vllm_kwargs = dict(
-                    model_name = model_name,
+                    model_name = _vllm_model_name,
                     config = model_config,
                     gpu_memory_utilization = gpu_memory_utilization,
                     max_seq_length = max_seq_length,
@@ -4673,18 +4668,7 @@ class FastBaseModel:
             )
 
         if _moe_module_targets:
-            if isinstance(target_modules, (list, tuple)):
-                target_modules = list(target_modules) + [
-                    target for target in _moe_module_targets if target not in target_modules
-                ]
-            elif isinstance(target_modules, str):
-                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
-                _expert_alt = (
-                    r".*\.experts\.(?:"
-                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
-                    + r")\.\d+"
-                )
-                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            target_modules = add_moe_target_modules(target_modules, _moe_module_targets)
             print(
                 f"Unsloth: Detected MoE model with per-expert Linear experts. "
                 f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
@@ -5061,13 +5045,9 @@ class FastBaseModel:
         except ImportError:
             pass
 
-        # Returning hidden states must be disabled for GRPO, and returning logits enabled.
+        # Returning hidden states must be disabled for GRPO. UNSLOTH_RETURN_LOGITS is left alone: label-free forwards
+        # return logits anyway, and a "1" forced here is indistinguishable from a user's later "1" (#3071).
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-        # Remember what the forced "1" replaced, for for_training() to put back (#3071).
-        _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
-        if _return_logits != "1":
-            os.environ["_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE"] = _return_logits
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
@@ -5122,11 +5102,8 @@ class FastBaseModel:
         except ImportError:
             pass
 
-        # Undo only for_inference()'s "1": forcing "0" here wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
-        _return_logits = os.environ.pop("_UNSLOTH_RETURN_LOGITS_BEFORE_INFERENCE", None)
-        if _return_logits is None:
-            _return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
-        os.environ["UNSLOTH_RETURN_LOGITS"] = _return_logits
+        # Never force "0": that wiped a user's UNSLOTH_RETURN_LOGITS=1 (#3071).
+        os.environ.setdefault("UNSLOTH_RETURN_LOGITS", "0")
         if torch_compiler_set_stance is not None:
             torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
