@@ -1399,36 +1399,17 @@ def _sysfs_pci_slot(device_dir: Path) -> Optional[str]:
     return name if name.count(":") == 2 else None
 
 
-def amdgpu_gtt_free_bytes(
+def amdgpu_gtt_reading(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
-) -> Optional[int]:
-    """Free GTT (``mem_info_gtt_total - mem_info_gtt_used``) of the amdgpu card at ``pci_slot``
-    (``DDDD:BB:DD.F``, or ``DDDD:BB:DD`` for any function), or the least free of every amdgpu card when the slot is unknown (TTM's limit is shared, so
-    the tightest is the safe reading). None when no amdgpu card, or none at that slot, reports one."""
+) -> "tuple[Optional[int], bool]":
+    """``(free GTT, use known)`` from ONE pass over sysfs, so both halves describe the same reading. Free is
+    ``mem_info_gtt_total - mem_info_gtt_used`` of the amdgpu card at ``pci_slot`` (``DDDD:BB:DD.F``, or
+    ``DDDD:BB:DD`` for any function), or the least free of every amdgpu card when the slot is unknown (TTM's limit
+    is shared). A card whose use cannot be read counts its whole total and makes ``use known`` False.
+    ``(None, True)`` when no amdgpu card, or none at that slot, reports a total."""
     want = pci_slot.lower() if pci_slot else None
     best: Optional[int] = None
-    for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
-        device = total_path.parent
-        if _sysfs_int(device / "vendor") != 0x1002:
-            continue
-        slot = _sysfs_pci_slot(device) if want is not None else None
-        if want is not None and slot != want and not (slot or "").startswith(want + "."):
-            continue
-        total = _sysfs_int(total_path)
-        if not total or total <= 0:
-            continue
-        # Unreadable use reads as the whole pool here; amdgpu_gtt_used_unknown lets the fit stay conservative.
-        used = _sysfs_int(device / "mem_info_gtt_used") or 0
-        free = max(total - max(used, 0), 0)
-        if best is None or free < best:
-            best = free
-    return best
-
-
-def amdgpu_gtt_used_unknown(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> bool:
-    """True when an amdgpu card ``amdgpu_gtt_free_bytes`` would read reports its GTT total but not a readable
-    ``mem_info_gtt_used``, so its free figure is only an upper bound."""
-    want = pci_slot.lower() if pci_slot else None
+    known = True
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
         device = total_path.parent
         if _sysfs_int(device / "vendor") != 0x1002:
@@ -1441,8 +1422,20 @@ def amdgpu_gtt_used_unknown(pci_slot: Optional[str] = None, sysfs_root: str = "/
             continue
         used = _sysfs_int(device / "mem_info_gtt_used")
         if used is None or used < 0:
-            return True
-    return False
+            known = False
+            used = 0
+        free = max(total - used, 0)
+        if best is None or free < best:
+            best = free
+    return best, known
+
+
+def amdgpu_gtt_free_bytes(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> Optional[int]:
+    return amdgpu_gtt_reading(pci_slot, sysfs_root)[0]
+
+
+def amdgpu_gtt_used_unknown(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> bool:
+    return not amdgpu_gtt_reading(pci_slot, sysfs_root)[1]
 
 
 def vulkan_device_is_amd(description: Optional[str]) -> bool:
@@ -1678,6 +1671,10 @@ def h3_native_host_budgets() -> "tuple[Optional[int], int]":
 def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
     """``h3_native_memory_fit`` on live RAM, swap and GTT readings: /proc, cgroup and sysfs files only."""
     ram, swap = h3_native_host_budgets()
+    gtt_free, gtt_known = amdgpu_gtt_reading(inputs.gtt_pci_slot) if inputs.check_gtt else (None, True)
+    if inputs.check_gtt and gtt_free is None and inputs.gtt_pci_slot:
+        # The device is AMD but its slot matched no amdgpu card: read the tightest card rather than skip the check.
+        gtt_free, gtt_known = amdgpu_gtt_reading(None)
     return h3_native_memory_fit(
         inputs.base_flags,
         accelerator = inputs.accelerator,
@@ -1685,8 +1682,8 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
         dit_bytes = inputs.dit_bytes,
         te_bytes = inputs.te_bytes,
         vae_bytes = inputs.vae_bytes,
-        pinned_free_bytes = amdgpu_gtt_free_bytes(inputs.gtt_pci_slot) if inputs.check_gtt else None,
-        pinned_used_unknown = inputs.check_gtt and amdgpu_gtt_used_unknown(inputs.gtt_pci_slot),
+        pinned_free_bytes = gtt_free,
+        pinned_used_unknown = not gtt_known,
         host_ram_bytes = ram,
         host_swap_bytes = swap,
     )

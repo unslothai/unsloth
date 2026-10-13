@@ -4262,7 +4262,7 @@ def _tiny_gtt(monkeypatch, *, encoder_fits: bool, free_vram = 1):
     from core.inference import video_minimax_h3
 
     limit = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + (4 if encoder_fits else 3)
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: limit)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (limit, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
 
 
@@ -4326,7 +4326,7 @@ def _no_gtt_room(monkeypatch, free_vram):
     from core.inference import video as video_mod
     from core.inference import video_minimax_h3
 
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
 
 
@@ -4385,7 +4385,7 @@ def _loaded_with_slot(monkeypatch, tmp_path, slot):
     """A backend holding a committed native H3 model whose sd-server slot is ``slot``."""
     from core.inference import video_minimax_h3
 
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 1 << 50)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (1 << 50, True))
     backend = VideoBackend()
     _load_h3_native_offload(
         monkeypatch,
@@ -4429,8 +4429,8 @@ def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(mo
     roomy = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 100
     monkeypatch.setattr(
         video_minimax_h3,
-        "amdgpu_gtt_free_bytes",
-        lambda *a, **k: roomy if slot.released else 0,
+        "amdgpu_gtt_reading",
+        lambda *a, **k: (roomy if slot.released else 0, True),
     )
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
     state, offload = _load_h3_native_offload(
@@ -4458,9 +4458,9 @@ def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, t
 
     def gtt(*_a, **_k):
         readings.append(1)
-        return 0
+        return 0, True
 
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", gtt)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", gtt)
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
     with pytest.raises(RuntimeError, match = "still running"):
         _load_h3_native_offload(
@@ -4499,7 +4499,7 @@ def _live_gtt(monkeypatch, value):
     from core.inference import video_minimax_h3
     from utils import host_memory
 
-    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: value)
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (value, True))
     monkeypatch.setattr(video_minimax_h3, "h3_native_host_available_bytes", lambda: 1 << 50)
     monkeypatch.setattr(host_memory, "cgroup_swap_allowance_bytes", lambda *a, **k: 0)
 
@@ -4575,7 +4575,7 @@ def test_an_offloaded_render_frees_an_idle_resident_server_before_its_reading(mo
     _live_gtt(monkeypatch, 0)
     roomy = 1 << 50
     monkeypatch.setattr(
-        video_minimax_h3, "amdgpu_gtt_free_bytes", lambda *a, **k: 0 if slot.alive else roomy
+        video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0 if slot.alive else roomy, True)
     )
     flags = _h3_offloaded_render_flags(
         _render_runtime(slot = slot), ["--offload-to-cpu", "--diffusion-fa"], render_resident = False, memory_mode = "auto"
@@ -4632,6 +4632,25 @@ def test_the_one_shot_sd_cli_launch_is_fitted_afresh():
     assert fallback.index("reuse_live_server = False") < fallback.index("runtime.engine.generate_video(")
 
 
+BALANCED_FLAGS = ["--offload-to-cpu", "--diffusion-fa", "--backend", "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0"]
+
+
+def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    runtime = _render_runtime()
+    _live_gtt(monkeypatch, 1 << 50)
+    assert _h3_offloaded_render_flags(
+        runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced"
+    ) == BALANCED_FLAGS
+    # Room for the encoder-on-CPU set only: Auto would move it, an explicit mode is refused instead.
+    _live_gtt(monkeypatch, video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 3)
+    with pytest.raises(H3NativeMemoryRefusal, match = "Low VRAM"):
+        _h3_offloaded_render_flags(runtime, list(BALANCED_FLAGS), render_resident = False, memory_mode = "balanced")
+
+
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
     from core.inference.video import _h3_offloaded_render_flags
     from core.inference import video_minimax_h3
@@ -4658,6 +4677,58 @@ def test_h3_native_keeps_the_outgoing_server_when_the_load_fits(monkeypatch, tmp
         backend = backend,
     )
     assert slot.released == []
+
+
+def test_h3_native_explicit_modes_keep_their_fit_inputs(monkeypatch, tmp_path):
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        memory_mode = "balanced",
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.fit_inputs is not None
+
+
+def test_h3_native_names_no_gtt_slot_when_the_vulkan_pin_did_not_resolve(monkeypatch, tmp_path):
+    """Unpinned, sd.cpp picks its own Vulkan device, so the torch card's slot may name another card."""
+    from core.inference import video as video_mod
+
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    monkeypatch.setattr(video_mod, "_torch_pci_slot", lambda *_a: "0000:03:00")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.fit_inputs.device_name is None
+    assert state.pipe.fit_inputs.gtt_pci_slot is None
+
+
+def test_h3_native_replacing_an_in_process_model_defers_the_refusal_to_the_launch(monkeypatch, tmp_path):
+    """The outgoing diffusers model's memory is freed by the commit's teardown, before any native process starts;
+    the load does not refuse on a reading that still counts it, and the pre-launch live fit decides."""
+    from core.inference import video as video_mod
+    from core.inference import video_minimax_h3
+
+    backend = _loaded_with_slot(monkeypatch, tmp_path, None)
+    backend._state = dataclasses.replace(backend._state, engine = "diffusers")
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
+    monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        memory_mode = "balanced",
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+        backend = backend,
+    )
+    assert state.engine == "sd_cpp" and state.pipe.fit_inputs is not None
 
 
 def test_h3_native_gtt_pool_is_not_a_cuda_build_concern(monkeypatch, tmp_path):

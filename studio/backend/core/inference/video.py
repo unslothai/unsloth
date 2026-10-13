@@ -1418,9 +1418,9 @@ def _h3_offloaded_render_flags(
     memory_mode: Optional[str],
     reuse_live_server: bool = True,
 ) -> list[str]:
-    """The flags an H3 native render runs with once Auto chose resident or offloaded. An offloaded Auto render is
-    re-fitted on live RAM, swap and GTT readings (file reads only), so pressure since the load is caught and memory
-    freed since lifts a refusal. ``reuse_live_server``: a live offloaded sd-server the render will reuse already
+    """The flags an H3 native render runs with once Auto chose resident or offloaded. Every offloaded render is
+    re-fitted on live RAM, swap and GTT readings (file reads only) before a process starts, so pressure since the load
+    is caught and memory freed since lifts a refusal; Auto may move the encoder, an explicit mode is only refused. ``reuse_live_server``: a live offloaded sd-server the render will reuse already
     holds its weights and keeps its own flags; pass False before launching any new process (the one-shot sd-cli),
     which releases that server and fits afresh."""
     from .sd_cpp_args import device_backend_flags
@@ -1432,12 +1432,8 @@ def _h3_offloaded_render_flags(
     )
 
     inputs = getattr(runtime, "fit_inputs", None)
-    if (
-        render_resident
-        or "--offload-to-cpu" not in render_flags
-        or inputs is None
-        or (memory_mode or "auto") != "auto"
-    ):
+    mode = memory_mode or "auto"
+    if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
         return h3_native_offloaded_render_flags(
             render_flags,
             render_resident = render_resident,
@@ -1454,13 +1450,16 @@ def _h3_offloaded_render_flags(
         # A resident server (slot.get() replaces it on the signature change anyway), or any server before a new
         # one-shot process: free it before the reading.
         released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
-    fit = h3_native_live_fit(inputs, "auto")
+    fit = h3_native_live_fit(inputs, mode)
     if fit.refusal:
         if released == "pending":
             raise H3NativeMemoryRefusal(fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
         raise H3NativeMemoryRefusal(fit.refusal)
     if fit.note:
         logger.info("video.h3_native_memory_fit (render): %s", fit.note)
+    if mode != "auto":
+        # An explicit mode runs exactly the flags the user chose, or not at all.
+        return list(render_flags)
     flags = tuple(fit.flags)
     return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
 
@@ -4269,7 +4268,11 @@ class VideoBackend:
                 base_flags = tuple(native_offload),
                 accelerator = fit_accelerator,
                 check_gtt = check_gtt,
-                gtt_pci_slot = _torch_pci_slot(native_ordinal) if check_gtt else None,
+                # The torch card is the Vulkan device only when the pin resolved; otherwise sd.cpp picks its own,
+                # so no slot is named and the tightest amdgpu card is read.
+                gtt_pci_slot = _torch_pci_slot(native_ordinal)
+                if check_gtt and native_device_name
+                else None,
                 dit_bytes = _size(resolved[0]),
                 te_bytes = _size(resolved[1]),
                 vae_bytes = _size(resolved[2]) + _size(resolved[3]),
@@ -4285,6 +4288,18 @@ class VideoBackend:
                 release_pending = released == "pending"
             if fit.refusal and release_pending:
                 fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
+            # An outgoing in-process (diffusers) model still holds host memory and GPU allocations that the commit's
+            # teardown frees before any native process starts. Its share cannot be told apart from the rest of this
+            # process, so a refusal is not raised here: the pre-launch live fit, taken after the teardown, decides.
+            with self._lock:
+                outgoing = self._state
+            outgoing_in_process = outgoing is not None and getattr(outgoing, "engine", None) != "sd_cpp"
+            if fit.refusal and outgoing_in_process:
+                logger.warning(
+                    "video.h3_native_memory_fit: deferred to the first render, after the outgoing in-process "
+                    "model is unloaded: %s",
+                    fit.refusal,
+                )
             if requested_mode == "auto" and (fit.refusal or fit.note):
                 # Auto decides resident vs offloaded at render time; refuse only if even the smallest clip cannot fit.
                 fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
@@ -4301,16 +4316,16 @@ class VideoBackend:
                     free_bytes = _h3_card_free_bytes(native_device, native_ordinal),
                     need_bytes = resident_need,
                 )
-                if fit.refusal and not could_be_resident:
+                if fit.refusal and not could_be_resident and not outgoing_in_process:
                     raise RuntimeError(fit.refusal)
                 native_fit_refusal = fit.refusal
                 if fit.note:
                     native_fit_flags = tuple(fit.flags)
                     native_fit_note = f"{fit.note} (applied when a render is offloaded)"
             else:
-                if fit.refusal:
+                if fit.refusal and not outgoing_in_process:
                     raise RuntimeError(fit.refusal)
-                native_offload = tuple(fit.flags)
+                # An explicit mode's flags are never altered: the fit only refuses them.
                 native_fit_note = fit.note
             if native_fit_note:
                 logger.warning("video.h3_native_memory_fit: %s", native_fit_note)
@@ -4343,7 +4358,7 @@ class VideoBackend:
             offload_flags = native_offload,
             offloaded_flags = native_fit_flags,
             offload_refusal = native_fit_refusal,
-            fit_inputs = native_fit_inputs if requested_mode == "auto" else None,
+            fit_inputs = native_fit_inputs,
             env = native_env,
             cudnn = native_cudnn,
             server_slot = (

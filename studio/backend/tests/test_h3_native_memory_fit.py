@@ -479,6 +479,33 @@ def test_an_unreadable_gtt_use_is_reported(tmp_path):
     assert amdgpu_gtt_used_unknown("0000:c5:00", sysfs_root = str(tmp_path)) is True
 
 
+def test_one_gtt_pass_returns_free_and_readability_together(tmp_path):
+    from core.inference.video_minimax_h3 import amdgpu_gtt_reading
+
+    _card(tmp_path, "card0", "0000:03:00.0", total = 24 * GIB, used = 4 * GIB)
+    _card(tmp_path, "card1", "0000:c5:00.0", total = 16 * GIB)
+    assert amdgpu_gtt_reading("0000:03:00", sysfs_root = str(tmp_path)) == (20 * GIB, True)
+    assert amdgpu_gtt_reading("0000:c5:00", sysfs_root = str(tmp_path)) == (16 * GIB, False)
+    assert amdgpu_gtt_reading(sysfs_root = str(tmp_path)) == (16 * GIB, False)
+    assert amdgpu_gtt_reading("0000:81:00", sysfs_root = str(tmp_path)) == (None, True)
+
+
+def test_a_slot_matching_no_amdgpu_card_falls_back_to_the_tightest_card(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video_minimax_h3 import H3NativeFitInputs, h3_native_live_fit
+
+    def reading(slot = None, *a, **k):
+        return (None, True) if slot else (0, True)
+
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", reading)
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (1 << 50, 0))
+    inputs = H3NativeFitInputs(
+        base_flags = AUTO, accelerator = "vulkan", check_gtt = True, gtt_pci_slot = "0000:81:00",
+        dit_bytes = GIB, te_bytes = GIB, vae_bytes = GIB, device_name = "Vulkan0",
+    )
+    assert "GTT" in h3_native_live_fit(inputs, "auto").refusal
+
+
 def _fit_unknown_use(flags, mode, *, gtt):
     return h3_native_memory_fit(
         flags,
