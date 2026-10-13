@@ -209,6 +209,26 @@ def test_folder_guard_matches_the_folder_however_it_was_loaded(monkeypatch, load
     assert deletion._audio_cpp_blocks_delete(AUDIO_CPP_REPO) is True
 
 
+def test_a_compound_scope_does_not_name_a_larger_sibling(hub):
+    # GigaAM: `multilingual-ctc` named both `...-multilingual-ctc-` and `...-multilingual-large-ctc-`,
+    # so the Hub key resolved to neither and delete / reveal answered 404.
+    folder = "GigaAM-ASR-GGUF"
+    small = acm.AudioCppVariant(
+        "gigaam-multilingual-ctc/F16", (), f"{folder}/gigaam-multilingual-ctc-f16.gguf"
+    )
+    large = acm.AudioCppVariant("large/F16", (), f"{folder}/gigaam-multilingual-large-ctc-f16.gguf")
+    assert acm._cached_variants_named([small, large], "multilingual-ctc/F16", folder) == [small]
+    assert acm._cached_variants_named([small, large], "multilingual-large-ctc/F16", folder) == [
+        large
+    ]
+    assert acm._state_key_named(
+        f"{folder}/gigaam-multilingual-ctc-f16", "multilingual-ctc/F16", folder
+    )
+    assert not acm._state_key_named(
+        f"{folder}/gigaam-multilingual-large-ctc-f16", "multilingual-ctc/F16", folder
+    )
+
+
 def test_a_timestamped_asr_holds_the_forced_aligner_it_opened(monkeypatch):
     # Qwen3-ASR attaches the aligner only for Timestamps and reports ASR as loaded, so the
     # folder-scoped guard let a live aligner be deleted.
