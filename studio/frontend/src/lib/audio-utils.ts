@@ -3,11 +3,15 @@
 
 // wav and mp3 pass through; the rest decode via libsndfile, PyAV's FFmpeg, or librosa.
 export const AUDIO_ACCEPT =
-  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
-// Browsers report empty or wrong types for some of these, so match names too.
+  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp,audio/x-matroska";
+// Browsers report an empty or wrong type for several of these containers, so
+// every surface that takes audio matches the name as well as the MIME.
 export const AUDIO_ACCEPT_EXTENSIONS =
-  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
-/** Keep .3gp out: the audio adapter is matched before video, so it would claim 3GP clips. */
+  ".wav,.mp3,.m4a,.m4b,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2,.weba,.mka";
+/** What claims a file as audio: the MIME list plus those extensions. Keep .3gp
+ *  out of it. A recording and a clip share that extension, and the composer's
+ *  audio adapter is matched before its video one, so claiming the name here
+ *  would take every 3GP video as audio. */
 export const AUDIO_ATTACHMENT_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCEPT_EXTENSIONS}`;
 /** Wider than the accept, since platforms map .3gp to video or nothing; clips are refused once
  * the tracks are read. */

@@ -110,3 +110,31 @@ test("keyframe support: per-frame fields win, the legacy flag covers old backend
   );
   assert.deepEqual(keyframeSupport(null), { first: false, last: false });
 });
+
+// LTX-2.5's rule: 704 px short edge, 1280x704 cap, 64 px units.
+const ltx25: VideoGenerationDefaults = {
+  ...h3,
+  resolution_multiple: 64,
+  resolution_presets: [[1280, 704]],
+  canvas_short_edge: 704,
+  canvas_max_pixels: 1280 * 704,
+};
+
+test("snapping never leaves the pixel cap, and matches the backend at its edges", () => {
+  // Rounding both sides up used to give 576x1664 here, 6% past LTX-2.5's cap.
+  assert.deepEqual(matchedCanvas(0.32841, 1, ltx25), [512, 1664]);
+  assert.deepEqual(matchedCanvas(0.32841, 1, h3), [576, 1760]);
+  assert.deepEqual(matchedCanvas(0.25, 1, ltx25), [448, 1920]);
+  assert.deepEqual(matchedCanvas(3.045, 1, ltx25), [1664, 512]);
+  for (const defaults of [ltx25, h3]) {
+    const multiple = defaults.resolution_multiple ?? 1;
+    for (let i = 2500; i <= 40000; i += 7) {
+      const canvas = matchedCanvas(i / 10000, 1, defaults);
+      assert.ok(canvas);
+      const [width, height] = canvas;
+      assert.ok(width * height <= (defaults.canvas_max_pixels ?? 0), `${i}: ${width}x${height}`);
+      assert.equal(width % multiple, 0);
+      assert.equal(height % multiple, 0);
+    }
+  }
+});

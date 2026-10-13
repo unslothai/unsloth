@@ -88,9 +88,11 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
 
     # Loaded model is present, marked loaded, and keeps context fields.
     assert ids["Qwen3-Q4"]["loaded"] is True
+    assert ids["Qwen3-Q4"]["status"] == {"value": "loaded"}
     assert ids["Qwen3-Q4"]["context_length"] == 4096
     # Not-loaded GGUFs are listed too, with the quant a client appends to pin them.
     assert ids["Llama-8B-Q8"]["loaded"] is False
+    assert ids["Llama-8B-Q8"]["status"] == {"value": "unloaded"}
     assert ids["Llama-8B-Q8"]["quant"] == "Q8_0"
     # The HF-cache GGUF is listed despite model_format being unset.
     assert ids["org/Foo"]["loaded"] is False
@@ -163,6 +165,7 @@ def test_a_manually_loaded_non_gguf_model_has_one_catalog_row(monkeypatch):
             "owned_by": "unsloth-studio",
             "context_length": 8192,
             "loaded": True,
+            "status": {"value": "loaded"},
         }
     ]
 
@@ -280,6 +283,7 @@ def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
     model = asyncio.run(inf.openai_retrieve_model("Qwen3-Q4", current_subject = "t"))
     assert model["id"] == "Qwen3-Q4"
     assert model["loaded"] is True
+    assert model["status"] == {"value": "loaded"}
 
 
 def test_cached_local_catalog_offloads_and_caches(monkeypatch):
@@ -598,6 +602,8 @@ def test_retrieve_resolves_an_on_disk_quant_pin(monkeypatch):
     assert model["id"] == "publisher/Qwen3:Q4_K_M"
     assert model["quant"] == "Q4_K_M"
     assert model["loaded"] is False
+    # Open WebUI's llama.cpp provider calls a row without status loaded.
+    assert model["status"] == {"value": "unloaded"}
 
 
 def test_retrieve_pin_of_the_resident_quant_keeps_its_loaded_fields(monkeypatch):
@@ -743,6 +749,7 @@ def test_list_names_every_on_disk_quant_of_a_multi_quant_repo(monkeypatch):
         "owned_by": "unsloth-studio",
         "display_name": "Qwen3",
         "loaded": False,
+        "status": {"value": "unloaded"},
         "quant": "Q4_K_M",
     }
     # Every listed pin retrieves as the same object, so validating clients accept it.

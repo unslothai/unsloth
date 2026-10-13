@@ -31,6 +31,8 @@ export interface LlamaUpdateJob {
   started_at: string | null;
   // Tells a repeated fetch of the same success apart from the next one.
   finished_at: string | null;
+  // The chained phase installing right now, when the backend reports phases.
+  runningPhase: "llama" | "whisper" | "audio" | null;
 }
 
 export interface ComponentOffer {
@@ -46,7 +48,7 @@ export interface LlamaUpdateStatus {
   source_build: boolean;
   component: "llama.cpp" | "whisper.cpp" | "audio.cpp";
   // Carried per component whatever the card names: several can be behind at once,
-  // and the card shows whichever one the notification switches allow.
+  // and the card lists every one the notification settings allow.
   llama: ComponentOffer;
   whisper: ComponentOffer | null;
   // The release this Studio pins, when the managed audio.cpp runtime is another one.
@@ -90,7 +92,23 @@ function parseJob(value: unknown): LlamaUpdateJob {
     progress: typeof job.progress === "number" ? job.progress : null,
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
+    runningPhase: parseRunningPhase(job.phases),
   };
+}
+
+function parseRunningPhase(value: unknown): LlamaUpdateJob["runningPhase"] {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const phases = value as Record<
+    string,
+    { state?: unknown } | null | undefined
+  >;
+  return (
+    (["llama", "whisper", "audio"] as const).find(
+      (name) => phases[name]?.state === "running",
+    ) ?? null
+  );
 }
 
 function parseOffer(offer: Record<string, unknown>): ComponentOffer {

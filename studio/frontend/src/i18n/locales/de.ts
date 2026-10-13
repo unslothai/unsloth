@@ -53,7 +53,7 @@ export const de = {
     agentSettings: {
       title: "Browsernutzung",
       enable: "Modelle den Browser nutzen lassen",
-      enableDescription: "Modelle öffnen Seiten in einem eigenen Tab des Browserbereichs, lesen sie und klicken und tippen für dich. Auch im +-Menü des Eingabefelds.",
+      enableDescription: "Modelle öffnen Seiten in einem eigenen Browser-Tab, lesen sie und klicken und tippen für dich. Auch im +-Menü des Eingabefelds.",
       history: "Browserverlauf",
       historyDescription: "Lege fest, ob Modelle deinen Browserverlauf lesen dürfen",
       alwaysAsk: "Immer fragen",
@@ -4145,6 +4145,7 @@ export const de = {
       chatAboutThis: "Darüber chatten",
       chatWithModel: "Mit diesem Modell chatten",
       addToFavorites: "Zu Favoriten hinzufügen",
+      regenerateTitle: "Titel neu generieren",
       removeFromFavorites: "Aus Favoriten entfernen",
       download: "Herunterladen",
       addToFolder: "Zu Ordner hinzufügen",

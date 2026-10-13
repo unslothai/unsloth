@@ -114,15 +114,15 @@ const TOOL_ONLY_ADAPTER_RE =
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
-  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.composerDocuments,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachOpenDocuments\?\.\([\s\S]*?composerAttachments/;
+  /const composerAttachments = \[[\s\S]*?\.\.\.registered\.docs,[\s\S]*?\.\.\.registered\.images,[\s\S]*?await attachOptions\.onAttachDocuments\?\.\([\s\S]*?composerAttachments/;
 const OPEN_DOCUMENT_REGISTRATION_CLASS_RE =
-  /const composerDocumentPaths = docPaths\.filter\(isComposerAttachmentName\);[\s\S]*?const ragDocumentPaths = docPaths\.filter[\s\S]*?registerEach\(ragDocumentPaths\),[\s\S]*?registerEach\(composerDocumentPaths\),[\s\S]*?composerDocuments: composerDocuments\.intents/;
+  /registerEach\(docPaths\),[\s\S]*?docs: docs\.intents/;
 const OPEN_DOCUMENT_IMAGE_REGISTRATION_RE =
-  /const needsComposerDocuments = composerDocumentPaths\.length > 0;[\s\S]*?const needsComposerAttachments =\s*needsImages \|\| needsComposerDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
+  /const needsDocuments = documentPaths\.length > 0;[\s\S]*?const needsComposerAttachments = needsImages \|\| needsDocuments;[\s\S]*?if \(needsComposerAttachments\) store\.beginImageDropRegistration\(\);[\s\S]*?finally \{[\s\S]*?if \(needsComposerAttachments\) store\.endImageDropRegistration\(\)/;
 const OPEN_DOCUMENT_BACKEND_GATE_RE =
-  /function canAttachDocumentPaths[\s\S]*?isComposerAttachmentName\(path\)[\s\S]*?\? canAttachOpenDocuments\(options\)[\s\S]*?: canAttachDocs\(options\)[\s\S]*?const needsRagDocuments = documentPaths\.some[\s\S]*?if \(needsRagDocuments && !canAttachDocs\(currentOptions\)\)/;
+  /function canAttachDocs[\s\S]*?return Boolean\(options\.onAttachDocuments\);/;
 const OPEN_DOCUMENT_CHAT_QUEUE_RE =
-  /const handleNativeOpenDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachOpenDocuments: handleNativeOpenDocumentDrop/;
+  /const handleNativeDocumentDrop = useCallback\([\s\S]*?addOpenDocumentAttachments\(artifactViewKey, intents\)[\s\S]*?onAttachDocuments: handleNativeDocumentDrop/;
 const OPEN_DOCUMENT_DRAIN_RE =
   /takeOpenDocumentAttachments\(targetKey\)[\s\S]*?nativeAttachmentIntentToFile\(intent\)[\s\S]*?await aui\.composer\(\)\.addAttachment\(file\)/;
 
@@ -220,16 +220,16 @@ for (const [format, extensions, adapter, rustList] of [
   });
 }
 
-test("Office, Outlook and web page drops index in chat with files and match the native allowlist", () => {
+test("native chat drops every Office, Outlook and saved-page type into the composer", () => {
   const office =
-    ".doc .xls .xlsx .xlsm .xltx .xltm .ppt .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
+    ".doc .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .ppsx .ott .ots .otp .msg .mht .mhtml .xhtml .xht".split(
       " ",
     );
   for (const extension of office) {
     const path = `/docs/Report${extension.toUpperCase()}`;
+    // Browser readers take .xlsx/.xlsm/.pptx; the server-document adapter reads the rest.
     assert.equal(classifyDropPaths([path]).kind, "docs", path);
-    assert.ok(!isComposerAttachmentName(path), path);
-    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+    assert.equal(isComposerAttachmentName(path), true, path);
   }
   // Types with a composer adapter keep going to the composer.
   for (const ext of [".odt", ".rtf", ".epub", ".eml", ".docm"]) {
@@ -1004,17 +1004,30 @@ test("both attachment stages go through the decode-once path", () => {
 });
 
 test("every basename the picker claims is one the drop paths accept", () => {
-  // assistant-ui maps extensionless "Dockerfile" to ".dockerfile"; drops must agree.
-  for (const name of ["Dockerfile", "Makefile", "Containerfile"]) {
+  // assistant-ui derives the extension as `.${name.split(".").pop()}`, so "README" matches
+  // ".readme" and ".gitignore" matches ".gitignore". A drop of the same file has to agree.
+  const accept = TEXT_ATTACHMENT_ACCEPT.split(",");
+  for (const name of [
+    "Dockerfile",
+    "GNUmakefile",
+    "README",
+    "LICENSE",
+    "Jenkinsfile",
+    "CODEOWNERS",
+    ".gitignore",
+    ".editorconfig",
+    ".zshrc",
+  ]) {
     const derived = `.${name.split(".").pop()!.toLowerCase()}`;
-    assert.ok(
-      TEXT_ATTACHMENT_EXTENSIONS.includes(derived),
-      `${name} is claimed through ${derived}`,
-    );
+    assert.ok(accept.includes(derived), `${name} is claimed through ${derived}`);
     assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
+    assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "docs", name);
   }
-  assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".gnumakefile"), false);
-  assert.equal(isTextAttachmentName("GNUmakefile"), false);
+  // Unlisted names stay out of both, rather than being widened; .env usually holds secrets.
+  for (const name of ["notes", ".env", ".DS_Store"]) {
+    assert.equal(isTextAttachmentName(name), false, name);
+    assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "unsupported", name);
+  }
 });
 
 test("a container declaring two charsets is refused, not part-decoded", async () => {
@@ -1471,10 +1484,10 @@ test("gettext catalogs use the charset declared by their header", async () => {
   );
 });
 
-test("RAG documents keep their existing route", () => {
+test("text and PDF drops attach to the composer", () => {
   for (const path of ["/docs/notes.txt", "/docs/notes.md", "/docs/paper.pdf"]) {
     assert.equal(classifyDropPaths([path]).kind, "docs", path);
-    assert.equal(isComposerAttachmentName(path), false, path);
+    assert.equal(isComposerAttachmentName(path), true, path);
   }
 });
 
@@ -2461,4 +2474,15 @@ test("formats the backends cannot take are converted, the rest sent as is", () =
   }
   assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));
   assert.ok(!isChatImageFile({ name: "x.constructor", type: "" }));
+});
+
+test("audiobooks, WebM and Matroska audio, 3GPP2 video and map files attach", () => {
+  for (const name of ["book.m4b", "voice.weba", "song.mka"]) {
+    assert.equal(classifyDropPaths([`/media/${name}`]).kind, "audio", name);
+  }
+  assert.equal(classifyDropPaths(["/media/clip.3g2"]).kind, "video");
+  for (const name of ["route.gpx", "places.kml"]) {
+    assert.equal(isTextAttachmentName(name), true, name);
+    assert.equal(classifyDropPaths([`/maps/${name}`]).kind, "docs", name);
+  }
 });

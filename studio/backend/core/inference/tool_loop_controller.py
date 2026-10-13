@@ -979,6 +979,8 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
+# edit_file emits it too, for a file it created.
+_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 # Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
 _MCP_TOOL_PREFIX = "mcp__"
@@ -1047,7 +1049,7 @@ def strip_result_for_model(
     # After the image strip, which leaves the UI envelope as the tail.
     if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
         result = _strip_mcp_ui_suffix(result)
-    if tool_name is None or tool_name in _SANDBOX_TOOLS:
+    if tool_name is None or tool_name in _FILE_SENTINEL_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
         result = _strip_images_sentinel(result)

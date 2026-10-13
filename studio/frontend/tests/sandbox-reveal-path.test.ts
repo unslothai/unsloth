@@ -236,7 +236,7 @@ test("a sandbox tool result is wrapped even when it carries no envelope", () => 
   );
   assert.ok(branch.length > 0, "the sandbox result branch moved");
   assert.ok(
-    branch.includes("SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName"),
+    branch.includes("SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName"),
     "python and terminal results must be wrapped without an envelope too",
   );
   assert.ok(branch.includes("sessionId: sandboxSessionId"));

@@ -3,6 +3,7 @@
 
 import {
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
 } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -110,7 +111,7 @@ function recoveredToolResult(
       // Keep malformed envelopes as text.
     }
   }
-  if (sandbox) {
+  if (sandbox && (SANDBOX_RUN_TOOLS.has(toolName as string) || files.length > 0)) {
     return { text, images: [], sessionId, files };
   }
   if (toolName === SEARCH_IMAGE_TOOL) {

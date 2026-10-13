@@ -285,6 +285,8 @@ class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
     # Apply only while the row still holds this title, so a rename beats a background rewrite.
     expectedTitle: Optional[str] = None
+    # Title regeneration must not move an old conversation up in Last modified.
+    preserveTitleModifiedAt: bool = False
     # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
     expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
@@ -716,6 +718,7 @@ def patch_thread(
 ):
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
+    preserve_title_modified_at = patch.pop("preserveTitleModifiedAt", False)
     expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
@@ -728,6 +731,7 @@ def patch_thread(
             thread_id,
             patch,
             expected_title = expected_title,
+            preserve_title_modified_at = preserve_title_modified_at,
             expected_opening_message_id = expected_opening_message_id,
             settings_write = settings_write,
         )

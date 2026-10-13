@@ -43,10 +43,12 @@ function setHovered(next: HTMLElement | null): void {
 function listen(): void {
   if (listening || !isTauri) return;
   listening = true;
-  void import("@tauri-apps/api/window")
-    .then(async ({ getCurrentWindow }) => {
-      const currentWindow = getCurrentWindow();
-      await currentWindow.onDragDropEvent(({ payload }) => {
+  void Promise.all([
+    import("@tauri-apps/api/webview"),
+    import("@tauri-apps/api/window"),
+  ])
+    .then(async ([{ getCurrentWebview }, { getCurrentWindow }]) => {
+      await getCurrentWebview().onDragDropEvent(({ payload }) => {
         if (payload.type === "leave") {
           setHovered(null);
           return;
@@ -62,7 +64,10 @@ function listen(): void {
       // Only now can a target be claimed, else window-wide handlers defer to a dead listener.
       ready = true;
 
-      // Failing here must not reset `listening`, or a second listener doubles every drop.
+      // Scale is a refinement; the devicePixelRatio seed holds until it lands.
+      // Failing here must not reset `listening`, or the next registration would
+      // stack a second drop listener and double every drop.
+      const currentWindow = getCurrentWindow();
       let scaleReported = false;
       await currentWindow
         .onScaleChanged(({ payload }) => {

@@ -8,10 +8,19 @@ export type SandboxFile = {
 
 const FILES_MARKER = "\n__FILES__:";
 
-export const SANDBOX_FILE_TOOLS = new Set(["python", "terminal"]);
+/** The tools that run code in the sandbox. Their result is always wrapped: the session is the only record of where it ran. */
+export const SANDBOX_RUN_TOOLS = new Set(["python", "terminal"]);
 
-/** Includes hosted code_execution: the backend keeps its `__IMAGES__` line for the model too. */
-export const IMAGE_SENTINEL_TOOLS = new Set([...SANDBOX_FILE_TOOLS, "code_execution"]);
+/** The tools that emit the file envelope; edit_file only for a file it created. Nothing else's output is an envelope. */
+export const SANDBOX_FILE_TOOLS = new Set([...SANDBOX_RUN_TOOLS, "edit_file"]);
+
+/**
+ * The tools that emit the image envelope: the sandbox ones, and the provider's hosted
+ * code execution, which attaches its plots the same way. The backend keeps a
+ * well-formed `__IMAGES__` line from any other tool as content the model reads, so
+ * the card has to keep it too, or the user sees less than the model was given.
+ */
+export const IMAGE_SENTINEL_TOOLS = new Set([...SANDBOX_RUN_TOOLS, "code_execution"]);
 
 function isSandboxFile(entry: unknown): entry is SandboxFile {
   if (typeof entry !== "object" || entry === null) return false;
@@ -77,6 +86,7 @@ export function isSandboxToolResult(
   );
 }
 
+/** Whether a sandbox tool call's card shows a created-files row. */
 export function hasCreatedFiles(toolName: unknown, result: unknown): boolean {
   if (typeof toolName !== "string" || !SANDBOX_FILE_TOOLS.has(toolName)) return false;
   if (!isSandboxToolResult(result)) return false;

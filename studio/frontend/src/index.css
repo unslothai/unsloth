@@ -5020,7 +5020,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
-		transform: translateY(2px);
+		/* Optical nudge for the top-heavy capsule. 2px read as low, most of all in the 28px circle. */
+		transform: translateY(1px);
 	}
 	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {

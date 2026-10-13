@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// bundler-resolver's rules plus "@tauri-apps/api/window" -> a local stub.
+// Hold native drop registration pending without replacing the bundler resolution rules.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -16,7 +16,7 @@ function firstExisting(base) {
 }
 
 export function resolve(specifier, context, next) {
-  if (specifier === "@tauri-apps/api/window") {
+  if (specifier === "@tauri-apps/api/window" || specifier === "@tauri-apps/api/webview") {
     return next(WINDOW_STUB, context);
   }
   if (specifier.startsWith("@/")) {

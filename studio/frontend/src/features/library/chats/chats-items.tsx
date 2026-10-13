@@ -53,6 +53,7 @@ import {
   PinIcon,
   PinOffIcon,
   PlusSignIcon,
+  Refresh01Icon,
   Settings02Icon,
   Upload01Icon,
   ViewIcon,
@@ -80,7 +81,7 @@ import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-[calc(var(--radius-xl)-2px)] px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -133,6 +134,7 @@ export interface ChatsActions {
   toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
+  regenerateTitle: (chat: SidebarItem) => void;
   togglePin: (chat: SidebarItem) => void;
   setFavorite: (chats: SidebarItem[], favorite: boolean) => void;
   toggleFavoriteProject: (projectId: string) => void;
@@ -334,6 +336,24 @@ export function MoveSubmenu({
   );
 }
 
+/** Off while any of its threads generates; a comparison's id is its pair's. */
+function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
+  const t = useT();
+  const actions = useChatsActions();
+  const generating = useChatRuntimeStore((s) =>
+    (chat.threadIds?.length ? chat.threadIds : [chat.id]).some((id) => Boolean(s.runningByThreadId[id])),
+  );
+  return (
+    <MenuItem
+      icon={Refresh01Icon}
+      label={t("library.menu.regenerateTitle")}
+      disabled={generating}
+      onSelect={() => actions.regenerateTitle(chat)}
+    />
+  );
+}
+
+/** Off while generating or forking, as in the sidebar. Mounts only when the menu opens. */
 function ForkItem({ chat }: { chat: SidebarItem }) {
   const t = useT();
   const actions = useChatsActions();
@@ -459,6 +479,7 @@ function ChatMenu({
             label={t("common.rename")}
             onSelect={() => actions.rename(chat)}
           />
+          <RegenerateTitleItem chat={chat} />
           {!archived && (
             <>
               <MenuItem
@@ -1760,7 +1781,7 @@ function FavoriteTile({
         aria-label={title}
         onClick={onOpen}
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           FILE_CARD_SURFACE,
         )}
       >

@@ -92,6 +92,23 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
+/** Not gated on sqlite-vec, so its status says nothing about RAG availability. */
+export async function extractDocumentText(
+  file: File,
+  beforeRetry?: () => void,
+): Promise<{ text: string; truncated: boolean }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await authFetch(
+    `${RAG_BASE}/extract-text`,
+    { method: "POST", body: form },
+    { beforeRetry },
+  );
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw ragError(response.status, json);
+  return json as { text: string; truncated: boolean };
+}
+
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const data = await ragRequest<{
     knowledgeBases: KnowledgeBase[];

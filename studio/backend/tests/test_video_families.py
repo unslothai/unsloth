@@ -180,6 +180,7 @@ def test_generation_defaults_distilled_vs_dev():
 def test_supported_names():
     assert supported_video_family_names() == (
         "minimax-h3",
+        "ltx-2.5",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",

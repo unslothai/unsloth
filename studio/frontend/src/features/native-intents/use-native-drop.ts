@@ -5,7 +5,6 @@ import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
 import {
   SUPPORTED_DROP_HINT,
   classifyDropPaths,
-  isComposerAttachmentName,
 } from "./drop-paths";
 import { nativeDropTargetAt } from "./native-drop-targets";
 import { useNativeIntentStore } from "./store";
@@ -14,12 +13,9 @@ import type { NativeIntent } from "./types";
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
-  | {
-      status: "attach";
-      count: number;
-      kind: "docs" | "images" | "audio" | "video" | "mixed";
-    }
-  // Absent `reason` means the files themselves are the problem.
+  | { status: "attach" }
+  // `reason` explains a refusal the file types alone do not. Absent means the
+  // files themselves are the problem.
   | { status: "invalid"; reason?: string };
 
 interface NativeModelDropOptions {
@@ -32,34 +28,18 @@ interface NativeModelDropOptions {
   hasActiveModel: boolean;
   isModelLoading: boolean;
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
-  onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
-  onAttachOpenDocuments?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachDocuments?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachAudio?: (intents: NativeIntent[]) => Promise<void> | void;
   onAttachVideo?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
 function canAttachDocs(options: NativeModelDropOptions): boolean {
-  return options.nativePathLeasesSupported && Boolean(options.onAttach);
+  return Boolean(options.onAttachDocuments);
 }
 
 function canAttachImages(options: NativeModelDropOptions): boolean {
   return Boolean(options.onAttachImages);
-}
-
-function canAttachOpenDocuments(options: NativeModelDropOptions): boolean {
-  return Boolean(options.onAttachOpenDocuments);
-}
-
-function canAttachDocumentPaths(
-  paths: string[],
-  options: NativeModelDropOptions,
-): boolean {
-  return paths.every((path) =>
-    isComposerAttachmentName(path)
-      ? canAttachOpenDocuments(options)
-      : canAttachDocs(options),
-  );
 }
 
 function canAttachAudio(options: NativeModelDropOptions): boolean {
@@ -78,28 +58,8 @@ function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   );
 }
 
-function attachmentCount(
-  dropped: ReturnType<typeof classifyDropPaths>,
-): number {
-  if (
-    dropped.kind === "docs" ||
-    dropped.kind === "images" ||
-    dropped.kind === "audio" ||
-    dropped.kind === "video"
-  ) {
-    return dropped.paths.length;
-  }
-  if (dropped.kind === "attach") {
-    return (
-      dropped.docs.length +
-      dropped.images.length +
-      dropped.audio.length +
-      dropped.video.length
-    );
-  }
-  return 0;
-}
-
+/** Anything this handler would otherwise act on. "none" and "unsupported"
+ * already have their own answers. */
 function isActionableKind(
   dropped: ReturnType<typeof classifyDropPaths>,
 ): boolean {
@@ -116,27 +76,27 @@ function dropStateForPaths(
     return { status: "invalid", reason: options.dropsUnsupportedReason };
   }
   if (dropped.kind === "docs") {
-    return canAttachDocumentPaths(dropped.paths, options)
-      ? { status: "attach", count: dropped.paths.length, kind: "docs" }
+    return canAttachDocs(options)
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "images") {
     return canAttachImages(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "images" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "audio") {
     return canAttachAudio(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "audio" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "video") {
     return canAttachVideo(options)
-      ? { status: "attach", count: dropped.paths.length, kind: "video" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "attach") {
-    const docsSupported = canAttachDocumentPaths(dropped.docs, options);
+    const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
     const imagesSupported =
       dropped.images.length === 0 || canAttachImages(options);
     const audioSupported =
@@ -144,7 +104,7 @@ function dropStateForPaths(
     const videoSupported =
       dropped.video.length === 0 || canAttachVideo(options);
     return docsSupported && imagesSupported && audioSupported && videoSupported
-      ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
+      ? { status: "attach" }
       : { status: "invalid" };
   }
   if (dropped.kind === "unsupported") return { status: "invalid" };
@@ -159,7 +119,6 @@ function dropStateForPaths(
 
 interface RegisteredDrop {
   docs: NativeIntent[];
-  composerDocuments: NativeIntent[];
   images: NativeIntent[];
   audio: NativeIntent[];
   video: NativeIntent[];
@@ -203,10 +162,6 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.docs
         : [];
-  const composerDocumentPaths = docPaths.filter(isComposerAttachmentName);
-  const ragDocumentPaths = docPaths.filter(
-    (path) => !isComposerAttachmentName(path),
-  );
   const imagePaths =
     dropped.kind === "images"
       ? dropped.paths
@@ -225,26 +180,23 @@ async function registerDroppedAttachments(
       : dropped.kind === "attach"
         ? dropped.video
         : [];
-  const [docs, composerDocuments, images, audio, video] = await Promise.all([
-    registerEach(ragDocumentPaths),
-    registerEach(composerDocumentPaths),
+  const [docs, images, audio, video] = await Promise.all([
+    registerEach(docPaths),
     registerEach(imagePaths),
     registerEach(audioPaths),
     registerEach(videoPaths),
   ]);
   return {
     docs: docs.intents,
-    composerDocuments: composerDocuments.intents,
     images: images.intents,
     audio: audio.intents,
     video: video.intents,
-    docsFailed: docs.failed + composerDocuments.failed,
+    docsFailed: docs.failed,
     imagesFailed: images.failed,
     audioFailed: audio.failed,
     videoFailed: video.failed,
     error:
       docs.error ??
-      composerDocuments.error ??
       images.error ??
       audio.error ??
       video.error,
@@ -258,8 +210,6 @@ function sameDropState(
   if (a.status !== b.status) return false;
   if (a.status === "valid" && b.status === "valid")
     return a.action === b.action;
-  if (a.status === "attach" && b.status === "attach")
-    return a.count === b.count && a.kind === b.kind;
   if (a.status === "invalid" && b.status === "invalid")
     return a.reason === b.reason;
   return true;
@@ -289,9 +239,9 @@ export function useNativeModelDrop(
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) =>
-        getCurrentWindow().onDragDropEvent(async (event) => {
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent(async (event) => {
           const currentOptions = optionsRef.current;
           if (event.payload.type === "leave") {
             draggedPaths = [];
@@ -341,37 +291,21 @@ export function useNativeModelDrop(
                 : dropped.kind === "attach"
                   ? dropped.docs
                   : [];
-            const composerDocumentPaths = documentPaths.filter(
-              isComposerAttachmentName,
-            );
-            const needsRagDocuments = documentPaths.some(
-              (path) => !isComposerAttachmentName(path),
-            );
-            const needsComposerDocuments = composerDocumentPaths.length > 0;
-            const needsComposerAttachments =
-              needsImages || needsComposerDocuments;
+            const needsDocuments = documentPaths.length > 0;
+            const needsComposerAttachments = needsImages || needsDocuments;
             const needsAudio =
               dropped.kind === "audio" ||
               (dropped.kind === "attach" && dropped.audio.length > 0);
             const needsVideo =
               dropped.kind === "video" ||
               (dropped.kind === "attach" && dropped.video.length > 0);
-            if (needsRagDocuments && !canAttachDocs(currentOptions)) {
-              toast.error("Attaching files needs the desktop backend", {
-                description: "Retry once Unsloth has finished starting up.",
-              });
-              return;
-            }
             if (needsImages && !canAttachImages(currentOptions)) {
               toast.error("Attaching images is unavailable right now", {
                 description: "Retry once this chat is ready for attachments.",
               });
               return;
             }
-            if (
-              needsComposerDocuments &&
-              !canAttachOpenDocuments(currentOptions)
-            ) {
+            if (needsDocuments && !canAttachDocs(currentOptions)) {
               toast.error("Attaching files is unavailable right now", {
                 description: "Retry once this chat is ready for attachments.",
               });
@@ -403,18 +337,14 @@ export function useNativeModelDrop(
                 latestOptions.attachmentScope === currentOptions.attachmentScope
                   ? latestOptions
                   : currentOptions;
-              if (registered.docs.length > 0) {
-                await attachOptions.onAttach?.(registered.docs);
-              }
-              // Documents first: a vision-less model throws on the image and aborts the batch.
+              // Documents first: a vision-less model throws on the image and
+              // aborts the batch, which would discard them.
               const composerAttachments = [
-                ...registered.composerDocuments,
+                ...registered.docs,
                 ...registered.images,
               ];
-              if (registered.composerDocuments.length > 0) {
-                await attachOptions.onAttachOpenDocuments?.(
-                  composerAttachments,
-                );
+              if (registered.docs.length > 0) {
+                await attachOptions.onAttachDocuments?.(composerAttachments);
               } else if (registered.images.length > 0) {
                 await attachOptions.onAttachImages?.(registered.images);
               }

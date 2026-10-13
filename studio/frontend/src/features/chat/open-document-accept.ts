@@ -30,7 +30,23 @@ export function isRtfAttachmentName(filename: string): boolean {
   return filename.toLowerCase().endsWith(RTF_ATTACHMENT_EXTENSIONS);
 }
 
-// Matched by extension only. Keep in sync with TOOL_ONLY_ATTACHMENT_EXTS in native_path_policy.rs.
+// RAG_DOCUMENT_UPLOAD_ACCEPT minus browser-read types; spelled out so this module stays a chat-barrel leaf.
+export const SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS = [
+  ".doc,.docm,.dotx,.dotm,.xls,.xlt,.xltx,.xltm,.ppt,.pps,.pptm,.potx,.potm,.ppsx,.ppsm",
+  ".odp,.ott,.ots,.otp,.msg,.mht,.mhtml,.epub,.xhtml,.xht",
+].join(",");
+// RAG's MAX_UPLOAD_BYTES.
+export const MAX_SERVER_DOCUMENT_BYTES = 200 * 1024 * 1024;
+
+export function isServerDocumentAttachmentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS.split(",").some((ext) =>
+    lower.endsWith(ext),
+  );
+}
+
+// Matched by extension only: their MIME types are missing or shared with unrelated files.
+// Keep in sync with TOOL_ONLY_ATTACHMENT_EXTS in native_path_policy.rs.
 export const TOOL_ONLY_ATTACHMENT_EXTENSIONS = [
   ".parquet,.feather,.arrow,.orc,.dta,.sas7bdat,.xpt,.mat,.npy,.npz,.safetensors",
   ".sqlite,.sqlite3,.db,.gpkg,.mbtiles,.duckdb",

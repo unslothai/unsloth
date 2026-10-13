@@ -75,6 +75,7 @@ import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
   NativeAttachmentTargetContext,
+  NativeAttachmentDragContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -3635,19 +3636,13 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  const handleNativeAttachmentDrop = useCallback(
-    (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
-    },
-    [artifactViewKey],
-  );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
-  const handleNativeOpenDocumentDrop = useCallback(
+  const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
@@ -3680,9 +3675,8 @@ export function ChatPage({
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
-    onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
-    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
+    onAttachDocuments: handleNativeDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
     onAttachVideo: handleNativeVideoDrop,
   });
@@ -4822,12 +4816,16 @@ export function ChatPage({
                     runtimeReady={projectRuntimeReady}
                   />
                 ) : (
-                  <NativeAttachmentTargetContext.Provider
-                    value={baseAttachmentTargetKey}
+                  <NativeAttachmentDragContext.Provider
+                    value={nativeModelDropState.status === "attach"}
                   >
-                    <TemporaryChatSaveBridge />
-                    <SingleContent threadId={baseView.threadId} />
-                  </NativeAttachmentTargetContext.Provider>
+                    <NativeAttachmentTargetContext.Provider
+                      value={baseAttachmentTargetKey}
+                    >
+                      <TemporaryChatSaveBridge />
+                      <SingleContent threadId={baseView.threadId} />
+                    </NativeAttachmentTargetContext.Provider>
+                  </NativeAttachmentDragContext.Provider>
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>

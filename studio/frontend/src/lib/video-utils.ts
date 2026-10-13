@@ -3,7 +3,7 @@
 
 /** llama-server decodes via ffmpeg. Extensions included because MIME is unreliable for mkv/mov. */
 export const VIDEO_ACCEPT =
-  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
+  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/3gpp2,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.3g2,.ogv,.m2ts";
 
 // Matches _MAX_VIDEO_B64_CHARS in the backend so the composer does not accept a refused clip.
 const MAX_VIDEO_SIZE_MB = 64;
@@ -29,6 +29,7 @@ const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   ".wmv": "video/x-ms-wmv",
   ".flv": "video/x-flv",
   ".3gp": "video/3gpp",
+  ".3g2": "video/3gpp2",
   ".ogv": "video/ogg",
   ".m2ts": "video/mp2t",
 };
