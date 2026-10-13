@@ -106,6 +106,7 @@ def test_middleware_rewrites_alias_and_content_length(store):
     [
         (b'{"model": "unsloth/Qwen3-4B-GGUF", "messages": []}', {}),
         (b'{"model": "fast-chat"}', {"path": "/api/settings/x"}),
+        (b'{"model": "fast-chat"}', {"path": "/v1/systemone"}),
         (b'{"model": "fast-chat"}', {"method": "PUT"}),
         (b"not json", {}),
         (b'["model"]', {}),

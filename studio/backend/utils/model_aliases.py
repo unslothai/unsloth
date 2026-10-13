@@ -18,6 +18,8 @@ MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ALIAS_PATH_PREFIXES = ("/v1/", "/api/inference/")
+# Decision API ids (laya-multilingual, clef, ...) are not chat models, so an alias must never shadow one.
+_DECISION_API_PATH = "/v1/systemone"
 _MODEL_VALUE_RE = re.compile(rb'"model"\s*:\s*"([^"\\]*)"')
 
 
@@ -155,7 +157,7 @@ class ModelAliasMiddleware:
     ):
         self.app = app
         # MaxBodyMiddleware's upload passthroughs: their cap is the upload limit, not the JSON one.
-        self.skip_paths = frozenset(skip_paths)
+        self.skip_paths = frozenset((*skip_paths, _DECISION_API_PATH))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("method", "").upper() != "POST":
