@@ -57,7 +57,7 @@ def test_precision_folders_are_whole_checkpoints_with_a_precision_name():
 
     folders = precision_variant_subfolders(_SIZES)
     assert sorted(folders) == ["2-bit", "4-bit", "6-bit", "8-bit"]
-    for name in ("4bit", "8bit", "mlx-4bit", "2bit-lite", "bf16", "MLX-8BIT", "q4"):
+    for name in ("4bit", "8bit", "mlx-4bit", "2bit-lite", "bf16", "MLX-8BIT", "mxfp4"):
         assert precision_variant_subfolders(
             {f"{name}/config.json": 1, f"{name}/model.safetensors": 1}
         )
@@ -243,14 +243,14 @@ def test_cached_precision_folder_needs_every_shard(monkeypatch, tmp_path):
     assert mlx_variants.cached_precision_folder(_REPO, "../8-bit") is None
 
 
-@pytest.mark.parametrize("variant", ["Q4_K_M", "UD-Q4_K_XL", "../6-bit", "6-bit/../x"])
+@pytest.mark.parametrize("variant", ["Q4_K_M", "UD-Q4_K_XL", "Q8_0", "../6-bit", "6-bit/../x"])
 def test_gguf_quant_names_never_resolve_as_folders(monkeypatch, variant):
     from hub.utils import mlx_variants
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no Hub read")),
-    )
+
+    reads = []
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda *a, **k: reads.append(a))
     assert mlx_variants.precision_folder_config_dir(_REPO, variant, None) is None
+    assert reads == []
 
 
 def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path):

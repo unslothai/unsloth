@@ -19,10 +19,10 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
 )
 CONSOLIDATED_PATTERN = "consolidated*"
 # Folder names publishers use for one precision of the same checkpoint: 4-bit, 4bit, 2bit-lite,
-# mlx-8bit, q4, bf16, mxfp4.
+# mlx-8bit, bf16, mxfp4. No q4: GGUF quant names (Q4_K_M) must never read as one.
 # [0-9], not \d, to stay identical to PRECISION_FOLDER_SOURCE in the frontend's dataset-size.ts.
 PRECISION_FOLDER_SOURCE = (
-    "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|q[0-9]{1,2}(?:[-_][a-z0-9]+)*"
+    "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*"
     "|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)"
 )
 PRECISION_FOLDER_RE = re.compile(PRECISION_FOLDER_SOURCE, re.IGNORECASE)

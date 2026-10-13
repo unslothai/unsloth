@@ -11,10 +11,14 @@ import sys
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin" or platform.machine() != "arm64",
-    reason = "MLX runs on Apple Silicon only",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform != "darwin" or platform.machine() != "arm64",
+        reason = "MLX runs on Apple Silicon only",
+    ),
+    # Fetches a 75 MB MLX checkpoint to lay out as a precision folder.
+    pytest.mark.allow_network,
+]
 
 _TINY = "mlx-community/SmolLM-135M-Instruct-4bit"
 _REPO = "example/SmolLM-135M-Instruct-MLX"
