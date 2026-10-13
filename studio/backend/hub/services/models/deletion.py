@@ -1071,7 +1071,7 @@ def _audio_cpp_blocks_delete(repo_id: str) -> bool:
         split_variant_ref,
     )
     from core.inference.orchestrator import peek_inference_backend
-    from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+    from core.inference.stt_audiocpp_sidecar import QWEN3_ALIGNER, get_audio_cpp_stt_sidecar
 
     wanted = (repo_id or "").strip().lower()
 
@@ -1094,6 +1094,8 @@ def _audio_cpp_blocks_delete(repo_id: str) -> bool:
     active = getattr(backend, "active_model_name", None) if backend is not None else None
     loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
     sidecar = get_audio_cpp_stt_sidecar()
+    if wanted == QWEN3_ALIGNER.id.lower() and sidecar.holds_timestamp_aligner:
+        return True
     return (
         holds(active)
         or any(holds(name) for name in loading)

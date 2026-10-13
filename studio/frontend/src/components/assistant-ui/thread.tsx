@@ -8274,29 +8274,28 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
-          <div className="flex flex-col gap-2 w-full">
-            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
-            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
-              <textarea
-                ref={textareaRef}
-                defaultValue={extractTaggedText(messageContent ?? [])}
-                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-                autoFocus
-                onInput={adjustHeight}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                    handleSave();
-                  }
-                  if (e.key === 'Escape') {
-                    setEditingId(null); // UX: Close editor on Escape
-                  }
-                }}
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
-              <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
+          // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
+          // index.css zeroes the margin-bottom of the reply's last descendants.
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted pb-3">
+            <textarea
+              ref={textareaRef}
+              defaultValue={extractTaggedText(messageContent ?? [])}
+              className="block min-h-14 w-full max-h-[70dvh] resize-none overflow-y-auto bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
+              autoFocus
+              onInput={adjustHeight}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
+              }}
+            />
+            <div className="mx-3 flex items-center gap-2 self-end">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+              <Button type="button" size="sm" onClick={handleSave}>Save</Button>
             </div>
           </div>
         ) : (
@@ -8329,7 +8328,7 @@ const AssistantMessage: FC = () => {
         )}
       </div>
 
-      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
@@ -8642,40 +8641,25 @@ function useDeleteMessage() {
   return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
 }
 
-// The More menu's Delete, last and in red.
-const DeleteMessageMenuItem: FC = () => {
+const DeleteMessageButton: FC = () => {
   const { handleDelete, isRunning, hidden } = useDeleteMessage();
   if (hidden) {
     return null;
   }
   return (
-    <ActionBarMorePrimitive.Item
+    <TooltipIconButton
+      tooltip="Delete"
       disabled={isRunning}
-      onSelect={() => void handleDelete()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      onClick={() => void handleDelete()}
+      className="hover:!text-destructive"
     >
       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-      Delete
-    </ActionBarMorePrimitive.Item>
+    </TooltipIconButton>
   );
 };
 
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
-
-const ForkMessageMenuItem: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
-  return (
-    <ActionBarMorePrimitive.Item
-      disabled={forkDisabled}
-      onSelect={() => void forkMessage()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-    >
-      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-      Fork in new chat
-    </ActionBarMorePrimitive.Item>
-  );
-};
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8698,54 +8682,24 @@ const RewindDialogMount: FC = () => {
   ) : null;
 };
 
-const RewindMessageMenuItem: FC = () => {
+const RewindMessageButton: FC = () => {
   const aui = useAui();
   const t = useT();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   return (
-    <ActionBarMorePrimitive.Item
+    <TooltipIconButton
+      tooltip={t("rewind.title")}
       disabled={isRunning}
-      onSelect={() =>
+      onClick={() =>
         useRewindDialogStore.getState().openRewind({
           threadKey: aui.threadListItem().getState().id,
           messageId,
         })
       }
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
-      {t("rewind.menuItem")}
-    </ActionBarMorePrimitive.Item>
-  );
-};
-
-// A prompt's More menu: Fork, Rewind, then Delete.
-const UserMoreMenu: FC = () => {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const collisionPadding = useWindowChromeCollisionPadding(undefined);
-  return (
-    <ActionBarMorePrimitive.Root modal={false}>
-      <ActionBarMorePrimitive.Trigger asChild={true}>
-        <TooltipIconButton ref={triggerRef} tooltip="More" className="data-[state=open]:bg-accent">
-          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
-        </TooltipIconButton>
-      </ActionBarMorePrimitive.Trigger>
-      <ActionBarMorePrimitive.Content
-        side="bottom"
-        align="end"
-        collisionPadding={collisionPadding}
-        onCloseAutoFocus={(e) => e.preventDefault()}
-        className={MORE_MENU_CONTENT_CLASS}
-      >
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-          <MenuDismissGuard triggerRef={triggerRef} />
-          <ForkMessageMenuItem />
-          <RewindMessageMenuItem />
-          <DeleteMessageMenuItem />
-        </div>
-      </ActionBarMorePrimitive.Content>
-    </ActionBarMorePrimitive.Root>
+    </TooltipIconButton>
   );
 };
 
@@ -8892,7 +8846,7 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Edit response lives in the More menu.
+  // On by default; off moves Edit response into the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8917,12 +8871,17 @@ const AssistantActionBar: FC = () => {
         // remounts a bar when focus enters that message, so tabbing brings back what hovering
         // brings back and the controls return to the accessibility tree with it.
         autohide={speaking ? "never" : "not-last"}
-        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
-        <ForkCountBadge />
-        <ForkMessageButton />
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
@@ -8945,13 +8904,9 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
-        )}
+        <ForkCountBadge />
+        <ForkMessageButton />
+        <DeleteMessageButton />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -9046,7 +9001,6 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
-              <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -9110,7 +9064,7 @@ const UserMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters More
+          mounts the autohidden controls, so the next Shift+Tab enters its controls
           instead of skipping the action bar and leaving the message. */}
       <span
         className="aui-user-reveal-sentinel"
@@ -9138,8 +9092,10 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
+      <RewindMessageButton />
       <ForkCountBadge />
-      <UserMoreMenu />
+      <ForkMessageButton />
+      <DeleteMessageButton />
     </UserMessageActionBar>
   );
 };

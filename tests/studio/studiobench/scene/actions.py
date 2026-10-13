@@ -709,8 +709,8 @@ OWN_TURN_TEXT = "one more"
 
 #: Remove the throwaway turn: assistant first, then the user turn, because deleting the user
 #: message can take the reply with it and leave the count ambiguous. Reports rather than asserts.
-#: The cleanup reaches Delete through the reply's More menu (#12735), so it first waits for that
-#: menu to mount. A paint or two in practice; the bound matters only when the menu is slow or never
+#: The cleanup waits for the reply's Delete button (on the action bar since #13615) to mount after
+#: the hover. A paint or two in practice; the bound matters only when the bar is slow or never
 #: comes. `stop_generation` passes what is left of its slot after the settle, clamped to these, so a
 #: slow menu cannot carry the turn into the next action's window. The floor is a few paints, so a
 #: slot already spent still tries once rather than leaving the turn in the thread.
@@ -730,15 +730,9 @@ async (opts) => {
     const target = D.lastAssistantMessage();
     if (!target) return false;
     target.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
-    // Delete is the More menu's last item since #12735; see DELETE_JS.
-    const trigger = D.actionButton("More");
-    if (!trigger) return false;
-    const button = (await D.openMenuAndFind(trigger, "Delete", opts.menuWaitMs)).item;
-    if (!button) {
-      document.dispatchEvent(new KeyboardEvent("keydown",
-        { key: "Escape", bubbles: true, cancelable: true }));
-      return false;
-    }
+    // Delete is a button on the reply's action bar since #13615; see DELETE_JS.
+    const button = (await D.waitForActionButton("Delete", opts.menuWaitMs)).el;
+    if (!button) return false;
     const started = performance.now();
     button.click();
     while (performance.now() - started < timeoutMs) {
@@ -2382,10 +2376,10 @@ async (opts) => {
   // action still reported NOT RUN on the first sample rather than waiting for the running message
   // to stop running. Same wait, same bound and same reporting as `message_menu`.
   //
-  // Delete is the last item of the reply's More menu since #12735, not a button on the bar, so
-  // the wait is for the More trigger and the menu is opened BEFORE the clock starts: what this
-  // action times is the delete, and `message_menu` already times the menu.
-  const found = await D.waitForActionButton("More", opts.waitForButtonMs);
+  // Delete is a button on the reply's action bar since #13615 (#12735 had moved it into the More
+  // menu), so the wait is for that button, found BEFORE the clock starts: what this action times is
+  // the delete.
+  const found = await D.waitForActionButton("Delete", opts.waitForButtonMs);
   const waitedMs = found.waitedMs;
   if (!found.el) {
     return {
@@ -2393,28 +2387,15 @@ async (opts) => {
       waitedMs,
       running: found.running,
       reason:
-        "no More button after waiting " + waitedMs + "ms" +
+        "no Delete button after waiting " + waitedMs + "ms" +
         (found.running ? ": the thread was still generating, which unmounts the action bar" : ""),
     };
   }
-  const menu = await D.openMenuAndFind(found.el, "Delete", opts.waitForButtonMs);
-  const button = menu.item;
-  if (!button) {
-    document.dispatchEvent(new KeyboardEvent("keydown",
-      { key: "Escape", bubbles: true, cancelable: true }));
-    return {
-      ran: false,
-      waitedMs,
-      reason:
-        "no Delete item in the More menu (opened=" + menu.opened + ", items=" + menu.items +
-        ", after " + menu.openMs + "ms)",
-    };
-  }
+  const button = found.el;
   const target = D.lastAssistantMessage();
   const before = D.threadTotal();
   const mountedBefore = D.messageCount();
   const started = performance.now();
-  // A Radix menu item selects on click, unlike its trigger.
   button.click();
   let ms = null;
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
@@ -2434,7 +2415,7 @@ async (opts) => {
   // alongside rather than replacing it: on a windowed mount `messageCount()` is the size of the
   // window and a recycled node would read as a delete. `waitedMs` is how long the bar was waited
   // for, which the row reports so a slot that opened too early is visible.
-  return { ran: true, waitedMs, menuOpenMs: menu.openMs,
+  return { ran: true, waitedMs,
            ms: ms === null ? null : Math.round(ms * 10) / 10,
            before, after: D.threadTotal(),
            mountedBefore, mountedAfter: D.messageCount() };
@@ -2467,7 +2448,6 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "mounted_before": raw.get("mountedBefore"),
             "mounted_after": raw.get("mountedAfter"),
             "action_bar_wait_ms": raw.get("waitedMs"),
-            "menu_open_ms": raw.get("menuOpenMs"),
         },
         timings = {"delete_ms": raw["ms"]},
         reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",

@@ -1701,7 +1701,10 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                # vLLM 0.11+ streams thinking as `reasoning`; llama-server and Kimi as `reasoning_content`.
                 reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
                 if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
                     turn.reasoning.append(reasoning)
                 content = delta.get("content")

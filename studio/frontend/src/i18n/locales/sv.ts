@@ -645,7 +645,6 @@ export const sv = {
     queueingHintShared: "Kön behålls.",
   },
   rewind: {
-    menuItem: "Spola tillbaka…",
     title: "Spola tillbaka",
     pickDescription: "Välj ett meddelande att spola tillbaka till.",
     pickEmpty: "Det finns inga meddelanden att spola tillbaka till än.",

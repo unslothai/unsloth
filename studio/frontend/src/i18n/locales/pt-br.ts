@@ -554,7 +554,6 @@ export const ptBR = {
     queueingHintShared: "A fila é mantida.",
   },
   rewind: {
-    menuItem: "Voltar no tempo…",
     title: "Voltar no tempo",
     pickDescription: "Escolha uma mensagem para a qual voltar.",
     pickEmpty: "Ainda não há mensagens para as quais voltar.",
