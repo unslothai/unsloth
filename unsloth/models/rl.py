@@ -2055,14 +2055,24 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             pieces = [
                 x.view_as(g) for x, g in zip(torch.split(flat, [g.numel() for g in chunk]), chunk)
             ]
+            # The fused CUDA route needs matching strides; one mismatch sends the whole list down the slow
+            # path, so non-contiguous grads are copied on their own.
+            dst, src = [], []
+            for g, x in zip(chunk, pieces):
+                if g.is_contiguous():
+                    dst.append(g)
+                    src.append(x)
+                else:
+                    g.copy_(x)
             foreach_copy = getattr(torch, "_foreach_copy_", None)
             try:
                 if foreach_copy is None:
                     raise NotImplementedError
-                foreach_copy(chunk, pieces)
+                if dst:
+                    foreach_copy(dst, src)
             except (RuntimeError, NotImplementedError, TypeError):
                 # Private op: fall back to the per-tensor copy if a torch build lacks or rejects it (idempotent).
-                for g, x in zip(chunk, pieces):
+                for g, x in zip(dst, src):
                     g.copy_(x)
             start = stop
 

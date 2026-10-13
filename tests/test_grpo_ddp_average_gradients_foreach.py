@@ -68,11 +68,13 @@ def test_bucket_copy_back_is_fused_and_exact(two_identical_ranks, monkeypatch, d
 
     def counting(dst, src, *args, **kwargs):
         calls.append(len(dst))
+        assert all(d.stride() == s.stride() for d, s in zip(dst, src))
         return real(dst, src, *args, **kwargs)
 
     monkeypatch.setattr(torch, "_foreach_copy_", counting)
     average(ddp)
-    assert calls == [len(before)]
+    # The non-contiguous grad is copied alone so the fused route sees only stride-matched pairs.
+    assert calls == [len(before) - 1]
     for p, g in zip(ddp.module.params, before):
         # SUM of two identical ranks then div by 2 gives the gradient back bit for bit.
         assert torch.equal(p.grad, g)
