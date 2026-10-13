@@ -57,7 +57,7 @@ Download the native Unsloth Desktop app for your operating system:
 
 Download from [Unsloth](https://unsloth.ai/download) or [GitHub Releases](https://github.com/unslothai/unsloth/releases).
 
-Or if you prefer to install manually:
+To install **Unsloth Studio (web UI)** and use it in your browser, run:
 
 #### macOS, Linux, WSL:
 ```bash
