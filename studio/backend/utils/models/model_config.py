@@ -3570,7 +3570,6 @@ def _refused_repo_cached_gguf(
     # Auto: preferred variant first, falling through incomplete ones, across every snapshot.
     remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
     while remaining:
-        # The checkpoint a bare id means (repo root, or a curated default subdirectory), as the healthy-Hub pick does.
         from hub.utils.gguf import default_gguf_scope
 
         best = _pick_best_gguf(
@@ -4811,13 +4810,7 @@ class ModelConfig:
                                 f"Available variants: {available}"
                             )
                 if not variant:  # auto-select best quant
-                    # ROOT rows when there are any. _pick_best_gguf keeps whichever filename it
-                    # met first among equals, so an LTX-style listing that puts distilled/...-Q6_K
-                    # before the root ...-Q6_K made a bare repo id load the distilled checkpoint --
-                    # while local_model_resolver, the auto-download map and /gguf-variants all
-                    # define a bare id as the root. This is the LOAD path, so it has to agree.
-                    # default_gguf_scope keeps that root rule and adds a curated repo's default
-                    # subdirectory (unsloth/LTX-2.5-GGUF: distilled/), the same scope every resolver uses.
+                    # _pick_best_gguf is order-sensitive: use the scope every resolver uses.
                     from hub.utils.gguf import default_gguf_scope
 
                     variant_filenames = [

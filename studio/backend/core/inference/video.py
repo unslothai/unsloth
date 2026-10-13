@@ -7747,8 +7747,7 @@ class VideoBackend:
                                 "skipped: offload moves the DiT, unsupported for torchao "
                                 "tensors; pin a resident memory mode to combine them"
                                 if quant_skipped_for_offload
-                                # A GGUF DiT runs the file's own weights at its own quant (a BF16 GGUF is dense), so name
-                                # the quant the status reports as gguf_variant rather than claiming either.
+                                # Name the GGUF's quant: a BF16 GGUF is dense, so "quantized" would be wrong.
                                 else (
                                     "not engaged (GGUF DiT ("
                                     + (_gguf_quant_token(gguf_filename) or "GGUF")

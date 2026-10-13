@@ -322,7 +322,6 @@ def _repo_id_of(name: object) -> Optional[str]:
     if not isinstance(name, str) or not name.strip():
         return None
     text = name.strip().rstrip("/\\")
-    # The cache folder may be any segment: a listed snapshot is ``models--org--repo/snapshots/<sha>``.
     for segment in reversed(re.split(r"[/\\]", text)):
         if segment.startswith("models--"):
             parts = segment[len("models--") :].split("--", 1)
@@ -344,11 +343,7 @@ def _repo_id_candidates(name: object) -> list:
 
 
 def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
-    """The subdirectory a bare id of any of *repo_ids* defaults to, or None for the repo root.
-
-    Set per curated repo (``VideoFamily.gguf_default_subdir``): unsloth/LTX-2.5-GGUF defaults to
-    distilled/ because the family's defaults are the distilled DiT's. Every other repo is None.
-    """
+    """The subdirectory a bare id of *repo_ids* defaults to (``VideoFamily.gguf_default_subdir``), or None."""
     from core.inference.video_families import gguf_default_subdir_for_repo
 
     for name in repo_ids:
@@ -360,8 +355,7 @@ def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
 
 
 def gguf_root_label(*repo_ids: object) -> Optional[str]:
-    """What the root files of any of *repo_ids* are when the repo labels them (``VideoFamily.gguf_root_label``:
-    unsloth/LTX-2.5-GGUF's root is the dev DiT beside the default distilled/ one), else None."""
+    """``VideoFamily.gguf_root_label`` for *repo_ids*, else None."""
     from core.inference.video_families import gguf_root_label_for_repo
 
     for name in repo_ids:
@@ -377,13 +371,9 @@ def default_gguf_scope(
     *repo_ids: object,
     key = None,
 ) -> list:
-    """The *items* a bare repo id may default to, ranked afterwards by ``pick_best_gguf``/``preferred_quant``.
+    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
 
-    *key* maps an item to its variant key (``Q4_K_M``, ``distilled/<stem>``); the item itself by
-    default. The repo's configured default subdirectory when it has rows there, else the ROOT rows,
-    else everything. Each surface that answers "what does a bare id mean" (the /gguf-variants
-    default, the plain load, ``_match_variant(None, ...)``, ``local_model_resolver`` and the media
-    index) filters through this one rule, so one id names one checkpoint everywhere.
+    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
     """
     rows = list(items)
     key_of = key or (lambda item: item)
@@ -884,8 +874,7 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
 
 
 def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: object) -> None:
-    """Fill ``display_label`` where the key alone does not say which checkpoint a row is. *repo_ids* (a repo id or the
-    directory listed) name a curated repo whose root rows carry a label of their own (``gguf_root_label``)."""
+    """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
     root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
@@ -927,8 +916,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
             )
         elif root_label and "/" not in variant.filename.replace("\\", "/"):
-            # A curated repo's root checkpoint beside its default subdirectory one: name it, or the bare quant reads
-            # as the default checkpoint ("UD-Q4_K_XL" for the dev DiT next to "UD-Q4_K_XL · distilled").
+            # Else the root quant reads as the default checkpoint.
             variant.display_label = f"{variant.quant} · {root_label}"
 
 

@@ -932,11 +932,7 @@ def _match_variant(
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    # A BARE org/repo means the checkpoint default_gguf_scope names (the ROOT, or a curated repo's default subdirectory:
-    # unsloth/LTX-2.5-GGUF -> distilled/), so a sibling outside it must not be ranked against it: preferred_quant is
-    # order-sensitive, and a repo with distilled/model-Q6_K beside model-Q6_K could otherwise serve either for one id.
-    # Same scope local_model_resolver._local_gguf_entry and the /gguf-variants default apply, so every resolver answers
-    # one id one way. Nothing in scope falls back to the whole set rather than refusing.
+    # A bare id means default_gguf_scope, the same scope every resolver applies (preferred_quant is order-sensitive).
     from hub.utils.gguf import default_gguf_scope
 
     return preferred_quant(default_gguf_scope(variants, repo_id))

@@ -426,11 +426,7 @@ def _local_gguf_entry(
         # and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
-        # Rank only the checkpoints a bare id means (default_gguf_scope: the ROOT ones when there are any, or a curated
-        # repo's default subdirectory such as unsloth/LTX-2.5-GGUF's distilled/). preferred_quant ranks on the key text
-        # and would otherwise hand a bare id an equally-good sibling that sorts earlier -- the same id serving different
-        # weights depending on which resolver answered it. The other rows stay advertised; they are not what a bare id
-        # means.
+        # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
         from hub.utils.gguf import default_gguf_scope
 
         best = preferred_quant(

@@ -289,11 +289,9 @@ class VideoFamily:
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
-    # Subdirectory of gguf_repo whose files a bare repo id means (picker default, plain load, media index, OpenAI-style
-    # id), when the family's defaults are tuned for that checkpoint rather than the root one. None keeps the root rule.
+    # Subdirectory of gguf_repo a bare repo id means; None keeps the root.
     gguf_default_subdir: Optional[str] = None
-    # What the repo-ROOT files of gguf_repo are, shown beside their quant in the picker ("UD-Q4_K_XL · dev") when the
-    # root holds a different checkpoint than gguf_default_subdir, so a bare quant name never reads as the default one.
+    # Picker label for root files when they differ from gguf_default_subdir ("UD-Q4_K_XL · dev").
     gguf_root_label: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
@@ -603,13 +601,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
-        # The DiT (plus its text connectors) as single-file GGUF quants: dev at the root, distilled under distilled/.
-        # The file name picks the variant (ltx25_is_dev) and the pack above stays the base for VAEs and connectors.
+        # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
         gguf_repo = "unsloth/LTX-2.5-GGUF",
-        # The family defaults (8 + 3 two-stage at CFG 1) and ComfyUI's LTX-2.5 templates are the distilled DiT's, so a
-        # bare repo id means distilled/; the root dev files stay selectable by their own keys.
+        # Family defaults (8 + 3 steps, CFG 1) are the distilled DiT's.
         gguf_default_subdir = "distilled",
-        # The root files are the dev DiT (30 steps at CFG 3), labelled so in the picker.
         gguf_root_label = "dev",
         supports_keyframes = True,
         accepts_last_frame = False,

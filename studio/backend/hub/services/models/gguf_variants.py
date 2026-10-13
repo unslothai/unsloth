@@ -1048,16 +1048,9 @@ class VariantsAnswer(NamedTuple):
 
 
 def _default_variant_candidates(variants, repo_id: Optional[str] = None) -> list[str]:
-    """The filenames the automatic default may be picked from: ``default_gguf_scope`` of the rows.
+    """Filenames the automatic default may be picked from: ``default_gguf_scope`` of the rows.
 
-    That is the ROOT rows when there are any, except for a curated repo with a default
-    subdirectory (unsloth/LTX-2.5-GGUF: distilled/), whose rows there come first.
-    ``pick_best_gguf`` keeps whichever filename it met first among equals, so a repo with
-    ``model-Q6_K.gguf`` beside ``distilled/model-Q6_K.gguf`` could make the wrong sibling the
-    default -- and then a bare repo id would mean one checkpoint here and another to
-    ``_match_variant(None, ...)`` and ``local_model_resolver``, which apply the same scope.
-    Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
-    depends on which one served the request. Nothing in scope falls back to the whole set.
+    Every branch here must apply it: ``pick_best_gguf`` is order-sensitive among equal siblings.
     """
     return [v.filename for v in default_gguf_scope(variants, repo_id, key = lambda v: v.quant)]
 
@@ -2258,10 +2251,7 @@ async def get_gguf_variants_answer(
                 variants[key] = detail
             response.variants = list(variants.values())
             response.has_vision = response.has_vision or any(s.has_vision for s in sources.values())
-            # Merging changes which rows are in scope, and _default_variant_candidates picks
-            # among those rows, so a default chosen from the active cache alone can name the
-            # wrong checkpoint once a remembered folder contributes a root row. A partial row
-            # is not a load the picker may recommend while a ready row exists, so prefer ready.
+            # Merging changes the scope, so re-pick the default; prefer ready rows over partial ones.
             if sources or not response.default_variant:
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
                 best = pick_best_gguf(

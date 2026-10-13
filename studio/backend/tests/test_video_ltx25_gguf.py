@@ -3,10 +3,8 @@
 
 """unsloth/LTX-2.5-GGUF: the LTX-2.5 DiT as single-file GGUF quants.
 
-Layout (the unsloth/LTX-2.3-GGUF one): the dev DiT at the repo root, the distilled DiT under ``distilled/``, static
-quants plus ``UD-Q*_K_XL`` dynamic ones. Header: ``general.architecture = ltxv`` (the ComfyUI-GGUF tag shared with 2.3),
-bare Comfy keys, ``model_version = 2.5.0``. Every file must load as the ``ltx-2.5`` family with the pack as its base
-and the variant's own defaults, never down the 2.3 assembly.
+Dev DiT at the root, distilled under ``distilled/``; header arch ``ltxv`` (shared with 2.3) with
+``model_version = 2.5.0``. Every file must load as ``ltx-2.5``, never down the 2.3 assembly.
 """
 
 from __future__ import annotations
@@ -180,8 +178,7 @@ def _rows(files):
 
 @pytest.mark.parametrize("order", ["dev_first", "distilled_first"])
 def test_bare_repo_id_defaults_to_the_distilled_ud_q4_k_xl(order):
-    """ComfyUI's LTX-2.5 templates and the family defaults (8 + 3 two-stage, CFG 1) are the distilled DiT's, so the
-    /gguf-variants default for the bare repo is distilled/...-UD-Q4_K_XL, whatever order the listing comes in."""
+    """The bare-repo /gguf-variants default is distilled/...-UD-Q4_K_XL, whatever the listing order."""
     from hub.services.models.gguf_variants import _default_variant_candidates
     from hub.utils.gguf import pick_best_gguf
 
@@ -253,9 +250,7 @@ def test_ltx23_and_other_repos_keep_the_root_default():
 
 
 def test_picker_labels_the_root_rows_dev_and_the_subfolder_rows_distilled(tmp_path):
-    """The root of unsloth/LTX-2.5-GGUF is the dev DiT: its rows read "<quant> · dev", never a bare quant that looks
-    like the distilled default ("<quant> · distilled"). Hub listing, cache snapshot and partial-download paths all
-    label through _apply_gguf_display_labels with the repo they list; 2.3 and plain repos keep bare root rows."""
+    """Root rows read "<quant> · dev" on every listing path; 2.3 and plain repos keep bare root rows."""
     from hub.utils.gguf import (
         GgufVariantInfo,
         _apply_gguf_display_labels,
@@ -297,8 +292,7 @@ def test_picker_labels_the_root_rows_dev_and_the_subfolder_rows_distilled(tmp_pa
 
 
 def test_a_plain_local_clone_keeps_the_distilled_default_and_dev_labels(tmp_path):
-    """A curated repo copied to an ordinary folder (``/models/unsloth/LTX-2.5-GGUF``, not an HF cache path) is
-    recognised by its trailing org/repo, so the local listing labels the root dev and defaults to distilled/."""
+    """A plain local copy (``/models/unsloth/LTX-2.5-GGUF``) is recognised by its trailing org/repo."""
     from hub.utils.gguf import default_gguf_subdir, gguf_root_label, list_local_gguf_variants
 
     clone = tmp_path / "models" / "unsloth" / "LTX-2.5-GGUF"
