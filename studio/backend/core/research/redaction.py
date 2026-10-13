@@ -31,8 +31,8 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=](?:[ \t]*\r?\n)?[ \t]*\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+    rf"""(?aix)(?<![A-Za-z0-9])authorization\\?["'”’]?\]?[ \t]*[:=](?:[ \t]*\r?\n)?[ \t]*\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)"""
 )
 _AUTH_PARAM_PAIR = re.compile(
     r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
@@ -177,7 +177,7 @@ def _shield_untrusted(text: str) -> str:
 def _authorization_values(match: re.Match) -> list[str]:
     """Decoded credential values of an Authorization match; empty when it reads as prose."""
     found = match["credentials"]
-    if re.fullmatch(r"[\w.~+/-]+=*", found):
+    if re.fullmatch(r"[\w.~+/-]+(?::[\w.~+/-]+)*=*", found):
         pairs = [("", found)]
     else:
         pairs = [
@@ -185,8 +185,10 @@ def _authorization_values(match: re.Match) -> list[str]:
             for name, value in _AUTH_PARAM_PAIR.findall(found)
             if name.lower() not in _PUBLIC_AUTH_PARAMS
         ]
+    raw = [value.strip("\\\"'“”‘’") for _, value in pairs]
     pairs = [(name, re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))) for name, value in pairs]
-    values = [value for _, value in pairs]
+    # The serialized spelling too, so an echo that keeps its escapes still matches.
+    values = [value for _, value in pairs] + [value for value in raw if "\\" in value]
     scheme = re.sub(r"[^a-z0-9]", "", match["scheme"].lower())
     if (
         match["scheme"].lower() in _REGISTERED_AUTH_SCHEMES
