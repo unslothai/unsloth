@@ -45,9 +45,8 @@ _SUBCONFIG_KEYS = (
     "language_config",
 )
 FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": set()}
-# H100, torch 2.14.1: FA3 / FA4 run faster kernels than torch's bundled flash but cost ~60 / ~110 us more host
-# time per forward call. Packed LoRA SFT at 8K tokens / step: hidden 1024 (Qwen3-0.6B) is launch bound and
-# 2 to 7% slower on FA3; hidden 2048 to 4096 (Llama-3.2-1B, Qwen3-1.7B / 4B / 8B, Mistral-7B) is 0.3 to 1.8% faster.
+# H100: FA3 / FA4 kernels are faster but cost ~60 / ~110 us more host time per forward; at 8K tokens / step
+# hidden 1024 trains 2 to 7% slower on FA3, hidden 2048 to 4096 0.3 to 1.8% faster.
 _HOPPER_AUTO_MIN_HIDDEN = 2048
 _logger = logging.getLogger(__name__)
 
