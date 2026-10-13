@@ -21,17 +21,7 @@ const DetailRow: FC<{ label: string; value: ReactNode }> = ({
   </div>
 );
 
-/**
- * Marks a compaction in the transcript: a short labelled rule, with the detail behind the label.
- *
- * Deliberately NOT a message: it renders from `metadata.custom.contextTruncation`, so it is
- * never sent to the model, editable, or exported as content, yet unlike a toast it survives a
- * reload. Drawn in the row slot above the prompt whose request compacted (see
- * `compactionDividerRows`), in the same column as the messages it sits between.
- *
- * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a thread past
- * its window refits on every request, so per-turn would mean a divider on every reply forever.
- */
+/** renders metadata once per compaction above its triggering prompt and survives reloads without entering model context, editable content, or exports. */
 export const CompactionDivider: FC<{ truncation: ContextTruncation }> = ({
   truncation,
 }) => {
@@ -55,8 +45,8 @@ export const CompactionDivider: FC<{ truncation: ContextTruncation }> = ({
           <button
             type="button"
             data-slot="compaction-divider-label"
-            // Padding cancelled by negative margin: a finger-sized target without moving the rule.
-            // Positioned, or the reply above (itself positioned) takes the top of the target.
+            // negative margins keep a large target from moving the rule.
+            // positioning stops the reply above from covering the target.
             className="relative -mx-2 -my-2.5 inline-flex shrink-0 cursor-default items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-2.5 leading-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
           >
             <ArchiveIcon className="size-3.5" aria-hidden={true} />

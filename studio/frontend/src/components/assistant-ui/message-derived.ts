@@ -131,20 +131,13 @@ export const compactionNoticeMessageIds = memoOnArray(
 const NO_COMPACTION_DIVIDERS: ReadonlyMap<string, ContextTruncation> =
   new Map();
 
-/**
- * Row id to the compaction whose divider is drawn above that row.
- *
- * Placed where the compaction HAPPENED: above the prompt whose request compacted, or above the reply itself when no prompt precedes it. Under the
- * checkpoint policy that is also where the kept context begins, since a reset evicts everything
- * ahead of the newest user turn. One entry per `compactionNoticeMessageIds` member, so the
- * meter's count is the number of dividers on screen.
- */
+/** maps each compaction to its triggering prompt row or, if absent, its reply row at the kept-context boundary so visible dividers match the context meter. */
 export const compactionDividerRows = memoOnArray(
   (
     messages: readonly MessageLike[],
   ): ReadonlyMap<string, ContextTruncation> => {
     const notices = compactionNoticeMessageIds(messages);
-    // Every streamed token is a new array; a thread that never compacted pays nothing for it.
+    // streamed tokens create new arrays, so reuse this map until a thread compacts.
     if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
     const rows = new Map<string, ContextTruncation>();
     let previous: MessageLike | undefined;
