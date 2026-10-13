@@ -35,6 +35,10 @@
 	[data-slot="window-titlebar"][data-viewport-backdrop-open]::after {
 		opacity: 1;
 	}
+	/* Settings dims a step darker than other popups; the titlebar repeats its backdrop. */
+	html:has([data-settings-dialog][data-state="open"]) [data-slot="window-titlebar"]::after {
+		background: rgb(0 0 0 / 40%);
+	}
 
 	/* The surface the sidebar panel actually paints. The collapsed icon rail
 	   repaints it, so gradients fading into the panel must read this rather

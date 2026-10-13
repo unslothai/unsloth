@@ -49,3 +49,11 @@ test("lightboxes, the browser panel and the titlebar backdrop do not blur", () =
   const titlebar = css.slice(css.indexOf('[data-slot="window-titlebar"]::after {'));
   assert.doesNotMatch(titlebar.slice(0, titlebar.indexOf("}")), /backdrop-filter/);
 });
+
+test("Settings dims a step darker, titlebar included", () => {
+  assert.match(read("features/settings/settings-dialog.tsx"), /overlayClassName="bg-black\/40"/);
+  assert.match(
+    read("index.css"),
+    /html:has\(\[data-settings-dialog\]\[data-state="open"\]\) \[data-slot="window-titlebar"\]::after \{\s*background: rgb\(0 0 0 \/ 40%\);/,
+  );
+});
