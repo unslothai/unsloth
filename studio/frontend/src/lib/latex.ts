@@ -454,6 +454,8 @@ export function isInRegion(
 /** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
+const BARE_NUMBER_RE = /^\d+(?:,\d{3})*(?:\.\d+)?$/;
+
 /** Body characters that almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
@@ -542,6 +544,8 @@ function hasInlineMathCloser(
     if (/\d/.test(content[i + 1] ?? "")) {
       continue;
     }
+    const body = content.slice(offset + 1, i);
+    if (BARE_NUMBER_RE.test(body)) return true;
     if (offset >= 2) {
       const op = content[offset - 1];
       if (
@@ -553,7 +557,7 @@ function hasInlineMathCloser(
         return true;
       }
     }
-    return looksLikeMathBody(content.slice(offset + 1, i));
+    return looksLikeMathBody(body);
   }
   return false;
 }
