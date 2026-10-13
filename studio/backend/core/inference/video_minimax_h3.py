@@ -1542,8 +1542,7 @@ def h3_native_memory_fit(
     def gtt_ok(te_on_cpu: bool) -> bool:
         if budget is None:
             return True
-        # Unreadable GTT use: the reading is the whole pool, an upper bound. Only a set the user chose to keep small
-        # (Low VRAM, encoder already on the CPU) is admitted against it; nothing is placed on it automatically.
+        # Unreadable GTT use: the pool is only an upper bound, so admit only a user-chosen small set (Low VRAM).
         return pinned(te_on_cpu) <= budget and (te_given or not pinned_used_unknown)
 
     def ok(te_on_cpu: bool) -> bool:
@@ -1560,8 +1559,7 @@ def h3_native_memory_fit(
         and host_problem(True) is None
         and pinned(True) <= budget
     ):
-        # Fail closed in every mode that keeps the encoder on the GPU, Auto included: how much of the pool is free
-        # cannot be known, so the choice to run against it is the user's (Low VRAM).
+        # Fail closed (Auto included) while the encoder stays on the GPU: free GTT is unknowable.
         return H3NativeFit(
             flags,
             refusal = (

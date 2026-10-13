@@ -186,14 +186,9 @@ def cgroup_swap_allowance_bytes(
             v1_relative = parts[2]
             break
     if v1_relative is not None:
-        # v1 counts RAM+swap together (memsw), so a level's swap room is not a quantity of its own: the swap this
-        # process can use is the tightest COMBINED headroom minus the tightest RAM headroom, each taken over every
-        # level, never the per-level differences (a tight child RAM limit under a tight parent memsw limit would
-        # otherwise subtract the parent's large RAM room and understate the swap).
+        # v1 memsw is RAM+swap: swap = tightest combined headroom - tightest RAM headroom, never per-level differences.
         v1_root = os.path.join(cgroup_root, "memory")
-        # memory.swappiness 0 on any ENFORCING level (finite memory or memsw limit; the process's own cgroup and a
-        # container's namespace root included): that level's limit reclaim never swaps, so none of the swap can
-        # relieve it. A level without a limit (a host root) reclaims nothing, so its value is irrelevant.
+        # swappiness 0 on an enforcing (limited) level means its reclaim never swaps; unlimited levels are irrelevant.
         for directory in _directories(v1_root, v1_relative):
             enforcing = any(
                 _integer(_first_line(os.path.join(directory, name)), limit = True) is not None

@@ -1435,9 +1435,7 @@ def _h3_offloaded_render_flags(
         inputs = None  # UNSLOTH_H3_NATIVE_FIT_CHECK=0: no reading, no release, the committed flags as they are
     if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
         if inputs is not None:
-            # A resident render places its weights in VRAM, but still needs its per-render host RAM. A live server
-            # with other flags (an idle offloaded one holding pinned RAM) is replaced by get() anyway: free it first
-            # so it is not counted against this render.
+            # A server with other flags is replaced by get() anyway: free it so its pinned RAM is not counted.
             slot = getattr(runtime, "server_slot", None)
             live = slot.alive_signature() if slot is not None else None
             hint = ""
@@ -1454,14 +1452,12 @@ def _h3_offloaded_render_flags(
     slot = getattr(runtime, "server_slot", None)
     live = slot.alive_signature() if slot is not None else None
     if reuse_live_server and live is not None and "--offload-to-cpu" in live[2]:
-        # A reading now would count the server's own placed weights against it; only what this render newly needs
-        # (its per-render host RAM) is checked.
+        # A reading now would count the server's own weights; check only the per-render host RAM.
         _h3_check_render_overhead()
         return list(live[2])
     released = "none"
     if live is not None:
-        # A resident server (slot.get() replaces it on the signature change anyway), or any server before a new
-        # one-shot process: free it before the reading.
+        # Free any server before the reading (a resident one is replaced by slot.get() anyway).
         released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
     return _h3_launch_flags(
         runtime,
@@ -3923,7 +3919,6 @@ class VideoBackend:
         requested_accelerator = _install_accelerator_for(target.backend)
         accelerator = preferred_accelerator(requested_accelerator, selected_card)
         if accelerator != requested_accelerator:
-            # Otherwise silent on every load after the first: the record alone diverts it.
             logger.warning(
                 "video.sd_cpp_accelerator_recorded_fallback: using the %s stable-diffusion.cpp build, "
                 "not %s, because this host recorded the %s build as unable to run; %s",
@@ -4337,9 +4332,7 @@ class VideoBackend:
                 release_pending = released == "pending"
             if fit.refusal and release_pending:
                 fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
-            # An outgoing in-process (diffusers) model still holds host memory and GPU allocations that the commit's
-            # teardown frees before any native process starts. Its share cannot be told apart from the rest of this
-            # process, so a refusal is not raised here: the pre-launch live fit, taken after the teardown, decides.
+            # An outgoing diffusers model's memory is freed only at commit, so the pre-launch live fit decides, not this.
             with self._lock:
                 outgoing = self._state
             outgoing_in_process = (
