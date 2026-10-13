@@ -85,6 +85,21 @@ for pkg, prefix in MOVED:
         "leaked": [x for x in (f"{prefix}Trainer", f"{prefix}Config") if x in vars(trl) or x in vars(trl.trainer)]
         + ([f"trl.trainer.{pkg}_trainer"] if f"{pkg}_trainer" in vars(trl.trainer) else []),
     }
+def _config_probe(pkg, prefix, **kwargs):
+    try:
+        cfg = getattr(importlib.import_module(f"trl.experimental.{pkg}"), f"{prefix}Config")(
+            output_dir = "unused", report_to = "none", **kwargs
+        )
+        return {"per_device_train_batch_size": cfg.per_device_train_batch_size}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+if "gold" in out["moved"]:
+    out["gold_config"] = _config_probe(
+        "gold", "GOLD", num_generations = 8, per_device_train_batch_size = 4,
+        gradient_accumulation_steps = 2, lmbda = 1.0,
+    )
+if "sdft" in out["moved"]:
+    out["sdft_eval_config"] = _config_probe("sdft", "SDFT", eval_strategy = "steps", eval_steps = 1)
 print("RESULT " + json.dumps(out))
 """
 
@@ -107,6 +122,9 @@ def _run(pre_import = ()):
     assert proc.returncode == 0 and lines, proc.stdout[-3000:] + proc.stderr[-3000:]
     result = json.loads(lines[-1][len("RESULT ") :])
     moved = {k: v for k, v in result["moved"].items() if "import_error" not in v}
+    for pkg, key in (("gold", "gold_config"), ("sdft", "sdft_eval_config")):
+        if pkg in moved:
+            moved[pkg]["config_probe"] = result.get(key)
     if not moved:
         pytest.skip(f"TRL {result['trl']} keeps these trainers in trl.trainer: {result['moved']}")
     return moved
@@ -172,3 +190,19 @@ def test_gold_keeps_trls_num_generations_default(after_unsloth):
         pytest.skip("no trl.experimental.gold on this TRL")
     patched, pristine = after_unsloth["gold"]["num_generations"]
     assert patched == pristine, after_unsloth["gold"]["num_generations"]
+
+
+def test_gold_keeps_a_valid_batch_size(after_unsloth):
+    """TRL accepts num_generations=8 with batch 4 x grad accum 2; GRPO's multiple-of-num_generations rewrite must not double it."""
+    got = after_unsloth.get("gold")
+    if got is None:
+        pytest.skip("no trl.experimental.gold on this TRL")
+    assert got["config_probe"] == {"per_device_train_batch_size": 4}, got["config_probe"]
+
+
+def test_sdft_config_with_evaluation_still_builds(after_unsloth):
+    """SDFT needs the eval batch divisible by num_generations (8); Unsloth's eval batch default of 4 made this raise."""
+    got = after_unsloth.get("sdft")
+    if got is None:
+        pytest.skip("no trl.experimental.sdft on this TRL")
+    assert "error" not in got["config_probe"], got["config_probe"]
