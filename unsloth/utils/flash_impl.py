@@ -436,8 +436,6 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
             )
             deactivate_flash_attention_impl()
             return None
-    facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
-    cases = _probe_cases(facts)
     if (
         requested == "auto"
         and major == 10
@@ -450,6 +448,8 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
         )
         deactivate_flash_attention_impl()
         return None
+    facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
+    cases = _probe_cases(facts)
     # auto falls through to the next impl when one is missing, refuses this model or fails its probe.
     for impl in candidates:
         error = _package_error(impl) or _model_gate(impl, major, facts)
@@ -498,16 +498,18 @@ def deactivate_flash_attention_impl():
 
 
 def _mean_document_length(dataset, rows = 128):
-    """Mean tokens per document over the first rows: TRL's packed ``seq_lengths``, else one document per row."""
+    """Mean tokens per document over evenly spaced rows (TRL's BFD packing puts the longest documents first):
+    TRL's packed ``seq_lengths``, else one document per row."""
     try:
-        n = min(len(dataset), rows)
-        if n <= 0:
+        total = len(dataset)
+        if total <= 0:
             return None
         columns = set(dataset.column_names)
         key = "seq_lengths" if "seq_lengths" in columns else "input_ids"
         if key not in columns:
             return None
-        head = dataset.select_columns([key])[:n][key]
+        step = max(1, total // rows)
+        head = dataset.select_columns([key]).select(range(0, total, step)[:rows])[key]
         if key == "seq_lengths":
             lengths = [int(x) for row in head for x in row]
         else:

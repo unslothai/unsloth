@@ -443,6 +443,9 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     rows = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "labels": [[1], [1]]})
     assert fi._mean_document_length(rows) == 200
     assert fi._mean_document_length(rows, rows = 1) == 100
+    # BFD packing puts the longest documents first, so rows are sampled across the dataset, not from the head.
+    longest_first = datasets.Dataset.from_dict({"input_ids": [[1] * n for n in (400, 300, 200, 100)]})
+    assert fi._mean_document_length(longest_first, rows = 2) == 300
     # Unknown: no dataset, no length, no token column, nothing to read.
     assert fi._mean_document_length(None) is None
     assert fi._mean_document_length(datasets.Dataset.from_dict({"text": ["a"]})) is None
