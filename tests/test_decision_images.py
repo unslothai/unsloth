@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Exercise the Clef image path with a real processor and tiny random vision model."""
-
 from types import SimpleNamespace
 
 import pytest
