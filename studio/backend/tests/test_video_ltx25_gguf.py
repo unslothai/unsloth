@@ -175,7 +175,6 @@ def _rows(files):
     import types
 
     from hub.utils.gguf import gguf_variant_key
-
     return [types.SimpleNamespace(filename = f, quant = gguf_variant_key(f)) for f in files]
 
 
@@ -277,13 +276,18 @@ def test_picker_labels_the_root_rows_dev_and_the_subfolder_rows_distilled(tmp_pa
     files23 = [f.replace("2.5", "2.3") for f in DEV_FILES + DISTILLED_FILES]
     got23 = labels(files23, "unsloth/LTX-2.3-GGUF")
     assert got23["ltx-2.3-22b-dev-UD-Q4_K_XL.gguf"] is None
-    assert got23["distilled/ltx-2.3-22b-distilled-UD-Q4_K_XL.gguf"].startswith("UD-Q4_K_XL · distilled")
+    assert got23["distilled/ltx-2.3-22b-distilled-UD-Q4_K_XL.gguf"].startswith(
+        "UD-Q4_K_XL · distilled"
+    )
     assert labels(DEV_FILES)["ltx-2.5-22b-dev-Q8_0.gguf"] is None
 
     # A cached snapshot is listed by directory: the repo is read off the models--org--repo segment.
     snap = tmp_path / "models--unsloth--LTX-2.5-GGUF" / "snapshots" / "abc"
     (snap / "distilled").mkdir(parents = True)
-    for name in ("ltx-2.5-22b-dev-UD-Q4_K_XL.gguf", "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"):
+    for name in (
+        "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf",
+        "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf",
+    ):
         (snap / name).write_bytes(b"GGUF" + b"\0" * 64)
     variants, _ = list_local_gguf_variants(str(snap))
     assert {v.quant: v.display_label for v in variants} == {

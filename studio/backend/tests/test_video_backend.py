@@ -2159,7 +2159,10 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     # The DiT is the GGUF's own quantized weights, not a dense bf16 one.
     quant = status["resolved"]["transformer_quant"]
     assert (quant["value"], quant["source"]) == ("off", "auto")
-    assert quant["reason"] == "not engaged (GGUF DiT (Q4_K_M) loaded; the file's own weights are used as is)"
+    assert (
+        quant["reason"]
+        == "not engaged (GGUF DiT (Q4_K_M) loaded; the file's own weights are used as is)"
+    )
     assert backend.unload()["gguf_variant"] is None
     # A pipeline load has no checkpoint quant to name.
     assert (

@@ -907,7 +907,9 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
 
 
 def _match_variant(
-    wanted: Optional[str], variants: dict[str, int], repo_id: Optional[str] = None
+    wanted: Optional[str],
+    variants: dict[str, int],
+    repo_id: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 

@@ -2264,7 +2264,9 @@ async def get_gguf_variants_answer(
             # is not a load the picker may recommend while a ready row exists, so prefer ready.
             if sources or not response.default_variant:
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
-                best = pick_best_gguf(_default_variant_candidates(ready or response.variants, repo_id))
+                best = pick_best_gguf(
+                    _default_variant_candidates(ready or response.variants, repo_id)
+                )
                 response.default_variant = gguf_variant_key(best) if best else None
         if response.dependencies_resolved and locally_proven[0] is not None:
             rows = frozenset(

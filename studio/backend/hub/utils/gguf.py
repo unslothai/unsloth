@@ -357,7 +357,11 @@ def gguf_root_label(*repo_ids: object) -> Optional[str]:
     return None
 
 
-def default_gguf_scope(items: Iterable, *repo_ids: object, key=None) -> list:
+def default_gguf_scope(
+    items: Iterable,
+    *repo_ids: object,
+    key = None,
+) -> list:
     """The *items* a bare repo id may default to, ranked afterwards by ``pick_best_gguf``/``preferred_quant``.
 
     *key* maps an item to its variant key (``Q4_K_M``, ``distilled/<stem>``); the item itself by
