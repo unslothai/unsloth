@@ -178,19 +178,28 @@ _frontend_proc_id() {
 
 # A build marks the tree before it touches node_modules or dist and clears the mark only once
 # it succeeded, so a build that died at any point is redone instead of trusted (the freshness
-# check reads it). A build whose setup was just interrupted is still being stopped for up to
-# ~6 s: wait for it and any child left in its group, then undo what it hid, so two builds
-# never share the tree.
+# check reads it). Wait while the marked build is alive (another setup on this checkout, or one
+# just interrupted and being stopped), then up to 30 s for children left in its group, then
+# undo what it hid, so two builds never share the tree.
 _frontend_build_begin() {
-    local _owner="" _n=0 _self
+    local _owner="" _pid _n=0 _self
+    _self=$(exec sh -c 'echo "$PPID"')
     [ -f "$_FRONTEND_BUILD_MARK" ] && _owner=$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)
-    while [ -n "$_owner" ] && [ "$_n" -lt 30 ] &&
-        { [ "$(_frontend_proc_id "${_owner%% *}")" = "$_owner" ] || { [ "${_owner%% *}" -gt 1 ] 2>/dev/null && kill -0 -- "-${_owner%% *}" 2>/dev/null; }; }; do
+    _pid=${_owner%% *}
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
+        [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ]; do
+        [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
+        sleep 1
+        _n=$((_n + 1))
+    done
+    _n=0
+    while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] && [ "$_n" -lt 30 ] &&
+        [ "$_pid" -gt 1 ] 2>/dev/null && kill -0 -- "-$_pid" 2>/dev/null; do
         sleep 1
         _n=$((_n + 1))
     done
     _frontend_build_cleanup
-    _self=$(exec sh -c 'echo "$PPID"')
     _frontend_proc_id "$_self" > "$_FRONTEND_BUILD_MARK" 2>/dev/null || :
 }
 

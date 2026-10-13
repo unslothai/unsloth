@@ -156,7 +156,8 @@ echo \"log=\$_FRONTEND_BG_LOG\"
 setup_fail 3 boom")
 assert_contains "setup exits with its own code" "$out" "rc=3"
 gc=$(grandchild)
-if [ -n "$gc" ] && kill -0 "$gc" 2>/dev/null; then bad "build still running when setup_fail returned"; else ok "nothing of the build survives setup_fail"; fi
+# A killed child can still be listed for a moment until it is reaped.
+if [ -n "$gc" ] && ! wait_gone "$gc" 2; then bad "build still running when setup_fail returned"; else ok "nothing of the build survives setup_fail"; fi
 log=$(printf '%s\n' "$out" | sed -n 's/^log=//p')
 if [ -n "$log" ] && [ ! -e "$log" ]; then ok "build log removed"; else bad "build log '$log' left behind"; fi
 check_aftermath "setup_fail"
@@ -226,6 +227,29 @@ wait "$owner" 2>/dev/null
 start=$(date +%s)
 run_case '_frontend_build_begin' >/dev/null
 if [ $(( $(date +%s) - start )) -le 1 ]; then ok "a dead owner is not waited for"; else bad "waited for a dead owner"; fi
+echo "== another live setup building this checkout is never overtaken =="
+prime
+( sleep 16 ) & owner=$!
+ps -o pid= -o lstart= -p "$owner" | sed 's/^ *//' > "$MARK"
+start=$(date +%s)
+# 0.1 s sleeps: a 30-poll cap gives up after 3-9 s (ps is slow on a busy host), before the owner ends.
+out=$(run_case 'sleep() { command sleep 0.1; }; _frontend_build_begin')
+waited=$(( $(date +%s) - start ))
+if [ "$waited" -ge 15 ]; then ok "waited for the live owner to finish (${waited}s)"; else bad "overtook a live owner (${waited}s)"; fi
+assert_contains "says why it is waiting" "$out" "waiting for another frontend build in this checkout"
+wait "$owner" 2>/dev/null
+
+echo "== an owner that finished its build but is still running is not waited for =="
+( sleep 20 ) & owner=$!
+ps -o pid= -o lstart= -p "$owner" | sed 's/^ *//' > "$MARK"
+( sleep 2; rm -f "$MARK" ) &
+start=$(date +%s)
+run_case '_frontend_build_begin' >/dev/null
+waited=$(( $(date +%s) - start ))
+if [ "$waited" -le 5 ]; then ok "stopped waiting once the owner cleared its mark (${waited}s)"; else bad "kept waiting after the mark was cleared (${waited}s)"; fi
+kill "$owner" 2>/dev/null; wait "$owner" 2>/dev/null
+rm -f "$MARK"
+
 echo "== a new build also waits for a child its stopped owner left in the group =="
 prime
 python3 -c 'import os, subprocess as s
