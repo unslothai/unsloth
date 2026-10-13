@@ -128,7 +128,11 @@ test("a refresh follows the connection that answered, and asks a local model onl
   );
   // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first,
   // bounded: a stalled status check must still reach the heuristic fallback.
-  assert.match(serving, /const status = await getInferenceStatus\(AbortSignal\.timeout\(TITLE_STATUS_WAIT_MS\), checkpoint\);/);
+  // With the WebKitGTK-safe helper (no AbortSignal.timeout before 2.38), disposed once settled.
+  assert.match(serving, /const wait = disposableTimeoutSignal\(TITLE_STATUS_WAIT_MS\);/);
+  assert.match(serving, /const status = await getInferenceStatus\(wait\.signal, checkpoint\);/);
+  assert.match(serving, /finally \{ wait\.dispose\(\); \}/);
+  assert.doesNotMatch(source, /AbortSignal\.timeout\(/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
   // The model's wait covers building the request (a stored key is encrypted through the backend) as well as the stream.
   const fromModel = source.slice(
@@ -153,7 +157,9 @@ test("a refresh follows the connection that answered, and asks a local model onl
     body,
     /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
-  assert.match(body, /updateChatThread\(id, \{ title \}, startTitle === undefined \? \{\} : \{ expectedTitle: startTitle \}\)/);
+  // Each pane is guarded with its own starting title: a comparison's panes can differ.
+  assert.match(body, /item\.type === "single" \? Promise\.resolve\(null\) : listStoredChatThreads\(\{ pairId: item\.id, includeArchived: true \}\)/);
+  assert.match(body, /updateChatThread\(id, \{ title \}, before === undefined \? \{\} : \{ expectedTitle: before \}\)/);
 });
 
 test("a locally answered chat is never sent to a selected external provider", () => {
@@ -255,4 +261,16 @@ test("the Library's Regenerate title is off while any of the chat's panes is gen
     /\(chat\.threadIds\?\.length \? chat\.threadIds : \[chat\.id\]\)\.some\(\(id\) => Boolean\(s\.runningByThreadId\[id\]\)\)/,
   );
   assert.match(item, /disabled=\{generating\}/);
+});
+
+test("a second Regenerate title while one runs leaves the running request's toast alone", () => {
+  const source = readFileSync(
+    new URL("../src/features/library/chats/chats-library.tsx", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  const fn = source.slice(
+    source.indexOf("async function regenerateChatTitleWithToast"),
+    source.indexOf("function isDateField"),
+  );
+  assert.match(fn, /if \(outcome === "busy"\) return; if \(outcome === "empty"\)/);
 });

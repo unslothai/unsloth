@@ -212,6 +212,8 @@ async function regenerateChatTitleWithToast(chat: SidebarItem): Promise<void> {
   const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
   const outcome = await regenerateChatTitle(chat);
   clearTimeout(slow);
+  // Another request for this chat is running and owns the toast.
+  if (outcome === "busy") return;
   if (outcome === "empty") {
     toast.error("This chat has no messages to title yet.", { id: toastId });
   } else if (outcome === "failed") {

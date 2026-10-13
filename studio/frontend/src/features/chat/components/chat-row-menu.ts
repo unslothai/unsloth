@@ -20,6 +20,7 @@ import {
   updateChatThread,
 } from "../api/chat-api";
 import { parseExternalModelId } from "../external-providers";
+import { disposableTimeoutSignal } from "../../hub/lib/abort-signals";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
 import {
   settleThreadScopedSettingsForCopy,
@@ -170,9 +171,11 @@ async function titleFromModel(checkpoint: string, excerpt: string): Promise<stri
  *  backend load it again, multi-GB for a few words. */
 async function titleModelServing(checkpoint: string): Promise<boolean> {
   if (parseExternalModelId(checkpoint) !== null) return true;
+  // The helper, not AbortSignal.timeout: WebKitGTK before 2.38 has none.
+  const wait = disposableTimeoutSignal(TITLE_STATUS_WAIT_MS);
   try {
     // Scoped to the slot serving it, which need not be the primary one.
-    const status = await getInferenceStatus(AbortSignal.timeout(TITLE_STATUS_WAIT_MS), checkpoint);
+    const status = await getInferenceStatus(wait.signal, checkpoint);
     if (!status.active_model || status.is_audio || status.is_diffusion) return false;
     const want = normalizeModelIdentity(checkpoint);
     return [status.model_identifier, status.active_model, ...(status.serving_checkpoints ?? [])].some(
@@ -180,6 +183,8 @@ async function titleModelServing(checkpoint: string): Promise<boolean> {
     );
   } catch {
     return false;
+  } finally {
+    wait.dispose();
   }
 }
 
@@ -197,9 +202,14 @@ export async function regenerateChatTitle(
     const liveBranch = liveThreadBranch(threadId);
     const { params, modelLoading } = useChatRuntimeStore.getState();
     const selected = !modelLoading ? params.checkpoint : "";
-    const [startTitle, raw] = await Promise.all([
+    // A comparison's panes can carry different titles (a restored backup keeps each), so each
+    // pane is guarded with its own.
+    const [startTitle, raw, panes] = await Promise.all([
       getStoredChatThread(threadId).then((thread) => thread?.title),
       listStoredChatMessages(threadId),
+      item.type === "single"
+        ? Promise.resolve(null)
+        : listStoredChatThreads({ pairId: item.id, includeArchived: true }),
     ]);
     // The branch on screen, else the one reopening the chat shows, as the exports read it.
     const storedIds = new Set(raw.map((m) => m.id));
@@ -223,15 +233,14 @@ export async function regenerateChatTitle(
       (serving ? await titleFromModel(checkpoint, excerpt) : null) ?? heuristicChatTitle(branch);
     if (!title) return "empty";
     if (title === startTitle) return "unchanged";
-    const ids =
-      item.type === "single"
-        ? [threadId]
-        : [...new Set((await listStoredChatThreads({ pairId: item.id, includeArchived: true })).map((t) => t.id))];
+    const targets = panes
+      ? [...new Map(panes.map((pane) => [pane.id, pane.title])).entries()]
+      : [[threadId, startTitle] as const];
     try {
       // Guarded: a rename that lands while the title is generated wins (409).
       await Promise.all(
-        ids.map((id) =>
-          updateChatThread(id, { title }, startTitle === undefined ? {} : { expectedTitle: startTitle }),
+        targets.map(([id, before]) =>
+          updateChatThread(id, { title }, before === undefined ? {} : { expectedTitle: before }),
         ),
       );
     } catch {
