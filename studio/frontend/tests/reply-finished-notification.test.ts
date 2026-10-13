@@ -132,10 +132,13 @@ async function load(env: Env) {
 
 mock.timers.enable({ apis: ["setTimeout"] });
 
-// Past the settle window, then a real turn of the event loop for notifyNative's awaits.
-async function settle() {
+// Past the settle window, then until `expected` sends land: notifyNative resolves its plugin
+// through dynamic imports, which take a variable number of turns. A case expecting none still
+// waits out a short window, so a send that should not happen has time to show up.
+async function settle(sent: () => number = () => 0, expected = 0) {
   mock.timers.tick(3_000);
-  for (let i = 0; i < 5; i += 1) {
+  const deadline = Date.now() + (expected === 0 ? 1_000 : 10_000);
+  while (sent() < Math.max(expected, 1) && Date.now() < deadline) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
@@ -163,7 +166,7 @@ test("a finished reply notifies nothing while the setting is off", async () => {
       pluginGranted: true,
     });
     mod.notifyReplyFinished();
-    await settle();
+    await settle(() => control.sent.length, 0);
     assert.equal(control.sent.length, 0);
     assert.equal(created.length, 0);
   }
@@ -176,9 +179,9 @@ test("Desktop sends one native notification per reply finished in the background
     pluginGranted: true,
   });
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 1);
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 2);
   assert.equal(control.sent.length, 2, "one per settled reply");
   assert.equal(control.sent[0].title, "Reply finished");
   assert.equal(control.requests, 0, "a finished reply never prompts");
@@ -195,7 +198,7 @@ test("nothing fires until the settle window passes", async () => {
   mock.timers.tick(2_999);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(control.sent.length, 0);
-  await settle();
+  await settle(() => control.sent.length, 1);
   assert.equal(control.sent.length, 1);
 });
 
@@ -208,10 +211,10 @@ test("a run starting inside the window, like auto-continue after Max Tokens, can
   mod.notifyReplyFinished();
   mock.timers.tick(1_000);
   mod.cancelReplyFinishedNotification();
-  await settle();
+  await settle(() => control.sent.length, 0);
   assert.equal(control.sent.length, 0, "the cut reply never notifies");
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 1);
   assert.equal(control.sent.length, 1, "the continuation that settles does");
 });
 
@@ -224,7 +227,7 @@ test("replies finishing together send one notification", async () => {
   mod.notifyReplyFinished();
   mock.timers.tick(500);
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 1);
   assert.equal(control.sent.length, 1);
 });
 
@@ -239,7 +242,7 @@ test("Windows Desktop: the switch turns on and notifies although the plugin shim
   });
   assert.equal(await mod.requestReplyFinishedPermission(), true);
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 1);
   assert.equal(control.sent.length, 1);
 });
 
@@ -257,7 +260,7 @@ test("a reply that finished in view never notifies, even if the user looks away 
     configurable: true,
     writable: true,
   });
-  await settle();
+  await settle(() => env.control.sent.length, 0);
   assert.equal(env.control.sent.length, 0);
 });
 
@@ -270,7 +273,7 @@ test("an unfocused but visible window still counts as the background", async () 
     pluginGranted: true,
   });
   mod.notifyReplyFinished();
-  await settle();
+  await settle(() => control.sent.length, 1);
   assert.equal(control.sent.length, 1);
 });
 
@@ -285,7 +288,7 @@ test("nothing fires while the user is looking at the window", async () => {
       pluginGranted: true,
     });
     mod.notifyReplyFinished();
-    await settle();
+    await settle(() => control.sent.length, 0);
     assert.equal(control.sent.length, 0);
     assert.equal(created.length, 0);
   }
@@ -298,7 +301,7 @@ test("the browser notifies only with permission already granted", async () => {
     permission: "granted",
   });
   granted.mod.notifyReplyFinished();
-  await settle();
+  await settle(() => granted.created.length, 1);
   assert.equal(granted.created.length, 1);
   assert.equal(granted.created[0].title, "Reply finished");
   assert.equal(granted.created[0].options?.tag, "unsloth-reply-finished");
@@ -306,7 +309,7 @@ test("the browser notifies only with permission already granted", async () => {
   for (const permission of ["default", "denied", "absent"] as const) {
     const env = await load({ tauri: false, enabled: true, permission });
     env.mod.notifyReplyFinished();
-    await settle();
+    await settle(() => env.created.length, 0);
     assert.equal(env.created.length, 0, permission);
   }
 });
