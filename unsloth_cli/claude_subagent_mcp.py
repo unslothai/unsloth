@@ -18,7 +18,11 @@ from typing import Any, Callable
 
 from unsloth_cli.commands.start import (
     _CLAUDE_ENV_UNSET,
+    _CLAUDE_SUBAGENT_AUTO_ROUTE_ENV,
+    _CLAUDE_SUBAGENT_FALLBACK_ENV,
     _CLAUDE_SUBAGENT_SETTINGS_ENV,
+    _SUBAGENT_AUTO_ROUTE_DESCRIPTION,
+    _SUBAGENT_AUTO_ROUTE_INSTRUCTIONS,
     _SUBAGENT_DESCRIPTION,
     _SUBAGENT_INSTRUCTIONS,
     _SUBAGENT_PLAN_DESCRIPTION,
@@ -465,12 +469,43 @@ def serve(
             signal.signal(signum, handler)
 
 
+def _with_fallback(run_agent: Callable[..., str], marker: str) -> Callable[..., str]:
+    def run(task: str, cancel_event: threading.Event) -> str:
+        try:
+            text = run_agent(task, cancel_event)
+        except Exception as exc:
+            if cancel_event.is_set():
+                raise
+            Path(marker).touch()
+            raise RuntimeError(
+                f"{exc}\n\nThe local agent failed, so your own Read, Grep, Glob, Bash, "
+                "PowerShell, Monitor, NotebookRead and Agent tools are unblocked until the "
+                "next successful unsloth_agent call. "
+                "Do this step yourself."
+            ) from exc
+        Path(marker).unlink(missing_ok = True)
+        return text
+
+    return run
+
+
 def main() -> None:
+    auto_route = os.environ.get(_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV) == "1"
+    marker = os.environ.get(_CLAUDE_SUBAGENT_FALLBACK_ENV)
+    run_agent = run_local_agent
+    run_read_only_agent = lambda task, cancel_event: run_local_agent(
+        task, cancel_event, read_only = True
+    )
+    if marker:
+        # With --auto-route the parent's own tools are blocked, so a failed local run would otherwise lose the task.
+        run_agent = _with_fallback(run_agent, marker)
+        run_read_only_agent = _with_fallback(run_read_only_agent, marker)
     serve(
-        run_read_only_agent = lambda task, cancel_event: run_local_agent(
-            task, cancel_event, read_only = True
-        ),
+        run_agent = run_agent,
+        tool_description = _SUBAGENT_AUTO_ROUTE_DESCRIPTION if auto_route else None,
+        run_read_only_agent = run_read_only_agent,
         read_only_tool_name = "unsloth_plan_agent",
+        instructions = _SUBAGENT_AUTO_ROUTE_INSTRUCTIONS if auto_route else None,
     )
 
 
