@@ -36,6 +36,7 @@ from core.inference.tools import (
     _sniff_meta_charset,
 )
 from loggers import get_logger
+from routes.browser_network import BROWSER_NETWORK_JS
 
 # same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
@@ -170,6 +171,9 @@ _FRAME_HTML = r"""<!doctype html>
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
         const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
+        // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
+        // relative links and requests after a pushState resolve as in a browser.
+        const routedBase = cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
@@ -241,6 +245,7 @@ _FRAME_HTML = r"""<!doctype html>
           let jar = "";
           Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
         } catch {}
+        /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
         let reportedUrl = pageUrl;
@@ -256,13 +261,21 @@ _FRAME_HTML = r"""<!doctype html>
         };
         for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
           history[method] = function (state, title, url) {
-            let next = url != null ? resolve(String(url)) : null;
+            const raw = url != null ? String(url) : null;
+            let next = raw !== null ? resolve(raw) : null;
+            // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
+            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            if (fromShell && cfg.url) {
+              const page = new URL(pageUrl);
+              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+            }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;
             try { original.call(this, state, title, next ? shellPath(next) : undefined); }
             catch { original.call(this, state, title); }
             if (next) {
               pageUrl = next;
+              routedBase?.setAttribute("href", pageUrl);
               reportUrl();
             }
           };
@@ -700,7 +713,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, base: data.base || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -723,6 +736,8 @@ _FRAME_HTML = r"""<!doctype html>
     </script>
   </body>
 </html>"""
+
+_FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under

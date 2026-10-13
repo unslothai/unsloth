@@ -87,6 +87,31 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
+    shell = browser_mod._FRAME_HTML
+    # Inside boot, where cfg and post exist, before any page script can capture fetch.
+    assert "/* BROWSER_NETWORK_JS */" not in shell
+    assert shell.index("const nativeFetch = window.fetch.bind(window);") < shell.index(
+        "const shellPathname"
+    )
+    for guard in (
+        "return nativeFetch(input, init).finally(done);",
+        "/^(?:about:)?srcdoc(?=[?#]|$)/",
+    ):
+        assert guard in shell, guard
+
+
+def test_the_shells_base_follows_the_router_only_without_a_page_base():
+    # A real browser resolves against the document URL when the page has no <base>; checked in
+    # Chromium, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    assert "base: data.base || null" in shell
+    assert 'cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null' in shell
+    assert shell.index("pageUrl = next;") < shell.index(
+        'routedBase?.setAttribute("href", pageUrl);'
+    )
+
+
 def test_annotate_code_is_sent_only_when_annotating():
     shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
     # Not in the shell (so not in every page), installed once and only from the shell's own message.
