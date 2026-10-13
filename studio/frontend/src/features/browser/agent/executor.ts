@@ -795,7 +795,6 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     }
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
   }
-  // In the same call as the drop: nothing can swap the target between the check and the release.
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, up.note);

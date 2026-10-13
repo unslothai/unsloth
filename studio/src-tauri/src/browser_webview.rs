@@ -1704,8 +1704,7 @@ pub async fn browser_view_agent<R: Runtime>(
     eval_json(&page, script).await
 }
 
-// Spliced like the agent code so a CSP without 'unsafe-eval' can't block it. Spliced source can close
-// any wrapper, so the document check is its own statement ahead of it: its throw stops the script.
+// Spliced past the CSP; the document check is its own statement since spliced code can close any wrapper.
 const EVAL_SCRIPT: &str = r#"(() => {
   const agent = window[Symbol.for("unsloth.agent")];
   if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
