@@ -431,12 +431,49 @@ def test_replayed_thinking_preserved_only_when_requested():
                 {"type": "text", "text": "the answer"},
             ],
         },
+        {"role": "user", "content": "and then?"},
     ]
     dropped = anthropic_messages_to_openai(messages)
-    assert "reasoning_content" not in dropped[-1]
+    assert "reasoning_content" not in dropped[1]
     kept = anthropic_messages_to_openai(messages, preserve_thinking = True)
-    assert kept[-1]["reasoning_content"] == "prior trace"
-    assert kept[-1]["content"] == "the answer"
+    assert kept[1]["reasoning_content"] == "prior trace"
+    assert kept[1]["content"] == "the answer"
+
+
+def test_the_current_turns_thinking_survives_without_preservation():
+    # Templates render reasoning after the last real query, so an agent's tool rounds keep theirs;
+    # dropping it made every round re-read the previous one's reasoning.
+    from core.inference.anthropic_compat import anthropic_messages_to_openai
+
+    def _round(trace, call_id):
+        return {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": trace, "signature": ""},
+                {"type": "tool_use", "id": call_id, "name": "bash", "input": {"cmd": "ls"}},
+            ],
+        }
+
+    def _result(call_id):
+        return {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "ok"}],
+        }
+
+    messages = [
+        {"role": "user", "content": "first task"},
+        _round("old trace", "t0"),
+        _result("t0"),
+        {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        {"role": "user", "content": "second task"},
+        _round("round one", "t1"),
+        _result("t1"),
+        _round("round two", "t2"),
+        _result("t2"),
+    ]
+    out = anthropic_messages_to_openai(messages)
+    traces = [m.get("reasoning_content") for m in out if m.get("role") == "assistant"]
+    assert traces == [None, None, "round one", "round two"]
 
 
 def test_anthropic_emitter_only_leading_think_is_reasoning():
@@ -4604,7 +4641,7 @@ class TestAnthropicMessagesToolRouting:
 
 def test_resumed_session_thinking_and_null_content_do_not_400():
     # A resumed session replays assistant turns with `thinking` (and sometimes null)
-    # content. Those must be accepted (thinking dropped by the converter), not 400ed.
+    # content. Those must be accepted, not 400ed.
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
@@ -4631,7 +4668,9 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
     openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
     assistant = next(m for m in openai if m["role"] == "assistant" and m.get("content"))
     assert assistant["content"] == "the answer"
-    assert "secret reasoning" not in json.dumps(openai)  # thinking never forwarded
+    # The current turn's thinking rides as reasoning, never as visible content.
+    assert assistant["reasoning_content"] == "secret reasoning"
+    assert all("secret reasoning" not in (m.get("content") or "") for m in openai)
 
     # A malformed KNOWN block still fails cleanly instead of being swallowed.
     with pytest.raises(ValidationError):
