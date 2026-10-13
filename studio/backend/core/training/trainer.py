@@ -238,6 +238,27 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
+def _spark_tts_repo_dir(
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+    on_model_resolved: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Spark-TTS repo root: LLM/ for training, BiCodec/ and wav2vec2 beside it for the codec."""
+    if local_files_only:
+        return os.path.abspath(lookup_name)
+    from huggingface_hub import snapshot_download
+
+    if model_name.endswith("/LLM"):
+        hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
+    else:
+        hf_repo = model_name
+    if on_model_resolved is not None:
+        on_model_resolved(hf_repo)
+    return os.path.abspath(snapshot_download(hf_repo, revision = model_revision))
+
+
 # Enough rows to see past a leading null or malformed value, few enough to stay cheap on a streamed dataset.
 _AUDIO_SNIFF_ROWS = 16
 
@@ -463,6 +484,7 @@ class UnslothTrainer:
         self._is_dataset_audio = False
         self._cuda_audio_used = False
         self._spark_tts_repo_dir = None
+        self._spark_tts_repo_source = None
         self._spark_tts_code_dir = None
         self._outetts_code_dir = None
         self.model_name = None
@@ -644,6 +666,14 @@ class UnslothTrainer:
                 model_name,
                 self._audio_type,
             )
+
+        # The worker formats the dataset before load_model, so BiCodec preprocessing resolves the repo itself (#13458).
+        self._spark_tts_repo_source = (
+            model_name,
+            model_load_name or model_name,
+            local_files_only,
+            model_revision,
+        )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         self.progress_callbacks.append(callback)
@@ -1339,23 +1369,14 @@ class UnslothTrainer:
                 # (sparktts + BiCodec weights) but loads only the LLM subfolder, so model_name is "Spark-TTS-0.5B/LLM"
                 # (YAML mapping) or "unsloth/Spark-TTS-0.5B".
                 from unsloth import FastModel
-                from huggingface_hub import snapshot_download
 
-                if model_name.endswith("/LLM"):
-                    hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
-                else:
-                    hf_repo = model_name
-
-                if local_files_only:
-                    repo_path = lookup_name
-                else:
-                    if on_model_resolved is not None:
-                        on_model_resolved(hf_repo)
-                    repo_path = snapshot_download(
-                        hf_repo,
-                        revision = model_revision,
-                    )
-                self._spark_tts_repo_dir = os.path.abspath(repo_path)
+                self._spark_tts_repo_dir = _spark_tts_repo_dir(
+                    model_name,
+                    lookup_name,
+                    local_files_only,
+                    model_revision,
+                    on_model_resolved,
+                )
                 llm_path = os.path.join(self._spark_tts_repo_dir, "LLM")
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
@@ -2343,6 +2364,8 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self._update_progress(status_message = "Preparing Spark-TTS codec source...")
+        if self._spark_tts_repo_dir is None:
+            self._spark_tts_repo_dir = _spark_tts_repo_dir(*self._spark_tts_repo_source)
         spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
         self._spark_tts_code_dir = spark_code_dir
         BiCodecTokenizer = import_sparktts_module(

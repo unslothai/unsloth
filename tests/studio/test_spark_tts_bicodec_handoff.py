@@ -1,80 +1,82 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Probe the real BiCodec handoff without importing the model or audio stack."""
+"""Spark-TTS: the BiCodec codec must get the repo root when the dataset is formatted before load_model (#13458).
+
+The worker runs detect -> dataset -> model, so `_preprocess_bicodec_dataset` runs before `load_model` has set
+`_spark_tts_repo_dir`; the codec then read `<cwd>/None/config.yaml`. Source-level: the real methods are exec'd
+with the model, audio and Hub layers stubbed.
+"""
 
 import ast
 import os
+import typing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-
-def _repo_root():
-    configured = os.environ.get("UNSLOTH_REPO_ROOT")
-    candidates = [Path(configured)] if configured else []
-    candidates.extend(Path(__file__).resolve().parents)
-    for candidate in candidates:
-        if (candidate / "studio/backend/core/training/trainer.py").is_file():
-            return candidate
-    pytest.skip("Could not locate studio/backend/training source.")
-
-
-def _method(namespace):
-    source = (_repo_root() / "studio/backend/core/training/trainer.py").read_text(encoding = "utf-8")
-    tree = ast.parse(source)
-    trainer = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "UnslothTrainer"
-    )
-    method = next(
-        node
-        for node in trainer.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_preprocess_bicodec_dataset"
-    )
-    # The constructor sentinel stops before any encoding or nested tensor functions.
-    exec(
-        compile(ast.Module(body = [method], type_ignores = []), "<bicodec-handoff>", "exec"), namespace
-    )
-    return namespace[method.name]
+_TRAINER = Path(__file__).resolve().parents[2] / "studio/backend/core/training/trainer.py"
+_NAMES = ("_spark_tts_repo_dir", "pre_detect_and_load_tokenizer", "_preprocess_bicodec_dataset")
 
 
 class _CodecReached(Exception):
     pass
 
 
-class _UnresolvedCodecRoot(AssertionError):
-    pass
+def _run(
+    model_name,
+    model_load_name = None,
+    local_files_only = False,
+    revision = None,
+    repo_dir = None,
+):
+    """pre_detect, then dataset preprocessing up to the BiCodec constructor, in the worker's order."""
+    tree = ast.parse(_TRAINER.read_text(encoding = "utf-8"))
+    trainer = next(
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainer"
+    )
+    nodes = [
+        n
+        for n in (*tree.body, *trainer.body)
+        if isinstance(n, ast.FunctionDef) and n.name in _NAMES
+    ]
+    downloads, codec_roots = [], []
 
-
-def _probe(repo_dir, *, missing_column = None):
-    calls = []
+    def snapshot_download(repo, revision = None):
+        downloads.append((repo, revision))
+        return f"/hf/hub/{repo}/snapshots/abc"
 
     def codec(root, device):
-        calls.append((root, device))
+        codec_roots.append(root)
         raise _CodecReached
 
     def import_module(name, source):
-        assert source == "<mock-source>"
         if name == "sparktts.models.audio_tokenizer":
             return SimpleNamespace(BiCodecTokenizer = codec)
-        if name == "sparktts.utils.audio":
-            return SimpleNamespace(audio_volume_normalize = lambda value: value)
-        raise AssertionError(f"Unexpected Spark-TTS import: {name}")
+        return SimpleNamespace(audio_volume_normalize = lambda value: value)
 
-    namespace = {
-        "ensure_spark_tts_source": lambda root: "<mock-source>",
-        "import_sparktts_module": import_module,
+    ns = {
+        "os": os,
+        "Optional": typing.Optional,
+        "Callable": typing.Callable,
         "logger": SimpleNamespace(info = lambda *args: None),
+        "_metadata_lookup_name": lambda name, lookup, *args: lookup,
+        "detect_audio_type_checked": lambda *args, **kwargs: ("bicodec", True),
+        "is_vision_model": lambda *args, **kwargs: False,
+        "_load_adapter_aware_tokenizer": lambda *args, **kwargs: object(),
+        "_spark_tts_tokenizer_kwargs": lambda *args: {},
+        "_tokenizer_is_empty": lambda tokenizer: False,
+        "ensure_spark_tts_source": lambda root: "<source>",
+        "import_sparktts_module": import_module,
     }
-    method = _method(namespace)
+    exec(compile(ast.Module(body = nodes, type_ignores = []), str(_TRAINER), "exec"), ns)
     owner = SimpleNamespace(
         _spark_tts_repo_dir = repo_dir,
+        _spark_tts_repo_source = None,
         _update_progress = lambda **kwargs: None,
         _resolve_audio_columns = lambda *args: {
-            "audio_col": None if missing_column == "audio" else "audio",
-            "text_col": None if missing_column == "text" else "text",
+            "audio_col": "audio",
+            "text_col": "text",
             "speaker_col": None,
         },
     )
@@ -83,6 +85,7 @@ def _probe(repo_dir, *, missing_column = None):
     audio = ModuleType("torchaudio")
     audio.transforms = ModuleType("torchaudio.transforms")
     modules = {
+        "huggingface_hub": SimpleNamespace(snapshot_download = snapshot_download),
         "torch": SimpleNamespace(cuda = SimpleNamespace(is_available = lambda: False)),
         "numpy": ModuleType("numpy"),
         "torchaudio": audio,
@@ -90,33 +93,43 @@ def _probe(repo_dir, *, missing_column = None):
         "datasets": SimpleNamespace(Audio = lambda: object()),
     }
     with patch.dict("sys.modules", modules):
-        if missing_column:
-            with pytest.raises(ValueError, match = "needs 'audio' and 'text'"):
-                method(owner, dataset)
-        else:
-            with pytest.raises(_CodecReached):
-                method(owner, dataset)
-    return calls
+        ns["pre_detect_and_load_tokenizer"](
+            owner,
+            model_name = model_name,
+            model_load_name = model_load_name,
+            local_files_only = local_files_only,
+            model_revision = revision,
+        )
+        # pre_detect stays config/tokenizer only: the codec weights are fetched when the dataset needs them.
+        assert downloads == []
+        with pytest.raises(_CodecReached):
+            ns["_preprocess_bicodec_dataset"](owner, dataset)
+    return downloads, codec_roots
+
+
+@pytest.mark.parametrize(
+    "model_name, revision",
+    [
+        ("unsloth/Spark-TTS-0.5B", None),
+        ("Spark-TTS-0.5B/LLM", None),
+        ("unsloth/Spark-TTS-0.5B", "c80b03b6"),
+    ],
+)
+def test_hub_model_codec_gets_the_downloaded_root_before_load_model(model_name, revision):
+    downloads, codec_roots = _run(model_name, revision = revision)
+    assert downloads == [("unsloth/Spark-TTS-0.5B", revision)]
+    assert codec_roots == [os.path.abspath("/hf/hub/unsloth/Spark-TTS-0.5B/snapshots/abc")]
+
+
+def test_cached_snapshot_codec_gets_the_snapshot_root_offline(tmp_path):
+    snapshot = tmp_path / "models--unsloth--Spark-TTS-0.5B" / "snapshots" / "c80b03b6"
+    downloads, codec_roots = _run("unsloth/Spark-TTS-0.5B", str(snapshot), local_files_only = True)
+    assert downloads == []
+    assert codec_roots == [str(snapshot)]
 
 
 @pytest.mark.parametrize("repo_dir", [r"C:\models\Spark-TTS-0.5B", "/srv/Spark-TTS-0.5B"])
-def test_resolved_root_reaches_codec_unchanged(repo_dir):
-    assert _probe(repo_dir) == [(repo_dir, "cpu")]
-
-
-@pytest.mark.parametrize("column", ["audio", "text"])
-def test_missing_required_column_stops_before_codec(column):
-    assert _probe(None, missing_column = column) == []
-
-
-@pytest.mark.xfail(
-    strict = True,
-    raises = _UnresolvedCodecRoot,
-    reason = "Issue #13458: preprocessing can run before load_model sets the codec repo root",
-)
-def test_dataset_before_model_does_not_pass_an_unresolved_root():
-    calls = _probe(None)
-    assert len(calls) == 1
-    assert calls[0][1] == "cpu"
-    if calls[0][0] is None:
-        raise _UnresolvedCodecRoot("BiCodecTokenizer received an unresolved repository root")
+def test_a_root_load_model_already_set_is_kept(repo_dir):
+    downloads, codec_roots = _run("unsloth/Spark-TTS-0.5B", repo_dir = repo_dir)
+    assert downloads == []
+    assert codec_roots == [repo_dir]
