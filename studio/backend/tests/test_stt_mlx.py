@@ -325,3 +325,54 @@ def test_the_cache_scan_row_is_speech_to_text_only_on_a_mac(monkeypatch, tmp_pat
         assert row["capabilities"]["can_chat"] is False
     else:
         assert row["task"] != "automatic-speech-recognition"
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        lambda snap: (snap / "tokenization_evil.py").write_text("raise SystemExit"),
+        lambda snap: (snap / "tokenizer_config.json").write_text(
+            json.dumps({"auto_map": {"AutoTokenizer": ["evil.Tok", None]}})
+        ),
+        lambda snap: (snap / "config.json").write_text(
+            json.dumps({**_QWEN3_ASR_CONFIG, "auto_map": {"AutoConfig": "other/repo--x.C"}})
+        ),
+    ],
+)
+def test_a_checkpoint_that_ships_its_own_code_is_refused_before_any_load(
+    mlx_host, monkeypatch, tmp_path, plant
+):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    plant(_write_snapshot(tmp_path / "hub", _REPO, _QWEN3_ASR_CONFIG))
+    with pytest.raises(SttModelCompatibilityError, match = "ships its own code"):
+        WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(_REPO)
+
+
+def test_the_child_refuses_custom_code_even_if_asked(tmp_path, monkeypatch):
+    (tmp_path / "custom.py").write_text("")
+    monkeypatch.setitem(sys.modules, "mlx_audio", None)
+    with pytest.raises(stt_sidecar_module.SttModelCompatibilityError):
+        worker_module.load_mlx_stt(str(tmp_path), "cpu")
+
+
+def test_an_mlx_checkpoint_cannot_translate(mlx_host, monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    _write_snapshot(tmp_path / "hub", _REPO, _QWEN3_ASR_CONFIG)
+    _write_snapshot(tmp_path / "hub", "someone/whisper-x", {"model_type": "whisper"})
+
+    assert stt_sidecar_module.can_translate(_REPO) is False
+    assert stt_sidecar_module.can_translate("someone/whisper-x") is True
+    assert stt_sidecar_module.can_translate("small") is True
+    assert stt_sidecar_module.can_translate("large-v3-turbo") is False
+
+
+def test_translation_is_untouched_off_a_mac(monkeypatch, tmp_path):
+    monkeypatch.setattr(stt_mlx, "mlx_stt_available", lambda: False)
+    monkeypatch.setattr(
+        stt_sidecar_module,
+        "_find_complete_cached_snapshot",
+        lambda _m: pytest.fail("no cache lookup off a Mac"),
+    )
+    assert stt_sidecar_module.can_translate(_REPO) is True

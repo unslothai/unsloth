@@ -345,8 +345,18 @@ def resolve_model_repo(model_id: str) -> str:
 
 def can_translate(model: Optional[str]) -> bool:
     """Whether Whisper's translate task works on this id. The turbo checkpoints were fine-tuned for transcription
-    only and answer in the source language when asked to translate."""
-    return "turbo" not in (model or DEFAULT_STT_MODEL).lower()
+    only and answer in the source language when asked to translate, as do mlx-audio checkpoints."""
+    if "turbo" in (model or DEFAULT_STT_MODEL).lower():
+        return False
+    from core.inference.stt_mlx import mlx_stt_available
+
+    if not model or model in STT_MODELS or not mlx_stt_available():
+        return True
+    try:
+        snapshot = _find_complete_cached_snapshot(model)
+    except Exception:  # noqa: BLE001 - an unreadable id is refused later, by the load
+        return True
+    return snapshot is None or _is_whisper_config(_read_json_object(snapshot / "config.json"))
 
 
 def _is_whisper_config(config: object) -> bool:
@@ -1521,6 +1531,11 @@ class WhisperSttSidecar:
                 f"STT model '{model_id}' is not a compatible Transformers Whisper model."
             )
         if not _is_whisper_config(config):
+            from core.inference.stt_mlx import ships_custom_code
+            if ships_custom_code(snapshot_path):
+                raise SttModelCompatibilityError(
+                    f"STT model '{model_id}' ships its own code, which dictation does not run."
+                )
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
         generation_config = _read_json_object(snapshot_path / "generation_config.json")
         is_multilingual = generation_config.get("is_multilingual")

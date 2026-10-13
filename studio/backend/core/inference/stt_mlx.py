@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import functools
 import importlib.util
+import json
+from pathlib import Path
 
 # Families proven end to end through the dictation worker; mlx-audio knows more.
 MLX_STT_MODEL_TYPES = frozenset({"qwen3_asr"})
@@ -32,3 +34,18 @@ def is_mlx_stt_config(config: object) -> bool:
     if not isinstance(model_type, str) or model_type.strip().lower() not in MLX_STT_MODEL_TYPES:
         return False
     return mlx_stt_available()
+
+
+def ships_custom_code(snapshot: Path) -> bool:
+    # mlx-audio loads the tokenizer with trust_remote_code=True, so a repo's own Python would run.
+    snapshot = Path(snapshot)
+    if any(snapshot.rglob("*.py")):
+        return True
+    for name in ("config.json", "tokenizer_config.json", "preprocessor_config.json"):
+        try:
+            data = json.loads((snapshot / name).read_text(encoding = "utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "auto_map" in data:
+            return True
+    return False

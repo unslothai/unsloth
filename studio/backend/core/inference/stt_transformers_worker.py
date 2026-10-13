@@ -180,6 +180,13 @@ def load_mlx_stt(
     device: str,
     cancel_event = None,
 ) -> _MlxSttModel:
+    from core.inference.stt_mlx import ships_custom_code
+    from core.inference.stt_sidecar import SttModelCompatibilityError
+
+    if ships_custom_code(snapshot_path):
+        raise SttModelCompatibilityError(
+            "This dictation model ships its own code, which is not run."
+        )
     import mlx.core as mx
     from mlx_audio.stt import load
 
