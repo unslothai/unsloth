@@ -102,6 +102,7 @@ def test_the_seed_is_set_before_the_model_is_built() -> None:
 
 @_POSIX_ONLY
 def test_a_bin_checkpoint_is_rejected_by_name(tmp_path) -> None:
+    pytest.importorskip("torch")
     pipeline = _load("spark_pipeline_for_plumbing", "studio/spark_pipeline.py")
     (tmp_path / "pytorch_model.bin").write_bytes(b"x")
 

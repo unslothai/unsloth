@@ -1396,6 +1396,7 @@ def _fake_rpc_server(behaviour: str):
     return port, thread, seen
 
 
+@_POSIX_ONLY
 def test_rpc_hello_probe_reads_a_six_zero_reply() -> None:
     sc = _load("studio/spark_cluster.py")
     port, thread, seen = _fake_rpc_server("6.0.0")
@@ -2414,6 +2415,7 @@ def test_train_refuses_both_modes_at_once(monkeypatch) -> None:
     )
 
 
+@_POSIX_ONLY
 def test_multi_node_vllm_recipes_start_ray_and_stage_a_local_model(tmp_path) -> None:
     """Ray is not in the Studio environment and every node opens the same model path; the
     pipeline-parallel recipe also never started a Ray cluster at all."""
@@ -2616,6 +2618,7 @@ def test_spark_up_is_not_ready_when_ssh_cannot_check_the_peer(monkeypatch) -> No
     assert "Ready" in CliRunner().invoke(S.spark_app, ["up"]).output
 
 
+@_POSIX_ONLY
 def test_the_hub_cache_follows_the_environment(monkeypatch, tmp_path) -> None:
     """A repo cached under HF_HOME / HF_HUB_CACHE was invisible to staging and sizing, so rank 1
     downloaded the model (or failed offline) while rank 0 loaded it from the custom cache."""
