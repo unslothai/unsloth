@@ -19,10 +19,10 @@ const CARD = read("../src/features/hub/catalog/local-on-device-card.tsx");
 test("local reveal and delete go through the path-checked hub routes", () => {
   assert.match(API, /authFetch\("\/api\/hub\/local\/reveal"/);
   assert.match(API, /authFetch\("\/api\/hub\/local\/delete", \{\s*method: "DELETE"/);
-  // Mirrors DELETABLE_SOURCES in local_model_actions.py: Ollama blobs stay read-only.
+  // Mirrors LOCAL_SOURCES in local_model_actions.py.
   assert.match(
     API,
-    /DELETABLE_LOCAL_SOURCES[^=]*= new Set\(\[\s*"models_dir",\s*"lmstudio",\s*"custom",\s*\]\)/,
+    /DELETABLE_LOCAL_SOURCES[^=]*= new Set\(\[\s*"models_dir",\s*"lmstudio",\s*"custom",\s*"ollama",\s*"hermes",\s*"omlx",\s*\]\)/,
   );
 });
 

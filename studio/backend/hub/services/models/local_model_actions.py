@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Reveal and delete for on-device models outside the Hugging Face cache (LM Studio, custom
-folders, ./models). Only a path the local inventory lists is accepted, so callers cannot probe or
-remove arbitrary files."""
+folders, ./models, Ollama, Hermes, oMLX). Only a path the local inventory lists is accepted, so
+callers cannot probe or remove arbitrary files."""
 
 from __future__ import annotations
 
@@ -16,14 +16,13 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo
-from hub.services.models import account_access, deletion, local_inventory
+from hub.services.models import account_access, deletion, local_inventory, ollama
 from hub.utils.host_paths import scrub_paths
 
 logger = get_logger(__name__)
 
-REVEALABLE_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
-# Ollama stores content-addressed blobs shared between tags, and Hermes / oMLX own their folders.
-DELETABLE_SOURCES = frozenset({"models_dir", "lmstudio", "custom"})
+# Every on-device source outside the HF cache, which has its own guarded delete-cached route.
+LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
 
 
 def _identity(raw: str | os.PathLike) -> str:
@@ -73,7 +72,12 @@ def _delete_blocking(target: Path, protected: set[str]) -> None:
     elif target.is_dir():
         shutil.rmtree(target)
     elif target.exists():
-        target.unlink()
+        from utils.models.model_config import colocated_split_shards
+
+        # A split GGUF row names its first shard; llama.cpp needs the rest, so they go too.
+        shards, _ = colocated_split_shards(target)
+        for shard in shards or [target]:
+            shard.unlink(missing_ok = True)
     else:
         raise HTTPException(status_code = 404, detail = "Model not found on device")
     # LM Studio nests publisher/repo/: drop folders the delete left empty, up to the scan root.
@@ -84,6 +88,16 @@ def _delete_blocking(target: Path, protected: set[str]) -> None:
         except OSError:
             break
         parent = parent.parent
+
+
+def _ollama_ref(row: LocalModelInfo) -> str:
+    for candidate in (row.load_id, row.id, row.path):
+        if candidate and ollama.is_ollama_manifest_ref(candidate):
+            return candidate
+    ref = ollama.ollama_manifest_ref_for_path(row.path)
+    if not ref:
+        raise HTTPException(status_code = 404, detail = "Model not found on device")
+    return ref
 
 
 def _load_state_blocks_delete(paths: tuple[str, ...]) -> str | None:
@@ -102,7 +116,7 @@ async def reveal_local_model_response(path: str) -> dict:
     account_access.require_installation_owner()
     from utils.paths.path_utils import reveal_in_file_manager
 
-    row = await _listed_row(path, REVEALABLE_SOURCES)
+    row = await _listed_row(path, LOCAL_SOURCES)
     target = Path(row.path)
     try:
         await asyncio.to_thread(reveal_in_file_manager, target)
@@ -116,10 +130,16 @@ async def reveal_local_model_response(path: str) -> dict:
 
 async def delete_local_model_response(path: str) -> dict:
     account_access.require_installation_owner()
-    row = await _listed_row(path, DELETABLE_SOURCES)
+    row = await _listed_row(path, LOCAL_SOURCES)
     target = Path(row.path)
-    # Loaded ids are whatever path the load was given: check the listed and the resolved spelling.
-    spellings = tuple(dict.fromkeys((row.path, os.path.realpath(row.path))))
+    ollama_ref = await asyncio.to_thread(_ollama_ref, row) if row.source == "ollama" else None
+    # Loaded ids are whatever the load was given: the listed and resolved path, and for Ollama the
+    # manifest reference and the directories its .gguf links live in.
+    spellings = [row.path, os.path.realpath(row.path)]
+    if ollama_ref:
+        spellings.append(ollama_ref)
+        spellings.extend(str(d) for d in ollama.ollama_model_ref_link_dirs(ollama_ref))
+    spellings = tuple(dict.fromkeys(spellings))
     try:
         blocks = await asyncio.to_thread(_load_state_blocks_delete, spellings)
     except Exception as e:
@@ -131,9 +151,16 @@ async def delete_local_model_response(path: str) -> dict:
     custom_folders = await local_inventory._load_custom_folders()
     protected = await asyncio.to_thread(_protected_roots, custom_folders)
     try:
-        await asyncio.to_thread(_delete_blocking, target, protected)
+        if ollama_ref:
+            await asyncio.to_thread(ollama.delete_ollama_model_ref, ollama_ref)
+        else:
+            await asyncio.to_thread(_delete_blocking, target, protected)
     except HTTPException:
         raise
+    except ollama.OllamaModelBusy as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except ValueError:
+        raise HTTPException(status_code = 404, detail = "Model not found on device")
     except OSError as e:
         logger.error("Failed to delete %s: %s", scrub_paths(str(target)), scrub_paths(e))
         raise HTTPException(status_code = 500, detail = "Failed to delete the model files")

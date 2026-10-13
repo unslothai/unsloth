@@ -432,11 +432,14 @@ export async function deleteCachedModel(
   }
 }
 
-/** Sources `/api/hub/local/delete` accepts; Ollama blobs and Hermes / oMLX folders stay read-only. */
+/** Sources `/api/hub/local/delete` accepts: everything detected outside the HF cache. */
 export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
   "custom",
+  "ollama",
+  "hermes",
+  "omlx",
 ]);
 
 /** Reveal an on-device model outside the HF cache; the server only accepts a path it lists. */

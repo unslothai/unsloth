@@ -5,6 +5,8 @@
 scan root, never a loaded model."""
 
 import asyncio
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -65,11 +67,71 @@ def test_delete_refuses_unlisted_path_and_hf_cache_rows(lm_root, tmp_path):
     root, model, _ = lm_root
     stray = root / "unsloth" / "other"
     stray.mkdir()
-    for path in (stray, tmp_path / "hf" / "models--a--b", tmp_path / "ollama" / "blob"):
+    for path in (stray, tmp_path / "hf" / "models--a--b"):
         with pytest.raises(HTTPException) as caught:
             asyncio.run(actions.delete_local_model_response(str(path)))
         assert caught.value.status_code == 404
     assert stray.is_dir() and model.is_dir()
+
+
+def _ollama_store(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    store = tmp_path / "ollama_store"
+    blobs = store / "blobs"
+    blobs.mkdir(parents = True)
+    for name in ("sha256-own", "sha256-shared", "sha256-cfg"):
+        (blobs / name).write_bytes(b"x")
+    library = store / "manifests" / "registry.ollama.ai" / "library"
+    own = {
+        "config": {"digest": "sha256:cfg"},
+        "layers": [{"digest": "sha256:own"}, {"digest": "sha256:shared"}],
+    }
+    other = {"layers": [{"digest": "sha256:shared"}]}
+    (library / "gone").mkdir(parents = True)
+    (library / "kept").mkdir(parents = True)
+    (library / "gone" / "latest").write_text(json.dumps(own))
+    (library / "kept" / "latest").write_text(json.dumps(other))
+    monkeypatch.setattr(ollama, "_known_ollama_dirs", lambda: [store])
+    ref = ollama._ollama_manifest_ref(Path(os.path.realpath(library / "gone" / "latest")))
+    return store, ref
+
+
+def test_delete_ollama_tag_keeps_layers_another_tag_uses(lm_root, tmp_path, monkeypatch):
+    store, ref = _ollama_store(tmp_path, monkeypatch)
+    blob = store / "blobs" / "sha256-own"
+    row = LocalModelInfo(
+        id = ref, load_id = ref, display_name = "gone:latest", path = str(blob), source = "ollama"
+    )
+
+    async def listing(models_dir: str = "./models"):
+        return LocalModelListResponse(models_dir = "", hf_cache_dir = "", models = [row])
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
+    asyncio.run(actions.delete_local_model_response(str(blob)))
+    library = store / "manifests" / "registry.ollama.ai" / "library"
+    assert not (library / "gone").exists()
+    assert (library / "kept" / "latest").is_file()
+    assert sorted(p.name for p in (store / "blobs").iterdir()) == ["sha256-shared"]
+
+
+def test_delete_split_gguf_takes_every_shard(lm_root, tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes"
+    hermes.mkdir()
+    shards = [hermes / f"big-0000{i}-of-00002.gguf" for i in (1, 2)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF")
+    keep = hermes / "other.gguf"
+    keep.write_bytes(b"GGUF")
+    row = _row(shards[0], "hermes")
+
+    async def listing(models_dir: str = "./models"):
+        return LocalModelListResponse(models_dir = "", hf_cache_dir = "", models = [row])
+
+    monkeypatch.setattr(local_inventory, "list_local_models_response", listing)
+    asyncio.run(actions.delete_local_model_response(str(shards[0])))
+    assert not any(s.exists() for s in shards)
+    assert keep.is_file()
 
 
 def test_delete_refuses_a_row_that_is_the_scan_folder_itself(lm_root):
