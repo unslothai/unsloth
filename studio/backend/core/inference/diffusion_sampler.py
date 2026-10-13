@@ -37,7 +37,7 @@ SCHEDULE_TYPES: dict[str, tuple[str, Optional[str]]] = {
     "karras": ("Karras", "use_karras_sigmas"),
     "exponential": ("Exponential", "use_exponential_sigmas"),
 }
-_SIGMA_FLAGS = ("use_karras_sigmas", "use_exponential_sigmas", "use_beta_sigmas")
+_SIGMA_FLAGS = ("use_karras_sigmas", "use_exponential_sigmas", "use_beta_sigmas", "use_lu_lambdas")
 
 # AUTOMATIC1111's per-sampler default schedule (modules/sd_samplers_kdiffusion.py); absent = keep the config's.
 _AUTOMATIC_FOR = {"dpmpp_2m": "karras", "dpmpp_2m_sde": "exponential"}
@@ -92,7 +92,13 @@ def sampler_options(scheduler: Any) -> list[dict[str, Any]]:
     Empty when the scheduler lists no compatible classes (every flow-matching model), so the
     control is absent there rather than offering choices that cannot run. Read on every status poll,
     hence cached per class."""
-    if scheduler is None:
+    config = getattr(scheduler, "config", None) or {}
+    # A DPM / UniPC scheduler driving a flow model lists the epsilon samplers as compatible too.
+    if (
+        scheduler is None
+        or config.get("use_flow_sigmas")
+        or config.get("prediction_type") == "flow_prediction"
+    ):
         return []
     return [
         {"id": sid, "label": label, "schedule_types": list(types)}

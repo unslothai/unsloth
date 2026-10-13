@@ -55,6 +55,20 @@ def test_flow_matching_offers_nothing():
     assert sampler_options(None) == []
 
 
+def test_flow_configured_dpm_offers_nothing():
+    flow_dpm = diffusers.DPMSolverMultistepScheduler(
+        use_flow_sigmas = True, prediction_type = "flow_prediction"
+    )
+    assert sampler_options(flow_dpm) == []
+
+
+def test_uniform_clears_an_inherited_lu_schedule():
+    dpm = diffusers.DPMSolverMultistepScheduler.from_config({**_SDXL, "use_lu_lambdas": True})
+    built, _ = build_scheduler(dpm, "dpmpp_2m", "uniform")
+    assert built.config.use_lu_lambdas is False
+    assert built.config.use_karras_sigmas is False
+
+
 def test_default_keeps_the_shipped_scheduler():
     assert build_scheduler(_sdxl(), None, None) == (None, None)
     assert build_scheduler(_sdxl(), "default", "automatic") == (None, None)

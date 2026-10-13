@@ -1503,6 +1503,9 @@ export function ImagesPage({
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   // Per model, like the rest of the recipe: a model switch brings back what was last used with it.
   const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  // A restored recipe's choice, kept until the model's options exist (a restore can run unloaded,
+  // then Generate recalls the model) or the user picks again.
+  const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
   // selected while the model downloaded is newer than that pick.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
@@ -1962,21 +1965,22 @@ export function ImagesPage({
   const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
-  const samplerChoice = normalizeSamplerChoice(samplerOptions, samplerChoices[samplerModelKey]);
+  const samplerChoice = normalizeSamplerChoice(
+    samplerOptions,
+    restoredSampler ?? samplerChoices[samplerModelKey],
+  );
   const changeSamplerChoice = useCallback(
     (next: Partial<SamplerChoice>) => {
+      setRestoredSampler(null);
       setSamplerChoices((all) =>
         withSamplerChoice(
           all,
           samplerModelKey,
-          normalizeSamplerChoice(samplerOptions, {
-            ...normalizeSamplerChoice(samplerOptions, all[samplerModelKey]),
-            ...next,
-          }),
+          normalizeSamplerChoice(samplerOptions, { ...samplerChoice, ...next }),
         ),
       );
     },
-    [samplerModelKey, samplerOptions],
+    [samplerChoice, samplerModelKey, samplerOptions],
   );
   useEffect(() => {
     if (!controlnetCapable) {
@@ -2496,7 +2500,7 @@ export function ImagesPage({
     setSteps(image.steps);
     setGuidance(image.guidance);
     // A recipe without one ran on the shipped scheduler; a choice this model lacks falls back to it.
-    changeSamplerChoice({
+    setRestoredSampler({
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
     });
@@ -2564,7 +2568,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, setPromptFor, setWorkflow, sizeLimits]);
+  }, [setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
