@@ -290,8 +290,7 @@ test("the Images page wires downloads, the stamp setting and import", () => {
   assert.match(store, /imageInfoStamp: true,/);
 });
 
-// ComfyUI's default text-to-image graph, as its SaveImage writes it into the `prompt` chunk, with
-// the seed wired through a primitive node.
+// ComfyUI's default text-to-image graph from its `prompt` chunk, seed wired through a primitive.
 const COMFY_PROMPT = JSON.stringify({
   "3": {
     class_type: "KSampler",
@@ -359,7 +358,6 @@ test("a ComfyUI PNG imports its prompt, seed, steps, CFG, size and checkpoint", 
     null,
   );
   assert.equal(parseComfyPrompt("not json"), null);
-  // Unsloth's recipe still wins when a file somehow carries both.
   assert.equal(
     importedRecipe({ recipe: RECIPE, comfyPrompt: COMFY_PROMPT })?.steps,
     4,

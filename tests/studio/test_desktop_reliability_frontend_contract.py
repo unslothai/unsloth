@@ -297,8 +297,7 @@ def test_media_galleries_save_natively_with_feedback():
     )[0]
 
     assert "await downloadUrl(src, filename);" in download
-    # Every save goes through downloadFile; the stored original is re-fetched authenticated
-    # (WebKit cannot refetch the cached object URL), only the unstamped browser PNG reuses src.
+    # WebKit cannot refetch the cached object URL, so only the unstamped browser PNG reuses src.
     assert 'await downloadFile(output, filename, output.type || "image/png");' in download
     assert "await fetchGalleryBlob(image.url)" in download
     assert "if (src && !isTauri)" in download
