@@ -37532,11 +37532,11 @@ class LlamaCppBackend:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
-        compact_context: bool = False,
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
+        compact_context: bool = False,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -37780,6 +37780,7 @@ class LlamaCppBackend:
                 # tools as the first attempt was.
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
+                compact_context = compact_context,
                 _allow_respawn_retry = False,
             )
 
@@ -37996,7 +37997,6 @@ class LlamaCppBackend:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
-        compact_context: bool = False,
         tool_choice: Any = None,
         # Appended, never inserted: no bare `*` here, so every parameter is
         # positional-or-keyword and inserting one rebinds later positional arguments.
@@ -38012,6 +38012,7 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
+        compact_context: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.

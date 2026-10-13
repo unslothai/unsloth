@@ -2766,7 +2766,6 @@ class InferenceOrchestrator:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
-        force_reset: bool = False,
         max_tokens: Optional[int] = None,
         thread_id: Optional[str] = None,
         cancel_event = None,
@@ -2781,6 +2780,7 @@ class InferenceOrchestrator:
         recall_done: bool = False,
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
+        force_reset: bool = False,
     ) -> dict:
         """Fit one MLX prompt into the served window under the policy GGUF uses.
 
