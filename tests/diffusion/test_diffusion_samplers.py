@@ -59,7 +59,9 @@ def _load_official_generate():
 @pytest.mark.skipif(
     not _LLADA_GENERATE, reason = "set UNSLOTH_LLADA_GENERATE_PY to LLaDA's generate.py"
 )
-@pytest.mark.parametrize("temperature", [0.0, 0.7])
+# Greedy only: the Gumbel noise is drawn for the active block, not the [B, L, V] canvas, so sampled runs share
+# the reference's distribution but not its RNG stream (see test_llada_sampling_is_seeded_and_resolves_every_mask).
+@pytest.mark.parametrize("temperature", [0.0])
 @pytest.mark.parametrize("remasking", ["low_confidence", "random"])
 def test_llada_sampler_matches_official(temperature, remasking):
     from unsloth.models.diffusion_samplers import _llada_sample
@@ -93,6 +95,35 @@ def test_llada_sampler_matches_official(temperature, remasking):
         remasking = remasking,
     )
     assert torch.equal(got, expected), (got, expected)
+
+
+@pytest.mark.parametrize("remasking", ["low_confidence", "random"])
+def test_llada_sampling_is_seeded_and_resolves_every_mask(remasking):
+    from unsloth.models.diffusion_samplers import _llada_sample
+
+    model = _TinyMaskPredictor()
+    prompt = torch.tensor([[1, 7, 9, 11, 13], [3, 5, 7, 9, 11]])
+
+    def sample(seed):
+        torch.manual_seed(seed)
+        return _llada_sample(
+            model,
+            None,
+            prompt,
+            None,
+            max_new_tokens = 16,
+            steps = 8,
+            block_length = 8,
+            temperature = 0.7,
+            mask_id = MASK_ID,
+            eos_ids = [],
+            remasking = remasking,
+        )
+
+    first = sample(1)
+    assert torch.equal(first, sample(1))
+    assert first.shape == (2, 16) and not bool((first == MASK_ID).any())
+    assert any(not torch.equal(first, sample(seed)) for seed in range(2, 6))
 
 
 def test_llada_sampler_stops_after_eos_block():
