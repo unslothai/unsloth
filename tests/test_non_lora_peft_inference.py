@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""fast_linear_forward must run non-LoRA PEFT adapters (VeRA, LoHa, ...) through their own forward (#1385)."""
-
 from __future__ import annotations
 
 import pytest
