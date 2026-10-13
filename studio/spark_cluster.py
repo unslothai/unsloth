@@ -2817,6 +2817,39 @@ def model_size_report(target: str) -> Dict[str, Any]:
     return {"gib": result["bytes"] / 2**30, "why": ""}
 
 
+_FLOAT_DTYPES = {"F8_E4M3", "F8_E5M2", "F8_E8M0", "F16", "BF16", "F32", "F64"}
+
+
+def bf16_resident_gib(target: str) -> Optional[float]:
+    """What a pipeline stage holds after casting every float tensor to bf16, from the safetensors
+    headers: an FP8 checkpoint doubles, so its size on disk understates it. None if unreadable."""
+    root = osp.expanduser(target)
+    if not osp.isdir(root):
+        repo = osp.join(
+            osp.expanduser("~/.cache/huggingface/hub"), "models--" + target.replace("/", "--")
+        )
+        root = _hf_snapshot_dir(repo) if osp.isdir(repo) else None
+    shards = sorted(glob.glob(osp.join(root, "*.safetensors"))) if root else []
+    if not shards:
+        return None
+    total = 0
+    try:
+        for shard in shards:
+            with open(shard, "rb") as handle:
+                header = json.loads(handle.read(struct.unpack("<Q", handle.read(8))[0]))
+            for name, entry in header.items():
+                if name == "__metadata__":
+                    continue
+                numel = 1
+                for dim in entry["shape"]:
+                    numel *= int(dim)
+                begin, end = entry["data_offsets"]
+                total += 2 * numel if entry["dtype"] in _FLOAT_DTYPES else end - begin
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return None
+    return total / 2**30
+
+
 def model_size_gib(target: str) -> Optional[float]:
     """Best-effort size of a model, from a file, a directory, or the HF cache."""
     return model_size_report(target)["gib"]
@@ -4187,16 +4220,22 @@ def _cmd_serve(
     # llama-server is, and the two need not share a directory.
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
+        # One engine has no front end, so it takes the requested port itself, bound as spark_lb is.
+        listen = (
+            f"--host 0.0.0.0 --port {port}"
+            if engines == 1
+            else (f"--host 127.0.0.1 --port {port + 1 + i}")
+        )
         print(f"     {shlex.quote(local_server)} -m {qmodel} \\")
         print(f"         --rpc {peer_ip}:{rpc_port + i} -ngl 999 --ctx-size {ctx * slots} \\")
-        print(f"         -np {slots} -cb -ub 512 --host 127.0.0.1 --port {port + 1 + i}")
+        print(f"         -np {slots} -cb -ub 512 {listen}")
     print("")
     if engines > 1:
         ends = " ".join(f"127.0.0.1:{port + 1 + i}" for i in range(engines))
         print("  3. Put the round-robin front end in front of them:")
         print(f"     python -m studio.spark_lb --port {port} {ends}")
         print("")
-        print(f"  Clients then talk to a single endpoint on port {port}.")
+    print(f"  Clients then talk to a single endpoint on port {port}.")
     print("")
     print("  Notes that change the numbers materially:")
     print("    * `-ub 512` -- the ubatch optimum INVERTS under a split (512 beats 1024).")
@@ -4579,6 +4618,9 @@ def _cmd_pipeline(
         print(NOT_A_SPARK)
         return 0
     size = model_size_gib(model)
+    resident = bf16_resident_gib(model)
+    if resident is not None:
+        size = max(size or 0.0, resident)
     budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
     if run and size is not None and size > budget and "--shard-load" not in extra.split():
         # Without it every node materialises the whole checkpoint before dropping foreign layers.

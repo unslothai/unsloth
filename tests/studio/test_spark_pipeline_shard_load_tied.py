@@ -97,6 +97,9 @@ def test_a_stage_holding_both_keeps_them_one_tensor(tmp_path) -> None:
     )
     embed = model.get_input_embeddings().weight
     assert model.lm_head.weight.data_ptr() == embed.data_ptr()
+    # One Parameter object, not two sharing storage: AdamW would otherwise step it twice.
+    assert model.lm_head.weight is embed
+    assert sum(p is embed for p in model.parameters()) == 1
 
 
 def test_an_untied_checkpoint_is_unaffected(tmp_path) -> None:
@@ -248,3 +251,23 @@ def test_shard_load_computes_every_rotary_buffer(tmp_path, arch: str, shard_load
     assert rotary
     for k in rotary:
         assert torch.equal(got[k], want[k]), k
+
+
+def test_auto_shard_load_sizes_an_fp8_checkpoint_at_its_bf16_footprint(tmp_path) -> None:
+    """On disk an FP8 checkpoint is half of what a stage holds after the bf16 cast."""
+    import importlib.util as iu
+    import json
+    import struct
+
+    spec = iu.spec_from_file_location("spark_cluster_sizes", REPO / "studio" / "spark_cluster.py")
+    cluster = iu.module_from_spec(spec)
+    spec.loader.exec_module(cluster)
+    header = {
+        "w": {"dtype": "F8_E4M3", "shape": [1024, 1024], "data_offsets": [0, 1024 * 1024]},
+        "n": {"dtype": "I32", "shape": [4], "data_offsets": [1024 * 1024, 1024 * 1024 + 16]},
+    }
+    blob = json.dumps(header).encode()
+    with open(tmp_path / "model.safetensors", "wb") as handle:
+        handle.write(struct.pack("<Q", len(blob)) + blob)
+    got = cluster.bf16_resident_gib(str(tmp_path))
+    assert got == (2 * 1024 * 1024 + 16) / 2**30
