@@ -49,7 +49,9 @@ def test_the_users_choice_stands_wherever_there_is_reasoning_or_no_proof(monkeyp
     backend = _backend()
     monkeypatch.setattr(LlamaCppBackend, "_empty_think_replays_with_preserve", lambda self: True)
     assert backend._replay_preserve_thinking(False, _history("thought about it"), False) is False
-    assert backend._replay_preserve_thinking(None, _history(), False) is None
+    # Omitted (every API client that never sends it) resolves the same way as an explicit off.
+    assert backend._replay_preserve_thinking(None, _history(), False) is True
+    assert backend._replay_preserve_thinking(None, _history("thought about it"), False) is None
     assert backend._replay_preserve_thinking(True, _history(), False) is True
     assert _backend(supports = False)._replay_preserve_thinking(False, _history(), False) is False
     # Thinking on: its reasoning is real, so the caller's choice to drop it stands.
@@ -129,3 +131,75 @@ def test_probe_failure_keeps_the_setting_and_retries(monkeypatch):
     backend = _backend()
     assert backend._empty_think_replays_with_preserve() is False
     assert getattr(backend, "_empty_think_preserve_probe", None) is None
+
+
+class _RouteBackend:
+    """What the passthrough body builder reads off the llama backend."""
+
+    is_vision = False
+    markup_profile = None
+
+    def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
+        kwargs = {"enable_thinking": enable_thinking}
+        if preserve_thinking is not None:
+            kwargs["preserve_thinking"] = preserve_thinking
+        return kwargs
+
+    def _replay_preserve_thinking(
+        self,
+        preserve,
+        messages,
+        enable_thinking = None,
+        effort = None,
+    ):
+        answered = any(m.get("role") == "assistant" for m in messages)
+        return True if preserve is not True and enable_thinking is False and answered else preserve
+
+
+def test_client_tool_passthrough_replays_the_empty_think_blocks_too():
+    # Coding agents bring their own tools, so their turns ride the passthrough: it has to send the
+    # preserve_thinking generation would, or every follow-up re-reads the previous turn.
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_openai_passthrough_body
+
+    payload = ChatCompletionRequest(
+        messages = [
+            {"role": "user", "content": "list files"},
+            {"role": "assistant", "content": "Done."},
+            {"role": "user", "content": "and again"},
+        ],
+        tools = [
+            {"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}}
+        ],
+        enable_thinking = False,
+    )
+    body = _build_openai_passthrough_body(payload, backend_ctx = 4096, llama_backend = _RouteBackend())
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "preserve_thinking": True}
+
+
+def test_gguf_history_carries_the_tool_call_ids_the_model_generated():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _openai_messages_for_gguf_chat
+
+    minted = "call_0:2f1c0a9e-4b7d-4c1e-9a3b-5d6e7f809a1b"
+    payload = ChatCompletionRequest(
+        messages = [
+            {"role": "user", "content": "run it"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": minted,
+                        "type": "function",
+                        "function": {"name": "python", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": minted, "name": "python", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    messages, _ = _openai_messages_for_gguf_chat(payload, is_vision = False)
+    assert messages[1]["tool_calls"][0]["id"] == "call_0"
+    assert messages[2]["tool_call_id"] == "call_0"

@@ -3215,6 +3215,46 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured["seed"] == 3407
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_client_tool_passthrough_sends_the_resolved_preserve_thinking(
+        self, monkeypatch, stream
+    ):
+        # Claude Code brings its own tools, so its turns ride the passthrough: a thinking-off
+        # follow-up must replay the empty think blocks generation would, or every turn re-reads.
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(
+            monkeypatch,
+            _replay_preserve_thinking = lambda preserve, messages, enable, effort: (
+                True if enable is False and preserve is not True else preserve
+            ),
+        )
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            stream = stream,
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["preserve_thinking"] is True
+
     _BUDGET_CASES = [
         ({"thinking": {"type": "enabled", "budget_tokens": 128}}, 128),
         ({"thinking": {"type": "adaptive", "budget_tokens": 128}}, 128),
@@ -3552,6 +3592,53 @@ class TestAnthropicMessagesToolRouting:
 
         assert response.status_code == 200
         assert [t["function"]["name"] for t in seen["tools"]] == expected
+
+    def test_server_tool_count_prices_the_restored_failed_result(self, monkeypatch):
+        # The server-tool loop renders a replayed failure with the nudge the model saw, so the
+        # count has to price the same bytes.
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+        from routes.inference import anthropic_count_tokens
+
+        seen = {}
+
+        def _count(messages, system, tools, **kwargs):
+            seen["messages"] = messages
+            return 2
+
+        _mock_backend(monkeypatch, count_chat_tokens = _count)
+        payload = _basic_payload(
+            enable_tools = True,
+            permission_mode = "off",
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            messages = [
+                {"role": "user", "content": "search"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "web_search",
+                            "input": {"query": "q"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "Error: boom"}
+                    ],
+                },
+            ],
+        )
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        tool = next(m for m in seen["messages"] if m.get("role") == "tool")
+        assert tool["content"].endswith(TOOL_ERROR_NUDGE)
 
     def test_count_tokens_prices_the_catalog_left_when_the_forced_tool_is_dropped(
         self, monkeypatch
