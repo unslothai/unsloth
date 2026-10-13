@@ -297,6 +297,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     )
     curl = r'curl -H "Authorization: Digest username=\"bob\", response=\"abcdefghijklmnop\"" why'
     assert "abcdefghijklmnop" not in _sanitize_public_query(curl)
+    assert _sanitize_public_query("Authorization: rôle utilisateur") == "utilisateur"
     kept = 'Authorization: Digest realm="api", response="abcdefghijklmnop" how does the api work'
     assert _sanitize_public_query(kept) == "how does the api work"
     question = _sanitize_public_query('Authorization: Digest realm="private\nexplain oauth refresh')
