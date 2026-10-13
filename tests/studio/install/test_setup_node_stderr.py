@@ -79,45 +79,20 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 pytestmark = pytest.mark.skipif(os.name != "nt", reason = "Windows native stderr wrapper behavior")
 
 
-@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
-@pytest.mark.parametrize("native_errors", [False, True])
-@pytest.mark.parametrize(
-    "warning,exits,retry",
-    [
-        (False, [], False),  # Missing executable must still fail and restore Stop.
-        (False, [0], False),
-        (True, [0], False),
-        (False, [7], False),
-        (True, [7], False),
-        (True, [3], True),
-        (True, [4], True),
-        (True, [7, 0], True),
-        (True, [7, 7], True),
-    ],
-)
-def test_node_helper_wrapper_preserves_exit_status(
-    tmp_path, shell, native_errors, warning, exits, retry
+def _run_node_probe(
+    tmp_path,
+    shell,
+    helper,
+    probe_source,
+    retry = False,
+    native_errors = False,
 ):
     executable = shutil.which(shell)
     if executable is None:
         pytest.skip(f"{shell} is unavailable")
     source = _setup_source()
     probe = tmp_path / "probe.ps1"
-    probe_source = PROBE
-    if not exits:
-        probe_source = probe_source.replace(
-            "$ValidatedSetupPython = $Python",
-            "$ValidatedSetupPython = Join-Path (Split-Path -Parent $ReportPath) 'missing-python.exe'",
-        )
     probe.write_text(probe_source, encoding = "utf-8")
-    helper = "import sys, warnings\nfrom pathlib import Path\n"
-    helper += "counter = Path(__file__).with_suffix('.count')\n"
-    helper += "attempt = int(counter.read_text()) if counter.exists() else 0\n"
-    helper += "counter.write_text(str(attempt + 1))\n"
-    if warning:
-        helper += "warnings.warn('synthetic harmless warning', UserWarning)\n"
-    helper += "print('synthetic helper completed', flush=True)\n"
-    helper += f"raise SystemExit({exits!r}[attempt])\n"
     (tmp_path / "install_node_prebuilt.py").write_text(helper, encoding = "utf-8")
     report = tmp_path / "report.json"
     env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR", "PATH") if key in os.environ}
@@ -152,7 +127,43 @@ def test_node_helper_wrapper_preserves_exit_status(
         timeout = 15,
     )
     assert process.returncode == 0, process.stdout + process.stderr
-    result = json.loads(report.read_text(encoding = "utf-8"))
+    return json.loads(report.read_text(encoding = "utf-8")), process.stdout
+
+
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize("native_errors", [False, True])
+@pytest.mark.parametrize(
+    "warning,exits,retry",
+    [
+        (False, [], False),  # Missing executable must still fail and restore Stop.
+        (False, [0], False),
+        (True, [0], False),
+        (False, [7], False),
+        (True, [7], False),
+        (True, [3], True),
+        (True, [4], True),
+        (True, [7, 0], True),
+        (True, [7, 7], True),
+    ],
+)
+def test_node_helper_wrapper_preserves_exit_status(
+    tmp_path, shell, native_errors, warning, exits, retry
+):
+    probe_source = PROBE
+    if not exits:
+        probe_source = probe_source.replace(
+            "$ValidatedSetupPython = $Python",
+            "$ValidatedSetupPython = Join-Path (Split-Path -Parent $ReportPath) 'missing-python.exe'",
+        )
+    helper = "import sys, warnings\nfrom pathlib import Path\n"
+    helper += "counter = Path(__file__).with_suffix('.count')\n"
+    helper += "attempt = int(counter.read_text()) if counter.exists() else 0\n"
+    helper += "counter.write_text(str(attempt + 1))\n"
+    if warning:
+        helper += "warnings.warn('synthetic harmless warning', UserWarning)\n"
+    helper += "print('synthetic helper completed', flush=True)\n"
+    helper += f"raise SystemExit({exits!r}[attempt])\n"
+    result, _ = _run_node_probe(tmp_path, shell, helper, probe_source, retry, native_errors)
     if not exits:
         assert "CommandNotFoundException" in (result["ErrorId"] or ""), result
         assert result["ExitCode"] is None, result
@@ -167,3 +178,79 @@ def test_node_helper_wrapper_preserves_exit_status(
     assert int((tmp_path / "install_node_prebuilt.count").read_text()) == len(exits)
     if warning:
         assert "synthetic harmless warning" in result["Output"], result
+
+
+@pytest.mark.parametrize("shell", ["powershell.exe", "pwsh.exe"])
+@pytest.mark.parametrize(
+    "exit_code,diagnostic,route",
+    [
+        (0, "ordinary success", ""),
+        (0, "keeping existing isolated Node; takeown /F repair", ""),
+        (1, "download failed", "failure:1"),
+        (2, "prebuilt unavailable", "failure:1"),
+        (3, "install busy", "failure:3"),
+        (4, "denied-scope: parent", "denied:parent"),
+        (4, "denied-scope: install-dir", "denied:install"),
+    ],
+)
+def test_node_setup_routes_failure_and_preserves_progress(
+    tmp_path, shell, exit_code, diagnostic, route
+):
+    # Include the real status-handling branches, stopping before any filesystem mutation.
+    probe = PROBE.replace(
+        "'        if ($nodeExit -eq 3)'",
+        "'        # Same condition as the guard above'",
+    ).replace("$env:UNSLOTH_TAURI_UPDATE = $null", "$env:UNSLOTH_TAURI_UPDATE = '1'")
+    probe = probe.replace(
+        "$ValidatedSetupPython = $Python",
+        r"""
+$writer = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Write-StudioLine'
+}, $true)
+Invoke-Expression $writer.Extent.Text
+$script:StudioStdoutRedirected = $true
+$script:Route = ''
+$script:StepText = ''
+$NodeParent = 'parent'
+function step { param($Name, $Message, $Color); $script:StepText = $Message }
+function Exit-SetupFailure {
+    param($Message, $Code = 1)
+    if ($ErrorActionPreference -ne 'Stop') { throw 'Preference leaked into failure handler' }
+    $script:Route = "failure:$Code"
+    throw 'expected routed failure'
+}
+function Exit-PathAccessDenied {
+    param($Path, $Label, [switch]$OwnershipUnverified)
+    if ($ErrorActionPreference -ne 'Stop') { throw 'Preference leaked into denial handler' }
+    $script:Route = if ($Path -eq $NodeParent) { 'denied:parent' } else { 'denied:install' }
+    throw 'expected routed failure'
+}
+$ValidatedSetupPython = $Python
+""",
+    ).replace(
+        "Output=$nodeOut;", "Route=$script:Route; StepText=$script:StepText; Output=$nodeOut;"
+    )
+    progress = "Downloading runtime.zip: 25.0% (1.0 MiB/4.0 MiB) at 1.0 MiB/s"
+    helper = (
+        "import sys, warnings\n"
+        f"print({progress!r}, flush=True)\n"
+        "warnings.warn('synthetic harmless warning', UserWarning)\n"
+        f"print({diagnostic!r}, flush=True)\n"
+        f"raise SystemExit({exit_code})\n"
+    )
+    result, stdout = _run_node_probe(tmp_path, shell, helper, probe)
+    assert result["Route"] == route, result
+    assert result["ExitCode"] == exit_code, result
+    assert result["Preference"] == "Stop", result
+    assert progress in stdout
+    assert diagnostic in result["Output"], result
+    if route:
+        assert result["ErrorMessage"] == "expected routed failure", result
+        assert diagnostic in stdout
+    else:
+        assert result["ErrorId"] is None, result
+    if "keeping existing" in diagnostic:
+        assert result["StepText"] == "update not applied, existing isolated Node kept", result
+        assert "takeown /F repair" in stdout
