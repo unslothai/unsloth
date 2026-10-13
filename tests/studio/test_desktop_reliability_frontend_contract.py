@@ -2708,9 +2708,8 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
     # Seven rows: #11589 added the drop-cue row, #12016 a second section header for the
-    # custom sidebar sections, and #12927 the pinned-pages label, all scaled like the rest;
-    # #13575 moved chat rename into a dialog and dropped the inline rename input, which
-    # carried one of the 30px heights and the second 39px project indent.
+    # custom sidebar sections, and #12927 the pinned-pages label; #13575 dropped the inline
+    # rename input (one 30px height, one 39px indent).
     (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 1),
