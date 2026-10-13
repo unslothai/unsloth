@@ -49,6 +49,7 @@ import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
+  isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -609,6 +610,7 @@ export const ModelInspector = memo(function ModelInspector({
     isMlx &&
     onRun &&
     !isDataset &&
+    !isEmbeddingOnly(model) &&
     !runsOnMediaRuntime &&
     !chatOnlyMeasured &&
     unslothSupport.status !== "unsupported"

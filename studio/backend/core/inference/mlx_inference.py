@@ -4995,6 +4995,7 @@ class MLXInferenceBackend:
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
             "gguf_variant": precision_folder,
+            "precision_folder": precision_folder,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,
             "model": self._model,

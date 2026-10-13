@@ -88,6 +88,9 @@ def test_root_download_skips_the_other_precisions():
     # Without a root checkpoint the folders are the model, so nothing is skipped.
     no_root = {k: v for k, v in _SIZES.items() if "/" in k}
     assert not any(p.endswith("bit/*") for p in resolve_snapshot_ignore_patterns_for_files(no_root))
+    # A stray root tensor without a root config.json is not a checkpoint either.
+    stray = {**no_root, "model.safetensors": GB}
+    assert not any(p.endswith("bit/*") for p in resolve_snapshot_ignore_patterns_for_files(stray))
 
 
 def test_frontend_size_estimate_mirrors_the_precision_folder_rule():
@@ -480,3 +483,62 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
         folder
     )
+
+
+@pytest.mark.parametrize("resident_folder, expected", [(None, "reuse"), ("6-bit", "load")])
+def test_a_root_request_never_reuses_a_resident_precision_folder(
+    monkeypatch, resident_folder, expected
+):
+    from hub.services.models import account_access
+    from models.inference import LoadRequest
+    from routes import inference
+
+    calls = []
+
+    def _record(step):
+        def _stop(*args, **kwargs):
+            calls.append(step)
+            raise RuntimeError(step)
+
+        return _stop
+
+    backend = SimpleNamespace(
+        active_model_name = _REPO,
+        models = {
+            _REPO: {
+                "engine": "auto",
+                "gguf_variant": resident_folder,
+                "precision_folder": resident_folder,
+            }
+        },
+        get_loading_model = lambda: None,
+        loading_models = (),
+        set_parallel_slots = _record("reuse"),
+        load_model = _record("load"),
+    )
+    llama = SimpleNamespace(is_loaded = False, is_active = False, model_identifier = None)
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference, "_resolve_model_identifier_for_request", lambda *a, **k: (_REPO, _REPO, False)
+    )
+    monkeypatch.setattr(account_access, "require_model_access", lambda *a, **k: None)
+    # Every runtime setting matches, so only the resident folder can tell the two apart.
+    for name in (
+        "_mlx_runtime_settings_match",
+        "_non_gguf_runtime_settings_match",
+        "_resident_audio_placement_matches",
+        "_resident_context_satisfies",
+    ):
+        monkeypatch.setattr(inference, name, lambda *a, **k: True)
+    fastapi_request = SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+    )
+    with pytest.raises(Exception):
+        asyncio.run(
+            inference._load_model_impl(
+                LoadRequest(model_path = _REPO), fastapi_request, current_subject = "user"
+            )
+        )
+    assert calls[:1] == [expected]

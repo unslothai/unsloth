@@ -51,7 +51,7 @@ const GENERATIVE_CAPABILITIES = new Set([
   "diffusion",
 ]);
 
-function isEmbeddingOnly(model: SelectedModelView): boolean {
+export function isEmbeddingOnly(model: SelectedModelView): boolean {
   if (
     model.isGguf ||
     !model.capabilities.some((capability) => capability.key === "embedding")
@@ -126,7 +126,11 @@ function createPrecisionFolderHandoff(
   selection: HubModelRunSelection,
 ): ModelConfigHandoffRequest | null {
   const id = model.hubRepoId ?? model.id;
-  if (!isPresent(id) || !isPresent(selection.ggufVariant) || isEmbeddingOnly(model)) {
+  if (
+    !isPresent(id) ||
+    !isPresent(selection.ggufVariant) ||
+    isEmbeddingOnly(model)
+  ) {
     return null;
   }
   const meta: ModelConfigHandoffRequest["meta"] = {

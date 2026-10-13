@@ -172,7 +172,9 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
         # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
         ignore.extend(redundant_torch_bin_files(names))
-        ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
+        # Only when the root is itself a checkpoint, or the folders are the only runnable copies.
+        if "config.json" in names:
+            ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
     return ignore
 
 

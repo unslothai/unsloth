@@ -437,7 +437,9 @@ export function fetchModelSize(
       const skipDuplicateFormats = shipsRootSafetensors(siblings);
       const names = siblings.map((s) => s.rfilename ?? "");
       const redundantBins = redundantTorchBinFiles(names);
-      const precisionFolders = precisionVariantFolders(names);
+      const precisionFolders = names.includes("config.json")
+        ? precisionVariantFolders(names)
+        : new Set<string>();
       let total = 0;
       let weights = 0;
       for (const s of siblings) {
