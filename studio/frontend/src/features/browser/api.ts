@@ -12,6 +12,8 @@ export type BrowserPage =
       base: string;
       /** The page declared its <base>, so it stays put when the page's router moves. */
       ownBase?: boolean;
+      /** Its site sent Access-Control-Allow-Origin * or null, so the sandbox reads its requests itself. */
+      anyOrigin?: boolean;
       html: string;
       refresh: { delay: number; url: string } | null;
     }

@@ -33,8 +33,10 @@ BROWSER_NETWORK_JS = r"""
         // To the browser the sandbox's origin is opaque, so even the page's own site is another origin,
         // and an API of it that sends no CORS headers can't be read. Requests to the page's origin go
         // through the panel to Studio's backend (POST /api/browser/request), which makes them as the
-        // same-origin requests they are. Requests to other sites stay the browser's.
-        const pageOrigin = (() => { try { return cfg.url ? new URL(cfg.url).origin : null; } catch { return null; } })();
+        // same-origin requests they are. Requests to other sites stay the browser's, and so do all of
+        // them when the page's site answers any origin (cfg.anyOrigin): there the browser already
+        // reads them, streamed and unbuffered.
+        const pageOrigin = (() => { try { return cfg.url && !cfg.anyOrigin ? new URL(cfg.url).origin : null; } catch { return null; } })();
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
         let lastRequest = 0;

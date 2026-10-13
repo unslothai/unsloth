@@ -429,6 +429,24 @@ def test_a_redirect_from_another_site_is_cors_checked_before_it_is_followed(monk
         assert base64.b64decode(_request(url = "https://site.test/go")["body"]) == b"public"
 
 
+def test_a_post_redirected_as_a_get_to_another_site_drops_its_content_type(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/upload": (303, b"", {"Location": "https://cdn.test/result"}),
+            "cdn.test/result": (200, b"done", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    _request(
+        url = "https://site.test/upload",
+        method = "POST",
+        headers = [["Content-Type", "text/plain"]],
+        body = base64.b64encode(b"x").decode(),
+    )
+    assert "content-type" not in sent[1]["headers"]
+    assert sent[1]["headers"]["origin"] == "https://site.test"
+
+
 def test_safelisted_headers_follow_a_redirect_to_another_site(monkeypatch):
     # A video's Range goes on to the CDN, as in a browser; Authorization and custom headers don't.
     sent = _serve(
@@ -463,7 +481,9 @@ def test_safelisted_headers_follow_a_redirect_to_another_site(monkeypatch):
         ("Accept-Language", "en-US,en;q=0.9", True),
         ("Accept", "application/json", True),
         ("Accept", "a:b", False),
-        ("Content-Type", "text/plain", False),
+        ("Content-Type", "text/plain;charset=UTF-8", True),
+        ("Content-Type", "application/json", False),
+        ("Content-Type", 'text/plain;a="b"', False),
     ],
 )
 def test_cors_safelisted_request_headers(name, value, safe):

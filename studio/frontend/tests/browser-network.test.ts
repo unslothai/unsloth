@@ -74,7 +74,7 @@ class PageXMLSerializer {
 }
 
 /** `pageUrl`: the page's address; with none (a local file) nothing goes through the panel. */
-function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null) {
+function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null, anyOrigin = false) {
   let now = 0;
   // The script patches its Response's body readers: a class of its own keeps that out of other tests.
   class PageResponse extends Response {}
@@ -96,7 +96,7 @@ function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null)
   };
   runInNewContext(source, {
     window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
-    cfg: { url: pageUrl }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
+    cfg: { url: pageUrl, anyOrigin }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
     setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer, URLSearchParams,
   });
@@ -225,6 +225,20 @@ test("a fetch to the page's own site goes through the panel and reads as same-or
   assert.equal(response.headers.get("x-total"), "3");
   assert.equal(response.clone().url, "https://site.test/models-json?q=1");
   assert.deepEqual(await response.json(), { models: [1] });
+});
+
+test("a page whose site answers any origin keeps its own requests, which the browser can read", async () => {
+  const t = setup(NativeXHR, "https://site.test/", true);
+  const own = t.window.fetch("/stream");
+  assert.equal(t.native.length, 1);
+  const xhr = new t.window.XMLHttpRequest();
+  xhr.open("GET", "/api");
+  xhr.send();
+  await tick();
+  assert.equal(t.posted.length, 0);
+  assert.deepEqual(xhr.calls.at(-1), ["send", undefined]);
+  t.answer(0);
+  await own;
 });
 
 test("requests to other sites, and from a page with no address, stay the browser's", async () => {

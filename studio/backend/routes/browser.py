@@ -739,7 +739,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -1568,6 +1568,8 @@ def _build_response(
             "url": final_url,
             "base": base_url,
             "ownBase": own_base is not None,
+            # Its site answers any origin, the sandbox's too: the page's requests to it stay native.
+            "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
             "refresh": refresh,
             "html": page,
         }
@@ -1630,16 +1632,24 @@ def _origin(url: str) -> Optional[tuple[str, str, int]]:
 def _cors_safelisted(name: str, value: str) -> bool:
     """Fetch's CORS-safelisted request-header, for the headers a bodiless GET carries."""
     lowered = name.lower()
+    unsafe = any(
+        (ord(char) < 0x20 and char != "\t") or char in '"():<>?@[\\]{}\x7f' for char in value
+    )
     if len(value) > 128:
         return False
     if lowered == "accept":
-        return not any(
-            (ord(char) < 0x20 and char != "\t") or char in '"():<>?@[\\]{}\x7f' for char in value
-        )
+        return not unsafe
     if lowered in ("accept-language", "content-language"):
         return bool(re.fullmatch(r"[0-9A-Za-z *,.;=-]*", value))
     if lowered == "range":
         return bool(re.fullmatch(r"bytes=[0-9]+-[0-9]*", value))
+    if lowered == "content-type":
+        essence = value.split(";", 1)[0].strip().lower()
+        return not unsafe and essence in (
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+            "text/plain",
+        )
     return False
 
 
@@ -1735,23 +1745,22 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         return None
 
     def host_headers(current_host: str) -> dict:
+        own_headers = page_headers
+        if hops["rewritten"]:
+            own_headers = {
+                name: value
+                for name, value in own_headers.items()
+                if name.lower() not in _REQUEST_BODY_HEADERS and name != "Origin"
+            }
         if not hops["same_origin"]:
             own_headers = {
                 **{
                     name: value
-                    for name, value in page_headers.items()
+                    for name, value in own_headers.items()
                     if _cors_safelisted(name, value)
                 },
                 "Origin": hops["origin"],
             }
-        elif hops["rewritten"]:
-            own_headers = {
-                name: value
-                for name, value in page_headers.items()
-                if name.lower() not in _REQUEST_BODY_HEADERS and name != "Origin"
-            }
-        else:
-            own_headers = page_headers
         return {**_studio_headers(current_host), **own_headers}
 
     meta: dict = {}
