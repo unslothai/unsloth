@@ -11,6 +11,12 @@ const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
 const { threadRows } = await import(
   "./helpers/store-stubs/chat-history-storage.ts"
 );
+const { useExternalProvidersStore } = await import(
+  "../src/features/chat/stores/external-providers-store.ts"
+);
+const { setProviderModelCapabilities } = await import(
+  "../src/features/chat/external-providers.ts"
+);
 type RuntimeModule = typeof chatRuntime;
 const runtimeUrl = new URL(
   "../src/features/chat/stores/chat-runtime-store.ts",
@@ -33,6 +39,7 @@ async function boot(t: TestContext, hydrate = true): Promise<RuntimeModule> {
   settingsHttp.settings = { rememberParamsPerModel: false };
   settingsHttp.puts.length = 0;
   threadRows.reset();
+  useExternalProvidersStore.setState({ providers: [] });
   const runtime = (await import(
     `${runtimeUrl}?scenario=${encodeURIComponent(t.name)}`
   )) as RuntimeModule;
@@ -271,4 +278,195 @@ test("suppressed Research remains scoped to its chat", async (t) => {
   store.setState(runtime.resolveToolsEnabledOnLoad(true));
   assert.equal(store.getState().toolsEnabled, true);
   assert.equal(store.getState().deepResearchEnabled, false);
+});
+
+const CLAMPED_TOOLS = [
+  ["toolsEnabled", "setToolsEnabled"],
+  ["codeToolsEnabled", "setCodeToolsEnabled"],
+  ["imageToolsEnabled", "setImageToolsEnabled"],
+  ["webFetchToolsEnabled", "setWebFetchToolsEnabled"],
+] as const;
+
+for (const [key, setter] of CLAMPED_TOOLS) {
+  for (const scope of ["pending chat", "pending save", "saved chat"] as const) {
+    test(`${key} survives capability suppression with a ${scope}`, async (t) => {
+      const runtime = await boot(t);
+      const store = runtime.useChatRuntimeStore;
+      store.getState().setActiveThreadId(THREAD);
+      if (scope === "pending chat") {
+        runtime.beginThreadScopedPairing(THREAD);
+      } else {
+        store.getState().applyThreadScopedSettings(THREAD, { [key]: false });
+      }
+      store.getState()[setter](true);
+      if (scope === "saved chat") {
+        await runtime.awaitThreadScopedSettingsWrite(THREAD);
+      }
+      store.getState().clearCheckpoint();
+      store.getState().setCheckpoint("unsloth/no-tools", null);
+      store.setState({ [key]: false, supportsTools: false });
+      if (scope === "pending chat") {
+        store.getState().applyThreadScopedSettings(THREAD, { [key]: false });
+      }
+      store.getState().clearCheckpoint();
+      store.getState().setPermissionMode("ask");
+      await runtime.awaitThreadScopedSettingsWrite(THREAD);
+      assert.equal(threadRows.rows.get(THREAD)?.[key], true);
+      assert.equal(runtime.threadScopedOverride(key), true);
+
+      store.getState()[setter](false);
+      await runtime.awaitThreadScopedSettingsWrite(THREAD);
+      assert.equal(threadRows.rows.get(THREAD)?.[key], false);
+    });
+  }
+
+  test(`${key} keeps the default when a chat opens under an incompatible model`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    store.getState()[setter](true);
+    store.setState({ [key]: false, supportsTools: false });
+    store.getState().setActiveThreadId(THREAD);
+    store.getState().applyThreadScopedSettings(THREAD, null);
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    assert.equal(threadRows.rows.get(THREAD)?.[key], true);
+  });
+}
+
+test("Research can be selected while model capabilities are still loading", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setCheckpoint("unsloth/no-tools", null);
+  store.setState({ supportsTools: false });
+  const lease = store.getState().beginModelLoading("loading");
+  assert.ok(lease !== null);
+  store.getState().setDeepResearchEnabled(true);
+  store.getState().setCheckpoint(MODEL, null);
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+  store.getState().endModelLoading(lease);
+  assert.equal(store.getState().deepResearchEnabled, true);
+});
+
+test("Research hydration keeps the global default separate from a held chat edit", async (t) => {
+  const runtime = await boot(t, false);
+  const store = runtime.useChatRuntimeStore;
+  settingsHttp.settings = { deepResearchEnabled: true };
+  store.setState({ supportsTools: false });
+  store.getState().setActiveThreadId(THREAD);
+  runtime.beginThreadScopedPairing(THREAD);
+  store.getState().setDeepResearchEnabled(false);
+  await store.getState().hydratePersistedSettings();
+  store.getState().applyThreadScopedSettings(THREAD, null);
+  await runtime.awaitThreadScopedSettingsWrite(THREAD);
+  assert.equal(threadRows.rows.get(THREAD)?.deepResearchEnabled, false);
+  assert.equal(runtime.threadScopedDefault("deepResearchEnabled"), true);
+  store.getState().setActiveThreadId(null);
+  store.getState().applyThreadScopedSettings(null, null);
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+  assert.equal(store.getState().deepResearchEnabled, true);
+});
+
+for (const scope of ["defaults", "chat"] as const) {
+  test(`${scope} restores Research across incompatible and compatible external models`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    useExternalProvidersStore.getState().setProviders([{
+      id: "tools-provider",
+      providerType: "vllm",
+      name: "Tool capability fixture",
+      baseUrl: "http://localhost:8000/v1",
+      models: ["capable", "unsupported"],
+      createdAt: 0,
+      updatedAt: 0,
+    }]);
+    setProviderModelCapabilities("vllm", {
+      capable: { studio_tools: true },
+      unsupported: { studio_tools: false },
+    });
+    if (scope === "chat") {
+      store.getState().setActiveThreadId(THREAD);
+      store.getState().applyThreadScopedSettings(THREAD, { deepResearchEnabled: false });
+    }
+    store.getState().setDeepResearchEnabled(true);
+    store.getState().setCheckpoint("external::tools-provider::unsupported", null);
+    assert.equal(store.getState().deepResearchEnabled, false);
+    store.getState().setPermissionMode("ask");
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    assert.equal(
+      scope === "chat"
+        ? threadRows.rows.get(THREAD)?.deepResearchEnabled
+        : storage.get("unsloth_chat_deep_research_enabled") === "true",
+      true,
+    );
+    store.getState().setCheckpoint("external::tools-provider::capable", null);
+    assert.equal(store.getState().deepResearchEnabled, true);
+    if (scope === "chat") {
+      store.getState().applyThreadScopedSettings(THREAD, threadRows.rows.get(THREAD)!);
+      assert.equal(store.getState().deepResearchEnabled, true);
+    }
+    store.getState().setDeepResearchEnabled(false);
+    store.getState().setCheckpoint("external::tools-provider::unsupported", null);
+    store.getState().setCheckpoint("external::tools-provider::capable", null);
+    assert.equal(store.getState().deepResearchEnabled, false);
+  });
+}
+
+for (const scope of ["defaults", "chat", "pending chat"] as const) {
+  test(`${scope} restores Research when switching from an incompatible local model to Codex`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    useExternalProvidersStore.getState().setProviders([{
+      id: "codex",
+      providerType: "openai_codex",
+      name: "Codex fixture",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      models: ["gpt-5.4"],
+      createdAt: 0,
+      updatedAt: 0,
+    }]);
+    setProviderModelCapabilities("openai_codex", {
+      "gpt-5.4": { studio_tools: true },
+    });
+    if (scope !== "defaults") {
+      store.getState().setActiveThreadId(THREAD);
+      if (scope === "pending chat") {
+        runtime.beginThreadScopedPairing(THREAD);
+      } else {
+        store.getState().applyThreadScopedSettings(THREAD, { deepResearchEnabled: false });
+      }
+    }
+    store.getState().setDeepResearchEnabled(true);
+    store.getState().clearCheckpoint();
+    store.getState().setCheckpoint("unsloth/no-tools", null);
+    store.setState({ supportsTools: false, ...runtime.resolveToolsEnabledOnLoad(false) });
+    assert.equal(store.getState().deepResearchEnabled, false);
+    store.getState().setCheckpoint("external::codex::gpt-5.4", null);
+    assert.equal(store.getState().deepResearchEnabled, true);
+    if (scope === "pending chat") {
+      store.getState().applyThreadScopedSettings(THREAD, { deepResearchEnabled: false });
+      assert.equal(store.getState().deepResearchEnabled, true);
+    }
+  });
+}
+
+test("an unresolved external provider preserves Research until its capabilities arrive", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setDeepResearchEnabled(true);
+  store.getState().setCheckpoint("external::late-provider::research-model", null);
+  assert.equal(store.getState().deepResearchEnabled, false);
+  assert.equal(storage.get("unsloth_chat_deep_research_enabled"), "true");
+  store.getState().setDeepResearchEnabled(true);
+  assert.equal(store.getState().deepResearchEnabled, false);
+  useExternalProvidersStore.getState().setProviders([{
+    id: "late-provider",
+    providerType: "vllm",
+    name: "Late provider fixture",
+    baseUrl: "http://localhost:8000/v1",
+    models: ["research-model"],
+    createdAt: 0,
+    updatedAt: 0,
+  }]);
+  setProviderModelCapabilities("vllm", { "research-model": { studio_tools: true } });
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+  assert.equal(store.getState().deepResearchEnabled, true);
 });

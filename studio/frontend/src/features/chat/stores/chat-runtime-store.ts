@@ -851,7 +851,7 @@ function persistSetting(key: string, raw: string): void {
     captureThreadScopedEdit(
       mirrored.field,
       writeGlobal,
-      key === CHAT_DEEP_RESEARCH_ENABLED_KEY ? raw === "true" : undefined,
+      isClampedPillKey(mirrored.field) ? raw === "true" : undefined,
     )
   ) {
     return;
@@ -878,14 +878,14 @@ function readThreadScopedValue(
   state: ChatRuntimeStore,
   key: ThreadScopedSettingKey,
 ): unknown {
-  if (key === "deepResearchEnabled") {
+  if (isClampedPillKey(key)) {
     return (
       heldThreadScopedParamValue(key) ??
-      activeThreadScopedSettings?.deepResearchEnabled ??
+      activeThreadScopedSettings?.[key] ??
       (threadScopedSettingsThreadId !== null
-        ? globalThreadScopedDefaults?.deepResearchEnabled
-        : loadOptionalBool(CHAT_DEEP_RESEARCH_ENABLED_KEY)) ??
-      state.deepResearchEnabled
+        ? globalThreadScopedDefaults?.[key]
+        : loadOptionalBool(MIRRORED_SETTINGS[key].storageKey)) ??
+      state[key]
     );
   }
   return isThreadScopedParamKey(key)
@@ -926,6 +926,14 @@ export function threadScopedDefault<K extends ThreadScopedSettingKey>(
 export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
+  if (isClampedPillKey(key)) {
+    const held = heldThreadScopedParamValue(key);
+    return (held ??
+      activeThreadScopedSettings?.[key] ??
+      (threadScopedSettingsThreadId !== null
+        ? globalThreadScopedDefaults?.[key]
+        : undefined)) as ThreadScopedSettings[K] | undefined;
+  }
   // Effort is captured before a model pin can overwrite the live value.
   if (key === "reasoningEffort" && activeThreadScopedSettings?.reasoningEffort !== undefined) {
     return activeThreadScopedSettings.reasoningEffort as ThreadScopedSettings[K];
@@ -1009,8 +1017,13 @@ const CLAMPED_PILL_KEYS = [
   "codeToolsEnabled",
   "imageToolsEnabled",
   "webFetchToolsEnabled",
+  "deepResearchEnabled",
 ] as const;
 type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
+
+function isClampedPillKey(key: string): key is ClampedPillKey {
+  return CLAMPED_PILL_KEYS.some((candidate) => candidate === key);
+}
 
 /** Sampling keys share `params` with the model's recommendation, so a load in this window
  *  would pin the model's value onto the chat. Captured at the edit; last entry wins. */
@@ -1143,20 +1156,6 @@ function buildThreadScopedSnapshot(
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
-  // Same for deep research, which apply() also holds back, or toggling any other pill erases
-  // the stored true. Unless the user just cleared it by enabling Search, Tools or Images.
-  if (
-    threadId === threadScopedSettingsThreadId &&
-    !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
-    activeThreadScopedSettings?.deepResearchEnabled === true &&
-    settings.deepResearchEnabled !== true &&
-    (externalCheckpointRefusesDeepResearch(
-      useChatRuntimeStore.getState().params.checkpoint,
-    ) ||
-      useChatRuntimeStore.getState().incognito)
-  ) {
-    settings.deepResearchEnabled = true;
-  }
   // And for thinking, which a model that cannot stop thinking forces on: that true is the
   // model's, so persisting it would erase a chat's stored false.
   if (
@@ -1172,29 +1171,6 @@ function buildThreadScopedSnapshot(
   if (threadId === threadScopedSettingsThreadId && pinHoldsLiveEffort()) {
     const onRecord = reasoningEffortOnRecord();
     if (onRecord !== undefined) settings.reasoningEffort = onRecord;
-  }
-  // Same for every pill the model-selection pass clamps off without touching the snapshot:
-  // each pill's own capability rule is exactly when the user could not have done it.
-  if (threadId === threadScopedSettingsThreadId) {
-    const live = useChatRuntimeStore.getState();
-    const modelLoaded = !!live.params.checkpoint && !live.modelLoading;
-    const capable: Record<ClampedPillKey, boolean> = {
-      toolsEnabled: live.supportsTools || live.supportsBuiltinWebSearch,
-      codeToolsEnabled: live.supportsTools || live.supportsBuiltinCodeExecution,
-      imageToolsEnabled: live.supportsBuiltinImageGeneration,
-      webFetchToolsEnabled: live.supportsBuiltinWebFetch,
-    };
-    for (const key of CLAMPED_PILL_KEYS) {
-      if (
-        modelLoaded &&
-        !capable[key] &&
-        !explicitlyEditedThreadFields.has(key) &&
-        activeThreadScopedSettings?.[key] === true &&
-        settings[key] !== true
-      ) {
-        settings[key] = true;
-      }
-    }
   }
   // And for pills a provider constraint moved without persisting: the store holds the
   // provider's value, so the chat keeps the one it was stored with.
@@ -1738,7 +1714,7 @@ function heldThreadScopedChanges(
   // read returns undefined and the sanitizer drops them.
   for (const edit of held) {
     edited[edit.field] =
-      (edit.field === "reasoningEffort" || edit.field === "deepResearchEnabled") &&
+      (edit.field === "reasoningEffort" || isClampedPillKey(edit.field)) &&
       edit.value !== undefined
         ? edit.value
         : readThreadScopedValue(
@@ -1820,10 +1796,10 @@ function captureThreadScopedEdit(
         reasoningEffort: value as ReasoningEffort,
       };
     }
-    if (field === "deepResearchEnabled" && typeof value === "boolean") {
+    if (isClampedPillKey(field) && typeof value === "boolean") {
       activeThreadScopedSettings = {
         ...activeThreadScopedSettings,
-        deepResearchEnabled: value,
+        [field]: value,
       };
     }
     explicitlyEditedThreadFields.add(field);
@@ -3357,22 +3333,19 @@ function noteModelDefaultsBeforeHydration(
   }
 }
 
-/** Whether the checkpoint is an external model that cannot run deep research, as the composer
- *  rules it. An unresolved provider is left alone: refusing would drop a Codex preference. */
 function externalCheckpointRefusesDeepResearch(
   checkpoint: string | null | undefined,
 ): boolean {
-  const parsed = parseExternalModelId(checkpoint);
-  if (!parsed) return false;
-  const provider = useExternalProvidersStore
-    .getState()
-    .providers.find((candidate) => candidate.id === parsed.providerId);
-  return provider != null && provider.providerType !== "openai_codex";
+  return (
+    isExternalModelId(checkpoint) &&
+    !externalModelSupportsStudioTools(checkpoint)
+  );
 }
 
 function localCheckpointRefusesDeepResearch(state: ChatRuntimeStore): boolean {
   return Boolean(
     state.params.checkpoint &&
+      !state.modelLoading &&
       !isExternalModelId(state.params.checkpoint) &&
       !state.supportsTools,
   );
@@ -3553,18 +3526,6 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
-    // Only a local model or an openai_codex provider can run deep research, so a
-    // stored true must not arm the pill for any other external checkpoint.
-    if (
-      key === "deepResearchEnabled" &&
-      value === true &&
-      (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
-        localCheckpointRefusesDeepResearch(state) ||
-        state.incognito)
-    ) {
-      nextState.deepResearchEnabled = false;
-      continue;
-    }
     // A click made before this response landed is held for the open chat rather than written
     // globally, so it advances no mutation version and the server's value would replace it.
     if (isHeldThreadScopedField(key)) {
@@ -3582,6 +3543,15 @@ function getHydratedSettingsState(
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]
     ) {
+      if (
+        key === "deepResearchEnabled" &&
+        (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
+          localCheckpointRefusesDeepResearch(state) ||
+          state.incognito)
+      ) {
+        nextState.deepResearchEnabled = false;
+        continue;
+      }
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
@@ -4927,9 +4897,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // it off for capable providers, and saveBool would write that off for every browser.
       const clampsDeepResearch =
         isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId);
-      if (clampsDeepResearch) {
-        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      }
       // Clear stale per-turn usage on model change, or the relaxed external render gate shows it.
       const checkpointChanged = state.params.checkpoint !== modelId;
       // An interactive pick during hydration has no adoption signal either, so
@@ -4990,8 +4957,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         }
       }
       const nextGgufVariant = ggufVariant ?? null;
-      const nextDeepResearchEnabled = clampsDeepResearch
-        ? false
+      const nextDeepResearchEnabled = isExternalModelId(modelId)
+        ? !clampsDeepResearch &&
+          !state.incognito &&
+          readThreadScopedValue(state, "deepResearchEnabled") === true
         : state.deepResearchEnabled;
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         {
@@ -5044,7 +5013,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           : {}),
         // Switching to a provider that cannot run Unsloth's tool loop disables Deep Research; a
         // capable one keeps the user's choice.
-        ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
+        deepResearchEnabled: nextDeepResearchEnabled,
       };
     });
     // An external pick is the whole story for that model: no load and no status follows it, so nothing
@@ -5074,7 +5043,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // or the read would silently undo a click the user already saw.
       const heldFields = new Set<string>();
       let heldEffort: ReasoningEffort | undefined;
-      let heldResearch: boolean | undefined;
+      const heldPills: Partial<Record<ClampedPillKey, boolean>> = {};
       if (threadId !== null && threadId === pendingPairingThreadId) {
         for (const edit of heldThreadScopedEdits) {
           heldFields.add(edit.field);
@@ -5082,10 +5051,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             heldEffort = edit.value as ReasoningEffort;
           }
           if (
-            edit.field === "deepResearchEnabled" &&
+            isClampedPillKey(edit.field) &&
             typeof edit.value === "boolean"
           ) {
-            heldResearch = edit.value;
+            heldPills[edit.field] = edit.value;
           }
         }
         heldThreadScopedEdits = [];
@@ -5164,15 +5133,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         // The user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
-          if (key === "deepResearchEnabled" && heldResearch !== undefined) {
-            applied[key] = heldResearch;
+          if (isClampedPillKey(key) && heldPills[key] !== undefined) {
+            const value = heldPills[key];
+            applied[key] = value;
             activeThreadScopedSettings = {
               ...activeThreadScopedSettings,
-              deepResearchEnabled: heldResearch,
+              [key]: value,
             };
-            const enabled = heldResearch && researchAllowed;
-            if (state.deepResearchEnabled !== enabled) {
-              nextState.deepResearchEnabled = enabled;
+            const enabled =
+              key === "deepResearchEnabled" ? value && researchAllowed : value;
+            if (state[key] !== enabled) {
+              target[key] = enabled;
             }
           } else if (key === "reasoningEffort" && heldEffort !== undefined) {
             applied[key] = heldEffort;
@@ -5219,7 +5190,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           effortDisplacedByPin = value as ReasoningEffort;
           continue;
         }
-        if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
+        if (
+          isSameThreadScopedValue(
+            value,
+            isClampedPillKey(key) ? state[key] : readThreadScopedValue(state, key),
+          )
+        ) {
           continue;
         }
         // The sampling ones are one object, gathered and applied together below.
@@ -5538,7 +5514,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
-      if (deepResearchEnabled && localCheckpointRefusesDeepResearch(state)) {
+      if (
+        deepResearchEnabled &&
+        (localCheckpointRefusesDeepResearch(state) ||
+          externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
+          state.incognito)
+      ) {
         return state;
       }
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
