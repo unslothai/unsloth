@@ -47,6 +47,7 @@ def synced(monkeypatch, current):
 
     monkeypatch.setattr(RE, "torch_device_stream", _Stream)
     monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
+    monkeypatch.setattr(RE, "_UNREGISTERED_SPLIT_SEEN", False, raising = False)
     monkeypatch.setattr(RE.Fast_RoPE_Embedding_QK, "apply", lambda Q, K, *a: (Q, K))
     monkeypatch.setattr(RE.Slow_RoPE_Embedding, "apply", lambda Q, *a: Q)
     return calls
@@ -126,12 +127,13 @@ def test_freed_split_model_stops_syncing(monkeypatch, synced):
     assert synced == [0]
 
 
-def test_unregistered_split_syncs_off_current_device(monkeypatch, synced):
-    # A split nothing registered: the shard off the current device still drains.
+def test_unregistered_split_syncs_once_seen(monkeypatch, synced):
+    # A split nothing registered: from the first call off the current device, every call drains.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
-    for index in [0, 0, 1, 1]:
-        _rope(index)
-    assert synced == [1, 1]
+    for _ in range(2):
+        for index in [0, 0, 1, 1]:
+            _rope(index)
+    assert synced == [1, 1, 0, 0, 1, 1]
 
 
 def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
@@ -181,6 +183,7 @@ def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
 @pytest.mark.parametrize("use_indices", [False, True])
 def test_real_kernel_single_device_no_sync_same_result(monkeypatch, use_indices):
     monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
+    monkeypatch.setattr(RE, "_UNREGISTERED_SPLIT_SEEN", False, raising = False)
     monkeypatch.setattr(RE, "_current_device", torch.cuda.current_device)
     count = [0]
     real = torch.cuda.Stream.synchronize

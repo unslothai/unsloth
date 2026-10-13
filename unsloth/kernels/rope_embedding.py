@@ -461,12 +461,20 @@ if DEVICE_COUNT > 1:
     _register_splits_on_dispatch()
 
 
+# Set by the first RoPE call off the current device: a split nothing registered (dispatched through a
+# dispatch_model bound before Unsloth was imported). From then on every call drains, as on main.
+_UNREGISTERED_SPLIT_SEEN = False
+
+
 def _sync_if_split(Q):
+    global _UNREGISTERED_SPLIT_SEEN
     if DEVICE_COUNT <= 1:
         return
-    # A layer on another device than the current one is a split nothing registered: drain that call.
-    if _SPLIT_MODELS or Q.get_device() != _current_device():
-        torch_device_stream(Q.device).synchronize()
+    if not (_SPLIT_MODELS or _UNREGISTERED_SPLIT_SEEN):
+        if Q.get_device() == _current_device():
+            return
+        _UNREGISTERED_SPLIT_SEEN = True
+    torch_device_stream(Q.device).synchronize()
 
 
 def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
