@@ -478,8 +478,8 @@ def _with_fallback(run_agent: Callable[..., str], marker: str) -> Callable[..., 
             Path(marker).touch()
             raise RuntimeError(
                 f"{exc}\n\nThe local agent failed, so your own Read, Grep, Glob, Bash, "
-                "NotebookRead and Agent tools are unblocked until the next successful "
-                "unsloth_agent call. "
+                "PowerShell, Monitor, NotebookRead and Agent tools are unblocked until the "
+                "next successful unsloth_agent call. "
                 "Do this step yourself."
             ) from exc
         Path(marker).unlink(missing_ok = True)

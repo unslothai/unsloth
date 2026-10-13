@@ -97,7 +97,10 @@ _AUTO_ROUTE_DESCRIPTION = (
     "yourself."
 )
 _SUBAGENT_AUTO_ROUTE_DESCRIPTION = _AUTO_ROUTE_DESCRIPTION.format(
-    blocked = "your own Read, Grep, Glob, Bash, NotebookRead and Agent calls are blocked"
+    blocked = (
+        "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls "
+        "are blocked"
+    )
 )
 # Without tools of its own the parent cannot check a small model's answer except by asking for the evidence.
 _AUTO_ROUTE_VERIFY = (
@@ -128,7 +131,8 @@ _OPENCODE_ROUTED_TOOLS = ("read", "bash")
 _OPENCODE_ROUTE_PLUGIN = "unsloth-auto-route.js"
 _SUBAGENT_AUTO_ROUTE_INSTRUCTIONS = (
     "Files and the shell in this session are reachable only through the unsloth_agent tool; "
-    "your own Read, Grep, Glob, Bash, NotebookRead and Agent calls are blocked by a hook. Give the "
+    "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls are "
+    "blocked by a hook. Give the "
     "tool the complete task in one message, with the paths and commands it needs, and review "
     "its result before answering. Keep talking with the user and planning and design "
     "decisions to yourself. In plan mode call unsloth_plan_agent instead."
@@ -3759,8 +3763,8 @@ print(json.dumps({"hookSpecificOutput": {
 }}))
 sys.exit(0)
 """
-# Agent (Task before Claude Code 2) would hand the same work to a cloud subagent.
-_CLAUDE_ROUTE_GATE_MATCHER = "Read|Grep|Glob|Bash|NotebookRead|Agent|Task"
+# PowerShell is the shell on Windows without Git Bash, Monitor runs commands too, and Agent (Task before Claude Code 2) would hand the same work to a cloud subagent.
+_CLAUDE_ROUTE_GATE_MATCHER = "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
 
 
 def _claude_hook(gate: Path) -> dict:

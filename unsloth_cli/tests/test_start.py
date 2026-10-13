@@ -1821,7 +1821,7 @@ def test_claude_auto_route_blocks_the_parents_own_file_and_shell_tools(fake_stud
         "PreToolUse"
     ]
     assert plan_gate["matcher"] == start._CLAUDE_SUBAGENT_TOOL
-    assert route_gate["matcher"] == "Read|Grep|Glob|Bash|NotebookRead|Agent|Task"
+    assert route_gate["matcher"] == "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
     [hook] = route_gate["hooks"]
     assert hook["type"] == "command"
     assert start._b64_path(plugin / "hooks" / "route_gate.py") in hook["command"]
