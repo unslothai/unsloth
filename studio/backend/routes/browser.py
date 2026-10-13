@@ -1645,19 +1645,69 @@ class BrowserResourceRequest(BaseModel):
     # The panel's address for the page, never one the page claims.
     page_url: str = Field(..., min_length = 1, max_length = 8192)
     url: str = Field(..., min_length = 1, max_length = 8192)
-    accept: str = Field(default = "*/*", max_length = 1024)
+    headers: dict[str, str] = Field(default_factory = dict, max_length = 32)
+
+
+_HEADER_NAME_RE = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]{1,100}")
+# The relay returns only status, type and body, so these stay native in the page (a Range needs
+# Content-Range, a conditional its 304's headers) along with credentials: one here is refused.
+# Kept in step with `plain` in routes/browser_network.py.
+_UNRELAYED_HEADER_RE = re.compile(r"authorization|cookie|range|if-.*")
+# The connection's and Studio's, not the page's to set, nor a claim about who the client is.
+_DROPPED_HEADERS = frozenset(
+    {
+        "accept-encoding",
+        "connection",
+        "content-length",
+        "expect",
+        "forwarded",
+        "host",
+        "keep-alive",
+        "max-forwards",
+        "origin",
+        "referer",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "user-agent",
+        "via",
+        "x-real-ip",
+    }
+)
+
+
+def _resource_headers(headers: dict[str, str]) -> dict[str, str]:
+    forwarded = {"Accept": "*/*"}
+    for name, value in headers.items():
+        name = name.lower()
+        if (
+            not _HEADER_NAME_RE.fullmatch(name)
+            or len(value) > 4096
+            or any(c in value for c in "\r\n\0")
+        ):
+            raise HTTPException(status_code = 400, detail = "Not a valid request header.")
+        if _UNRELAYED_HEADER_RE.fullmatch(name):
+            raise HTTPException(status_code = 400, detail = f"The {name} header is not relayed.")
+        if name in _DROPPED_HEADERS or name.startswith(("sec-", "proxy-", "x-forwarded-")):
+            continue
+        # urllib capitalizes names the same way, so a page's "accept" replaces the default.
+        forwarded[name.capitalize()] = value
+    forwarded["User-Agent"] = _BROWSER_UA
+    return forwarded
 
 
 def _fetch_resource(request: BrowserResourceRequest, cancel_event: threading.Event) -> dict:
     origin = _web_origin(request.url)
     if origin is None or origin != _web_origin(request.page_url):
         raise HTTPException(status_code = 400, detail = "Only the page's own site can be read.")
+    headers = _resource_headers(request.headers)
     meta: dict = {}
     # No Studio credentials and no cookies: what the site serves anyone.
     error, body, _content_type = _fetch_url_raw(
         request.url,
         timeout = _FETCH_TIMEOUT_S,
-        extra_headers = {"User-Agent": _BROWSER_UA, "Accept": request.accept},
+        extra_headers = headers,
         deadline = time.monotonic() + _FETCH_TIMEOUT_S,
         raw_bytes_max = _MAX_RESOURCE_BYTES,
         meta_out = meta,

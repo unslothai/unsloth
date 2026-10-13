@@ -97,7 +97,8 @@ def test_the_shell_relays_the_pages_own_reads_and_maps_srcdoc_paths():
     )
     for guard in (
         'method === "GET" && /^https?:$/.test(target.protocol) && target.origin === new URL(cfg.url).origin',
-        'request.headers.has("authorization") || request.credentials === "include"',
+        '!plain(request.headers) || request.credentials === "include"',
+        "if (!this._relay || this.withCredentials || !plain(this._headers))",
         'if (data?.type === "unsloth:browser-command" && data.command === "resourceResult")',
         "const type = this._relay ? this._type : super.responseType;",
         "/^(?:about:)?srcdoc(?=[?#]|$)/",
@@ -147,7 +148,68 @@ def test_a_page_read_has_no_credentials_and_keeps_http_errors(monkeypatch):
     assert seen["same_origin_only"] and seen["raw_http_errors"]
     assert seen["raw_bytes_max"] == browser_mod._MAX_RESOURCE_BYTES
     assert "host_headers" not in seen
-    assert set(seen["extra_headers"]) == {"User-Agent", "Accept"}
+    assert seen["extra_headers"] == {"Accept": "*/*", "User-Agent": browser_mod._BROWSER_UA}
+
+
+def test_a_page_read_forwards_the_pages_headers_but_not_the_connections(monkeypatch):
+    seen = {}
+
+    def fake_fetch(url, **kwargs):
+        seen.update(kwargs["extra_headers"])
+        kwargs["meta_out"].update(status = 200, content_type = "application/json", url = url)
+        return None, b"{}", "application/json"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    request = browser_mod.BrowserResourceRequest(
+        page_url = "https://huggingface.co/models",
+        url = "https://huggingface.co/models-json?search=qwen",
+        headers = {
+            "accept": "application/json",
+            "x-request-id": "Root=1-abc",
+            "x-requested-with": "XMLHttpRequest",
+            "host": "evil.example",
+            "user-agent": "page",
+            "accept-encoding": "br",
+            "sec-fetch-site": "same-origin",
+            "proxy-authorization": "Basic x",
+            "te": "trailers",
+            "x-forwarded-for": "10.0.0.1",
+            "forwarded": "for=10.0.0.1",
+            "via": "1.1 page",
+        },
+    )
+    browser_mod._fetch_resource(request, threading.Event())
+    assert seen == {
+        "Accept": "application/json",
+        "X-request-id": "Root=1-abc",
+        "X-requested-with": "XMLHttpRequest",
+        "User-Agent": browser_mod._BROWSER_UA,
+    }
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("range", "bytes=0-1023"),
+        ("if-none-match", '"abc"'),
+        ("authorization", "Bearer x"),
+        ("cookie", "a=b"),
+        ("x-bad", "a\r\nHost: evil.example"),
+        ("bad name", "x"),
+        ("x-a\n", "v"),
+        ("range\n", "bytes=0-1"),
+    ],
+)
+def test_a_header_the_relay_cannot_honor_is_refused(monkeypatch, name, value):
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", lambda *a, **k: pytest.fail("fetched"))
+    request = browser_mod.BrowserResourceRequest(
+        page_url = "https://huggingface.co/models",
+        url = "https://huggingface.co/models-json",
+        headers = {name: value},
+    )
+    with pytest.raises(HTTPException) as caught:
+        browser_mod._fetch_resource(request, threading.Event())
+    assert caught.value.status_code == 400
 
 
 def test_a_failed_page_read_is_a_network_error(monkeypatch):

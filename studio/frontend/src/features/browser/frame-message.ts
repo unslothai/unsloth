@@ -29,7 +29,7 @@ export type FrameMessage =
   /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */
   | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null }
   /** A GET of the page's own site, which CORS refuses the sandbox (routes/browser_network.py). */
-  | { type: "resource"; id: string; url: string; accept: string }
+  | { type: "resource"; id: string; url: string; headers: Record<string, string> }
   | { type: "resourceCancel"; id: string };
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
@@ -65,6 +65,23 @@ const MAX_COORD = 1_000_000;
 
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.length <= max ? value : null;
+
+const MAX_HEADERS = 32;
+const HEADER_NAME = /^[a-z0-9!#$%&'*+.^_`|~-]{1,100}$/;
+
+/** A page request's headers, as names and values HTTP allows; null when anything else is there. */
+function requestHeaders(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_HEADERS) return null;
+  const headers: Record<string, string> = {};
+  for (const [name, raw] of entries) {
+    const header = text(raw, 4096);
+    if (!HEADER_NAME.test(name) || header === null || /[\r\n\0]/.test(header)) return null;
+    headers[name] = header;
+  }
+  return headers;
+}
 
 const title = (value: unknown): string => (typeof value === "string" ? value.slice(0, MAX_TITLE_CHARS) : "");
 
@@ -128,8 +145,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "resource": {
       const id = text(message.id, 64);
       const url = text(message.url, MAX_URL_CHARS);
-      const accept = text(message.accept, 1024);
-      return id && url && accept !== null ? { type: "resource", id, url, accept } : null;
+      const headers = requestHeaders(message.headers);
+      return id && url && headers ? { type: "resource", id, url, headers } : null;
     }
     case "resourceCancel": {
       const id = text(message.id, 64);

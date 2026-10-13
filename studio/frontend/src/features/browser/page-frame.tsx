@@ -111,8 +111,8 @@ function resourceRelay(reply: (id: string, result: unknown) => void) {
     while (!closed && active.size < RESOURCE_SLOTS && waiting.length) waiting.shift()?.run();
   };
   return {
-    read(message: { id: string; url: string; accept: string }, pageUrl: string | null) {
-      const { id, url, accept } = message;
+    read(message: { id: string; url: string; headers: Record<string, string> }, pageUrl: string | null) {
+      const { id, url, headers } = message;
       if (!pageUrl || !sameWebOrigin(url, pageUrl)) {
         reply(id, { error: "not this page's site" });
         return;
@@ -136,7 +136,7 @@ function resourceRelay(reply: (id: string, result: unknown) => void) {
           authFetch("/api/browser/resource", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ page_url: pageUrl, url, accept }),
+            body: JSON.stringify({ page_url: pageUrl, url, headers }),
             signal: controller.signal,
           })
             .then(async (response) => (response.ok ? response.json() : { error: `HTTP ${response.status}` }))

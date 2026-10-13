@@ -30,7 +30,7 @@ BROWSER_NETWORK_JS = r"""
         }
         const resources = new Map();
         let resourceId = 0;
-        const readResource = (url, accept, signal) => new Promise((resolve, reject) => {
+        const readResource = (url, headers, signal) => new Promise((resolve, reject) => {
           if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
           const id = `resource-${++resourceId}`;
           const settle = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); resources.delete(id); };
@@ -38,7 +38,7 @@ BROWSER_NETWORK_JS = r"""
           const timer = setTimeout(() => { post({ type: "resourceCancel", id }); settle(); reject(new TypeError("Failed to fetch")); }, 60000);
           resources.set(id, (result) => { settle(); result && !result.error ? resolve(result) : reject(new TypeError("Failed to fetch")); });
           signal?.addEventListener("abort", abort, { once: true });
-          post({ type: "resource", id, url, accept });
+          post({ type: "resource", id, url, headers: Object.fromEntries(headers) });
         });
         window.addEventListener("message", (event) => {
           if (event.source !== parent) return;
@@ -52,6 +52,15 @@ BROWSER_NETWORK_JS = r"""
             return method === "GET" && /^https?:$/.test(target.protocol) && target.origin === new URL(cfg.url).origin;
           } catch { return false; }
         };
+        // The relay forwards the page's headers but returns only status, type and body, so a request
+        // whose answer depends on more (a Range's Content-Range, a conditional's 304) or that carries
+        // a credential stays native, as it was. Kept in step with _UNRELAYED_HEADER_RE in routes/browser.py.
+        // So do headers past what the panel takes (frame-message.ts), rather than waiting out a timeout.
+        const plain = (headers) => {
+          const all = [...headers];
+          return all.length <= 32 && all.every(([name, value]) =>
+            name.length <= 100 && value.length <= 4096 && !/^(authorization|cookie|range|if-.*)$/.test(name));
+        };
         const bytesOf = (body) => {
           const text = atob(body);
           const bytes = new Uint8Array(text.length);
@@ -62,10 +71,10 @@ BROWSER_NETWORK_JS = r"""
           const done = track();
           return (async () => {
             const request = new Request(input instanceof Request ? input : resourceUrl(input), init);
-            if (!relayed(request.url, request.method) || request.headers.has("authorization") || request.credentials === "include") {
+            if (!relayed(request.url, request.method) || !plain(request.headers) || request.credentials === "include") {
               return nativeFetch(request);
             }
-            const result = await readResource(request.url, request.headers.get("accept") || "*/*", request.signal);
+            const result = await readResource(request.url, request.headers, request.signal);
             const response = new Response([101, 204, 205, 304].includes(result.status) ? null : bytesOf(result.body), {
               status: result.status, headers: result.headers,
             });
@@ -149,7 +158,7 @@ BROWSER_NETWORK_JS = r"""
             super.abort();
           }
           send(body) {
-            if (!this._relay || this.withCredentials || this._headers.has("authorization")) {
+            if (!this._relay || this.withCredentials || !plain(this._headers)) {
               if (this._relay) { this._relay = false; super.responseType = this._type; }
               const done = track();
               this.addEventListener("loadend", done, { once: true });
@@ -165,7 +174,7 @@ BROWSER_NETWORK_JS = r"""
             void (async () => {
               let outcome = "load";
               try {
-                const result = await readResource(this._url, this._headers.get("accept") || "*/*", controller.signal);
+                const result = await readResource(this._url, this._headers, controller.signal);
                 if (this._controller !== controller) return;
                 this._result = result;
                 this._state = 2; this.dispatchEvent(new Event("readystatechange"));

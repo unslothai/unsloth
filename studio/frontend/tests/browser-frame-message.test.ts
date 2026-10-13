@@ -77,3 +77,16 @@ test("a snapshot is markup or nothing", () => {
   assert.deepEqual(from({ type: "snapshot", html: 5 }), { type: "snapshot", html: null });
   assert.deepEqual(from({ type: "snapshot", html: "x".repeat(8 * 1024 * 1024 + 1) }), { type: "snapshot", html: null });
 });
+
+test("a page's API read carries only headers HTTP allows", () => {
+  const read = (headers: unknown) => from({ type: "resource", id: "r1", url: "https://huggingface.co/models-json", headers });
+  assert.deepEqual(read({ accept: "application/json", "x-request-id": "Root=1-abc" }), {
+    type: "resource", id: "r1", url: "https://huggingface.co/models-json",
+    headers: { accept: "application/json", "x-request-id": "Root=1-abc" },
+  });
+  assert.equal(read({ "x-bad": "a\r\nHost: evil.example" }), null);
+  assert.equal(read({ "bad name": "x" }), null);
+  assert.equal(read({ accept: 1 }), null);
+  assert.equal(read(["accept", "x"]), null);
+  assert.equal(read(Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`x-${i}`, "v"]))), null);
+});

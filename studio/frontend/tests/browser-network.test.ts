@@ -35,11 +35,15 @@ class NativeXHR extends EventTarget {
     this.#state = 1;
   }
   setRequestHeader() {}
-  send() {}
+  send() {
+    nativeSends.push(this);
+  }
   abort() {
     if (this.#state === 4) this.#state = 0;
   }
 }
+/** Every XHR the browser itself was asked to send. */
+const nativeSends: NativeXHR[] = [];
 
 function setup() {
   const posted: Array<Record<string, unknown>> = [];
@@ -85,8 +89,8 @@ test("a same-origin GET goes to the panel and comes back as the site's response"
   const response = t.window.fetch("/models-json?search=qwen");
   await flush();
   assert.deepEqual(
-    { type: t.posted[0].type, url: t.posted[0].url, accept: t.posted[0].accept },
-    { type: "resource", url: "https://huggingface.co/models-json?search=qwen", accept: "*/*" },
+    { type: t.posted[0].type, url: t.posted[0].url, headers: t.posted[0].headers },
+    { type: "resource", url: "https://huggingface.co/models-json?search=qwen", headers: {} },
   );
   // Only the shell's parent answers; the page posting to itself can't.
   t.reply(t.posted[0].id, t.ok('{"models":["spoofed"]}'), {});
@@ -105,14 +109,58 @@ test("a failed read is a network error to the page, as a refused CORS request is
   await assert.rejects(response, (error: Error) => error.name === "TypeError");
 });
 
-test("writes, credentials and other sites keep the native request", async () => {
+test("writes, credentials, other sites, ranges and conditionals keep the native request", async () => {
   const t = setup();
   await t.window.fetch("/api/settings", { method: "POST", body: "x" });
   await t.window.fetch("/models-json", { credentials: "include" });
   await t.window.fetch("/models-json", { headers: { Authorization: "Bearer x" } });
+  await t.window.fetch("/weights.bin", { headers: { Range: "bytes=0-1023" } });
+  await t.window.fetch("/models-json", { headers: { "If-None-Match": '"abc"' } });
   await t.window.fetch("https://api.github.com/repos");
+  // Past what the panel takes: native at once, rather than a relayed read nobody answers.
+  await t.window.fetch("/models-json", { headers: { "X-Big": "v".repeat(5000) } });
+  await t.window.fetch("/models-json", { headers: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`x-${i}`, "v"])) });
   assert.equal(t.posted.length, 0);
-  assert.equal(t.native.length, 4);
+  assert.equal(t.native.length, 8);
+  assert.equal(t.native[3].headers.get("range"), "bytes=0-1023");
+});
+
+test("the page's other headers go along with a relayed read", async () => {
+  const t = setup();
+  const relayed = t.window.fetch("/models-json", {
+    headers: { Accept: "application/json", "X-Request-Id": "Root=1-abc", "X-Requested-With": "XMLHttpRequest" },
+  });
+  await flush();
+  assert.deepEqual(t.posted[0].headers, {
+    accept: "application/json", "x-request-id": "Root=1-abc", "x-requested-with": "XMLHttpRequest",
+  });
+  t.reply(t.posted[0].id, t.ok("{}"));
+  await relayed;
+});
+
+test("a relayed XHR takes its headers along, repeats joined as the browser joins them", async () => {
+  const t = setup();
+  const xhr = new t.window.XMLHttpRequest();
+  xhr.open("GET", "/models-json");
+  xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+  xhr.setRequestHeader("X-Tag", "a");
+  xhr.setRequestHeader("X-Tag", "b");
+  const done = new Promise((resolve) => xhr.addEventListener("loadend", resolve));
+  xhr.send();
+  assert.deepEqual(t.posted[0].headers, { "x-requested-with": "XMLHttpRequest", "x-tag": "a, b" });
+  t.reply(t.posted[0].id, t.ok("{}"));
+  await done;
+  assert.equal(xhr.status, 200);
+});
+
+test("an XHR asking for a range goes out natively, header and all", async () => {
+  const t = setup();
+  const xhr = new t.window.XMLHttpRequest();
+  xhr.open("GET", "/weights.bin");
+  xhr.setRequestHeader("Range", "bytes=0-1023");
+  xhr.send();
+  assert.equal(t.posted.length, 0);
+  assert.equal(nativeSends.at(-1), xhr);
 });
 
 test("only requests started since the action count, however long they stay open", async () => {
