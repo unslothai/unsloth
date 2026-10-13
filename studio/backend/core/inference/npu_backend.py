@@ -49,10 +49,8 @@ _VALIDATED_MARKER = "npu_validated.json"
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
-# Lemonade reports a model's config.json max_position_embeddings as its context window, but some
-# FastFlowLM engines stop short of it and fail to load above their limit. Measured on FastFlowLM
-# 1.0.7, where Qwen3.8 fails above 8192 with "max_len is at most 16384 (MAX_L_LIMIT)"; recheck
-# when the pin moves. https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
+# Lemonade reports config.json max_position_embeddings, but FastFlowLM engines can fail above a lower
+# limit (FastFlowLM 1.0.7; recheck on pin bumps). https://fastflowlm.com/docs/models/qwen/#-model-card-qwen38-27b
 _FLM_CONTEXT_LIMITS = {"qwen3.8-mtp:27b": 8192}
 
 _VALIDATE_PROBLEMS = (
