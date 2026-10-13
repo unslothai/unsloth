@@ -544,7 +544,7 @@ def test_ram_is_capped_by_the_v1_memsw_headroom(monkeypatch):
 
 
 def test_an_unreadable_swap_reading_keeps_the_ram_check(monkeypatch):
-    import psutil
+    psutil = pytest.importorskip("psutil")
 
     from core.inference import video_minimax_h3
     from utils import host_memory
@@ -772,6 +772,7 @@ def test_the_fallback_reason_names_the_missing_rocm_libraries(monkeypatch):
 
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
     monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+    monkeypatch.setattr(sd_cpp_backend.os, "name", "posix")
     assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3"]
     reason = sd_cpp_backend.accelerator_fallback_reason("rocm")
     assert "libhipblas.so.3" in reason and "ROCm 7" in reason
