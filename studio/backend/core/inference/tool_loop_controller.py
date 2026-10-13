@@ -696,6 +696,14 @@ def _mcp_tool_spec(tool_name: str) -> Any:
         return None
 
 
+def _mcp_fit_loaded(specs: list) -> list:
+    try:
+        from core.inference.tools import mcp_fit_loaded  # noqa: PLC0415 -- cycle at import time
+        return mcp_fit_loaded(specs)
+    except Exception:  # noqa: BLE001 -- unsized, the newest load still goes through
+        return specs[:1]
+
+
 def _mcp_tool_search_specs(arguments: Any) -> list:
     try:
         from core.inference.tools import mcp_tool_search_specs  # noqa: PLC0415 -- cycle at import time
@@ -1189,6 +1197,8 @@ class ToolLoopController:
         }
         # Deferred MCP tools load into the listing when searched for or named (#10997).
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        self._listed_count = len(self._tools)
+        self._mcp_loaded: list[dict[str, Any]] = []
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1374,12 +1384,27 @@ class ToolLoopController:
 
         # Remote text, swept as the loops sweep the catalog this controller was built from (#7066); with no model's
         # profile at hand, against every family's markup.
-        specs = neutralize_tool_descriptions([s for s in specs if isinstance(s, Mapping)]) or []
-        for spec in specs:
-            name = _tool_name_from_schema(spec)
-            if name and name not in self._allowed_tool_names:
-                self._tools.append(copy.deepcopy(dict(spec)))
-                self._allowed_tool_names.add(name)
+        specs = (
+            neutralize_tool_descriptions([dict(s) for s in specs if isinstance(s, Mapping)]) or []
+        )
+        listed = self._tools[: self._listed_count]
+        listed_names = {_tool_name_from_schema(tool) for tool in listed}
+        fresh = [s for s in specs if _tool_name_from_schema(s) not in listed_names]
+        fresh_names = {_tool_name_from_schema(s) for s in fresh}
+        # Newest first into the turn's load share, so a later search can retire an older load but never overflow.
+        kept = _mcp_fit_loaded(
+            fresh
+            + [
+                s
+                for s in reversed(self._mcp_loaded)
+                if _tool_name_from_schema(s) not in fresh_names
+            ]
+        )
+        self._mcp_loaded = [copy.deepcopy(s) for s in reversed(kept)]
+        self._tools = listed + self._mcp_loaded
+        self._allowed_tool_names = {
+            name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
+        }
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:

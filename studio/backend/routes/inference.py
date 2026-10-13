@@ -5256,7 +5256,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+    # mcp_tool_search loads MCP tools, which can prompt, into the same turn.
+    return not all(
+        is_always_safe_tool(t) and t not in ("web_search", "mcp_tool_search") for t in enabled
+    )
 
 
 class _AutoPermissionMode:

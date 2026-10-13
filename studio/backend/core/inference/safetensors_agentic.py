@@ -755,10 +755,13 @@ def run_safetensors_tool_loop(
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + mcp_loadable_specs(tools)
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).

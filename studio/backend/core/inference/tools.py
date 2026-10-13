@@ -14,6 +14,7 @@ import functools
 import hashlib
 from html.parser import HTMLParser
 import json
+import math
 import http.client
 import ntpath
 import os
@@ -13579,6 +13580,8 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
+# Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
+_MCP_TOOL_LOAD_SHARE = 0.5
 # Each tool the search tool names carries this much of its description, so the model can tell what to search for.
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
@@ -13592,6 +13595,7 @@ _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens
 _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = None)
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
+_MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 # (account, thread) -> MCP tools the thread loaded through mcp_tool_search, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
@@ -13617,18 +13621,42 @@ def set_mcp_listing_context_tokens(
     dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    last_user = next(
+        (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
+    )
+    _MCP_LISTING_IMAGE.set(bool(last_user) and _content_has_image(last_user.get("content")))
 
 
-def _mcp_tool_search_spec(catalog: list[tuple[str, list[tuple[str, str]]]]) -> dict:
-    """``catalog`` is (server display name, [(raw tool name, summary)]) per server, in listing order."""
-    budget = _MCP_TOOL_SEARCH_MAX_NAMES
+def _content_has_image(content) -> bool:
+    if isinstance(content, list):
+        return any(_content_has_image(part) for part in content)
+    return isinstance(content, dict) and str(content.get("type", "")).lower() in (
+        "image",
+        "image_url",
+        "input_image",
+    )
+
+
+def _mcp_tool_search_spec(
+    catalog: list[tuple[str, list[tuple[str, str]]]], max_chars: int | None = None
+) -> dict:
+    """``catalog`` is (server display name, [(tool name, summary)]) per server, in listing order; the tool lines
+    stop at ``_MCP_TOOL_SEARCH_MAX_NAMES`` and at ``max_chars``."""
+    names_left = _MCP_TOOL_SEARCH_MAX_NAMES
+    chars_left = max_chars if max_chars is not None else float("inf")
     groups = []
     for display, tools in catalog:
-        shown, budget = tools[: max(budget, 0)], budget - len(tools)
-        lines = [f"- {name}: {summary}" if summary else f"- {name}" for name, summary in shown]
-        if len(tools) > len(shown):
-            lines.append(f"- and {len(tools) - len(shown)} more")
-        groups.append(f"{display}:\n" + "\n".join(lines))
+        lines = []
+        for name, summary in tools:
+            line = f"- {name}: {summary}" if summary else f"- {name}"
+            if names_left <= 0 or len(line) > chars_left:
+                break
+            lines.append(line)
+            names_left -= 1
+            chars_left -= len(line) + 1
+        if len(tools) > len(lines):
+            lines.append(f"- and {len(tools) - len(lines)} more")
+        groups.append(f"{display[:_MCP_SUMMARY_CHARS]}:\n" + "\n".join(lines))
     return {
         "type": "function",
         "function": {
@@ -13807,31 +13835,33 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     # in place of the right, deferred one (Qwen3-4B on Notion, #10997).
     by_name = {spec["function"]["name"]: spec for spec in specs}
     # Always listed: a forced tool_choice names its tool, and an attached image is refused unless the catalog
-    # lists the tool mapped to take it.
+    # lists a tool mapped to take it.
     pinned = [_MCP_LISTING_FORCED.get()]
     catalog = []
     for server, payload, server_specs in listed:
         display = server.get("display_name") or server["id"]
         names = [_mcp_raw_tool_name(spec["function"]["name"]) for spec in server_specs]
+        # The composed name past its mcp__<server>__ prefix: a raw name can be any length, an alias cannot.
         tools_listed = [
             (
-                name,
+                spec["function"]["name"].split("__", 2)[2],
                 _mcp_summary(
                     spec["function"]["description"].removeprefix(f"[{display}]"),
                     _MCP_TOOL_SEARCH_SUMMARY_CHARS,
                 ),
             )
-            for name, spec in zip(names, server_specs)
+            for spec in server_specs
         ]
         if names:
             catalog.append((display, tools_listed))
-        tools = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
-        pinned += [
-            spec["function"]["name"]
-            for spec, raw in zip(server_specs, names)
-            if image_mapping(server, tools.get(raw))
-        ]
-    listing = [_mcp_tool_search_spec(catalog)]
+        if _MCP_LISTING_IMAGE.get():
+            tools = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
+            pinned += [
+                spec["function"]["name"]
+                for spec, raw in zip(server_specs, names)
+                if image_mapping(server, tools.get(raw))
+            ]
+    listing = [_mcp_tool_search_spec(catalog, int(budget * 4))]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
@@ -13863,6 +13893,12 @@ def _cached_mcp_catalog() -> list[dict]:
     return specs
 
 
+def mcp_loadable_specs(tools) -> list[dict]:
+    """The MCP tools a loop offering mcp_tool_search may load mid-turn, so its call detection knows their names."""
+    names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
+    return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
+
+
 def mcp_tool_spec(name) -> dict | None:
     """The full spec of a cached MCP tool, for loading it into a running tool loop."""
     if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
@@ -13877,9 +13913,10 @@ def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
     function = spec["function"]
     parameters = function.get("parameters") or {}
     props = parameters.get("properties") if isinstance(parameters, dict) else None
+    props = props if isinstance(props, dict) else {}
     param_text = " ".join(
         f"{key} {value.get('description') or ''}" if isinstance(value, dict) else str(key)
-        for key, value in (props or {}).items()
+        for key, value in props.items()
     )
     # Names are word-split so notion-create-pages matches "create pages".
     return re.sub(r"[_\-.]+", " ", function["name"]), function.get("description") or "", param_text
@@ -13913,7 +13950,7 @@ def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
 
 
 def _mcp_search_limit(limit) -> int:
-    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit):
         return _MCP_TOOL_SEARCH_LIMIT
     return max(1, min(_MCP_TOOL_SEARCH_MAX_LIMIT, int(limit)))
 
@@ -13961,31 +13998,45 @@ def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
     return list(dict.fromkeys(exact + ranked)), len(exact)
 
 
-def mcp_tool_search_specs(arguments) -> list[dict]:
-    """The cached MCP tools a mcp_tool_search call loads: exact names and the best match always, the rest while
-    they fit the preload share of the window (five Notion query tools are more schema than a 32K window)."""
+def mcp_fit_loaded(specs: list[dict]) -> list[dict]:
+    """The leading ``specs`` (newest first) that fit the share of the window a turn's loaded tools may take."""
+    ctx = _MCP_LISTING_CONTEXT_TOKENS.get() or _window_context_tokens()
+    if not ctx:
+        return list(specs)
+    room = ctx * _MCP_TOOL_LOAD_SHARE
+    fitted = []
+    for spec in specs:
+        cost = _text_token_cost(json.dumps(spec, separators = (",", ":")), ctx)
+        if cost <= room:
+            fitted.append(spec)
+            room -= cost
+    return fitted
+
+
+def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
+    """(the cached MCP tools a mcp_tool_search call loads, the matches too large to)."""
     arguments = arguments if isinstance(arguments, dict) else {}
     specs = _cached_mcp_catalog()
     order, exact = _mcp_ranked(specs, arguments.get("query"))
     picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
-    ctx = _MCP_LISTING_CONTEXT_TOKENS.get() or _window_context_tokens()
-    if not ctx:
-        return picked
-    room = ctx * _MCP_TOOL_PRELOAD_SHARE
-    found = []
-    for position, spec in enumerate(picked):
-        cost = _text_token_cost(json.dumps(spec, separators = (",", ":")), ctx)
-        if position < max(exact, 1) or cost <= room:
-            found.append(spec)
-            room -= cost
-    return found
+    fitted = mcp_fit_loaded(picked)
+    return fitted, [spec for spec in picked if spec not in fitted]
+
+
+def mcp_tool_search_specs(arguments) -> list[dict]:
+    """The cached MCP tools a mcp_tool_search call loads: exact names first, then the best matches, while they
+    fit the window's load share (five Notion query tools are more schema than a 32K window)."""
+    return _mcp_search_matches(arguments)[0]
 
 
 def _mcp_tool_search(arguments) -> str:
     query = arguments.get("query") if isinstance(arguments, dict) else None
     if not isinstance(query, str) or not query.strip():
         return "Error: mcp_tool_search needs a query naming the action you need."
-    found = mcp_tool_search_specs(arguments)
+    found, too_large = _mcp_search_matches(arguments)
+    if not found and too_large:
+        names = ", ".join(spec["function"]["name"] for spec in too_large)
+        return f"Error: the matching MCP tools ({names}) are too large for this model's context window."
     if not found:
         return (
             f"No MCP tool matched '{query.strip()}'. Try other keywords, or one of the tool names "

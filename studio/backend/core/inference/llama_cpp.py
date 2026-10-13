@@ -38161,10 +38161,13 @@ class LlamaCppBackend:
 
         # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
         # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
-        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        from core.inference.tools import mcp_loadable_specs
+
+        # Plus the MCP tools a search can load mid-turn (#10997).
+        _detect_tools = list(tools or []) + mcp_loadable_specs(tools)
+        _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
         # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
         # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-        _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
             return {

@@ -40,18 +40,21 @@ or launching Unsloth Studio does not download anything.
 A server can expose dozens of tools with long descriptions and deeply nested
 parameter schemas: Notion's catalog alone is about 65,000 tokens. Every tool is
 listed in full while the catalog takes at most a tenth of the loaded local model's
-context window.
+context window. External providers always get the full listing.
 
-Past that, Studio searches tools the way Claude Code and Codex do: the largest
-tools are deferred, largest first, until the listing fits, and the model gets
-`mcp_tool_search`, whose description names every deferred tool. A search ranks
-the deferred catalog with the same SQLite FTS5 BM25 index and rank fusion the
-knowledge base uses (tool names and descriptions searched separately), loads the
-best matches (5 by default, exact names always), and those tools are callable
-with their full schemas from the next step on. A deferred tool the model calls by
-name loads the same way. Tools a chat has loaded stay listed on its later turns,
-so the prompt prefix the model server caches does not change. External providers
-always get the full listing.
+Past that, Studio searches tools the way Claude Code and Codex do. The model gets
+`mcp_tool_search`, whose description names every tool with a one-line summary,
+instead of the schemas. A search ranks the catalog with the SQLite FTS5 BM25 index
+and rank fusion the knowledge base uses (tool names and descriptions searched
+separately) and loads the best matches, exact names always; the model then calls
+them with their full schemas. A tool the model calls by name loads the same way.
+
+Up front, the listing also carries a tool a `tool_choice` forces, the tools mapped
+to take an attached image, and, within a third of the window, the tools the chat
+ran on earlier turns (so the prompt prefix the model server caches holds) and up
+to five tools ranked against the user's message. Tools a turn loads stay within
+half of the window, the oldest leaving first; a tool too large for that is refused
+with a message naming it.
 
 ## Unsloth Decisions MCP
 

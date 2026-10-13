@@ -2509,17 +2509,47 @@ def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
     big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
     _cache_server_tools(tmp_path, monkeypatch, big)
     cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
+    window = lambda share: lambda: int(share * cost / tools_mod._MCP_TOOL_LOAD_SHARE)  # noqa: E731
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", window(2.5))
+    assert len(tools_mod.mcp_tool_search_specs({"query": "query rows"})) == 2
+
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", window(0.5))
+    assert tools_mod.mcp_tool_search_specs({"query": "query rows"}) == []
+    out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows"})
+    assert out.startswith("Error: the matching MCP tools (mcp__srv1__query-0, ")
+    assert out.endswith("are too large for this model's context window.")
+
+
+def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
+    _cache_server_tools(tmp_path, monkeypatch, big)
+    cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
     monkeypatch.setattr(
         tools_mod,
         "_window_context_tokens",
-        lambda: int(2.5 * cost / tools_mod._MCP_TOOL_PRELOAD_SHARE),
+        lambda: int(2.5 * cost / tools_mod._MCP_TOOL_LOAD_SHARE),
     )
-    found = tools_mod.mcp_tool_search_specs({"query": "query rows"})
-    assert len(found) == 2
-    # The best match loads even when it alone is over the room.
-    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: 10)
-    assert len(tools_mod.mcp_tool_search_specs({"query": "query rows"})) == 1
-    assert len(tools_mod.mcp_tool_search_specs({"query": "query-1 query-2"})) == 2
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    for name in ("query-0", "query-1", "query-2"):
+        decision = controller.prepare_call(
+            {"function": {"name": "mcp_tool_search", "arguments": json.dumps({"query": name})}}
+        )
+        controller.record_result(decision, "Loaded")
+    assert _names(controller.active_tools()) == [
+        "mcp_tool_search",
+        "mcp__srv1__query-1",
+        "mcp__srv1__query-2",
+    ]
+    assert (
+        controller.prepare_call(
+            {"function": {"name": "mcp__srv1__query-0", "arguments": "{}"}}
+        ).action
+        == "execute"
+    )
+    assert _names(controller.active_tools())[1:] == ["mcp__srv1__query-2", "mcp__srv1__query-0"]
 
 
 def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
@@ -2528,18 +2558,46 @@ def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, search
     from core.inference import tools as tools_mod
 
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
-    ctx = contextvars.copy_context()
+
+    def listing_for(messages, tool_choice = None):
+        ctx = contextvars.copy_context()
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, messages, tool_choice)
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
     forced = {"type": "function", "function": {"name": "mcp__srv1__get-users"}}
-    ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, None, forced)
-    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
-        "mcp_tool_search",
-        "mcp__srv1__get-users",
-    ]
+    assert listing_for(None, forced) == ["mcp_tool_search", "mcp__srv1__get-users"]
 
     monkeypatch.setattr(
         tools_mod, "image_mapping", lambda server, tool: tool and tool.get("name") == "ping"
     )
-    assert _names(tools_mod.cached_mcp_tools()[0]) == ["mcp_tool_search", "mcp__srv1__ping"]
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    asked = [{"role": "user", "content": [{"type": "text", "text": "hi"}, image]}]
+    assert listing_for(asked) == ["mcp_tool_search", "mcp__srv1__ping"]
+    # Without an attachment the mapped tool is deferred like any other.
+    assert listing_for([{"role": "user", "content": "hi"}]) == ["mcp_tool_search"]
+
+
+def test_malformed_schemas_and_limits_do_not_break_the_search(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    odd = {
+        "name": "odd",
+        "description": "Odd rows.",
+        "inputSchema": {"type": "object", "properties": "x"},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [odd])
+    assert _names(
+        tools_mod.mcp_tool_search_specs({"query": "odd rows", "limit": float("inf")})
+    ) == ["mcp__srv1__odd"]
+
+
+def test_the_search_tool_names_tools_within_a_character_budget():
+    from core.inference import tools as tools_mod
+
+    catalog = [("A", [("t" * 60, "s" * 80) for _ in range(10)])]
+    description = tools_mod._mcp_tool_search_spec(catalog, 500)["function"]["description"]
+    assert description.count("- " + "t" * 60) == 3
+    assert description.endswith("- and 7 more")
 
 
 def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monkeypatch):
