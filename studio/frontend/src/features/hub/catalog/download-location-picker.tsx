@@ -80,14 +80,14 @@ export function DownloadLocationPicker() {
             type="button"
             aria-label={`Download to: ${dir ?? "Models folder"}`}
             title={`Download to: ${dir ?? "Models folder"}`}
-            className="hub-tag-soft inline-flex h-[calc(26px*var(--ui-space-scale,1))] max-w-[calc(220px*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-1.5 rounded-full border-0 px-2.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className="hub-tag-soft inline-flex h-[calc(26px*var(--ui-space-scale,1))] max-w-[calc(160px*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-1 rounded-full border-0 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
               icon={Folder02Icon}
               strokeWidth={1.75}
               className="size-3.5 shrink-0"
             />
-            <span className="truncate">Download to: {label}</span>
+            <span className="truncate">{label}</span>
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
