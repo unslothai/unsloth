@@ -117,6 +117,10 @@ def test_awq_checkpoint_gets_trainable_backend(monkeypatch):
     merged = AutoHfQuantizer.merge_quantization_configs(dict(_AWQ4), cfg)
     assert (merged.bits, merged.group_size, merged.zero_point) == (4, 64, True)
     assert merged.format == "gemm" and merged.backend == "auto_trainable"
+    # Configs saved by transformers 4.x (Qwen/Qwen3-8B-AWQ) carry the legacy default backend.
+    for legacy in ("autoawq", "llm-awq"):
+        legacy_cfg = gptq_trainable_quantization_config(_config({**_AWQ4, "backend": legacy}), None)
+        assert legacy_cfg is not None and legacy_cfg.backend == "auto_trainable"
 
 
 def test_awq_backend_left_alone(monkeypatch):

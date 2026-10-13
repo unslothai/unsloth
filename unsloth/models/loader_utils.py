@@ -3377,7 +3377,11 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
     quant_method = str((qc or {}).get("quant_method", "")).lower()
     if quant_method not in ("gptq", "awq"):
         return None
-    if qc.get("backend") not in (None, "auto"):
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
         return None
     try:
         from transformers import AwqConfig, GPTQConfig
