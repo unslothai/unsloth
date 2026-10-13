@@ -19,7 +19,8 @@ STAGE_META = "unsloth_stage.json"
 # Written per stage and expected to differ: the merged adapter is the union of the stages, so a
 # per-stage module list says nothing about a config mismatch.
 _CFG_IGNORED = frozenset({"base_model_name_or_path"})
-_LAYER_RE = re.compile(r"\.layers\.(\d+)\.")
+# `layers` (Llama, NeoX, OPT) and GPT-J's `transformer.h`, as spark_pipeline.find_layers accepts.
+_LAYER_RE = re.compile(r"\.(?:layers|h)\.(\d+)\.")
 
 
 def stage_dirs(root: str) -> List[str]:
@@ -216,12 +217,16 @@ def merge(
                 tensors[k] = f.get_tensor(k)
                 provenance[k] = osp.basename(st["path"])
 
-    # Both files together, tensors first and the config immediately after, so `out` never holds one
-    # run's weights beside another's config.
+    # Both written to temporary names first, so a failed or interrupted write leaves the previous
+    # pair intact; only the two renames at the end replace it.
     os.makedirs(out, exist_ok = True)
-    save_file(tensors, osp.join(out, ADAPTER_BIN))
-    with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
+    bin_tmp = osp.join(out, ADAPTER_BIN + ".tmp")
+    cfg_tmp = osp.join(out, ADAPTER_CFG + ".tmp")
+    save_file(tensors, bin_tmp)
+    with open(cfg_tmp, "w", encoding = "utf-8") as f:
         json.dump(cfgs[0][1], f, indent = 2)
+    os.replace(bin_tmp, osp.join(out, ADAPTER_BIN))
+    os.replace(cfg_tmp, osp.join(out, ADAPTER_CFG))
 
     return {
         "out": out,
