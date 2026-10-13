@@ -70,6 +70,7 @@ function context(
     pinnedProjectIds: new Set(["work"]),
     sectionByChatId: {},
     sectionByProjectId: {},
+    sectionByPageId: {},
     sectionSort: () => "manual",
     orders: {
       pinned: ["work", "p1"],

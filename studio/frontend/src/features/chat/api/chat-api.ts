@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  forgetThreadReads,
+  inFlightThreadReads,
+  type InFlightThreadRead,
+} from "./thread-read-cache.ts";
+import { skillLoadCardEvent } from "./skill-load-event";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import {
+  abortError,
   combineAbortSignals,
   disposableTimeoutSignal,
 } from "@/features/hub/lib/abort-signals";
@@ -23,6 +30,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
@@ -45,7 +53,10 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
-import { publishChatHistoryRevision } from "../utils/chat-history-revision";
+import {
+  CHAT_HISTORY_REVISION_KEY,
+  publishChatHistoryRevision,
+} from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -76,6 +87,7 @@ const THREAD_WRITE_TIMEOUT_MS = 30_000;
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
+  affected: readonly string[] | null,
   caller?: AbortSignal,
 ): Promise<Response> {
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
@@ -84,6 +96,7 @@ async function threadWriteFetch(
       return await authFetch(input, { ...init, signal: timeout.signal });
     } finally {
       timeout.dispose();
+      forgetThreadReads(affected);
     }
   }
   // Either reason ends the request. Linked by hand rather than with AbortSignal.any, which Safari only got in 17.4.
@@ -97,6 +110,7 @@ async function threadWriteFetch(
   } finally {
     caller.removeEventListener("abort", abort);
     timeout.dispose();
+    forgetThreadReads(affected);
   }
 }
 
@@ -163,7 +177,85 @@ export function notifyChatHistoryUpdated(
   }
 }
 
-function notifyChatProjectsUpdated(): void {
+export function subscribeChatHistoryUpdated(
+  listener: (detail: ChatHistoryUpdatedDetail) => void,
+): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onEvent = (event: Event) =>
+    listener((event as CustomEvent<ChatHistoryUpdatedDetail>).detail ?? {});
+  window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onEvent);
+  return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onEvent);
+}
+
+const THREAD_READ_JOIN_MS = 2_000;
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === CHAT_HISTORY_REVISION_KEY) forgetThreadReads(null);
+  });
+}
+
+async function readThreadRecord(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<ThreadRecord | null> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    signal ? { signal } : undefined,
+  );
+  if (response.status === 404) return null;
+  return parseJsonOrThrow<ThreadRecord>(response);
+}
+
+function shareThreadRead(
+  threadId: string,
+  signal?: AbortSignal,
+): Promise<ThreadRecord | null> {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  let shared = inFlightThreadReads.get(threadId);
+  const authEpoch = getAuthSessionEpoch();
+  if (
+    !shared
+    || shared.authEpoch !== authEpoch
+    || performance.now() - shared.startedAt > THREAD_READ_JOIN_MS
+  ) {
+    const controller = new AbortController();
+    const started: InFlightThreadRead = {
+      controller,
+      readers: 0,
+      startedAt: performance.now(),
+      authEpoch,
+      promise: readThreadRecord(threadId, controller.signal),
+    };
+    const forget = () => {
+      if (inFlightThreadReads.get(threadId) === started) {
+        inFlightThreadReads.delete(threadId);
+      }
+    };
+    started.promise.then(forget, forget);
+    inFlightThreadReads.set(threadId, started);
+    shared = started;
+  }
+  shared.readers += 1;
+  if (!signal) return shared.promise;
+  const joined = shared;
+  return new Promise<ThreadRecord | null>((resolve, reject) => {
+    const onAbort = () => {
+      joined.readers -= 1;
+      if (inFlightThreadReads.get(threadId) === joined) {
+        inFlightThreadReads.delete(threadId);
+      }
+      if (joined.readers === 0) joined.controller.abort(signal.reason);
+      reject(abortError(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    joined.promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+export function notifyChatProjectsUpdated(): void {
   notifyChatHistoryUpdated();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
@@ -415,9 +507,6 @@ export async function validateModel(
       reasoning_budget_message: payload.reasoning_budget_message ?? "",
       // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
       // would approve a different command from the one that runs.
-      ...(payload.llama_cpp_config !== undefined
-        ? { llama_cpp_config: payload.llama_cpp_config }
-        : {}),
       ...(payload.llama_extra_args !== undefined
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: payload.llama_extra_args }
@@ -552,6 +641,7 @@ export interface CachedGgufRepo {
    *  Images picker can show only diffusion GGUFs. */
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -649,7 +739,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
@@ -661,6 +751,7 @@ export interface LocalModelInfo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
 }
 
 interface LocalModelListResponse {
@@ -699,6 +790,7 @@ export interface CachedModelRepo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when the snapshot is incomplete: such a repo must not count as downloaded, or a click
    *  re-downloads the full weights. */
   partial?: boolean;
@@ -797,6 +889,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Sub-folders are scanned too. Absent on older backends. */
+  recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
@@ -807,11 +901,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive?: boolean,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/models/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   return parseJsonOrThrow<ScanFolderInfo>(response);
 }
@@ -932,7 +1029,12 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
-  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: {
+    bounded?: boolean;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    share?: boolean;
+  } = {},
 ): Promise<ThreadRecord | null> {
   // Bounded for the delete reconciliation: an unbounded read there would hang the delete the write timeout
   // exists to keep moving. `timeoutMs` is for a caller with a deadline of its own, since the settings pairing
@@ -948,12 +1050,9 @@ export async function getChatThread(
       : null;
   const signal = combined?.signal ?? timeout?.signal ?? options.signal;
   try {
-    const response = await authFetch(
-      `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      signal ? { signal } : undefined,
-    );
-    if (response.status === 404) return null;
-    return parseJsonOrThrow<ThreadRecord>(response);
+    return options.share
+      ? await shareThreadRead(threadId, signal)
+      : await readThreadRecord(threadId, signal);
   } finally {
     combined?.dispose();
     timeout?.dispose();
@@ -982,11 +1081,15 @@ export class ChatThreadWriteError extends Error {
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await threadWriteFetch("/api/chat/threads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(thread),
-  });
+  const response = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(thread),
+    },
+    [thread.id],
+  );
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
@@ -1006,6 +1109,8 @@ export async function saveChatThread(
 export interface UpdateChatThreadOptions {
   /** Apply only while the row still holds this title, else 409. */
   expectedTitle?: string;
+  /** Regenerate a title without changing conversation recency. */
+  preserveTitleModifiedAt?: boolean;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
   /** Off for one update inside a bulk action, which announces itself once at the end. Every notification is a
@@ -1034,6 +1139,9 @@ export async function updateChatThread(
   if (options.expectedTitle !== undefined) {
     body.expectedTitle = options.expectedTitle;
   }
+  if (options.preserveTitleModifiedAt !== undefined) {
+    body.preserveTitleModifiedAt = options.preserveTitleModifiedAt;
+  }
   if (options.expectedOpeningMessageId !== undefined) {
     body.expectedOpeningMessageId = options.expectedOpeningMessageId;
   }
@@ -1044,6 +1152,7 @@ export async function updateChatThread(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    [threadId],
     options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
@@ -1063,14 +1172,19 @@ export async function forkChatThread(
    *  the chat is not generating. */
   args: { messageId?: string; newThreadId: string; createdAt: number },
 ): Promise<ForkChatThreadResult> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(args),
-    },
-  );
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      },
+    );
+  } finally {
+    forgetThreadReads([threadId, args.newThreadId]);
+  }
   const data = await parseJsonOrThrow<{
     thread: ThreadRecord;
     messages: MessageRecord[];
@@ -1100,11 +1214,15 @@ export async function deleteChatThreads(
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
   if (threadIds.length === 0) return [];
-  const response = await threadWriteFetch("/api/chat/threads", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
-  });
+  const response = await threadWriteFetch(
+    "/api/chat/threads",
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
+    },
+    threadIds,
+  );
   const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
   return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
@@ -1132,6 +1250,14 @@ export async function getChatProject(
   );
   if (response.status === 404) return null;
   return parseJsonOrThrow<ProjectRecord>(response);
+}
+
+export async function getChatAgentsMd(
+  projectId: string | null,
+): Promise<AgentsMdRecord> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const response = await authFetch(`/api/chat/agents-md${query}`);
+  return parseJsonOrThrow<AgentsMdRecord>(response);
 }
 
 export async function saveChatProject(
@@ -1164,6 +1290,26 @@ export async function updateChatProject(
   return project;
 }
 
+/** A null lease reverts to Studio's folder; the user's folder is never moved or deleted. */
+export async function setChatProjectWorkingFolder(
+  projectId: string,
+  nativePathLease: string | null,
+): Promise<ProjectRecord> {
+  const response = await authFetch(
+    `/api/chat/projects/${encodeURIComponent(projectId)}/working-folder`,
+    nativePathLease
+      ? {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nativePathLease }),
+        }
+      : { method: "DELETE" },
+  );
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
 /** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
@@ -1172,10 +1318,15 @@ export async function deleteChatProject(
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
-  const response = await authFetch(
-    `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
-    { method: "DELETE" },
-  );
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
+      { method: "DELETE" },
+    );
+  } finally {
+    forgetThreadReads(null);
+  }
   const data = await parseJsonOrThrow<
     ProjectRecord & { sandboxes_kept?: string[] }
   >(response);
@@ -1278,14 +1429,19 @@ export async function saveChatMessage(
   const editQuery = options.allowGenerationEdit
     ? "?allowGenerationEdit=true"
     : "";
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message),
-    },
-  );
+  let response: Response;
+  try {
+    response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}${editQuery}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+      },
+    );
+  } finally {
+    forgetThreadReads([message.threadId]);
+  }
   // Two failures share this status: a protected message, where the autosave must stop, and a
   // thread-id collision, which the caller must see. Only the header separates them.
   if (
@@ -1323,6 +1479,7 @@ export async function syncChatMessages(
         deletedMessageIds: options.deletedMessageIds ?? [],
       }),
     },
+    [threadId],
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning is how a message is deleted, which no other tab should keep matching for a whole
@@ -1356,6 +1513,7 @@ export async function clearBackendChats(
         operationId: options.operationId,
       }),
     },
+    null,
   );
   const data = await parseJsonOrThrow<{
     deletedThreadIds?: string[];
@@ -1764,6 +1922,11 @@ export async function* streamChatCompletions(
         if ("error" in parsed && parsed.error) {
           throw new Error(parsed.error.message || "Stream error");
         }
+        if ("type" in parsed && parsed.type === "skill_load") {
+          yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
         // Tool status events are custom SSE payloads, not OpenAI chunks
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
@@ -1805,6 +1968,12 @@ export async function* streamChatCompletions(
             _reasoningDurationMs: (parsed as { duration_ms?: number })
               .duration_ms,
           } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
+        }
+        // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
+        if ("type" in parsed && parsed.type === "context_usage") {
+          yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }

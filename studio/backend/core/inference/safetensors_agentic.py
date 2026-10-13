@@ -63,8 +63,9 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
-    _WORKSPACE_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
+    _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     coerce_tool_arguments,
@@ -621,6 +622,7 @@ def run_safetensors_tool_loop(
     execute_tool: Callable[..., str],
     cancel_event: Optional[threading.Event] = None,
     auto_heal_tool_calls: bool = True,
+    deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -631,6 +633,7 @@ def run_safetensors_tool_loop(
     mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
     markup = None,
@@ -640,6 +643,7 @@ def run_safetensors_tool_loop(
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
+    context_fitter: Optional[Callable[[list, list, list], dict]] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -661,6 +665,10 @@ def run_safetensors_tool_loop(
 
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
+    if mcp_image is not None:
+        from core.inference.mcp_image import note_attached_image
+        from core.inference.tools import mcp_image_targets
+        messages = note_attached_image(messages, mcp_image_targets(_active_tool_names(tools)))
     conversation = list(messages)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
@@ -668,11 +676,23 @@ def run_safetensors_tool_loop(
     # let the prompt carry a second full allowance. The route reserves the attachment's
     # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # The branch this request is on, before the loop appends anything. A GGUF-compacted
-    # thread keeps its archive across a switch to safetensors, so search_conversation is
-    # advertised here too and needs the same filtering: the stored rows are the whole
-    # DAG, and Retry leaves the replaced response in them.
-    request_branch = list(messages)
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    _live_branch = list(messages)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
+    _live_branch_ids = {id(message) for message in _live_branch}
+
+    def _extend_live_branch(current: list) -> list:
+        for message in current:
+            if id(message) not in _live_branch_ids and message.get("role") != "user":
+                _live_branch_ids.add(id(message))
+                _live_branch.append(message)
+        return _live_branch
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -680,12 +700,36 @@ def run_safetensors_tool_loop(
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
     from core.inference.tool_stream_exec import stream_tool_execution
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_sandbox_level,
+        normalize_tool_permissions,
+        requires_os_isolation,
+        runs_without_os_sandbox,
+        tool_call_may_prompt,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    yield from load_mentioned_skills(
+        conversation,
+        tools if max_tool_iterations > 0 else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        context_length = context_length,
+        continue_final_message = continue_final_message,
+        # The downstream tokenizer owns fitting; only system context is guaranteed.
+        dedup_tool_context = False,
+    )
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask
@@ -733,12 +777,19 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        deduplicate_tool_calls = deduplicate_tool_calls,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
+    # A browser task is many steps, each a chance to announce the next one and stop: there one
+    # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
+    browser_turns = any(name in BROWSER_TOOL_NAMES for name in _active_tool_names(tools or []))
+    post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
     last_reprompt_text = ""
     # A denied tool confirmation must not be answered with a plan-without-action
@@ -766,7 +817,11 @@ def run_safetensors_tool_loop(
     _state_draining = 2
 
     # Reserve re-prompt slots so they don't eat the caller's tool budget.
-    _extra_iters = MAX_ACT_REPROMPTS if max_tool_iterations > 0 else 0
+    _extra_iters = (
+        MAX_ACT_REPROMPTS + (max_tool_iterations if browser_turns else 0)
+        if max_tool_iterations > 0
+        else 0
+    )
     for iteration in range(max_tool_iterations + _extra_iters + 1):
         if cancel_event is not None and cancel_event.is_set():
             return
@@ -785,6 +840,15 @@ def run_safetensors_tool_loop(
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+
+        # Refit every iteration: tool results grow the prompt after the first turn. Given
+        # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
+        if context_fitter is not None:
+            fit_result = context_fitter(
+                conversation, active_tools, _extend_live_branch(conversation)
+            )
+            conversation = list(fit_result.get("messages") or conversation)
+            yield from fit_result.get("events") or ()
 
         # This loop receives cumulative snapshots, so keep both whole-prefix scans
         # incremental: the stripper settles safe prefixes, the signal detector resumes
@@ -835,12 +899,11 @@ def run_safetensors_tool_loop(
         # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
         # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
         # exemption.
-        from core.inference.tools import is_always_safe_tool
-
-        _provisional_confirm_gated = (
-            bool(confirm_tool_calls)
-            and not bypass_permissions
-            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        _provisional_confirm_gated = tool_call_may_prompt(
+            confirm_tool_calls = bool(confirm_tool_calls),
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            name = "render_html",
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
@@ -1228,14 +1291,20 @@ def run_safetensors_tool_loop(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
+                already_acted = any(record.executed for record in tool_controller.history)
                 if (
                     auto_heal_tool_calls
                     and nudge_enabled(nudge_tool_calls)
                     and active_tools
-                    and reprompt_count < MAX_ACT_REPROMPTS
-                    and not rag_autoinjected
+                    and (
+                        post_tool_reprompts < 1
+                        if already_acted
+                        else reprompt_count < MAX_ACT_REPROMPTS
+                    )
+                    # Retrieval injected up front is no reason to stop a browser task mid-way.
+                    and (not rag_autoinjected or (browser_turns and already_acted))
                     and not tool_denied
-                    and not any(record.executed for record in tool_controller.history)
+                    and (browser_turns or not already_acted)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
                     # Markup stripped first: a call fenced inside <tool_call> is not an answer.
@@ -1251,13 +1320,16 @@ def run_safetensors_tool_loop(
                         )
                     )
                 ):
-                    reprompt_count += 1
+                    if already_acted:
+                        post_tool_reprompts += 1
+                    else:
+                        reprompt_count += 1
                     last_reprompt_text = intent_text
                     logger.info(
                         "Safetensors re-prompt %d/%d: model responded without "
                         "calling tools (%d chars)",
-                        reprompt_count,
-                        MAX_ACT_REPROMPTS,
+                        post_tool_reprompts if already_acted else reprompt_count,
+                        1 if already_acted else MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
@@ -1373,10 +1445,13 @@ def run_safetensors_tool_loop(
             novel_kept = 0
             novel_at_last_keep: dict = {}
             deduped: list = []
-            for _tc in tool_calls:
+            if not deduplicate_tool_calls:
+                deduped = tool_calls[:_MAX_TOOL_CALLS_PER_TURN]
+                over_cap = tool_calls[_MAX_TOOL_CALLS_PER_TURN:]
+            for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _fn.get("name") in _WORKSPACE_TOOLS:
+                if _reruns_after_new_work(_fn.get("name")):
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
@@ -1386,7 +1461,8 @@ def run_safetensors_tool_loop(
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
-                elif _key in seen_keys:
+                # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                elif _key in seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                     continue
                 seen_keys.add(_key)
                 if len(deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -1432,6 +1508,14 @@ def run_safetensors_tool_loop(
             # consecutive results the same way -- so without the id a batch persisted
             # as separate pairs replayed as several pictures on the next request.
             decision.provenance["round_id"] = iteration
+            image_share = None
+            if decision.should_execute and mcp_image is not None:
+                from core.inference.tools import mcp_image_share
+                image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                if image_share is not None:
+                    decision = tool_controller.reprepare_call(
+                        decision, provisional = provisional_match
+                    )
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
@@ -1475,22 +1559,27 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins here too, so a direct internal caller with both flags
-            # never prompts. "auto" pauses only high-risk calls; "off" never
-            # prompts (sandbox stays on).
-            from core.inference.tools import mcp_image_share, never_needs_approval
-
-            needs_confirm = (
-                bool(confirm_tool_calls)
-                and not bypass_permissions
-                and permission_mode != "off"
-                and not never_needs_approval(decision.tool_name)
+            # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
+            # high-risk python/terminal call without OS isolation.
+            needs_confirm = needs_tool_confirmation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                sandbox_level = sandbox_level,
             )
-            if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             # Sending the user's image always asks, whatever the permission mode.
-            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
             needs_confirm = needs_confirm or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                prompted = needs_confirm,
+                sandbox_level = sandbox_level,
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
@@ -1578,6 +1667,7 @@ def run_safetensors_tool_loop(
                     _output_callback,
                     _decision = decision,
                     _approved = _host_access_approved,
+                    _strict = strict_isolation,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1587,8 +1677,15 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                    if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(
+                        _decision.tool_name, sandbox_level
+                    ) and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "software"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
-                        kwargs["conversation_branch"] = request_branch
+                        kwargs["conversation_branch"] = _extend_live_branch(conversation)
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
                         kwargs["host_access_approved"] = True
                     # And the room the model has left, as the GGUF loop does: without a
@@ -1774,6 +1871,10 @@ def run_safetensors_tool_loop(
         # consume budget so the model gets its nudge and another tool-enabled turn (GGUF parity).
         if _turn_executed_real_tool:
             _executed_tool_iters += 1
+            post_tool_reprompts = 0
+            if browser_turns:
+                # A new step may stall in the same words as the last one (external loop parity).
+                last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
             if over_cap:

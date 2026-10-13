@@ -133,6 +133,17 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
+_VIBE_PROVIDER = "unsloth-studio"
+_VIBE_MODEL_ALIAS = "unsloth"
+_VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+# Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
+_VIBE_POSIX_INSTALL_HINT = (
+    'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
+)
+_VIBE_WINDOWS_INSTALL_HINT = (
+    "irm https://astral.sh/uv/install.ps1 | iex; "
+    '$env:Path = "$HOME\\.local\\bin;$env:Path"; uv tool install mistral-vibe'
+)
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -413,6 +424,7 @@ _YOLO_COMMAND_FLAGS = {
     "hermes": ["--yolo"],
     # Pi never prompts per tool call; its only approval gate is project trust, so -a (trust project resources) is the closest "do not ask me" equivalent.
     "pi": ["--approve"],
+    "vibe": ["--auto-approve"],
 }
 
 
@@ -439,20 +451,7 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command() -> tuple[str, bool]:
-    resolved_v2 = _which_with_install_dirs("opencode2")
-    if resolved_v2:
-        return resolved_v2, True
-    return "opencode", False
-
-
-def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if Path(command).stem.lower() == "opencode2":
-        return True
-    executable = _which_with_install_dirs(command)
-    if executable is None:
-        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
-        return True
+def _opencode_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -464,11 +463,30 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _OPENCODE_NATIVE_AUTO_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    # Distro packages (Arch extra, opencode-beta) ship V2 as plain `opencode`, which rejects V1's --model flag.
+    resolved = _which_with_install_dirs("opencode")
+    version = _opencode_version(resolved) if resolved else None
+    return "opencode", bool(version) and version[0] >= 2
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
+        return True
+    version = _opencode_version(executable)
+    return bool(version) and version >= _OPENCODE_NATIVE_AUTO_MIN_VERSION
 
 
 def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
@@ -544,6 +562,10 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _vibe_install_hint() -> str:
+    return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
@@ -2443,7 +2465,7 @@ _QUANT_LABEL_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)"
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
@@ -3238,7 +3260,7 @@ def write_codex_subagent_bridge(
     return path
 
 
-def _wsl_windows_user_profile(executable: str) -> Path:
+def _wsl_windows_user_profile(executable: str, app: str = "Codex") -> Path:
     """Return the Windows user profile as a path accessible from WSL."""
     profile = os.environ.get("USERPROFILE", "").strip()
     if not profile:
@@ -3254,13 +3276,13 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             ).strip()
         except UnicodeDecodeError as exc:
             _fail(
-                f"Could not read the Windows user profile for Codex ({exc}); "
+                f"Could not read the Windows user profile for {app} ({exc}); "
                 "set USERPROFILE in the WSL environment, for example through WSLENV."
             )
         except (OSError, subprocess.CalledProcessError) as exc:
-            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+            _fail(f"Could not find the Windows user profile for {app}: {exc}")
     if not profile or profile == "%USERPROFILE%":
-        _fail("Could not find the Windows user profile for Codex.")
+        _fail(f"Could not find the Windows user profile for {app}.")
     if profile.startswith("/"):
         return Path(profile)
     try:
@@ -4692,6 +4714,19 @@ def _openclaw_provider(
     }
 
 
+def _openclaw_doctor_command(path: Path, *, windows: bool) -> str:
+    """`openclaw doctor --fix` against Unsloth's managed config, in the user's shell syntax."""
+    env = {"OPENCLAW_CONFIG_PATH": str(path), "OPENCLAW_STATE_DIR": str(path.parent)}
+    if windows:
+        sets = "; ".join(
+            f'$env:{name} = "{value.replace("`", "``").replace(chr(34), "`" + chr(34)).replace("$", "`$")}"'
+            for name, value in env.items()
+        )
+        return f"{sets}; openclaw doctor --fix"
+    inline = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    return f"{inline} openclaw doctor --fix"
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4752,12 +4787,24 @@ def write_openclaw_config(
         workspace_path = str(workspace)
     defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This config is itself an isolated Unsloth copy, so remove stale explicit paths and let OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    # OpenClaw 2026.10.1 keys agents by id under agents.entries; older configs carry an agents.list array.
     agent_list = agents.get("list")
+    agent_entries = agents.get("entries")
+    listed = list(agent_list) if isinstance(agent_list, list) else []
+    if isinstance(agent_entries, dict):
+        listed += list(agent_entries.values())
+    for agent_config in listed:
+        if isinstance(agent_config, dict):
+            agent_config.pop("workspace", None)
+            agent_config.pop("agentDir", None)
     if isinstance(agent_list, list):
-        for agent_config in agent_list:
-            if isinstance(agent_config, dict):
-                agent_config.pop("workspace", None)
-                agent_config.pop("agentDir", None)
+        # 2026.10.1 rejects agents.list. Converting it (id normalization, ownership, channel bindings,
+        # workspace pins) is OpenClaw's own migration, so point at it rather than half-reimplement it.
+        typer.echo(
+            f"Note: {path} still has the legacy agents.list, which OpenClaw 2026.10.1+ rejects. "
+            f"Migrate it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     # Unauthenticated loopback gateway: without auth.mode=none the client will not open the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
@@ -5052,6 +5099,43 @@ def write_hermes_config(
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
         typer.echo(f"Updated {path}")
+
+
+def _vibe_env(
+    base: str,
+    model: dict,
+    request_body: Optional[dict] = None,
+) -> dict:
+    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
+    nothing is written to the user's Vibe config."""
+    entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
+    # Vibe sends its own temperature (0.2 by default) with every request.
+    temperature = (request_body or {}).get("temperature")
+    if temperature is not None:
+        entry["temperature"] = float(temperature)
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        # Vibe compacts at 200k tokens by default, past most local windows.
+        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+    provider = {
+        "name": _VIBE_PROVIDER,
+        "api_base": f"{base}/v1",
+        "api_key_env_var": _VIBE_ENV_KEY,
+        "api_style": "openai",
+        "backend": "generic",
+    }
+    return {
+        "VIBE_PROVIDERS": json.dumps([provider]),
+        "VIBE_MODELS": json.dumps([entry]),
+        "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+        # Only this model: an inherited allowlist or a resumed cloud session would otherwise
+        # select a hosted model. An escaped `re:` pattern matches the id exactly.
+        "VIBE_ALLOWED_MODELS": json.dumps(["re:" + re.escape(model["id"])]),
+        "VIBE_ENABLE_TELEMETRY": "false",
+        "VIBE_ENABLE_UPDATE_CHECKS": "false",
+        "VIBE_ENABLE_AUTO_UPDATE": "false",
+        "VIBE_ENABLE_NOTIFICATIONS": "false",
+    }
 
 
 def write_pi_config(
@@ -5629,7 +5713,12 @@ def _app_api_key(target: _AppTarget, base: str, explicit: Optional[str], state: 
     return answer["key"], answer["api_key"]["id"]
 
 
-def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str]) -> tuple:
+def _open_app_config(
+    target: _AppTarget,
+    base: str,
+    explicit_key: Optional[str],
+    parse = _parse_app_config,
+) -> tuple:
     if not is_loopback_url(base) and not explicit_key:
         _fail(
             f"{base} isn't on this machine. --app saves the key in your {target.label} "
@@ -5640,7 +5729,7 @@ def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str])
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
-    _parse_app_config(target.path, text)
+    parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
 
@@ -6020,6 +6109,229 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
         return [(("providers", _HERMES_PROVIDER), provider)]
 
     return _AppTarget("hermes", "Hermes app", path, updates)
+
+
+_VSCODE_GROUP = "Unsloth"
+_VSCODE_DEFAULT_CONTEXT = 32768
+# Copilot's Agent prompt (instructions + tool schemas) does not fit in a smaller window.
+_VSCODE_AGENT_MIN_CONTEXT = 32768
+
+
+def _vscode_models_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        code = _wsl_windows_executable(["code"])
+        if code and not any((root / app / "User").is_dir() for app in ("Code", "Code - Insiders")):
+            # Under WSL, Windows VS Code reads its own user dir, not the distro's.
+            root = _wsl_windows_user_profile(code, "VS Code") / "AppData" / "Roaming"
+    app = "Code"
+    if not (root / "Code" / "User").is_dir() and (root / "Code - Insiders" / "User").is_dir():
+        app = "Code - Insiders"
+    return root / app / "User" / "chatLanguageModels.json"
+
+
+def _vscode_groups(path: Path, text: Optional[str]) -> list:
+    if text is None or not text.strip():
+        return []
+    try:
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
+    return data
+
+
+def _is_unsloth_vscode_group(group: object) -> bool:
+    return (
+        isinstance(group, dict)
+        and group.get("vendor") == "customendpoint"
+        and group.get("name") == _VSCODE_GROUP
+    )
+
+
+def _vscode_models_text(
+    text: Optional[str],
+    path: Path,
+    base: str,
+    key: str,
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    replaced: frozenset = frozenset(),
+    thinking: bool = False,
+) -> Optional[str]:
+    groups = _vscode_groups(path, text)
+    window = int(
+        entry.get("context_length") or entry.get("max_context_length") or _VSCODE_DEFAULT_CONTEXT
+    )
+    output = _agent_output_limit(window, max_tokens)
+    model = {
+        "id": entry["id"],
+        "name": entry["id"],
+        "url": f"{base}/v1/chat/completions",
+        "apiType": "chat-completions",
+        # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
+        "toolCalling": tool_calling,
+        "vision": vision,
+        # Without it VS Code drops reasoning_content when it replays an agent tool round.
+        "thinking": thinking,
+        "contextWindow": window,
+        "maxInputTokens": window - output,
+        "maxOutputTokens": output,
+        # A raw apiKey is read as a secret-storage reference and dropped, so the key rides here.
+        "requestHeaders": {"Authorization": f"Bearer {key}"},
+    }
+    index = next((i for i, g in enumerate(groups) if _is_unsloth_vscode_group(g)), None)
+    updated = list(groups)
+    if index is None:
+        updated.append({"name": _VSCODE_GROUP, "vendor": "customendpoint", "models": [model]})
+    else:
+        # Replace only the models this command wrote; the rest of the group is the user's.
+        group = dict(groups[index])
+        drop = replaced | {entry["id"]}
+        kept = [
+            m
+            for m in group.get("models") or []
+            if not (isinstance(m, dict) and m.get("id") in drop)
+        ]
+        group["models"] = [*kept, model]
+        updated[index] = group
+    if updated == groups:
+        return text
+    return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
+
+
+def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
+    # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
+    try:
+        query = urlencode({"model": entry["id"]})
+        status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
+    except Exception:
+        status = {}
+    resident = any(
+        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+        for status_id in (status.get("active_model"), status.get("model_identifier"))
+        if status_id
+    )
+    if not resident:
+        # Only a status about this model can vouch for it; an older server reports nothing.
+        return True, False, False
+    return (
+        status.get("supports_tools") is not False,
+        status.get("is_vision") is True,
+        status.get("supports_reasoning") is True,
+    )
+
+
+def _vscode_over_ssh(path: Path) -> bool:
+    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+        return False
+    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+    return any(os.environ.get(name) for name in remote)
+
+
+def _add_vscode_provider(
+    base: str,
+    explicit_key: Optional[str],
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    thinking: bool = False,
+) -> None:
+    target = _AppTarget("vscode", "VS Code", _vscode_models_path())
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(
+            target, base, explicit_key, _vscode_groups
+        )
+        remote = _vscode_over_ssh(target.path)
+        new_text = _vscode_models_text(
+            None if remote else text,
+            target.path,
+            base,
+            key,
+            entry,
+            max_tokens,
+            tool_calling,
+            vision,
+            frozenset(state.get("models") or ()),
+            thinking,
+        )
+        new_state = {
+            "path": str(target.path),
+            "base": base,
+            "key": key,
+            "key_id": key_id,
+            "models": [entry["id"]],
+        }
+        if remote:
+            # Keep the key in state so a re-run reuses it; a file here would never be read.
+            _save_app_config(target, state_path, state, new_state, None, None)
+        else:
+            _save_app_config(target, state_path, state, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    if remote:
+        url = urlparse(base)
+        port = url.port or (443 if url.scheme == "https" else 80)
+        reach = (
+            f"forward port {port} to the same port on your machine (for example: "
+            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            if is_loopback_url(base)
+            else f"make sure your machine can reach {base}"
+        )
+        typer.echo(
+            "This is a remote session (SSH or a container) with no VS Code user dir here, so "
+            "nothing was written. VS Code does not list these models in remote windows yet "
+            f"(microsoft/vscode#332085), so {reach}. Then, in a local VS Code window, run "
+            "Chat: Manage Language Models, open chatLanguageModels.json and add:"
+        )
+        typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
+        _app_server_notice(base)
+        return
+    typer.echo(
+        f"Added {entry['id']} from Unsloth at {base} to VS Code. In the Copilot Chat model "
+        f"picker, pick it under {_VSCODE_GROUP} (Manage Models if it is hidden; run "
+        "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
+        "extension; no Copilot plan is required."
+    )
+    if os.environ.get("WSL_DISTRO_NAME") and target.path.parts[:2] == ("/", "mnt"):
+        typer.echo(
+            "Use it from a local VS Code window: VS Code does not list these models in remote "
+            "(WSL, SSH, container) windows yet (microsoft/vscode#332085)."
+        )
+    if not tool_calling:
+        typer.echo(
+            f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
+            "not Agent mode."
+        )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if tool_calling and window and int(window) < _VSCODE_AGENT_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for Copilot's Agent mode, which sends about 20,000 tokens of instructions before "
+            "your message. Load it with --context-length "
+            f"{_VSCODE_AGENT_MIN_CONTEXT} and re-run unsloth start vscode.",
+            err = True,
+        )
+    if key_id is not None:
+        typer.echo(
+            f"It uses its own API key, '{target.label}', which you can revoke in "
+            "Unsloth → Settings → API."
+        )
+    typer.echo("After loading another model, re-run: unsloth start vscode")
+    _app_server_notice(base)
 
 
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -6461,7 +6773,9 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
-            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+            yolo
+            and (opencode_v2 or _opencode_supports_native_auto(command_name))
+            and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6513,7 +6827,7 @@ def opencode(
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
+    route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6861,3 +7175,138 @@ def dsh(
             ),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+@start_app.command("vibe", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vibe(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point Mistral Vibe at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("vibe", ctx.args)
+    install_hint = _vibe_install_hint()
+    _require_agent_for_launch("vibe", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = frozenset({"temperature"}),
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
+    # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
+    # sessions); the env layer pins the Unsloth provider and model above its config files.
+    request_body = server_options.request_body()
+    if "temperature" not in request_body:
+        # Vibe always sends a temperature, which the server honours over the model's
+        # recommended one, so pass the recommendation along explicitly.
+        status = _inference_status(base, key)
+        recommended = (status.get("inference") or {}).get("temperature")
+        if recommended is not None and any(
+            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            request_body = {**request_body, "temperature": recommended}
+    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+_VSCODE_LAUNCH_OPTION = typer.Option(True, "--launch/--no-launch", hidden = True)
+
+
+@start_app.command("vscode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vscode(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _VSCODE_LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
+    serve: bool = _SERVE_OPTION,
+):
+    """Add the model Unsloth is serving to VS Code's Copilot Chat model picker."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    if ctx.args:
+        _fail("unsloth start vscode only edits VS Code's settings, so it takes no extra arguments.")
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
+    # Remote: the key _connect accepted. Local: never an explicit key it rejected for a fresh server.
+    explicit = key if not is_loopback_url(base) else api_key if key == api_key else None
+    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)

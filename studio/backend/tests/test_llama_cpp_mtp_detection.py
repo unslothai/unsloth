@@ -2650,8 +2650,8 @@ def test_auto_glm5next_keeps_draft_mtp(monkeypatch):
     assert backend.spec_fallback_reason != "mla_mtp_disabled"
 
 
-def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
-    # The "glm5-next" port never builds the NextN graph: no spillover.
+def test_auto_glm5next_hyphenated_arch_keeps_draft_mtp(monkeypatch):
+    # The upstream "glm5-next" name, as the rewritten GLM-5.3-Flash shards carry it.
     backend = _mla_resolver_backend(monkeypatch)
     backend._architecture = "glm5-next"
     flags = backend._build_speculative_flags(
@@ -2663,6 +2663,24 @@ def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
         gpus = True,
         binary = "/fake/llama-server",
     )
+    assert _flags_dict(flags).get("--spec-type") == "draft-mtp"
+    assert backend.speculative_type == "draft-mtp"
+    assert backend.spec_fallback_reason != "mla_mtp_disabled"
+
+
+def test_auto_glm_dsa_mtp_still_gated(monkeypatch):
+    # Only the NextN-only archs are exempt: glm-dsa keeps the duplicated target KV.
+    backend = _mla_resolver_backend(monkeypatch)
+    backend._architecture = "glm-dsa"
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _GLM_MLA_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
     assert _flags_dict(flags).get("--spec-type") != "draft-mtp"
     assert backend.spec_fallback_reason == "mla_mtp_disabled"
 
@@ -2670,7 +2688,8 @@ def test_auto_glm5next_hyphenated_arch_still_gated(monkeypatch):
 def test_arch_has_fast_mla_mtp_is_case_and_space_tolerant():
     assert _arch_has_fast_mla_mtp("glm5next")
     assert _arch_has_fast_mla_mtp("  GLM5Next  ")
-    assert not _arch_has_fast_mla_mtp("glm5-next")
+    assert _arch_has_fast_mla_mtp("glm5-next")
+    assert _arch_has_fast_mla_mtp(" GLM5-Next ")
     assert not _arch_has_fast_mla_mtp("glm-dsa")
     assert not _arch_has_fast_mla_mtp(None)
     assert not _arch_has_fast_mla_mtp("")

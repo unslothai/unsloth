@@ -54,7 +54,14 @@ HOST_PATH_HANDLE_FIELDS = frozenset(
 
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset(
-    {"error_message", "error", "detail", "message", "transformer_quant_backend_reason"}
+    {
+        "error_message",
+        "error",
+        "detail",
+        "message",
+        "transformer_quant_backend_reason",
+        "sd_cpp_cudnn_reason",
+    }
 )
 
 # The same text, one per entry. A run's warnings quote the file they are about ("missing
@@ -108,7 +115,9 @@ HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"
 HOST_PATH_ROW_SOURCE_FIELD = "source"
 # `hf_cache` is absent: those rows are named by repo id, and otherwise value decides.
-HOST_PATH_LOCAL_SOURCES = frozenset({"models_dir", "lmstudio", "ollama", "hermes", "custom"})
+HOST_PATH_LOCAL_SOURCES = frozenset(
+    {"models_dir", "lmstudio", "omlx", "ollama", "hermes", "custom"}
+)
 
 
 def _row_identity_is_a_path(payload: Mapping) -> bool:

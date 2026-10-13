@@ -17,15 +17,20 @@ read bf16 and Inductor re-tiles them, a rounding-order change smaller than compi
 
 Per-arch gate: sm80 / sm89 / sm120 on (measured), everything else stock. sm75: Triton cannot lower the int8 dot;
 sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU never reach it.
+Tiles: one default per arch plus a per-shape table (``_SHAPE_TILES``) for the shapes where another tile measured
+faster; every tile is probed bit-exact per device, and a tile that fails falls back to the arch default. All tiles
+accumulate in int32, so the output does not depend on the tile.
 
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
+``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0`` keeps the arch default tile for every shape.
 
-ConvRot Linears (MiniMax-H3) run ``ConvRotLinear.forward``'s own rotation first, so eager output stays bit-identical;
-kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
+ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
+output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
 
-Rotated Linears on sm120 / sm80 (group 256) run the rotation and the act quant as ONE kernel (``rotq_i8``): the same
-rotation GEMM in the same K order, then torchao's per-row quant with every bf16 rounding kept, so codes and scales are
-bit-identical (probed per device). Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
+Rotated Linears on the archs ``diffusion_convrot_quant`` covers run the rotation and the act quant as ONE kernel
+(``rotq_i8``, codes and scales bit-identical, probed per device). Where the fused GEMM is off but that kernel is on
+(sm100), only the rotated Linears are swapped and their GEMM is cuBLAS ``_int_mm`` with torchao's epilogue, op for
+op. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
 
 A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
 ``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
@@ -43,7 +48,7 @@ from typing import Any, Optional
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
-INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
+INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -51,7 +56,6 @@ _K_ALIGN = 64
 _N_ALIGN = 16
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_mm_dequant"
-_ROTQ_OP_NAME = "convrot_act_quant_int8"
 _REC = "_unsloth_i8_gemm"
 _MARK = "_unsloth_i8_gemm_prev"
 _NO_PREV = object()
@@ -76,13 +80,17 @@ _ARCH_CONFIG = {
 # When the arch tile does not fit this part's shared memory.
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
-# rotq_i8 (BLOCK_M group rows, BLOCK_K, num_warps, num_stages); measured end to end on these archs only.
-_ROTQ_CONFIG = {
-    (8, 0): (128, 32, 8, 3),
-    (12, 0): (128, 32, 8, 4),
+# Per-shape tiles: (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), first match wins, bounds inclusive,
+# M >= _SHAPE_MIN_M only. No L4 rule on purpose: per-GEMM wins there cost s/step end to end (power-capped clocks).
+_SHAPE_TILES: dict = {
+    (12, 0): (
+        # MiniMax-H3 fused QKV / FFN in
+        (16384, 32768, 4096, 6144, (128, 128, 64, 32, 4, 4)),
+        # deep K: H3 out / FFN down, Qwen-Image-2.1 MLP out, Z-Image w2
+        (1, 8192, 7168, 16384, (256, 128, 128, 8, 8, 3)),
+    ),
 }
-_ROTQ_FALLBACK = (128, 32, 8, 3)
-_ROTQ_GROUPS = (256,)
+_SHAPE_MIN_M = 1024
 
 
 def int8_gemm_mode() -> str:
@@ -105,23 +113,9 @@ def streamed_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
-def rotquant_enabled() -> bool:
-    """ConvRot Linears quantize their activation with the fused rotation kernel unless
-    ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``."""
-    raw = (os.environ.get(INT8_ROTQUANT_ENV) or "").strip().lower()
+def tiles_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_TILES_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
-
-
-def rotquant_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
-    """The fused rotation tile for this compute capability, or None (stock rotation)."""
-    mode = int8_gemm_mode() if mode is None else mode
-    if mode == "off" or capability is None or not rotquant_enabled():
-        return None
-    cap = (int(capability[0]), int(capability[1]))
-    cfg = _ROTQ_CONFIG.get(cap)
-    if cfg is None and mode == "force" and cap >= (8, 0):
-        return _ROTQ_FALLBACK
-    return cfg
 
 
 def _triton_version_ok(version: Optional[str] = None) -> bool:
@@ -235,69 +229,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
 
-    from triton.language.extra import libdevice
-
-    @triton.jit
-    def rotq_i8(
-        x_ptr,
-        h_ptr,
-        q_ptr,
-        s_ptr,
-        M,
-        NG,
-        G: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        ROWS: tl.constexpr,
-        ROWS_P2: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        DIV: tl.constexpr,
-        EPS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-    ):
-        # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
-        pid = tl.program_id(0)
-        t = tl.arange(0, BLOCK_M)
-        lr = t // NG
-        row = pid.to(tl.int64) * ROWS + lr
-        live = (lr < ROWS) & (row < M)
-        rg = tl.where(live, row * NG + (t % NG), 0)
-        offs_k = tl.arange(0, BLOCK_K)
-        offs_n = tl.arange(0, G)
-        acc = tl.zeros((BLOCK_M, G), dtype = tl.float32)
-        a_ptrs = x_ptr + rg[:, None] * G + offs_k[None, :]
-        h_ptrs = h_ptr + offs_k[:, None] * G + offs_n[None, :]
-        for _k in range(0, G // BLOCK_K):
-            a = tl.load(a_ptrs, mask = live[:, None], other = 0.0)
-            acc = tl.dot(a, tl.load(h_ptrs), acc, out_dtype = tl.float32)
-            a_ptrs += BLOCK_K
-            h_ptrs += BLOCK_K * G
-        z = _rbf16(acc)
-        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s)))); FP32_SCALE (torchao >= 0.18
-        # Int8Tensor) keeps the reciprocal and the product in fp32.
-        j = tl.arange(0, ROWS_P2)
-        sel = lr[:, None] == j[None, :]
-        amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
-        s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
-        inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
-        if not FP32_SCALE:
-            inv = _rbf16(inv)
-        inv_t = tl.max(tl.where(sel, inv[None, :], 0.0), axis = 1)
-        p = z * inv_t[:, None]
-        if not FP32_SCALE:
-            p = _rbf16(p)
-        p = libdevice.rint(p)
-        p = tl.minimum(tl.maximum(p, QMIN), QMAX)
-        tl.store(q_ptr + rg[:, None] * G + offs_n[None, :], p.to(tl.int8), mask = live[:, None])
-        srow = pid.to(tl.int64) * ROWS + j
-        tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = (j < ROWS) & (srow < M))
-
-    return types.SimpleNamespace(i8mm_dq = i8mm_dq, rotq_i8 = rotq_i8)
+    return types.SimpleNamespace(i8mm_dq = i8mm_dq)
 
 
 # device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
+# device index -> the per-shape rules whose tile passed the probe on that device.
+_DEVICE_TILES: dict = {}
 
 
 def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
@@ -368,16 +306,32 @@ def _aligned(a: Any, w: Any) -> bool:
     )
 
 
+def tile_for(index: Any, m: int, n: int, k: int) -> Optional[tuple]:
+    """The probed tile this device runs an ``[m, k] x [n, k]`` GEMM with: a per-shape rule, else the arch default."""
+    cfg = _DEVICE_CFG.get(index)
+    if cfg is None or m < _SHAPE_MIN_M:
+        return cfg
+    for n_lo, n_hi, k_lo, k_hi, tile in _DEVICE_TILES.get(index, ()):
+        if n_lo <= n <= n_hi and k_lo <= k <= k_hi:
+            return tile
+    return cfg
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the probed tile for this device, else (launch failure, ``_aligned`` false) the stock epilogue."""
+    """Op body: the probed tile for this device and shape, else (launch failure, ``_aligned`` false) the stock
+    epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
-    cfg = _DEVICE_CFG.get(a.device.index)
+    index = a.device.index
+    cfg = tile_for(index, a.shape[0], w.shape[0], a.shape[1])
     if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
-            _DEVICE_CFG[a.device.index] = None
+            if cfg != _DEVICE_CFG.get(index) and _DEVICE_TILES.get(index):
+                _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
+                return _run(a, w, xs, ws, bias)
+            _DEVICE_CFG[index] = None
     return reference(a, w, xs, ws, bias)
 
 
@@ -412,12 +366,21 @@ def _op() -> Any:
     return getattr(torch.ops, _OP_NAMESPACE).int8_mm_dequant
 
 
+def shape_tiles(capability: Optional[tuple]) -> tuple:
+    """This arch's per-shape rules, or () (``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0``, unmeasured arch)."""
+    if capability is None or not tiles_enabled():
+        return ()
+    return tuple(_SHAPE_TILES.get((int(capability[0]), int(capability[1])), ()))
+
+
 def device_config(index: int) -> Optional[tuple]:
     """Probe once per device: arch gate, Triton, op registration, then a launch that must match the eager torchao
-    epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path."""
+    epilogue bit for bit (bf16 and fp32 activation scales, bias, ragged M / N / K). None keeps the stock path. Each
+    per-shape tile is probed the same way; one that fails leaves its shapes on the default tile."""
     if index in _DEVICE_CFG:
         return _DEVICE_CFG[index]
     cfg = None
+    rules: tuple = ()
     try:
         import torch
         if (
@@ -427,13 +390,22 @@ def device_config(index: int) -> Optional[tuple]:
             and _kernels() is not None
             and _op() is not None
         ):
-            want = arch_config(torch.cuda.get_device_capability(index))
+            cap = torch.cuda.get_device_capability(index)
+            want = arch_config(cap)
             for cand in (want, _FALLBACK_CONFIG) if want is not None else ():
                 if cand is not None and _probe(index, cand):
                     cfg = cand
                     break
+            if cfg is not None:
+                ok: dict = {}
+                for rule in shape_tiles(cap):
+                    tile = rule[4]
+                    if tile not in ok:
+                        ok[tile] = tile == cfg or _probe(index, tile)
+                rules = tuple(rule for rule in shape_tiles(cap) if ok[rule[4]])
     except Exception:  # noqa: BLE001
         cfg = None
+    _DEVICE_TILES[index] = rules if cfg is not None else ()
     _DEVICE_CFG[index] = cfg
     return cfg
 
@@ -473,224 +445,6 @@ def _probe(index: int, cfg: tuple) -> bool:
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
-
-
-# (QMIN, QMAX, DIV, EPS): v1 _int8_symm_per_token_reduced_range_quant, v2 Int8Tensor.from_hp(PerRow, SYMMETRIC).
-_ROTQ_QPARAMS = {
-    "v1": (-127.0, 127.0, 127.0, 1e-5),
-    "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
-}
-# device index -> probed rotq tile (None = stock).
-_ROTQ_DEVICE: dict = {}
-_ROTQ_CALLS = [0]
-_ROTQ_HANDLE: Any = None
-
-
-@lru_cache(maxsize = 1)
-def _v2_act_scale_fp32() -> bool:
-    """torchao 0.18+ ``Int8Tensor.from_hp`` returns an fp32 activation scale (and quantizes in fp32)."""
-    try:
-        import torch
-        from torchao.quantization.granularity import PerRow
-        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
-
-        x = torch.ones(1, 16, dtype = torch.bfloat16)
-        return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
-    except Exception:  # noqa: BLE001 - unknown: the probe below still has to match bit for bit
-        return False
-
-
-def _rotq_scale_fp32(kind: str) -> bool:
-    return kind == "v2" and _v2_act_scale_fp32()
-
-
-def rotquant_reference(x2d: Any, group: int, kind: str) -> tuple:
-    """The stock path: ConvRotLinear.forward's rotation (bf16 GEMM), then torchao's activation quant. (int8, scale)."""
-    import torch
-    from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
-
-    xr = rotate_convrot_activation(
-        x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
-    )
-    if kind == "v1":
-        q, scale = _act_quant_v1(xr)
-    else:
-        from torchao.quantization.granularity import PerRow
-        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
-
-        t = Int8Tensor.from_hp(xr, PerRow())
-        q, scale = t.qdata, t.scale
-    if _rotq_scale_fp32(kind):
-        return q, scale.reshape(-1).to(torch.float32)
-    return q, scale.reshape(-1).to(torch.bfloat16)
-
-
-def _rotq_rows(k: int, group: int, cfg: tuple) -> int:
-    """Whole activation rows per program (0: this K does not fit one tile)."""
-    return cfg[0] // (k // group)
-
-
-def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
-    import torch
-    import triton
-    from .diffusion_convrot import build_convrot_hadamard
-
-    kern = _kernels()
-    m, k = x2d.shape
-    bm, bk, warps, stages = cfg
-    rows = _rotq_rows(k, group, cfg)
-    qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
-    h = build_convrot_hadamard(group, device = x2d.device, dtype = torch.bfloat16)
-    q = torch.empty((m, k), device = x2d.device, dtype = torch.int8)
-    fp32_scale = _rotq_scale_fp32(kind)
-    s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
-    with torch.cuda.device(x2d.device):
-        kern.rotq_i8[(triton.cdiv(m, rows),)](
-            x2d,
-            h,
-            q,
-            s,
-            m,
-            k // group,
-            G = group,
-            BLOCK_M = bm,
-            BLOCK_K = bk,
-            ROWS = rows,
-            ROWS_P2 = max(triton.next_power_of_2(rows), 2),
-            QMIN = qmin,
-            QMAX = qmax,
-            DIV = div,
-            EPS = eps,
-            FP32_SCALE = fp32_scale,
-            num_warps = warps,
-            num_stages = stages,
-            enable_fp_fusion = False,
-        )
-    return q, s
-
-
-def rotquant_supported(x2d: Any, group: int, cfg: Optional[tuple]) -> bool:
-    """Shape / dtype / device / group gate of the fused kernel (anything else keeps the stock rotation + quant)."""
-    import torch
-
-    if (
-        cfg is None
-        or group not in _ROTQ_GROUPS
-        or x2d.dim() != 2
-        or x2d.dtype != torch.bfloat16
-        or not x2d.is_cuda
-    ):
-        return False
-    k = x2d.shape[1]
-    return k % group == 0 and k >= group and _rotq_rows(k, group, cfg) >= 1
-
-
-def _rotq_run(x2d: Any, group: int, v2: bool) -> tuple:
-    """Op body: the probed tile for this device, the stock rotation + quant if anything does not fit."""
-    _ROTQ_CALLS[0] += 1
-    kind = "v2" if v2 else "v1"
-    x2d = x2d if x2d.is_contiguous() else x2d.contiguous()
-    cfg = _ROTQ_DEVICE.get(x2d.device.index)
-    if rotquant_supported(x2d, group, cfg):
-        try:
-            return _rotq_launch(x2d, group, kind, cfg)
-        except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
-            _ROTQ_DEVICE[x2d.device.index] = None
-    return rotquant_reference(x2d, group, kind)
-
-
-@lru_cache(maxsize = 1)
-def _rotq_op() -> Any:
-    """``unsloth_studio::convrot_act_quant_int8`` (opaque to Inductor, allocation only), or None."""
-    try:
-        import torch
-    except Exception:  # noqa: BLE001
-        return None
-    ns = getattr(torch.ops, _OP_NAMESPACE, None)
-    if ns is not None and hasattr(ns, _ROTQ_OP_NAME):
-        return getattr(ns, _ROTQ_OP_NAME)
-    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
-    if custom_op is None:
-        return None
-    try:
-
-        @custom_op(
-            f"{_OP_NAMESPACE}::{_ROTQ_OP_NAME}",
-            mutates_args = (),
-            schema = "(Tensor x, int group, bool v2) -> (Tensor, Tensor)",
-        )
-        def _convrot_act_quant_int8(x, group, v2):
-            return _rotq_run(x, group, v2)
-
-        @_convrot_act_quant_int8.register_fake
-        def _(x, group, v2):
-            return (
-                x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
-                x.new_empty(
-                    (x.shape[0],),
-                    dtype = torch.float32
-                    if _rotq_scale_fp32("v2" if v2 else "v1")
-                    else torch.bfloat16,
-                ),
-            )
-    except Exception:  # noqa: BLE001
-        return None
-    return getattr(getattr(torch.ops, _OP_NAMESPACE), _ROTQ_OP_NAME)
-
-
-def rotquant_device_config(index: int) -> Optional[tuple]:
-    """Once per device: arch gate, then bit-exact codes and scales vs the stock path (v1, v2, outliers, zero row, ragged
-    M). None = stock."""
-    if index in _ROTQ_DEVICE:
-        return _ROTQ_DEVICE[index]
-    cfg = None
-    try:
-        import torch
-        if (
-            torch.cuda.is_available()
-            and not getattr(torch.version, "hip", None)
-            and _triton_version_ok()
-            and _kernels() is not None
-            and _rotq_op() is not None
-        ):
-            want = rotquant_config(torch.cuda.get_device_capability(index))
-            for cand in (want, _ROTQ_FALLBACK) if want is not None else ():
-                if _rotq_probe(index, cand):
-                    cfg = cand
-                    break
-    except Exception:  # noqa: BLE001
-        cfg = None
-    _ROTQ_DEVICE[index] = cfg
-    return cfg
-
-
-def _rotq_probe(index: int, cfg: tuple) -> bool:
-    import torch
-
-    dev = torch.device("cuda", index)
-    g = torch.Generator(device = "cpu").manual_seed(2)
-    try:
-        for m, k in ((257, 256 * 3), (33, 256 * 21), (130, 256 * 56), (17, 256 * 128)):
-            if _rotq_rows(k, 256, cfg) < 1:
-                continue
-            x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
-            x[:, :3] *= 60
-            x[1] = 0
-            x[2, 11] = 3e4
-            x = x.to(torch.bfloat16).to(dev)
-            for kind in ("v1", "v2"):
-                q, s = _rotq_launch(x, 256, kind, cfg)
-                rq, rs = rotquant_reference(x, 256, kind)
-                if not (torch.equal(q, rq) and torch.equal(s, rs)):
-                    return False
-        torch.cuda.synchronize(dev)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def rotquant_call_count() -> int:
-    return _ROTQ_CALLS[0]
 
 
 def tie_operands(
@@ -777,28 +531,8 @@ def _v2_parts(w: Any, check_zero_point: bool = True) -> Optional[tuple]:
 
 
 def _act_quant_v1(x2d: Any) -> tuple:
-    """torchao 0.17's ``_int8_symm_per_token_reduced_range_quant`` minus the tensor-subclass wrapper."""
-    import torch
-    from torchao.quantization.quant_primitives import (
-        MappingType,
-        choose_qparams_affine,
-        quantize_affine,
-    )
-
-    block = (1, x2d.shape[-1])
-    scale, zero_point = choose_qparams_affine(
-        x2d,
-        MappingType.SYMMETRIC,
-        block,
-        torch.int8,
-        -127,
-        127,
-        1e-5,
-        torch.float32 if x2d.dtype == torch.float16 else None,
-        None,
-    )
-    q = quantize_affine(x2d, block, scale, zero_point, torch.int8, -127, 127)
-    return q, scale
+    from .diffusion_convrot_quant import act_quant_v1
+    return act_quant_v1(x2d)
 
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
@@ -828,14 +562,28 @@ def _v1_act_quant_matches(index: int) -> bool:
         return False
 
 
+def stock_gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
+    """torchao's int8 Linear after its act quant, op for op: cuBLAS ``_int_mm``, ``* x_scale`` in the scale's dtype,
+    bf16, ``* w_scale``, ``+ bias``, bf16 (``reference`` minus the small-M padding; callers keep M >= 17). torchao 0.17's
+    zero-point pass subtracts an exact zero for this symmetric quant and is skipped."""
+    import torch
+
+    y = (torch._int_mm(xq, wq.t()) * xs.reshape(-1, 1)).to(torch.bfloat16)
+    y = y * ws.reshape(-1)
+    if bias is not None:
+        y = y + bias
+    return y.to(torch.bfloat16)
+
+
 def _linear_forward(self: Any, x: Any) -> Any:
-    """``nn.Linear.forward`` for a torchao int8 dynamic weight: torchao's activation quant, then the fused GEMM."""
+    """``nn.Linear.forward`` for a torchao int8 dynamic weight: torchao's activation quant (fused with the ConvRot
+    rotation where that kernel is on), then the fused-dequant GEMM, or cuBLAS + torchao's epilogue where it is not."""
     import torch
 
     rec = self.__dict__.get(_REC)
     if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
         return type(self).forward(self, x)
-    kind, group, rotq, weight = rec
+    kind, group, rotq, weight, fused = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
     # Payload off the live parameter, never a cached alias: a moved weight must not leave a stale device or pin a copy.
@@ -849,12 +597,15 @@ def _linear_forward(self: Any, x: Any) -> Any:
     lead = x.shape[:-1]
     if x.numel() < _MIN_ROWS * x.shape[-1]:
         return type(self).forward(self, x)
-    if (
-        rotq
-        and _ROTQ_HANDLE is not None
-        and rotquant_supported(x.reshape(-1, x.shape[-1]), group, _ROTQ_DEVICE.get(x.device.index))
-    ):
-        xq, xs = _ROTQ_HANDLE(x.reshape(-1, x.shape[-1]), group, kind == "v2")
+    q = None
+    if rotq:
+        from .diffusion_convrot_quant import convrot_act_quant
+        q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2")
+    if q is not None:
+        xq, xs = q
+    elif not fused:
+        # rotation kernel not covering this call and no fused GEMM: the module's own stock forward
+        return type(self).forward(self, x)
     else:
         if group is not None:
             from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
@@ -866,7 +617,10 @@ def _linear_forward(self: Any, x: Any) -> Any:
             xq, xs = _act_quant_v1(x2d)
         else:
             xq, xs = _act_quant_v2(x2d, weight)
-    y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, self.bias)
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, self.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, self.bias)
     return y.reshape(*lead, y.shape[-1])
 
 
@@ -937,11 +691,21 @@ def _eligible(module: Any) -> Optional[tuple]:
     return None
 
 
-def candidates(transformer: Any) -> int:
+def candidates(transformer: Any, rotated_only: bool = False) -> int:
     try:
-        return sum(1 for m in transformer.modules() if _eligible(m) is not None)
+        recs = (_eligible(m) for m in transformer.modules())
+        return sum(1 for r in recs if r is not None and (r[1] is not None or not rotated_only))
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _gates(capability: Optional[tuple]) -> tuple:
+    """(fused GEMM on this arch, rotation kernel on this arch), before any probe."""
+    from .diffusion_convrot_quant import rotquant_config
+
+    gemm = arch_config(capability) is not None
+    rotq = convrot_enabled() and rotquant_config(capability) is not None
+    return gemm, rotq
 
 
 def install(
@@ -974,11 +738,12 @@ def install(
             return 0
         if not _triton_version_ok() or _kernels() is None:
             return 0
-        if arch_config(torch.cuda.get_device_capability(torch.cuda.current_device())) is None:
+        gemm, rotq = _gates(torch.cuda.get_device_capability(torch.cuda.current_device()))
+        if not (gemm or rotq):
             return 0
     except Exception:  # noqa: BLE001
         return 0
-    n = candidates(transformer)
+    n = candidates(transformer, rotated_only = not gemm)
     if n:
         run_on_first_call(transformer, "int8_gemm", lambda t: _finalize(t, logger))
     return n
@@ -1002,7 +767,7 @@ def _swap(
     logger: Any = None,
     device: Any = None,
 ) -> int:
-    global _OP_HANDLE, _ROTQ_HANDLE
+    global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
     import torch
@@ -1026,31 +791,45 @@ def _swap(
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     recs = [(m, _eligible(m)) for m in transformer.modules()]
     recs = [(m, r) for m, r in recs if r is not None]
-    if not recs or device_config(index) is None:
+    if not recs:
         return 0
+    from .diffusion_convrot_quant import rotquant_device_config
+
+    gemm = device_config(index) is not None
+    rotq = any(r[1] is not None for _, r in recs) and rotquant_device_config(index) is not None
+    if not gemm:
+        # no fused GEMM here: only rotated Linears gain (one kernel instead of rotation GEMM + act quant)
+        recs = [(m, r) for m, r in recs if r[1] is not None] if rotq else []
     if any(r[0] == "v1" for _, r in recs) and not _v1_act_quant_matches(index):
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
-    rotq = any(r[1] is not None for _, r in recs) and rotquant_device_config(index) is not None
+    if not recs:
+        return 0
     count = 0
     with _LOCK:
-        _OP_HANDLE = _op()
-        if _OP_HANDLE is None:
-            return 0
-        if rotq:
-            _ROTQ_HANDLE = _rotq_op()
+        if gemm:
+            _OP_HANDLE = _op()
+            if _OP_HANDLE is None:
+                return 0
         for module, rec in recs:
             if _MARK in module.__dict__:
                 count += 1
                 continue
-            # kind, rotation group, fused rotation + act quant on, the Parameter; no payload alias
-            module.__dict__[_REC] = (rec[0], rec[1], bool(rotq and rec[1] is not None), rec[3])
+            # kind, rotation group, fused rotation + act quant on, the Parameter (no payload alias), fused GEMM on
+            module.__dict__[_REC] = (
+                rec[0],
+                rec[1],
+                bool(rotq and rec[1] is not None),
+                rec[3],
+                gemm,
+            )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
     if logger is not None and count:
         logger.info(
-            "diffusion.int8_gemm: %d int8 Linear(s) run the fused-dequant GEMM (bf16 out) on sm_%d%d%s",
+            "diffusion.int8_gemm: %d int8 Linear(s) %s on sm_%d%d%s",
             count,
+            "run the fused-dequant GEMM (bf16 out)" if gemm else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
             ", ConvRot rotation fused into the act quant" if rotq else "",
         )

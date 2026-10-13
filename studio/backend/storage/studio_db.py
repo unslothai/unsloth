@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -139,6 +141,11 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
+
+
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 5
@@ -420,10 +427,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL UNIQUE {collation},
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            recursive INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    if "recursive" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(scan_folders)").fetchall()
+    }:
+        conn.execute("ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_projects (
@@ -442,6 +454,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
+    if "working_folder" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
+    if "working_folder_identity" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -757,6 +774,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # Import ledger: without it a re-import cannot tell a turn deleted in Studio from a newly appended one.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_import_sessions (
+            source TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turns_imported INTEGER NOT NULL,
+            revision TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source, session_id)
+        ) WITHOUT ROWID
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -968,6 +997,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    document_source_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_document_sources)").fetchall()
+    }
+    if "kind" not in document_source_cols:
+        conn.execute("ALTER TABLE research_document_sources ADD COLUMN kind TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_events (
@@ -1322,8 +1356,8 @@ def get_connection(
 ) -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_account_dir(db_path.parent)
-    conn = sqlite3.connect(
-        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    conn = connect_studio_db(
+        db_path, timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
@@ -1923,14 +1957,14 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
@@ -1973,21 +2007,29 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing), False
+            # None keeps the stored flag, so a re-add from export registration never resets it.
+            if recursive is None or bool(existing["recursive"]) == recursive:
+                return dict(existing), False
+            conn.execute(
+                "UPDATE scan_folders SET recursive = ? WHERE id = ?",
+                (int(recursive), existing["id"]),
+            )
+            conn.commit()
+            return {**dict(existing), "recursive": int(recursive)}, True
         inserted = False
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
-                (normalized, now),
+                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
+                (normalized, now, int(bool(recursive))),
             )
             conn.commit()
             inserted = True
@@ -1995,9 +2037,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
@@ -2007,8 +2049,8 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    row, _ = add_scan_folder_with_status(path)
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
+    row, _ = add_scan_folder_with_status(path, recursive)
     return row
 
 
@@ -2071,6 +2113,8 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "workingFolder": data.get("working_folder") or None,
+        "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -2203,6 +2247,7 @@ def update_chat_thread(
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
     settings_write: Optional[dict] = None,
+    preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
     so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
@@ -2254,11 +2299,14 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
-    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    # Generated title refreshes preserve recency. Moves and (un)archives still stamp it.
+    # The CASE reads the pre-update row.
     edited = [
         (column, value)
         for key, (column, value) in allowed.items()
-        if key in patch and key in ("title", "projectId", "archived")
+        if key in patch
+        and key in ("title", "projectId", "archived")
+        and not (key == "title" and preserve_title_modified_at)
     ]
     if edited:
         changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
@@ -2507,6 +2555,18 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
             "UPDATE chat_threads SET forked_from_thread_id = ? WHERE id = ?",
             (source_id, row["id"]),
         )
+
+
+def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
+    """Forget these deleted thread ids, so an import into an emptied Studio can recreate them."""
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "DELETE FROM chat_thread_tombstones WHERE id = ?", [(i,) for i in set(thread_ids)]
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
@@ -2813,6 +2873,32 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+def _unretire_project_rag_scope(project_id: str) -> None:
+    """Give a recreated project id back its RAG scope (#10567).
+
+    Runs after the Studio row commits and under the scope lock the delete route purges in, so a
+    purged tombstone left by a racing delete is cleared instead of disabling RAG for good. The
+    owner is re-read under the lock: a delete that won it must keep its tombstone.
+    """
+    from utils.paths import rag_db_path
+    try:
+        if not rag_db_path().exists():
+            return
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.project_scope(project_id)
+        with folder_sync.scope_lock(scope):
+            if get_chat_project(project_id) is None:
+                return
+            folder_sync.unretire_scope(scope)
+    except Exception:
+        logger.warning(
+            "could not clear RAG retirement for project %s after the Studio row committed",
+            project_id,
+            exc_info = True,
+        )
+
+
 def upsert_chat_project(project: dict) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
@@ -2845,9 +2931,11 @@ def upsert_chat_project(project: dict) -> dict:
             ),
         )
         conn.commit()
-        return get_chat_project(project["id"]) or project
+        saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
+    _unretire_project_rag_scope(project["id"])
+    return saved
 
 
 def update_chat_project(id: str, patch: dict) -> Optional[dict]:
@@ -2878,6 +2966,52 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         return _chat_project_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+def set_chat_project_working_folder(
+    id: str,
+    path: Optional[str],
+    identity: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    """The managed workspace is kept, so switching back finds its files."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                path or None,
+                f"{identity[0]}:{identity[1]}" if path and identity else None,
+                int(time.time() * 1000),
+                id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    path = (project or {}).get("workingFolder")
+    if not path or not is_owner_context():
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    identity = (project or {}).get("workingFolderIdentity")
+    if identity and identity != f"{st.st_dev}:{st.st_ino}":
+        return None
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:
@@ -5338,5 +5472,44 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int, str]]:
+    """(turns brought over, source revision they came from), or None if never imported."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT turns_imported, revision FROM external_import_sessions"
+            " WHERE source = ? AND session_id = ?",
+            (source, session_id),
+        ).fetchone()
+        return None if row is None else (row["turns_imported"], row["revision"])
+    finally:
+        conn.close()
+
+
+def record_external_import_mark(
+    source: str,
+    session_id: str,
+    turns: int,
+    revision: str = "",
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                    ELSE excluded.turns_imported END,
+                revision = excluded.revision
+            """,
+            (source, session_id, int(turns), revision),
+        )
+        conn.commit()
     finally:
         conn.close()

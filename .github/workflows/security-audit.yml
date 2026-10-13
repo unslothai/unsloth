@@ -83,6 +83,7 @@ on:
       - 'scripts/lockfile_supply_chain_audit.py'
       - 'studio/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'scripts/scan_npm_packages.py'
       - 'scripts/scan_npm_packages_baseline.json'
       - 'scripts/check_new_install_scripts.py'
@@ -645,7 +646,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@363923b901c911a9164f50b6c423f47c15372b1c  # v3.97.4
+        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85  # v3.97.9
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}

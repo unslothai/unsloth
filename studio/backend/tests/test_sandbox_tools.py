@@ -53,6 +53,10 @@ class TestMetadataHostDenylist:
                 id = "alibaba_ecs_literal_blocked",
             ),
             pytest.param(
+                'import _socket; s=_socket.socket(); s.connect(("169.254.169.254", 80))',
+                id = "c_socket_imds_literal_blocked",
+            ),
+            pytest.param(
                 'import urllib.request; urllib.request.urlopen("http://[fd00:ec2::254]/")',
                 id = "ipv6_imds_literal_blocked",
             ),
@@ -130,6 +134,23 @@ class TestUntrustedHostBlock:
             pytest.param(
                 'import socket; s=socket.socket(); s.connect(("evil.example", 80))',
                 id = "socket_connect_random_host_blocked",
+            ),
+            # `_socket` is the C module behind `socket`: same primitives, same verdict.
+            pytest.param(
+                'import _socket; s=_socket.socket(); s.connect(("evil.example", 80))',
+                id = "c_socket_connect_random_host_blocked",
+            ),
+            pytest.param(
+                'from _socket import socket; s=socket(); s.connect(("evil.example", 80))',
+                id = "c_socket_from_import_connect_blocked",
+            ),
+            pytest.param(
+                'import _socket; _socket.SocketType().connect_ex(("evil.example", 80))',
+                id = "c_socket_sockettype_alias_blocked",
+            ),
+            pytest.param(
+                'import _socket as s; s.getaddrinfo("evil.example", 80)',
+                id = "c_socket_getaddrinfo_alias_blocked",
             ),
         ],
     )
@@ -1301,6 +1322,7 @@ class TestNetworkTargetResolution:
             "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(proxy_command='nc 203.0.113.5 22')\n"
             "asyncssh.connect('pypi.org', options=opts)",
             "import aiohttp\naiohttp.ClientSession('https://pypi.org').get('//' + host)",
+            "import _socket\nh = '.'.join(['10', '0', '0', '1'])\n_socket.socket().connect((h, 80))",
         ],
     )
     def test_unreadable_destination_refused(self, code):
@@ -2719,6 +2741,23 @@ class TestSandboxEnvIsolation:
         assert list(_snapshot_workdir_files(str(tmp_path))) == [
             f"{_SANDBOX_TEMP_DIRNAME}/report.csv"
         ]
+
+    def test_dependency_trees_do_not_spend_the_walk(self, tmp_path):
+        """node_modules, __pycache__ and a virtualenv are not walked: a big one used up the file budget and a file the
+        call wrote beside it got no download row."""
+        from core.inference.tools import _MAX_SNAPSHOT_FILES, _snapshot_workdir_files
+
+        deps = tmp_path / "node_modules" / "pkg"
+        deps.mkdir(parents = True)
+        for i in range(_MAX_SNAPSHOT_FILES + 10):
+            (deps / f"f{i}.js").write_bytes(b"x")
+        (tmp_path / "env" / "lib").mkdir(parents = True)
+        (tmp_path / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (tmp_path / "env" / "lib" / "site.py").write_bytes(b"x")
+        (tmp_path / "src" / "__pycache__").mkdir(parents = True)
+        (tmp_path / "src" / "__pycache__" / "app.cpython-313.pyc").write_bytes(b"x")
+        (tmp_path / "src" / "app.py").write_bytes(b"x")
+        assert sorted(_snapshot_workdir_files(str(tmp_path))) == ["src/app.py"]
 
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox

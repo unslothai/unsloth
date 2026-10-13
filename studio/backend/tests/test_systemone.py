@@ -228,7 +228,15 @@ def test_named_checkpoint_swaps_the_resident_model(client, runtime):
             422,
             "invalid_request_error",
         ),
-        ({"images": ["data:image/png;base64,AAAA"]}, 400, "api_usage_error"),
+        (
+            {
+                "images": [
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                ]
+            },
+            400,
+            "api_usage_error",
+        ),
         (
             {"questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
             422,
@@ -2070,3 +2078,13 @@ def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypa
         ("float32", 2),
         ("float32", 1),
     ]
+
+
+def test_an_env_pinned_local_clef_folder_keeps_the_clef_layout(monkeypatch, tmp_path):
+    from core.systemone import catalog
+
+    for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (tmp_path / name).write_text("{}", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_SUBFOLDER", raising = False)
+    assert catalog.default_checkpoint().layout == "clef"

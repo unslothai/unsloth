@@ -16,32 +16,45 @@ import { SettingsSection } from "@/features/settings/components/settings-section
 import { useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { formatGiB } from "@/lib/memory/format";
+import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
   type InferenceEngine,
   changeEngine,
-  convertsToInteger,
   precisionAfterEngineSwitch,
   isEngineReady,
+  supportsPrecision,
   wslNoticeKey,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
 
 const names = { vllm: "vLLM", sglang: "SGLang" };
+const PRECISION_LABELS = [
+  ["bf16", "BF16 (16-bit)"],
+  ["fp16", "FP16 (16-bit)"],
+  ["int4", "4-bit"],
+  ["int8", "INT8 (8-bit)"],
+  ["fp8", "FP8 (8-bit)"],
+] as const;
 
-function EngineInstall({
+export function EngineInstall({
   engine,
   management = false,
+  centered = false,
   onUse,
 }: {
   engine: EngineStatus;
   management?: boolean;
+  /** The load dialog: centred, and the install prompt (size, Install and load) shown up front. */
+  centered?: boolean;
   onUse?: () => void;
 }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
+  // Off once an install starts, until it fails or stops: the next poll may not show it running yet.
+  const [autoConfirm, setAutoConfirm] = useState(true);
   useEffect(() => {
     if (
       engine.job.state === "error" ||
@@ -49,6 +62,7 @@ function EngineInstall({
       engine.job.state === "waiting"
     ) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
     }
     if (
       useAfterInstall.current &&
@@ -63,6 +77,11 @@ function EngineInstall({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const running = engine.job.state === "running";
+  const canInstall = !engine.in_use && isOwner && !engine.unsupported_reason;
+  // The dialog's user already asked to load, so skip the extra "Install engine" click there.
+  const showConfirm =
+    confirm ||
+    (centered && autoConfirm && canInstall && !engine.installed && !running);
   const action = async (
     operation: "install" | "cancel" | "remove" | "rollback",
   ) => {
@@ -71,6 +90,7 @@ function EngineInstall({
     try {
       if (operation === "install") {
         useAfterInstall.current = !!onUse;
+        setAutoConfirm(false);
       }
       if (operation === "cancel") {
         useAfterInstall.current = false;
@@ -79,25 +99,30 @@ function EngineInstall({
       setConfirm(false);
     } catch (err) {
       useAfterInstall.current = false;
+      setAutoConfirm(true);
       setError(err instanceof Error ? err.message : "Engine operation failed");
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className="space-y-2 text-ui-12">
-      {!(isOwner || engine.installed) && (
+    <div className={cn("space-y-2 text-ui-12", centered && "text-center")}>
+      {/* Settings shows these under the engine name (engineNote). */}
+      {!management && !(isOwner || engine.installed) && (
         <p className="text-muted-foreground">
           {t("managedEngines.ownerRequired")}
         </p>
       )}
-      {engine.unsupported_reason && (
+      {!management && engine.unsupported_reason && (
         <p className="text-muted-foreground">{engine.unsupported_reason}</p>
       )}
       {running ? (
         <output
           aria-live="polite"
-          className="flex items-center justify-between gap-3"
+          className={cn(
+            "flex items-center gap-3",
+            centered ? "justify-center" : "justify-between",
+          )}
         >
           <span>{t("managedEngines.installing")}</span>
           <Button
@@ -110,7 +135,12 @@ function EngineInstall({
           </Button>
         </output>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            centered && "justify-center",
+          )}
+        >
           {engine.installed && (
             <span>
               {t("managedEngines.installed", {
@@ -118,24 +148,23 @@ function EngineInstall({
               })}
             </span>
           )}
-          {(!engine.installed || !engine.current || management) && (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={
-                busy || engine.in_use || !isOwner || !!engine.unsupported_reason
-              }
-              onClick={() => setConfirm(true)}
-            >
-              {engine.installed
-                ? t(
-                    engine.current
-                      ? "managedEngines.repair"
-                      : "managedEngines.update",
-                  )
-                : t("managedEngines.install")}
-            </Button>
-          )}
+          {(!engine.installed || !engine.current || management) &&
+            !(centered && showConfirm) && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !canInstall}
+                onClick={() => setConfirm(true)}
+              >
+                {engine.installed
+                  ? t(
+                      engine.current
+                        ? "managedEngines.repair"
+                        : "managedEngines.update",
+                    )
+                  : t("managedEngines.install")}
+              </Button>
+            )}
           {management && isOwner && engine.installed && (
             <Button
               size="sm"
@@ -161,12 +190,14 @@ function EngineInstall({
       {management && engine.in_use && (
         <p className="text-muted-foreground">{t("managedEngines.inUse")}</p>
       )}
-      {confirm && (
+      {showConfirm && (
         <section
           aria-label={t("managedEngines.installTitle", {
             engine: names[engine.engine],
           })}
-          className="space-y-3 rounded-lg border p-3"
+          className={cn(
+            centered ? "space-y-1 text-muted-foreground" : "space-y-3 rounded-lg border p-3",
+          )}
         >
           <p>
             {engine.download_bytes
@@ -184,9 +215,9 @@ function EngineInstall({
             <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
           )}
           <p>{t("managedEngines.background")}</p>
-          <div className="flex gap-2">
+          <div className={cn("flex gap-2", centered && "justify-center pt-3")}>
             <Button
-              size="sm"
+              size={centered ? "default" : "sm"}
               disabled={busy}
               onClick={() => void action("install")}
             >
@@ -194,9 +225,11 @@ function EngineInstall({
                 ? t("managedEngines.installAndLoad")
                 : t("managedEngines.install")}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
-              {t("common.cancel")}
-            </Button>
+            {!centered && (
+              <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
+                {t("common.cancel")}
+              </Button>
+            )}
           </div>
         </section>
       )}
@@ -225,7 +258,12 @@ function EngineInstall({
 
 export function InferenceEnginesSection() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
+  // Why the engine can't be installed, shown under its name.
+  const engineNote = (engine: EngineStatus) =>
+    engine.unsupported_reason ||
+    (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
   return (
     <SettingsSection
       title={t("managedEngines.title")}
@@ -233,7 +271,11 @@ export function InferenceEnginesSection() {
     >
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
-        <SettingsRow key={engine.engine} label={names[engine.engine]}>
+        <SettingsRow
+          key={engine.engine}
+          label={names[engine.engine]}
+          description={engineNote(engine)}
+        >
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}
@@ -268,7 +310,7 @@ export function InferenceEnginePicker({
 }) {
   const { engines, error } = useEngines();
   const t = useT();
-  const devices = useGpuDevices()?.filter(isEngineGpuDevice);
+  const devices = useGpuDevices(true)?.filter(isEngineGpuDevice);
   // The backend's default for an unpicked GPU, so a first pick cannot keep a hidden GPU 0.
   const selectedGpuIds = gpuIds?.length
     ? gpuIds
@@ -280,6 +322,13 @@ export function InferenceEnginePicker({
   useEffect(() => {
     onReadyChange(ready);
   }, [ready, onReadyChange]);
+  // A precision kept from another GPU (INT4 saved on NVIDIA, opened on AMD) resets once the
+  // engine's status says it is unsupported, not only on an engine switch.
+  useEffect(() => {
+    if (!selected) return;
+    const kept = precisionAfterEngineSwitch(precision, selected);
+    if (kept !== precision) onPrecisionChange(kept);
+  }, [selected, precision, onPrecisionChange]);
   if (
     value === "auto" &&
     engines.length > 0 &&
@@ -332,9 +381,11 @@ export function InferenceEnginePicker({
       )}
       {selected && (
         <>
-          <p className="text-ui-12 text-muted-foreground">
-            {t("managedEngines.scope")}
-          </p>
+          {selected.platform !== "rocm" && (
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.scope")}
+            </p>
+          )}
           {devices && devices.length > 0 && (
             <div
               role="group"
@@ -434,21 +485,15 @@ export function InferenceEnginePicker({
                   <SelectItem value="auto">
                     {t("managedEngines.precisionAuto")}
                   </SelectItem>
-                  <SelectItem value="bf16">BF16 (16-bit)</SelectItem>
-                  <SelectItem value="fp16">FP16 (16-bit)</SelectItem>
-                  <SelectItem
-                    value="int4"
-                    disabled={!convertsToInteger(selected)}
-                  >
-                    4-bit
-                  </SelectItem>
-                  <SelectItem
-                    value="int8"
-                    disabled={!convertsToInteger(selected)}
-                  >
-                    INT8 (8-bit)
-                  </SelectItem>
-                  <SelectItem value="fp8">FP8 (8-bit)</SelectItem>
+                  {PRECISION_LABELS.map(([value, label]) => (
+                    <SelectItem
+                      key={value}
+                      value={value}
+                      disabled={!supportsPrecision(selected, value)}
+                    >
+                      {label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

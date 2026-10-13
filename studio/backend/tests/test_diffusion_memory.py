@@ -1168,6 +1168,28 @@ def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch
     assert snap.free_mib == 2_000 + 4 * 1024
 
 
+def test_reclaimable_snapshot_does_not_credit_a_live_cuda_graph_pool(monkeypatch):
+    # A captured graph's pool is reserved but not allocated, and nothing else can allocate into it while the
+    # graph lives (under block offload it also holds the prefetch window): the guard must see it as used.
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302
+        ),
+    )
+    _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 3 * 1024**3)
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000 + 1024
+    monkeypatch.setattr(
+        cg, "live_pool_free_bytes", lambda: 5 * 1024**3
+    )  # the pool is all of the cached bytes
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000
+
+
 def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
     # The credit is arithmetic, so a bogus allocator reading must not invent memory the card
     # does not have and talk the guard out of a real refusal.
@@ -1423,8 +1445,16 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         # reaches H3 through the GGUF or prequantized artifacts instead.
         "minimax-h3": {16, 24, 32, 64, 96, 128},
         "ltx-2": {16, 24, 32, 64, 96},
+        # 75.1 GB of bf16 weights (the Gemma 4 encoder counted, though it lives in its worker process).
+        "ltx-2.5": {16, 24, 32, 64, 96},
         "wan2.2-ti2v-5b": {16, 24, 32},
         "wan2.2-t2v-a14b": {16, 24, 32, 64, 96},
+        # 14.7 GB (1.3B DiT + UMT5-XXL + the Wan2.1 VAE): plus overhead it just misses the ~14.4 GiB
+        # budget of a 24 GiB Mac, and fits from 32 GiB up.
+        "wan2.1-t2v-1.3b": {16, 24},
+        # 40.5 GB (one 14B DiT, same encoder + VAE): plus overhead it just misses the ~38.4 GiB budget
+        # at 64 GiB, and fits at 96 GiB and above (unlike the two-expert A14B at 69.1 GB).
+        "wan2.1-t2v-14b": {16, 24, 32, 64},
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
     }

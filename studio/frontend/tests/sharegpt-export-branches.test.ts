@@ -83,7 +83,10 @@ function loadExporters(
       onRead();
       return stored;
     },
+    getStoredChatThread: async () => undefined,
+    settleThreadScopedSettingsForCopy: async () => {},
     ...liveThreadHead,
+    savedBranchHead: () => undefined,
     orderByParentChain,
     exportFormatIncludesSiblings,
     ndjsonBody,

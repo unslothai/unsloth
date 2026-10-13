@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.inference import diffusion_convrot_quant as cq
 from core.inference import diffusion_int8_gemm as g8
 
 torch = pytest.importorskip("torch")
@@ -16,12 +17,17 @@ torch = pytest.importorskip("torch")
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
-    monkeypatch.delenv(g8.INT8_ROTQUANT_ENV, raising = False)
+    monkeypatch.delenv(cq.INT8_ROTQUANT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_TILES_ENV, raising = False)
     g8._DEVICE_CFG.clear()
-    g8._ROTQ_DEVICE.clear()
+    g8._DEVICE_TILES.clear()
+    cq._ROTQ_DEVICE.clear()
+    cq._ROTQ_DEVICE_K.clear()
     yield
     g8._DEVICE_CFG.clear()
-    g8._ROTQ_DEVICE.clear()
+    g8._DEVICE_TILES.clear()
+    cq._ROTQ_DEVICE.clear()
+    cq._ROTQ_DEVICE_K.clear()
 
 
 @pytest.mark.parametrize(
@@ -608,32 +614,32 @@ def test_streamed_kill_switch(forced, monkeypatch):
     [
         ((8, 0), True),  # A100: measured end to end (streamed H3)
         ((8, 6), False),
-        ((8, 9), False),  # L4: H3 Diffusers does not load there (host RAM floor), never measured
+        ((8, 9), True),  # L4
         ((9, 0), False),
         ((10, 0), False),
         ((12, 0), True),
     ],
 )
 def test_rotquant_arch_gate(cap, on):
-    assert (g8.rotquant_config(cap, "auto") is not None) is on
+    assert (cq.rotquant_config(cap, "auto") is not None) is on
 
 
 def test_rotquant_kill_switch_and_force(monkeypatch):
     assert (
-        g8.rotquant_config((12, 0), "off") is None
+        cq.rotquant_config((12, 0), "off") is None
     )  # the fused GEMM's own kill switch also turns it off
-    assert g8.rotquant_config((10, 0), "force") is not None
-    assert g8.rotquant_config((7, 5), "force") is None
-    assert g8.rotquant_config((8, 0), "off") is None
-    monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
-    assert g8.rotquant_config((12, 0), "auto") is None
-    assert g8.rotquant_config((8, 0), "auto") is None
-    assert g8.rotquant_config((10, 0), "force") is None
+    assert cq.rotquant_config((10, 0), "force") is not None
+    assert cq.rotquant_config((7, 5), "force") is None
+    assert cq.rotquant_config((8, 0), "off") is None
+    monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "0")
+    assert cq.rotquant_config((12, 0), "auto") is None
+    assert cq.rotquant_config((8, 0), "auto") is None
+    assert cq.rotquant_config((10, 0), "force") is None
 
 
 @pytest.fixture
 def forced_rotq(forced):
-    cfg = g8.rotquant_device_config(torch.cuda.current_device())
+    cfg = cq.rotquant_device_config(torch.cuda.current_device())
     if cfg is None:
         pytest.skip("fused rotation probe refused this device")
     return cfg
@@ -654,10 +660,10 @@ def _act(m, k, seed):
 @pytest.mark.parametrize("kind", ["v1", "v2"])
 def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq, m, k, kind):
     x = _act(m, k, m + k)
-    q, s = g8._rotq_op()(x, 256, kind == "v2")
-    rq, rs = g8.rotquant_reference(x, 256, kind)
+    q, s = cq._rotq_op()(x, 256, kind == "v2")
+    rq, rs = cq.rotquant_reference(x, 256, kind)
     # torchao's own activation-scale dtype: bf16, except v2 on torchao >= 0.18 (fp32)
-    want = torch.float32 if kind == "v2" and g8._v2_act_scale_fp32() else torch.bfloat16
+    want = torch.float32 if kind == "v2" and cq._v2_act_scale_fp32() else torch.bfloat16
     assert q.dtype == torch.int8 and s.dtype == want and s.shape == (m,)
     assert torch.equal(q, rq) and torch.equal(s, rs)
 
@@ -665,7 +671,7 @@ def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq
 @needs_cuda
 def test_rotquant_probe_accepts_this_torchao(forced):
     # with 0.17's bf16 roundings on 0.18, ~4% of codes differed and the probe refused every device
-    assert g8.rotquant_device_config(torch.cuda.current_device()) is not None
+    assert cq.rotquant_device_config(torch.cuda.current_device()) is not None
 
 
 @needs_cuda
@@ -673,24 +679,24 @@ def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
     from torch._subclasses.fake_tensor import FakeTensorMode
     x = _act(40, 768, 9)
     for v2 in (False, True):
-        _, s = g8._rotq_op()(x, 256, v2)
+        _, s = cq._rotq_op()(x, 256, v2)
         with FakeTensorMode() as mode:
-            _, fs = g8._rotq_op()(mode.from_tensor(x), 256, v2)
+            _, fs = cq._rotq_op()(mode.from_tensor(x), 256, v2)
         assert fs.dtype == s.dtype
 
 
 @needs_cuda
 def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
     x = _act(40, 256 * 129, 3)  # more groups than one tile holds
-    assert not g8.rotquant_supported(x, 256, forced_rotq)
-    assert not g8.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)
-    assert not g8.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
-    q, s = g8._rotq_op()(x, 256, True)
-    rq, rs = g8.rotquant_reference(x, 256, "v2")
+    assert not cq.rotquant_supported(x, 256, forced_rotq)
+    assert not cq.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)
+    assert not cq.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
+    q, s = cq._rotq_op()(x, 256, True)
+    rq, rs = cq.rotquant_reference(x, 256, "v2")
     assert torch.equal(q, rq) and torch.equal(s, rs)
     xt = _act(1024, 300, 6).t()  # non-contiguous input: made contiguous, same result
-    q, s = g8._rotq_op()(xt, 256, True)
-    rq, rs = g8.rotquant_reference(xt.contiguous(), 256, "v2")
+    q, s = cq._rotq_op()(xt, 256, True)
+    rq, rs = cq.rotquant_reference(xt.contiguous(), 256, "v2")
     assert torch.equal(q, rq) and torch.equal(s, rs)
 
 
@@ -714,9 +720,9 @@ def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
         x * 0.5
     )  # made outside inference_mode like x, so a recompile here would be the op's own guards
     with torch.inference_mode():
-        before = g8.rotquant_call_count()
+        before = cq.rotquant_call_count()
         assert torch.equal(fused(x), stock(x))
-        assert g8.rotquant_call_count() == before + 1
+        assert cq.rotquant_call_count() == before + 1
         counters.clear()
         torch._dynamo.reset()
         with torch._inductor.config.patch(emulate_precision_casts = True):
@@ -732,22 +738,246 @@ def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
 @needs_cuda
 def test_rotquant_kill_switch_keeps_the_stock_rotation(forced, monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
-    monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
+    monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "0")
     stock = _convrot(_int8_linear(1024, 768, False, 2))
     fused = _convrot(_int8_linear(1024, 768, False, 2))
     holder = torch.nn.Sequential(fused)
     assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is False
     x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
     with torch.inference_mode():
-        before, gemm = g8.rotquant_call_count(), g8.call_count()
+        before, gemm = cq.rotquant_call_count(), g8.call_count()
         assert torch.equal(fused(x), stock(x))
-        assert g8.rotquant_call_count() == before and g8.call_count() == gemm + 1
+        assert cq.rotquant_call_count() == before and g8.call_count() == gemm + 1
     g8.uninstall(holder)
 
 
 @needs_cuda
 def test_rotquant_probe_refusal_keeps_the_stock_rotation(forced, monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
-    monkeypatch.setattr(g8, "_rotq_probe", lambda index, cfg: False)
+    monkeypatch.setattr(cq, "_rotq_probe", lambda index, cfg: False)
     fused = _convrot(_int8_linear(1024, 768, False, 2))
     assert g8.install(torch.nn.Sequential(fused)) == 1 and fused.__dict__[g8._REC][2] is False
+
+
+# ---------------------------------------------------------------- per-shape tiles
+
+
+def test_tile_for_picks_the_shape_rule_then_the_arch_default(monkeypatch):
+    default, wide = (128, 128, 64, 8, 4, 4), (128, 256, 64, 8, 8, 3)
+    g8._DEVICE_CFG[0] = default
+    g8._DEVICE_TILES[0] = ((16384, 65536, 4096, 8192, wide),)
+    assert g8.tile_for(0, 4096, 21504, 5376) == wide
+    assert g8.tile_for(0, 4096, 5376, 5376) == default  # N outside the rule
+    assert g8.tile_for(0, 4096, 21504, 14336) == default  # K outside the rule
+    assert g8.tile_for(0, g8._SHAPE_MIN_M - 1, 21504, 5376) == default  # small M keeps the default
+    assert g8.tile_for(1, 4096, 21504, 5376) is None  # unprobed device: stock
+
+
+def test_tiles_kill_switch_and_unmeasured_arch(monkeypatch):
+    monkeypatch.setitem(g8._SHAPE_TILES, (12, 0), ((1, 2, 3, 4, (64, 64, 64, 8, 4, 3)),))
+    assert g8.shape_tiles((12, 0))
+    assert g8.shape_tiles((8, 6)) == ()
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    assert g8.shape_tiles((12, 0)) == ()
+
+
+def test_shape_tile_launch_failure_falls_back_to_the_default(monkeypatch):
+    default, wide = (128, 128, 64, 8, 4, 4), (128, 256, 64, 8, 8, 3)
+    g8._DEVICE_CFG[None] = default  # CPU tensors report device index None
+    g8._DEVICE_TILES[None] = ((1, 1 << 20, 1, 1 << 20, wide),)
+    used = []
+
+    def launch(a, w, xs, ws, bias, cfg):
+        used.append(cfg)
+        if cfg == wide:
+            raise RuntimeError("out of shared memory")
+        return "fused"
+
+    monkeypatch.setattr(g8, "_launch", launch)
+    monkeypatch.setattr(g8, "reference", lambda *a: "stock")
+    a = torch.zeros(2048, 1024, dtype = torch.int8)
+    w = torch.zeros(1024, 1024, dtype = torch.int8)
+    xs = torch.ones(2048, dtype = torch.bfloat16)
+    ws = torch.ones(1024, dtype = torch.bfloat16)
+    assert g8._run(a, w, xs, ws, None) == "fused"
+    assert used == [wide, default]
+    assert g8._DEVICE_TILES[None] == () and g8._DEVICE_CFG[None] == default
+    assert g8._run(a, w, xs, ws, None) == "fused" and used[-1] == default
+
+
+@needs_cuda
+def test_failed_shape_tile_probe_keeps_its_shapes_on_the_default(monkeypatch):
+    cap = torch.cuda.get_device_capability()
+    bad, good = (64, 64, 64, 8, 4, 3), (128, 64, 64, 8, 4, 3)
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    monkeypatch.setitem(
+        g8._SHAPE_TILES, cap, ((1, 4096, 1, 4096, bad), (4097, 1 << 20, 1, 1 << 20, good))
+    )
+    real = g8._probe
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != bad and real(index, cfg))
+    cfg = g8.device_config(torch.cuda.current_device())
+    if cfg is None:
+        pytest.skip("int8 GEMM probe refused this device")
+    rules = g8._DEVICE_TILES[torch.cuda.current_device()]
+    assert [r[4] for r in rules] == [good]
+    assert g8.tile_for(torch.cuda.current_device(), 4096, 1024, 1024) == cfg
+
+
+def _shipped_tiles():
+    return sorted({rule[4] for rules in g8._SHAPE_TILES.values() for rule in rules})
+
+
+@needs_cuda
+@pytest.mark.parametrize("tile", _shipped_tiles() or [None])
+@pytest.mark.parametrize("ws32", [False, True])
+def test_every_shipped_shape_tile_is_bit_exact(forced, tile, ws32):
+    """Every tile in the shape table, at a shape it is picked for and ragged neighbours: int32 accumulation makes the
+    output independent of the tile, so each must equal the eager torchao epilogue bit for bit (and the tie operands)."""
+    if tile is None:
+        pytest.skip("no per-shape tiles shipped")
+    g = torch.Generator().manual_seed(7)
+    for m, n, k in ((1100, 1024, 1024), (2061, 2064, 1088), (17, 512, 256)):
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
+        xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16).cuda()
+        ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).cuda()
+        ws = ws.float() if ws32 else ws
+        try:
+            out = g8._launch(a, w, xs, ws, None, tile)
+        except Exception as exc:  # noqa: BLE001 - a tile that does not fit this part is dropped by the probe
+            if g8._probe(torch.cuda.current_device(), tile):
+                raise
+            pytest.skip(
+                f"tile {tile} does not fit this part ({type(exc).__name__}); probe drops it"
+            )
+        assert torch.equal(out, g8.reference(a, w, xs, ws, None))
+    a, w = g8.tie_operands(torch.device("cuda"))
+    ones = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    wones = torch.ones(w.shape[0], device = "cuda", dtype = torch.bfloat16)
+    assert torch.equal(
+        g8._launch(a, w, ones, wones, None, tile), g8.reference(a, w, ones, wones, None)
+    )
+
+
+# ---------------------------------------------------------------- fused rotation without the fused GEMM
+
+
+@pytest.fixture
+def rotq_only(monkeypatch):
+    """The fused rotation forced on, the fused GEMM forced off (what sm100 and other unfused archs run)."""
+    monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "1")
+    monkeypatch.setattr(g8, "device_config", lambda index: None)
+    monkeypatch.setattr(g8, "arch_config", lambda cap, mode = None: None)
+    cfg = cq.rotquant_device_config(torch.cuda.current_device())
+    if cfg is None:
+        pytest.skip("fused rotation probe refused this device")
+    return cfg
+
+
+def test_rotquant_mode_follows_its_own_switch_and_the_gemm_master(monkeypatch):
+    assert cq.rotquant_mode() == "auto"
+    monkeypatch.setenv(cq.INT8_ROTQUANT_ENV, "1")
+    assert cq.rotquant_mode() == "force" and cq.rotquant_config((9, 0)) == cq._ROTQ_FALLBACK
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")  # the whole int8 swap off
+    assert cq.rotquant_mode() == "off" and cq.rotquant_config((12, 0)) is None
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    monkeypatch.delenv(cq.INT8_ROTQUANT_ENV)
+    assert cq.rotquant_mode() == "force"
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+@pytest.mark.parametrize("bias", [False, True])
+def test_rotated_linear_without_the_fused_gemm_is_bit_identical(
+    rotq_only, monkeypatch, version, bias
+):
+    """Fused GEMM off, rotation kernel on: only the ConvRot Linear is swapped; rotq + cuBLAS _int_mm + torchao's
+    epilogue equals ConvRotLinear.forward eager, compiled fullgraph keeps one graph, the plain Linear stays stock."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _convrot(_int8_linear(1024, 768, bias, version))
+    fused = _convrot(_int8_linear(1024, 768, bias, version))
+    plain = _int8_linear(1024, 768, bias, version)
+    holder = torch.nn.Sequential(fused, torch.nn.Linear(768, 1024).cuda().to(torch.bfloat16), plain)
+    assert g8.install(holder) == 1
+    assert g8.is_installed(fused) and not g8.is_installed(plain)
+    assert fused.__dict__[g8._REC][2] is True and fused.__dict__[g8._REC][4] is False
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200
+    with torch.inference_mode():
+        before, gemm = cq.rotquant_call_count(), g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert cq.rotquant_call_count() == before + 1 and g8.call_count() == gemm
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            compiled = torch.compile(fused, fullgraph = True)
+            out = compiled(x)
+            assert not counters["graph_break"]
+            assert counters["stats"]["unique_graphs"] == 1
+            # codes / scales come from the eager-exact op; the epilogue's bf16 roundings are emulated
+            assert torch.equal(out, stock(x))
+    g8.uninstall(holder)
+
+
+@needs_cuda
+def test_rotated_linear_without_either_kernel_is_left_alone(monkeypatch):
+    monkeypatch.setattr(g8, "device_config", lambda index: None)
+    monkeypatch.setattr(cq, "rotquant_device_config", lambda index: None)
+    fused = _convrot(_int8_linear(1024, 768, False, 2))
+    assert g8.install(torch.nn.Sequential(fused)) == 0 and not g8.is_installed(fused)
+
+
+@needs_cuda
+def test_stock_gemm_matches_torchao_linear_bit_for_bit(rotq_only):
+    for version in (None, 2):
+        lin = _int8_linear(1024, 768, True, version)
+        x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 2
+        parts = g8._v1_parts(lin.weight) or g8._v2_parts(lin.weight)
+        kind = "v1" if g8._v1_parts(lin.weight) else "v2"
+        xq, xs = g8._act_quant_v1(x) if kind == "v1" else g8._act_quant_v2(x, lin.weight)
+        with torch.inference_mode():
+            assert torch.equal(g8.stock_gemm(xq, parts[0], xs, parts[1], lin.bias), lin(x))
+
+
+@needs_cuda
+def test_convrot_act_quant_api(forced_rotq):
+    x = _act(300, 1024, 11)
+    q, s = cq.convrot_act_quant(x, 256, True)
+    rq, rs = cq.rotquant_reference(x, 256, "v2")
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+    assert cq.convrot_act_quant(x, 64, True) is None  # group the kernel does not cover
+    assert cq.convrot_act_quant(x.half(), 256, True) is None
+    assert cq.convrot_act_quant(x.cpu(), 256, True) is None
+
+
+def test_rotq_tile_for_picks_the_k_rule_only_where_a_row_fits(monkeypatch):
+    default, narrow = (128, 32, 8, 3), (64, 32, 4, 3)
+    cq._ROTQ_DEVICE[0] = default
+    cq._ROTQ_DEVICE_K[0] = ((5000, 20000, narrow),)
+    assert cq.rotq_tile_for(0, 5376) == narrow
+    assert cq.rotq_tile_for(0, 4096) == default  # outside the rule
+    assert cq.rotq_tile_for(0, 256 * 70) == default  # 70 groups do not fit a 64-row tile
+    assert cq.rotq_tile_for(1, 5376) is None
+    monkeypatch.setitem(cq._ROTQ_K_TILES, (8, 0), ((1, 2, narrow),))
+    assert cq.rotq_k_tiles((8, 0))
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    assert cq.rotq_k_tiles((8, 0)) == ()
+
+
+@needs_cuda
+def test_every_shipped_rotq_k_tile_is_bit_exact(forced):
+    tiles = sorted({rule[2] for rules in cq._ROTQ_K_TILES.values() for rule in rules})
+    if not tiles:
+        pytest.skip("no per-K rotq tiles shipped")
+    for tile in tiles:
+        assert cq._rotq_probe(torch.cuda.current_device(), tile), tile
+        for m, k in ((1037, 5376), (300, 4096), (129, 14336), (77, 10240)):
+            if cq._rotq_rows(k, 256, tile) < 1:
+                continue
+            x = _act(m, k, m * k)
+            for kind in ("v1", "v2"):
+                q, s = cq._rotq_launch(x, 256, kind, tile)
+                rq, rs = cq.rotquant_reference(x, 256, kind)
+                assert torch.equal(q, rq) and torch.equal(s, rs), (tile, m, k, kind)

@@ -26,4 +26,10 @@ export {
   getTauriAuthFailure,
   tauriAutoAuth,
 } from "./tauri-auto-auth";
-export { OWNER_USERNAME, sessionAccount, useIsAccountOwner, useLoginMode } from "./account-session";
+export {
+  OWNER_USERNAME,
+  isAccountOwner,
+  sessionAccount,
+  useIsAccountOwner,
+  useLoginMode,
+} from "./account-session";

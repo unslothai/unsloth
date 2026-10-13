@@ -35,6 +35,7 @@ from core.inference.runtime_context import (
     runtime_context_length,
 )
 from core.inference.message_content import content_to_text, named_turn
+from core.inference.model_ids import is_deepseek_ocr
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -64,7 +65,11 @@ from core.inference.native_tool_tokens import (
     reasoning_control_tokens,
     stop_token_text,
 )
-from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
+from core.inference.mlx_inference import (
+    _mlx_stop_cut,
+    _mlx_stop_sequences,
+    _scaling_image_marker,
+)
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -77,6 +82,130 @@ logger = get_logger(__name__)
 def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
     return {} if load_in_4bit else {"load_in_4bit": False}
+
+
+_OFFLOAD_FIT_FRACTION = 0.9
+
+
+def _loader_repo(path: str, load_in_4bit: bool) -> str:
+    """The repo Unsloth's mapper will load for `path`, else `path`."""
+    try:
+        from unsloth.models import loader, loader_utils
+
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        tables = (
+            loader_utils.FLOAT_TO_INT_MAPPER,
+            loader_utils.INT_TO_FLOAT_MAPPER,
+            loader_utils.MAP_TO_UNSLOTH_16bit,
+        )
+        # Unknown names would fetch the remote mapper.
+        name = path.lower()
+        if name in loader_utils.BAD_MAPPINGS or not any(name in t for t in tables):
+            return path
+        return loader_utils.get_model_name(path, load_in_4bit = load_in_4bit) or path
+    except Exception:
+        return path
+
+
+def _complete_local_safetensors_bytes(folder: Path) -> Optional[int]:
+    """None while a shard the index names is missing (interrupted download)."""
+    try:
+        index = folder / "model.safetensors.index.json"
+        if index.is_file():
+            shards = set(json.loads(index.read_text(encoding = "utf-8"))["weight_map"].values())
+            files = [folder / shard for shard in shards]
+            if not all(f.is_file() for f in files):
+                return None
+        else:
+            files = list(folder.glob("*.safetensors"))
+        return sum(f.stat().st_size for f in files) or None
+    except Exception:
+        return None
+
+
+def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
+    folder = Path(name)
+    if not folder.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            folder = Path(snapshot_download(name, local_files_only = True, allow_patterns = ["*.json"]))
+        except Exception:
+            folder = None
+    if folder is not None:
+        local = _complete_local_safetensors_bytes(folder)
+        if local:
+            return local
+    if Path(name).is_dir():
+        return None
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(name, token = hf_token, files_metadata = True)
+        total = sum(
+            s.size or 0
+            for s in info.siblings or ()
+            if s.rfilename.endswith(".safetensors") and "/" not in s.rfilename
+        )
+        return total or None
+    except Exception:
+        return None
+
+
+def _offload_kwargs_for_fit(
+    name: str,
+    device_map,
+    load_in_4bit: bool,
+    hf_token = None,
+    mapped: bool = True,
+) -> dict:
+    """Gemma 4 E2B 4-bit is 8.1 GB on an 8 GB card (#13388); "auto" still loads it all onto the GPU if it fits."""
+    # "sequential" over several visible cards pools them; "auto" would plan for one.
+    if device_map != "sequential" or not torch.cuda.is_available():
+        return {}
+    try:
+        if torch.cuda.device_count() != 1:
+            return {}
+        free = torch.cuda.mem_get_info(0)[0]
+    except Exception:
+        return {}
+    # mapped = False: use_exact_model_name reads `name` verbatim.
+    size = _checkpoint_bytes(_loader_repo(name, load_in_4bit) if mapped else name, hf_token)
+    if not size or size < _OFFLOAD_FIT_FRACTION * free:
+        return {}
+    logger.info(
+        f"Checkpoint is {size / 2**30:.2f} GiB with {free / 2**30:.2f} GiB free; loading with offload_layers='auto'"
+    )
+    return {"offload_layers": "auto"}
+
+
+def _load_with_offload_fallback(load, **kwargs):
+    """A single-GPU load the size check missed that spills to the CPU: free it, retry with offload_layers = "auto"."""
+    try:
+        return load(**kwargs)
+    except ValueError as e:
+        text = str(e)
+        spilled = "does not fit in GPU memory" in text or text.startswith(
+            "Some modules are dispatched on the CPU or the disk"
+        )
+        if (
+            not spilled
+            or "offload_layers" in kwargs
+            or kwargs.get("device_map") != "sequential"
+            or not torch.cuda.is_available()
+            or torch.cuda.device_count() != 1
+        ):
+            raise
+    # After the except block: its traceback's frames held the half-built model.
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info(
+        f"Model did not fit in GPU memory; retrying with offload_layers='auto' "
+        f"({torch.cuda.memory_allocated() / 2**30:.2f} GiB still allocated)"
+    )
+    return load(offload_layers = "auto", **kwargs)
 
 
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
@@ -540,6 +669,14 @@ def _prompt_already_has_bos(tokenizer, prompt):
     return bool(len(ids)) and ids[0] == bos_token_id
 
 
+_MISSING = object()
+
+
+class _OcrNeedsImageError(ValueError):
+    public = True
+    openai_param = "messages"
+
+
 def _without_image_parts(messages) -> list[dict]:
     """The same conversation with every image placeholder dropped, collapsing a
     turn back to its text when that is all it held."""
@@ -734,6 +871,8 @@ class InferenceBackend:
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
+                        from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                         base_path = config.base_model
                         abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
                             base_path, hf_token = hf_token
@@ -742,16 +881,19 @@ class InferenceBackend:
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
                         )
-                        model, tokenizer = FastModel.from_pretrained(
-                            config.path,
-                            dtype = torch.float32,
-                            # Flash Attention cannot run float32
-                            attn_implementation = "sdpa",
-                            load_in_4bit = False,
-                            device_map = device_map,
-                            token = _hf_token_for_loader(hf_token),
-                            trust_remote_code = trust_remote_code,
-                        )
+                        with spark_tts_adapter_load_target(
+                            config.path, hf_token = _hf_token_for_loader(hf_token)
+                        ) as load_target:
+                            model, tokenizer = FastModel.from_pretrained(
+                                load_target,
+                                dtype = torch.float32,
+                                # Flash Attention cannot run float32
+                                attn_implementation = "sdpa",
+                                load_in_4bit = False,
+                                device_map = device_map,
+                                token = _hf_token_for_loader(hf_token),
+                                trust_remote_code = trust_remote_code,
+                            )
                     elif config.is_local and os.path.isdir(config.path):
                         # A merged export saves the LLM straight into the export directory, so
                         # there is no repo to download and no LLM/ child. snapshot_download on
@@ -882,8 +1024,17 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
+            # A LoRA loads its base model.
+            offload_kwargs = _offload_kwargs_for_fit(
+                config.base_model if config.is_lora and config.base_model else load_path,
+                device_map,
+                load_in_4bit,
+                _hf_token_for_loader(hf_token),
+                mapped = not use_exact_model_name,
+            )
             if config.is_vision:
-                model, processor = FastVisionModel.from_pretrained(
+                model, processor = _load_with_offload_fallback(
+                    FastVisionModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -892,6 +1043,7 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -932,7 +1084,8 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                model, tokenizer = FastLanguageModel.from_pretrained(
+                model, tokenizer = _load_with_offload_fallback(
+                    FastLanguageModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -941,6 +1094,7 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastLanguageModel.for_inference(model)
@@ -1217,6 +1371,7 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        deduplicate_tool_calls: bool = True,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1304,6 +1459,7 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
@@ -1413,6 +1569,12 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
+        if is_deepseek_ocr(model_info.get("model")):
+            yield from self._generate_deepseek_ocr_response(
+                messages, image, images, max_new_tokens, cancel_event, _adapter_state, stop
+            )
+            return
+
         if is_vision and (image or images):
             # Verify the stored processor can handle images; FastVisionModel may
             # return a raw tokenizer instead of a ProcessorMixin (e.g. Gemma-3).
@@ -1516,41 +1678,61 @@ class InferenceBackend:
                     f"one via tokenizer.chat_template before inference."
                 )
             reasoning_channel_markers = None
-            formatted_prompt = self._apply_chat_template_for_generation(
-                tokenizer,
-                template_messages,
-                tools = tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                continue_final_message = continue_final_message,
-            )
-
-            # If tools were requested but the (possibly overridden) template ignored
-            # them, fall back to the model's native template (shared with MLX).
             from core.inference.chat_template_helpers import (
+                messages_have_tool_history,
+                render_native_template,
                 render_with_native_template_fallback,
             )
 
-            render_result = render_with_native_template_fallback(
-                formatted_prompt = formatted_prompt,
-                tokenizer = tokenizer,
-                model_info = model_info,
-                active_model_name = self.active_model_name,
-                messages = template_messages,
-                tools = tools,
-                enable_thinking = enable_thinking,
-                reasoning_effort = reasoning_effort,
-                preserve_thinking = preserve_thinking,
-                continue_final_message = continue_final_message,
-                apply_fn = self._apply_chat_template_for_generation,
-                hf_token = model_info.get("hf_token"),
-                return_metadata = True,
-            )
+            try:
+                formatted_prompt = self._apply_chat_template_for_generation(
+                    tokenizer,
+                    template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                )
+            except Exception:
+                if not messages_have_tool_history(template_messages):
+                    raise
+                render_result = render_native_template(
+                    model_info = model_info,
+                    active_model_name = self.active_model_name,
+                    messages = template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                    apply_fn = self._apply_chat_template_for_generation,
+                    hf_token = model_info.get("hf_token"),
+                    return_metadata = True,
+                )
+                if render_result is None:
+                    raise
+            else:
+                # use the native template shared with MLX when an override ignores requested tools.
+                render_result = render_with_native_template_fallback(
+                    formatted_prompt = formatted_prompt,
+                    tokenizer = tokenizer,
+                    model_info = model_info,
+                    active_model_name = self.active_model_name,
+                    messages = template_messages,
+                    tools = tools,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
+                    apply_fn = self._apply_chat_template_for_generation,
+                    hf_token = model_info.get("hf_token"),
+                    return_metadata = True,
+                )
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
-            # Suppress the tokenizer's BOS only when the template already emitted one.
+            # suppress the tokenizer's BOS only when the template already emitted one.
             add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
@@ -1582,6 +1764,77 @@ class InferenceBackend:
             add_special_tokens = add_special_tokens,
             stop = stop,
         )
+
+    def _generate_deepseek_ocr_response(
+        self,
+        messages,
+        image,
+        images,
+        max_new_tokens,
+        cancel_event,
+        _adapter_state,
+        stop = None,
+    ) -> Generator[str, None, None]:
+        """DeepSeek-OCR ships no processor or chat template: its own infer() tiles the image."""
+        import tempfile
+
+        from core.inference.chat_template_helpers import last_user_text
+
+        self.last_generation_stats = None
+        picture = image if image is not None else next(iter(images or ()), None)
+        if picture is None:
+            raise _OcrNeedsImageError(
+                "DeepSeek-OCR reads text from an image: attach one to your message."
+            )
+        model_info = self.models[self.active_model_name]
+        tokenizer = model_info.get("tokenizer") or model_info.get("processor")
+        prompt = "<image>\n" + (last_user_text(messages) or "Free OCR.")
+        infer = model_info["model"].infer
+        # infer() hardcodes max_new_tokens=8192 and no stopping criteria: bound the generate() it calls.
+        owner = infer.__self__
+        previous = owner.__dict__.get("generate", _MISSING)
+        generate = owner.generate
+        stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+
+        def bounded_generate(*args, **kwargs):
+            if max_new_tokens:
+                kwargs["max_new_tokens"] = min(
+                    kwargs.get("max_new_tokens", max_new_tokens), max_new_tokens
+                )
+            if stopping_criteria is not None:
+                kwargs["stopping_criteria"] = stopping_criteria
+            return generate(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp, self._generation_lock:
+            path = str(Path(tmp) / "image.png")
+            picture.convert("RGB").save(path)
+            self._apply_adapter_state(_adapter_state)
+            owner.generate = bounded_generate
+            try:
+                # Gundam preset from each model card: 640 px tiles for v1, 768 for OCR-2.
+                text = infer(
+                    getattr(tokenizer, "tokenizer", tokenizer),
+                    prompt = prompt,
+                    image_file = path,
+                    output_path = tmp,
+                    base_size = 1024,
+                    image_size = 640
+                    if "DeepseekOCRForCausalLM" in model_info["model"].config.architectures
+                    else 768,
+                    crop_mode = True,
+                    save_results = False,
+                    eval_mode = True,
+                )
+            finally:
+                if previous is _MISSING:
+                    del owner.generate
+                else:
+                    owner.generate = previous
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        yield text
 
     def _generate_vision_response(
         self,
@@ -2938,7 +3191,7 @@ class InferenceBackend:
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
@@ -2971,7 +3224,7 @@ class InferenceBackend:
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
-            logger.info(f"Manual template result: {manual_prompt[:200]}...")
+            logger.debug(f"Manual template result: {manual_prompt[:200]}...")
         else:
             logger.info("Using generic chat formatting for base model")
             manual_prompt = self._format_generic_template(manual_messages, {})
@@ -3317,6 +3570,11 @@ class InferenceBackend:
         except Exception:
             processes_images = processor is not None and hasattr(processor, "image_processor")
         chat_template_info["renders_image"] = bool(processes_images)
+        # Not mlx-vlm's SINGLE_IMAGE_ONLY_MODELS: that list is its prompt builder's limit, while the
+        # transformers processors for llava_next and mllama take one image per marker.
+        chat_template_info["accepts_multiple_images"] = bool(processes_images) and bool(
+            _scaling_image_marker(tokenizer, processor, self.models[model_name].get("model"))
+        )
         if processes_images:
             processor_template = getattr(processor, "chat_template", None)
             # Narrowing the named-template list form away disables the image-turn override.

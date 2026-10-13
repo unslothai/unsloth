@@ -122,3 +122,45 @@ test("the endpoint rows are searchable only while Hugging Face serves, as they r
   assert.deepEqual(endpoint.map((key) => [huggingFace.includes(key), modelScope.includes(key)]), [[true, false], [true, false]]);
   assert.ok(modelScope.includes("settings.general.hub.source"));
 });
+
+const MCP_ENTRY = "settings.apiKeys.mcp.title";
+
+test("agent access (MCP) is found by the protocol and the agents' names, by the owner only", () => {
+  const index = createSettingsSearchIndex({
+    desktop: false,
+    closeToTray: false,
+  });
+  assert.ok(index["api-keys"].includes(MCP_ENTRY));
+  const keywordsKey = SETTINGS_SEARCH_KEYWORDS[MCP_ENTRY];
+  assert.equal(keywordsKey, "settings.apiKeys.mcp.keywords");
+  const haystack =
+    `${en.settings.apiKeys.mcp.title} ${en.settings.apiKeys.mcp.keywords}`.toLowerCase();
+  for (const term of ["mcp", "claude", "codex", "model context protocol"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
+  assert.ok(
+    renderedSearchEntries(index, "api-keys", "huggingface", true).includes(
+      MCP_ENTRY,
+    ),
+  );
+  assert.ok(
+    !renderedSearchEntries(index, "api-keys", "huggingface", false).includes(
+      MCP_ENTRY,
+    ),
+  );
+});
+
+const TOOL_RESULT_LIMIT_ENTRY = "settings.chat.toolResultLimit";
+
+test("the tool output length is found by truncate and limit, by the owner only", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+  assert.ok(index.chat.includes(TOOL_RESULT_LIMIT_ENTRY));
+  const haystack =
+    `${en.settings.chat.toolResultLimit} ${en.settings.chat.toolResultLimitKeywords}`.toLowerCase();
+  for (const term of ["truncat", "limit", "tool output", "characters"]) {
+    assert.ok(haystack.includes(term), `search matches "${term}"`);
+  }
+  assert.ok(!haystack.split(/\s+/).includes("mcp"), "MCP results keep the install cap");
+  assert.ok(renderedSearchEntries(index, "chat", "huggingface", true).includes(TOOL_RESULT_LIMIT_ENTRY));
+  assert.ok(!renderedSearchEntries(index, "chat", "huggingface", false).includes(TOOL_RESULT_LIMIT_ENTRY));
+});

@@ -8,9 +8,21 @@ import {
   attachmentViewerMeta,
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
-import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
+import { filesOpenInBrowser } from "@/features/browser";
+import {
+  DocumentView,
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import {
+  type MediaViewerActions,
+  type MediaViewerGallery,
+  MediaViewer,
+  ScaleMenu,
+} from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   attachmentBodyText,
@@ -30,6 +42,7 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -49,6 +62,11 @@ export const AttachmentViewer: FC<{
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
+  /** The Library's own actions on the attachment, for one it lists. */
+  libraryActions?: Omit<MediaViewerActions, "primary" | "onDownload">;
+  variant?: "card" | "lightbox";
+  gallery?: MediaViewerGallery;
+  itemKey?: string;
   children: ReactNode;
 }> = ({
   trigger,
@@ -63,10 +81,15 @@ export const AttachmentViewer: FC<{
   saveAs,
   flush = true,
   extra,
+  libraryActions,
+  variant,
+  gallery,
+  itemKey,
   children,
 }) => {
   const t = useT();
   const navigate = useNavigate();
+  const openInBrowser = useContext(AttachmentBrowserOpenContext);
   // Mounted on first open: every mounted viewer's project menu refetches the project list.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
@@ -94,11 +117,18 @@ export const AttachmentViewer: FC<{
             .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
+    ...libraryActions,
   };
   return (
     <>
       <Slot.Root
-        onClick={() => onOpenChange(true)}
+        onClick={() => {
+          if (openInBrowser && filesOpenInBrowser()) {
+            openInBrowser();
+            return;
+          }
+          onOpenChange(true);
+        }}
         className="aui-attachment-preview-trigger cursor-pointer transition-colors hover:bg-accent/50"
       >
         {trigger}
@@ -115,6 +145,9 @@ export const AttachmentViewer: FC<{
           redactFromReload={redactFromReload}
           extra={extra}
           actions={actions}
+          variant={variant}
+          gallery={gallery}
+          itemKey={itemKey}
         >
           {open && children}
         </MediaViewer>
@@ -157,6 +190,10 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
+  // The Library's ceiling: a larger file was read on the server, and parsing it here blocks the main thread.
+  if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
   return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
@@ -192,7 +229,13 @@ const DocumentDialog: FC<
               : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A File decodes as the composer does (BOM, UTF-16); a code page it refuses still shows raw.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, blob.type).catch(async () =>
+                  truncateAttachmentPreviewText(await blob.text()),
+                )
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
@@ -252,6 +295,33 @@ const SentOriginalDialog: FC<
     </DocumentDialog>
   );
 };
+
+/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
+ *  text (a text/* blob). */
+export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => Promise<Blob> }>> = ({
+  children,
+  name,
+  load,
+}) => (
+  <DocumentDialog
+    source={{
+      kind: "document",
+      name,
+      contentType: undefined,
+      file: undefined,
+      src: undefined,
+      audio: undefined,
+      video: undefined,
+      text: undefined,
+      hasOriginal: true,
+    }}
+    load={load}
+    redactFromReload={false}
+    textFallback={true}
+  >
+    {children}
+  </DocumentDialog>
+);
 
 export const AttachmentDocumentDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>

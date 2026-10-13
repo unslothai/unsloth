@@ -28,10 +28,12 @@ from typing import Any
 
 logger = get_logger(__name__)
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from utils.hardware import apply_gpu_ids
 
@@ -389,6 +391,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "checkpoint": checkpoint_path if success else None,
                 "is_vision": backend.is_vision if success else False,
                 "is_peft": backend.is_peft if success else False,
+                "decision": getattr(backend, "decision", None) if success else None,
                 "ts": time.time(),
             },
         )

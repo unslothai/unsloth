@@ -197,7 +197,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);
   assert.match(
     modelInspector,
-    /const mediaPage = studioPageForTask\([\s\S]*?taskForMediaPick\(model\.pipelineTag, model\.task\)/,
+    /const mediaTask = taskForMediaPick\(model\.pipelineTag, model\.task\);\s*const mediaPage = studioPageForTask\(mediaTask \?\? undefined\);/,
   );
   assert.match(
     hubPage,
@@ -205,7 +205,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     hubPage,
-    /to: `\/\$\{mediaPage\}`,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
+    /to: `\/\$\{mediaPage\}`,[\s\S]*?mediaPage === "audio"[\s\S]*?audioPickSearch\(selectedModel\.hubRepoId,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
   );
   assert.match(
     hubPage,
@@ -260,7 +260,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
     modelInspector,
-    /\? \(selection: HubModelRunSelection\) => onRun\(selection, mediaPage\)/,
+    /\? \(selection: HubModelRunSelection\) =>\s*onRun\(selection, audioPage \? "audio" : mediaPage\)/,
   );
   assert.match(
     ggufCard,
@@ -329,12 +329,39 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   );
   assert.match(
     chatPage,
-    /setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
+    /setHandoffOwnsPicker\(true\);\s*setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
   );
   assert.match(
     chatPage,
     /open=\{active && modelConfigRequest === null && settingsOpen\}/,
   );
+  // On a first Chat mount the new composer's autofocus would dismiss the handed-off settings.
+  const thread = readFileSync(
+    path.join(FRONTEND_ROOT, "src/components/assistant-ui/thread.tsx"),
+    "utf8",
+  );
+  assert.match(
+    chatPage,
+    /<ChatComposerFocusableContext\.Provider\s*value=\{modelConfigRequest === null && !handoffOwnsPicker\}/,
+  );
+  // Released when the picker closes, or the composer would never autofocus again.
+  assert.match(
+    chatPage,
+    /if \(handoffOwnsPicker && !modelSelectorOpen\)\s*\{?\s*setHandoffOwnsPicker\(false\)/,
+  );
+  assert.match(
+    thread,
+    /const composerFocusable = useContext\(\s*ChatComposerFocusableContext,?\s*\);/,
+  );
+  assert.match(
+    thread,
+    // A layout effect, so the override is in place before the input's own autofocus effect.
+    /useLayoutEffect\(\(\) => \{\s*const input = inputRef\.current;\s*if \(composerFocusable \|\| !input\)\s*\{?\s*return;\s*\}?\s*input\.focus = \(\) => \{\};\s*return \(\) => \{\s*Reflect\.deleteProperty\(input, "focus"\);\s*\};\s*\}, \[composerFocusable, isDictating\]\);/,
+  );
+  // Neither gated autoFocus, which focuses the composer when the picker closes, nor inert, which
+  // blocks a press on it and reads as Chat being covered.
+  assert.match(thread, /autoFocus=\{!disabled\}/);
+  assert.doesNotMatch(thread, /inert=\{!composerFocusable\}/);
 });
 
 test("the shared model row menu no longer offers Hub model settings", () => {

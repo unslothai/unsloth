@@ -769,15 +769,17 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    # #7767 added the expander's abort signal to this call, so the options are an object
-    # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
         0
     ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
+    assert "localOnly," in call.group(0)
+    assert "loadPickerGgufVariants(" in picker
+    sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
+    assert sole and "localOnly: true," in sole.group(0)
+    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -799,8 +801,8 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
-    # Staged metadata, validate and load: all three read the copy that loads.
-    assert runtime.count("model_path: loadPath,") == 3
+    # Staged metadata, validate, the engine-switch revalidate and load all read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 4
     assert "model_path: modelId," not in runtime
     # A rollback reads the approval under the snapshot path, so store it under both keys.
     assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
@@ -1086,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
@@ -1123,14 +1125,19 @@ def test_blur_cache_cleared_on_every_settled_render():
 
 
 def test_auto_defaults_not_persisted_as_overrides():
-    """Auto GPU memory mode and Auto/default speculative type are follow-global
-    defaults; normalization must not persist them as per-model overrides, else a
-    model stops following later changes to the global preference."""
+    """Auto GPU memory mode and a GGUF model's Auto/default speculative type are
+    follow-global defaults; they must not persist as per-model overrides, else a
+    model stops following later changes to the global preference. An MLX model
+    keeps its explicit Auto, which beats a standing "off"."""
     src = _read("features/model-picker/model-config/per-model-config.ts")
     assert 'if (partial.gpuMemoryMode === "manual") {' in src
     assert 'partial.gpuMemoryMode === "auto" || partial.gpuMemoryMode === "manual"' not in src
     spec = re.search(r'if \(s === "auto" \|\| s === "default"\) \{\s*return ([^;]+);', src)
-    assert spec and spec.group(1).strip() == "null"
+    assert spec and spec.group(1).strip() == '"auto"'
+    fold = " ".join(src.split())
+    assert (
+        '!isMlx && config.speculativeType === "auto" ? { ...config, speculativeType: null }' in fold
+    )
 
 
 def test_compare_pane_context_from_own_config_only():
@@ -1333,7 +1340,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
-    assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
+    assert 'displayValue={isMlx && windowUnknown && !dragging ? "—" : undefined}' in page
     assert (
         "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
         "                npuServedWindow == null\n" in page
@@ -1344,7 +1351,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert re.search(r"const servedWindow = [^;]*Math\.floor\(value\)\n\s*: null;", page), page
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     # Typing the shown number is a choice even where it equals the value beneath it.
-    assert "derived={isMlx && !pinned}" in page
+    assert "derived={isMlx && !pinned && !dragging}" in page
     assert "pinned={savedContextPin(config) != null}" in page
     # Committing pins that exact number; one outside the control's range is no commit,
     # which is why the slider stays inside it too.
@@ -1352,7 +1359,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert re.search(r"shown && \(\(max[^{]+parsed < min\)+ \{\n\s+return null;", numeric)
     assert "const final = commitDraft(draftRef.current);\n          dirtyRef" in numeric
     assert "value={maxSeqLengthValue}\n              max={maxSeqLengthMax}" in page
-    assert "value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}" in page
+    assert re.search(
+        r"useSliderDraft\(\n(?:\s*//[^\n]*\n)*\s*Math\.min\(Math\.max\(value, MAX_SEQ_LENGTH_MIN\), max\),",
+        page,
+    )
     assert "const final = shown ? parsed : snapToStep(parsed, step, min, max);" in numeric
     assert re.search(
         r"MAX_SEQ_LENGTH_MAX,\s+Math\.max\(native\w+, maxSeqLengthValue\),\s+\);", page
@@ -1567,10 +1577,7 @@ def test_forget_settings_is_not_locked_by_unloadable_extra_args():
     """Forget only deletes, so invalid saved llama args must not lock it: the args gates
     apply to a save only."""
     gate = " ".join(_save_button_gate().split())
-    assert re.search(
-        r"\(remember && \((?:\([^()]*\) \|\| )?\(!extraArgsLoadable && !sharedExtraArgsCleared\) \|\|",
-        gate,
-    ), gate
+    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
     assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
 
 
@@ -2146,7 +2153,8 @@ def test_staged_downloads_use_one_actionable_download_surface():
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
     assert 'job.variant?.startsWith("@")' in panel
-    assert '"Model file" : "Required assets"' in panel
+    assert '"Model file"' in panel
+    assert "assetLabel(" in panel and '"Required assets"' in panel
 
 
 def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension():
@@ -2186,8 +2194,8 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     assert "{ checkpoint: job.checkpoint }" in state
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
-    suffix = re.search(r"function variantSuffix\(.*?\n\}", panel, re.S)
-    assert suffix, "variantSuffix not found"
+    suffix = re.search(r"function isRequiredAssetJob\(.*?\n\}", panel, re.S)
+    assert suffix, "isRequiredAssetJob not found"
     body = suffix.group(0)
     assert "job.checkpoint ??" in body, "the label ignores the flag the plan carried"
     # The .gguf guess may only survive as the fallback for jobs persisted before the flag.
@@ -2446,7 +2454,7 @@ def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert 'entry["n_parallel"] = n_parallel' in store
     # Ungated: MLX sizes its batch by the same width llama-server sizes its slots by.
-    shared, gguf_block = store.split("    if is_gguf:", 1)
+    shared, gguf_block = store.rsplit("    if is_gguf:", 1)
     assert '("n_parallel", "n_parallel"),' in shared
     assert "n_parallel" not in gguf_block.split("\n\n", 1)[0]
 
@@ -3249,10 +3257,15 @@ def test_backfill_splits_a_quant_suffix_the_way_the_backend_does():
 
 def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
-    Speculative Decoding "auto", which canonicalizes to null."""
+    Speculative Decoding "auto", which a GGUF model stores as null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     # Load and Save (#10216) both go through persistConfig.
-    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert (
+        "const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));"
+        in src
+    )
+    # Server hydration writes the same record, so a GGUF row's stored "auto" folds there too.
+    assert "storedSpeculativeAuto(rememberedConfig, !target.isGguf)" in src
     assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
     assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src

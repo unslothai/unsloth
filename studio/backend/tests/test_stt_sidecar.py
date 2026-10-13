@@ -368,6 +368,37 @@ def test_english_only_model_rejects_non_english_before_decode(monkeypatch, tmp_p
         )
 
 
+def test_translation_asks_whisper_for_its_translate_task(monkeypatch):
+    sidecar = WhisperSttSidecar()
+    infer = _CaptureInference()
+    monkeypatch.setattr(sidecar, "_transcribe_decoded", infer)
+
+    sidecar.transcribe(b"encoded audio", task = "translate")
+
+    assert infer.generate_kwargs["task"] == "translate"
+    assert "language" not in infer.generate_kwargs
+
+
+def test_english_only_model_refuses_to_translate_before_decode(monkeypatch, tmp_path):
+    # Its generation config pins the transcribe task, so the request would quietly transcribe.
+    (tmp_path / "config.json").write_text('{"model_type": "whisper"}')
+    (tmp_path / "generation_config.json").write_text('{"is_multilingual": false}')
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(
+        stt_sidecar_module,
+        "_find_complete_cached_snapshot",
+        lambda _model: tmp_path,
+    )
+    monkeypatch.setattr(
+        stt_sidecar_module,
+        "_decode_audio_bounded",
+        lambda *_: pytest.fail("an English-only translation must be refused before decode"),
+    )
+
+    with pytest.raises(SttLanguageError, match = "cannot translate"):
+        sidecar.transcribe(b"encoded audio", model = "owner/whisper-small.en", task = "translate")
+
+
 def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     calls = []
 
@@ -1911,6 +1942,8 @@ def test_download_status_is_idle_before_any_download():
     assert status == {
         "downloading": False,
         "model": None,
+        "download_id": None,
+        "completed_download_ids": [],
         "error": None,
         "cancelled": False,
         # Only set alongside cancelled: "model" goes None once the download thread stops, so

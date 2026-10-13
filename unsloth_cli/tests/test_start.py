@@ -783,6 +783,44 @@ def test_opencode_command_falls_back_to_v1(monkeypatch):
     assert start._opencode_command() == ("opencode", False)
 
 
+@pytest.mark.parametrize(
+    "version_output, v2",
+    [("opencode v2.0.27\n", True), ("1.19.0\n", False), (OSError("probe failed"), False)],
+)
+def test_opencode_command_detects_v2_installed_as_opencode(monkeypatch, version_output, v2):
+    # Arch's opencode package ships V2 as plain `opencode` (#13476).
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/bin/opencode" if name == "opencode" else None,
+    )
+
+    def check_output(argv, **_):
+        assert argv == ["/usr/bin/opencode", "--version"]
+        if isinstance(version_output, Exception):
+            raise version_output
+        return version_output
+
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+    assert start._opencode_command() == ("opencode", v2)
+
+
+def test_opencode_command_probes_real_v2_binary_named_opencode(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        (bin_dir / "opencode.cmd").write_text("@echo opencode v2.0.27\r\n")
+    else:
+        script = bin_dir / "opencode"
+        script.write_text("#!/bin/sh\necho opencode v2.0.27\n")
+        script.chmod(0o755)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert start._opencode_command() == ("opencode", True)
+
+
 def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
     install_dir = tmp_path / ".opencode" / "bin"
     install_dir.mkdir(parents = True)
@@ -1302,7 +1340,7 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
     assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh"])
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh", "vibe"])
 @pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
 def test_unsupported_agents_reject_as_subagent(agent, flag):
     result = CliRunner().invoke(start.start_app, [agent, flag])
@@ -1311,7 +1349,7 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
 
 
 @pytest.mark.parametrize(
-    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
@@ -1410,7 +1448,7 @@ def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
@@ -1431,7 +1469,7 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh", "vibe"])
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -3902,7 +3940,7 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
 
 
 @pytest.mark.parametrize(
-    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_start_agents_expose_gpu_memory_mode_option(command_name):
     import inspect
@@ -5417,6 +5455,63 @@ def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
     ]
 
 
+def test_write_openclaw_config_points_a_legacy_agent_list_at_openclaw_doctor(tmp_path, capsys):
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"agents": {"list": [{"id": "main"}]}}))
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    captured = capsys.readouterr()
+    # stderr, so the copy-paste launch recipe on stdout stays clean.
+    assert "legacy agents.list" in captured.err
+    assert "openclaw doctor --fix" in captured.err
+    assert "legacy agents.list" not in captured.out
+
+
+def test_openclaw_doctor_command_matches_the_shell(tmp_path):
+    path = tmp_path / "with space" / "openclaw.json"
+    posix = start._openclaw_doctor_command(path, windows = False)
+    assert posix.startswith("OPENCLAW_CONFIG_PATH=")
+    assert shlex.split(posix)[:2] == [
+        f"OPENCLAW_CONFIG_PATH={path}",
+        f"OPENCLAW_STATE_DIR={path.parent}",
+    ]
+    assert posix.endswith(" openclaw doctor --fix")
+    windows = start._openclaw_doctor_command(path, windows = True)
+    assert windows.startswith(f'$env:OPENCLAW_CONFIG_PATH = "{path}"; ')
+    assert f'$env:OPENCLAW_STATE_DIR = "{path.parent}"; openclaw doctor --fix' in windows
+    assert "OPENCLAW_CONFIG_PATH=" not in windows
+
+
+def test_write_openclaw_config_clears_per_agent_path_overrides_in_keyed_entries(tmp_path):
+    # OpenClaw 2026.10.1 moved agents.list to agents.entries keyed by agent id.
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "entries": {
+                        "main": {
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        "reviewer": {"workspace": "/old/reviewer-workspace"},
+                    },
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["entries"] == {"main": {"model": "keep/me"}, "reviewer": {}}
+    assert "list" not in agents
+
+
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "openclaw.json"
     path.write_text(
@@ -5959,6 +6054,17 @@ def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypa
     assert "enabled_providers" not in _opencode_inline_config(result.output)
     assert "disabled_providers" not in _opencode_inline_config(result.output)
     assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
+
+
+def test_connect_opencode_v2_named_opencode_launches_without_model_flag(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", True))
+    launched = []
+    monkeypatch.setattr(start, "_run", lambda *a, **k: launched.append(a[3]))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--yolo"])
+
+    assert result.exit_code == 0, result.output
+    assert launched == [["opencode", "--standalone", "--auto"]]
 
 
 def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(
@@ -6960,6 +7066,139 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     assert entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
     # dsh 0.1.7 imports a settings.yaml into the profile only after boot, so none is written.
     assert not (home / "settings.yaml").exists()
+
+
+# ── Vibe (Mistral, OpenAI-compatible /v1, settings and key via VIBE_* env) ──
+
+
+def _vibe_settings(env: dict) -> tuple:
+    return json.loads(env["VIBE_PROVIDERS"]), json.loads(env["VIBE_MODELS"])
+
+
+def test_vibe_env(tmp_path):
+    env = start._vibe_env(BASE, MODEL)
+    providers, models = _vibe_settings(env)
+    assert providers == [
+        {
+            "name": start._VIBE_PROVIDER,
+            "api_base": f"{BASE}/v1",
+            "api_key_env_var": start._VIBE_ENV_KEY,
+            "api_style": "openai",
+            "backend": "generic",
+        }
+    ]
+    assert models == [
+        {
+            "name": MODEL["id"],
+            "provider": start._VIBE_PROVIDER,
+            "alias": start._VIBE_MODEL_ALIAS,
+            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+        }
+    ]
+    assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
+    assert env["VIBE_ENABLE_TELEMETRY"] == "false"
+    # Only the served model is selectable, so a resumed cloud session cannot switch away.
+    assert json.loads(env["VIBE_ALLOWED_MODELS"]) == ["re:" + re.escape(MODEL["id"])]
+
+
+def test_vibe_env_carries_temperature_and_odd_model_ids():
+    model = {"id": 'C:\\models\\q"\U0001f600.gguf', "max_context_length": 32768}
+    _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
+    assert models[0]["name"] == model["id"]
+    assert models[0]["temperature"] == 0.7
+    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
+    assert set(models[0]) == {"name", "provider", "alias"}
+
+
+def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
+    _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
+    assert "VIBE_HOME" not in result.output
+    assert _launch_command(result.output) == ["vibe", "--auto-approve"]
+    # Vibe's own home (instructions, hooks, trust, agents) is used as is; nothing is written.
+    assert not (tmp_path / "agents" / "vibe").exists()
+
+
+def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
+    assert captured["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
+    # Vibe's tools run git/ssh/gh, which need the user's real HOME; ~/.vibe stays its home.
+    assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert "VIBE_HOME" not in captured["env"]
+    assert _vibe_settings(captured["env"])[1][0]["temperature"] == 0.6
+
+
+@pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.headers.get("Authorization"), body))
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    # Keep the real CLI's own state off the runner's ~/.vibe.
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
+    monkeypatch.chdir(tmp_path)
+    try:
+        result = CliRunner().invoke(
+            start.start_app,
+            ["vibe", "--yolo", "--temperature", "0.5", "--disabled-tools", "*", "-p", "Reply pong"],
+        )
+    finally:
+        server.shutdown()
+    assert result.exit_code == 0, result.output
+    assert requests, "vibe never called the Unsloth /v1 endpoint"
+    auth, body = requests[0]
+    assert auth == "Bearer sk-unsloth-e2e"
+    assert body["model"] == MODEL["id"]
+    assert body["temperature"] == 0.5
+
+
+@pytest.mark.parametrize(
+    ("argv", "status", "expected"),
+    [
+        ([], {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}}, 1.0),
+        (
+            ["--temperature", "0.3"],
+            {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}},
+            0.3,
+        ),
+        ([], {"model_identifier": "other/model", "inference": {"temperature": 1.0}}, None),
+        ([], {}, None),
+    ],
+)
+def test_vibe_sends_recommended_temperature(fake_studio, monkeypatch, argv, status, expected):
+    # Vibe always sends a temperature; without one in its model entry it sends 0.2.
+    monkeypatch.setattr(start, "_inference_status", lambda *args: status)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe", *argv])
+    assert json.loads(captured["env"]["VIBE_MODELS"])[0].get("temperature") == expected
+
+
+def test_vibe_install_hint_per_os(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    assert start._vibe_install_hint() == start._VIBE_WINDOWS_INSTALL_HINT
+    monkeypatch.setattr(start.os, "name", "posix")
+    assert start._vibe_install_hint() == start._VIBE_POSIX_INSTALL_HINT
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -10327,6 +10566,7 @@ def test_direct_gguf_labels_keep_packed_and_grouped_quants():
         ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
         ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
         ("Ternary-Bonsai-8B-Q2_0_g64.gguf", "Q2_0_g64"),
+        ("Ternary-Bonsai-27B-Q2_g64.gguf", "Q2_g64"),
         ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
     ):
         assert start._direct_gguf_variant_labels(name)[1] == label

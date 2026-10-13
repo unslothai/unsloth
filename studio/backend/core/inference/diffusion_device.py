@@ -88,6 +88,56 @@ def force_float32_rope(
     return changed
 
 
+# Downsample shortcuts that zero-pad only the frame axis in front, to a multiple of ``factor_t``.
+_FRAME_PAD_CLASSES = frozenset({"QwenImage21AvgDown3D", "AvgDown3D"})
+
+
+def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
+    x = args[0]
+    pad_t = -x.shape[2] % module.factor_t
+    if not pad_t:
+        return None
+    import torch
+
+    zeros = x.new_zeros((*x.shape[:2], pad_t, *x.shape[3:]))
+    return (torch.cat([zeros, x], dim = 2), *args[1:])
+
+
+def install_frame_pad_fix(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> int:
+    """Pad the VAE downsample shortcuts' frame axis by concatenation on Metal; returns the modules patched.
+
+    ``F.pad`` on MPS silently returns wrong data (all zeros for a front pad) for a 5-D tensor padded
+    on the frame axis alone once a frame holds 65536 values, i.e. from a 256x256 feature map up
+    (torch 2.10 through 2.14). The shortcuts pad a single frame exactly that way; prepending the zero
+    frames leaves their own pad empty.
+    """
+    if target.device != "mps":
+        return 0
+    patched = 0
+    for component in getattr(pipe, "components", {}).values() or ():
+        modules = getattr(component, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            if type(module).__name__ not in _FRAME_PAD_CLASSES:
+                continue
+            if getattr(module, "_unsloth_frame_pad_fix", False):
+                continue
+            module.register_forward_pre_hook(_prepend_zero_frames)
+            module._unsloth_frame_pad_fix = True
+            patched += 1
+    if patched and logger is not None:
+        logger.info(
+            "diffusion.vae_frame_pad: %d module(s) pad by concatenation (MPS pad defect)", patched
+        )
+    return patched
+
+
 # Fraction of the device's recommended working set above which a decode starts synchronising.
 DECODE_SYNC_FRACTION = 0.85
 
@@ -145,6 +195,130 @@ def install_decoder_sync(
     if logger is not None and budget is not None:
         logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
     return True
+
+
+VAE_BF16_DECODE_ENV = "UNSLOTH_VIDEO_VAE_BF16_DECODE"
+# RDNA3 / RDNA3.5 / RDNA4: bf16 WMMA. Measured on gfx1151 (Strix Halo); RDNA2 and older have no bf16 matrix path.
+_ROCM_BF16_DECODE_ARCH_PREFIXES = ("gfx11", "gfx12")
+
+
+def _rocm_bf16_decode_arch(torch: Any, target: DiffusionDeviceTarget) -> Optional[str]:
+    try:
+        index = target.ordinal if target.ordinal is not None else torch.cuda.current_device()
+        arch = str(getattr(torch.cuda.get_device_properties(index), "gcnArchName", "") or "")
+    except Exception:  # noqa: BLE001 -- unreadable arch: keep fp32
+        return None
+    return arch if arch.startswith(_ROCM_BF16_DECODE_ARCH_PREFIXES) else None
+
+
+def _as_float32(value: Any, torch: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.float() if value.is_floating_point() else value
+    if isinstance(value, tuple):
+        return tuple(_as_float32(v, torch) for v in value)
+    if isinstance(value, list):
+        return [_as_float32(v, torch) for v in value]
+    sample = getattr(value, "sample", None)
+    if isinstance(sample, torch.Tensor):
+        value.sample = _as_float32(sample, torch)
+    return value
+
+
+_VAE_BF16_OFF = ("0", "false", "off", "no")
+_VAE_BF16_FORCE = ("1", "true", "on", "yes")
+VAE_BF16_DECODE_MODES = ("weights", "autocast")
+
+
+def _vae_bf16_decode_request(gate: str) -> tuple[str, bool]:
+    """(mode, forced) for a non-off UNSLOTH_VIDEO_VAE_BF16_DECODE; unknown values cast weights, "1" also forces."""
+    if gate in VAE_BF16_DECODE_MODES:
+        return gate, False
+    return "weights", gate in _VAE_BF16_FORCE
+
+
+def _cast_float_args(torch: Any, dtype: Any) -> Any:
+    def _hook(module: Any, args: tuple) -> tuple:
+        return tuple(
+            a.to(dtype)
+            if isinstance(a, torch.Tensor) and a.is_floating_point() and a.dtype != dtype
+            else a
+            for a in args
+        )
+
+    return _hook
+
+
+def install_rocm_vae_bf16_decode(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> Optional[str]:
+    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm gfx11 / gfx12; returns the mode engaged, else None.
+
+    fp32 runs Wan's 3D convs as im2col plus a small-tile fp32 GEMM without matrix cores (~385 s of a 1280x704x21 clip on
+    gfx1151); ComfyUI decodes this VAE in bf16 on these cards. "weights" (default) casts only ``post_quant_conv`` +
+    ``decoder``, so ``vae.dtype`` and image-to-video encodes stay fp32; "autocast" keeps fp32 weights. Both return fp32.
+    UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also allows any bf16 CUDA device."""
+    gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
+    if gate in _VAE_BF16_OFF or target.device != "cuda":
+        return None
+    vae = getattr(pipe, "vae", None)
+    decode = getattr(vae, "decode", None)
+    if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
+        return None
+    # NVIDIA's fp16 decode (diffusion_speed) owns the decoder dtype and recasts it to fp32 on a non-finite output.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return None
+    import torch
+
+    if getattr(vae, "dtype", None) is not torch.float32:
+        return None
+    mode, forced = _vae_bf16_decode_request(gate)
+    if forced:
+        if not torch.cuda.is_bf16_supported():
+            return None
+        arch = "forced"
+    else:
+        if target.backend != "rocm":
+            return None
+        arch = _rocm_bf16_decode_arch(torch, target)
+        if arch is None:
+            return None
+
+    parts = [
+        m
+        for m in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None))
+        if isinstance(m, torch.nn.Module)
+    ]
+    if mode == "weights" and not parts:
+        mode = "autocast"  # no separable decode half: cast nothing
+
+    if mode == "weights":
+        for part in parts:
+            part.to(torch.bfloat16)
+            # A path that reaches the decoder without vae.decode (a custom tiled / untiled decode) still gets bf16.
+            part.register_forward_pre_hook(_cast_float_args(torch, torch.bfloat16))
+
+        def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(z, torch.Tensor) and z.is_floating_point():
+                z = z.to(torch.bfloat16)
+            return _as_float32(decode(z, *args, **kwargs), torch)
+
+    else:
+
+        def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
+            with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+                out = decode(*args, **kwargs)
+            return _as_float32(out, torch)
+
+    _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
+    _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
+    vae.decode = _bf16_decode
+    vae._unsloth_bf16_decode_mode = mode
+    if logger is not None:
+        logger.info("video.vae_decode: bf16 %s on %s", mode, arch)
+    return mode
 
 
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
@@ -393,6 +567,12 @@ def diffusion_device_target_from_torch_device(
     return _cpu_target(torch = None, dtype = dtype)
 
 
+def float64_device(device: Any) -> Any:
+    """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
+    target = diffusion_device_target_from_torch_device(str(device), None)
+    return device if target.supports_float64 else "cpu"
+
+
 def _cuda_or_rocm_target(
     torch: Any,
     *,
@@ -400,11 +580,11 @@ def _cuda_or_rocm_target(
     ordinal: Optional[int] = None,
 ) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy. It takes no device
-        # argument, so the selected card is asked by scoping the current device.
+        # is_bf16_supported() takes no device argument: scope the selected card current.
+        from .rocm_bf16 import rocm_bf16_supported
         try:
             with diffusion_device_scope(ordinal):
-                bf16_ok = bool(torch.cuda.is_bf16_supported())
+                bf16_ok = rocm_bf16_supported(torch, ordinal)
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16

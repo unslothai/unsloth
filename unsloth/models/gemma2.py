@@ -184,6 +184,8 @@ def Gemma2Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True.
@@ -206,7 +208,7 @@ def Gemma2Attention_fast_forward(
         if not hasattr(self, "_flash_attention_softmax_scale"):
             self._flash_attention_softmax_scale = 1.0 / (self.config.query_pre_attn_scalar**0.5)
 
-        use_varlen = seq_info is not None and past_key_value is None
+        use_varlen = seq_info is not None and not had_cache
 
         attention_config = AttentionConfig(
             backend = select_attention_backend(use_varlen),
@@ -568,7 +570,10 @@ def Gemma2Model_fast_forward_inference(
         SWA = None
         GA = None
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
@@ -617,6 +622,8 @@ def Gemma2Model_fast_forward_inference(
         )
         hidden_states += residual
 
+        if block_swap is not None:
+            block_swap.leave(idx)
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]

@@ -136,9 +136,11 @@ def CohereAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
-    use_varlen = seq_info is not None and past_key_value is None
+    use_varlen = seq_info is not None and not had_cache
     backend = select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
@@ -445,7 +447,10 @@ def CohereModel_fast_forward_inference(
         attention_mask = None
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         residual = hidden_states
@@ -465,6 +470,8 @@ def CohereModel_fast_forward_inference(
         residual += hidden_states_attention
         residual += hidden_states_mlp
         hidden_states = residual
+        if block_swap is not None:
+            block_swap.leave(idx)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_layernorm_inference(

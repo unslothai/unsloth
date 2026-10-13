@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { CustomReasoningConfig } from "../src/features/chat/custom-reasoning.ts";
 
 import { installLocalStorageFake, readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -16,10 +17,17 @@ const { requestParsesThinkTags } = await import(
   "../src/features/chat/utils/chat-generation-recovery.ts"
 );
 
+const { customReasoningRequestFields } = await import("../src/features/chat/custom-reasoning.ts");
+
 type Caps = ReturnType<typeof getExternalReasoningCapabilities>;
 
 // Runs the adapter's own external reasoning expressions, so the test follows the shipped code.
-function externalReasoningFields(caps: Caps, reasoningEnabled: boolean, effort = "high"): unknown {
+function externalReasoningFields(
+  caps: Caps,
+  reasoningEnabled: boolean,
+  effort = "high",
+  externalProvider?: { providerType: string; reasoningConfig?: CustomReasoningConfig },
+): unknown {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const enabledAt = adapter.indexOf("const externalReasoningEnabled =");
   const fieldsAt = adapter.indexOf("const externalReasoningFields", enabledAt);
@@ -31,9 +39,11 @@ function externalReasoningFields(caps: Caps, reasoningEnabled: boolean, effort =
     "reasoningEnabled",
     "selectedExternalEffort",
     "fallbackExternalEffort",
+    "externalProvider",
+    "customReasoningRequestFields",
     `const externalReasoningEnabled = ${enabled};\nreturn ${fields};`,
   );
-  return build(caps, reasoningEnabled, effort, "high");
+  return build(caps, reasoningEnabled, effort, "high", externalProvider, customReasoningRequestFields);
 }
 
 test("an always-on catalog model sends thinking on even when the chat stored it off", () => {
@@ -62,6 +72,22 @@ test("a toggleable catalog model still sends the stored choice", () => {
   assert.equal(qwen.supportsReasoningOff, true);
   assert.deepEqual(externalReasoningFields(qwen, false), { thinking: { type: "disabled" } });
   assert.deepEqual(externalReasoningFields(qwen, true), { thinking: { type: "enabled" } });
+});
+
+test("the shipped adapter sends Custom controls only for the selected connection's opt-in", () => {
+  for (const style of ["reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"] as const) {
+    const reasoningConfig = { enabled: true, style };
+    const custom = { providerType: "custom", reasoningConfig };
+    const caps = getExternalReasoningCapabilities("custom", "same-model", { reasoningConfig });
+    const effort = style === "reasoning_effort" || style === "reasoning";
+    assert.deepEqual(externalReasoningFields(caps, true, "low", custom),
+      effort ? { reasoning_effort: "low" } : { thinking: { type: "enabled" } });
+    assert.deepEqual(externalReasoningFields(caps, false, "high", custom),
+      effort ? { reasoning_effort: "none" } : { thinking: { type: "disabled" } });
+    const disabled = { providerType: "custom", reasoningConfig: { ...reasoningConfig, enabled: false } };
+    assert.deepEqual(externalReasoningFields(caps, true, "high", disabled), {});
+    assert.deepEqual(externalReasoningFields(caps, true, "high", { providerType: "custom" }), {});
+  }
 });
 
 test("an external effort of none reads as thinking off", () => {

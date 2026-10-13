@@ -671,6 +671,7 @@ export async function getStoredChatThreadReadResult(
       bounded: options.bounded,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
+      share: true,
     });
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
@@ -850,7 +851,7 @@ export async function readStoredChatMessages(
     [] as MessageRecord[],
   );
   const [backendThread, backendMessages] = await Promise.all([
-    getChatThread(threadId).catch(() => undefined),
+    getChatThread(threadId, { share: true }).catch(() => undefined),
     listChatMessages(threadId).catch((error) => {
       if (legacyMessages.length > 0) {
         return undefined;
@@ -974,8 +975,12 @@ export async function listStoredChatThreadsWithMessages(
 ): Promise<ThreadRecord[]> {
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
-  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
+  const counts = await countStoredChatMessages(threadIds).catch(() => null);
+  if (counts !== null) {
+    return threads.filter((thread) => (counts.get(thread.id) ?? 0) > 0);
+  }
+  // Per-thread Dexie fallback only when the batch is empty.
   let backendByThread: Map<string, MessageRecord[]>;
   try {
     backendByThread = await batchListChatMessages(threadIds);

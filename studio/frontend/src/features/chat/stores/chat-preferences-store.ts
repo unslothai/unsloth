@@ -26,8 +26,9 @@ import {
 // expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
-// showInlineReadAloud / showInlineEditResponse: on keeps that action in each response's action bar
-// instead of its More menu.
+// showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
+// More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
+// window is hidden or unfocused.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -45,8 +46,6 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
-  showInlineReadAloud: boolean;
-  setShowInlineReadAloud: (value: boolean) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -61,6 +60,8 @@ export interface ChatPreferencesState {
   setAutoScrollWhileGenerating: (value: boolean) => void;
   showScrollToBottomButton: boolean;
   setShowScrollToBottomButton: (value: boolean) => void;
+  notifyWhenReplyFinishes: boolean;
+  setNotifyWhenReplyFinishes: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -93,9 +94,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      showInlineReadAloud: false,
-      setShowInlineReadAloud: (showInlineReadAloud) =>
-        set({ showInlineReadAloud }),
       showInlineEditResponse: false,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -117,6 +115,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showScrollToBottomButton: true,
       setShowScrollToBottomButton: (showScrollToBottomButton) =>
         set({ showScrollToBottomButton }),
+      // Off by default: it asks for notification permission, so it stays opt in.
+      notifyWhenReplyFinishes: false,
+      setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
+        set({ notifyWhenReplyFinishes }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -136,7 +138,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
-          showInlineReadAloud: saved?.showInlineReadAloud ?? false,
           showInlineEditResponse: saved?.showInlineEditResponse ?? false,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
@@ -155,6 +156,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           ),
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           showScrollToBottomButton: saved?.showScrollToBottomButton ?? true,
+          notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
         };
       },
     },

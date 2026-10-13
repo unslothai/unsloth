@@ -8,17 +8,27 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from .family_profile import profile_table as _profile_table
+
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled fp16 decode peak per latent pixel (h x w), measured on a B200; frame count does not enter (Wan's causal cache
-# decodes one latent frame at a time). Scaled by the decoder's element size: fp32 peaked at 21.1 GiB vs fp16 9.6 GiB.
+# Untiled decode peak models per family (``FamilyProfile.untiled_vae`` on the video registry, measured on a B200; the
+# reasoning sits next to the data). Per latent pixel (h x w) + the (spatial, temporal) RGB output for a causal decoder
+# (Wan), or per output frame x latent pixel + the temporal scale for a decoder holding every frame (LTX-2 / 2.3 / 2.5).
+_UNTILED = _profile_table("untiled_vae")
 _BYTES_PER_LATENT_PIXEL = {
-    "wan2.2-ti2v-5b": 2.5 * 2**20,
+    name: m.bytes_per_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_latent_pixel is not None
 }
-# (spatial, temporal) upsampling to the RGB output, which Wan's decode holds about twice (per-frame torch.cat, then
-# clamp) and which grows with frames: 1021 frames at 1280x704 is 5.2 GiB per fp16 copy.
-_OUTPUT_SCALE = {
-    "wan2.2-ti2v-5b": (16, 4),
+_OUTPUT_SCALE = {name: m.output_scale for name, m in _UNTILED.items() if m.output_scale is not None}
+_BYTES_PER_FRAME_LATENT_PIXEL = {
+    name: m.bytes_per_frame_latent_pixel
+    for name, m in _UNTILED.items()
+    if m.bytes_per_frame_latent_pixel is not None
+}
+_TEMPORAL_SCALE = {
+    name: m.temporal_scale for name, m in _UNTILED.items() if m.temporal_scale is not None
 }
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30
@@ -34,11 +44,17 @@ def untiled_decode_bytes(
     itemsize: int = 2,
 ) -> Optional[int]:
     """Extra bytes of an untiled decode of ``latent_shape`` (B, C, T, h, w), or None if unmeasured."""
-    coef = _BYTES_PER_LATENT_PIXEL.get(family)
-    if coef is None or len(latent_shape) != 5:
+    if len(latent_shape) != 5:
         return None
     batch, _, latent_frames, height, width = (int(x) for x in latent_shape)
     batch, itemsize = max(1, batch), max(2, itemsize)
+    per_frame = _BYTES_PER_FRAME_LATENT_PIXEL.get(family)
+    if per_frame is not None:
+        frames = (max(1, latent_frames) - 1) * _TEMPORAL_SCALE[family] + 1
+        return int(per_frame * itemsize / 2 * batch * frames * height * width)
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None:
+        return None
     spatial, temporal = _OUTPUT_SCALE[family]
     frames = (max(1, latent_frames) - 1) * temporal + 1
     output = 2 * batch * 3 * frames * height * spatial * width * spatial * itemsize
@@ -79,7 +95,9 @@ def install_untiled_decode(
     decode = getattr(vae, "decode", None)
     if not _enabled() or vae is None or not callable(decode):
         return False
-    if family not in _BYTES_PER_LATENT_PIXEL or not getattr(vae, "use_tiling", False):
+    if (
+        family not in _BYTES_PER_LATENT_PIXEL and family not in _BYTES_PER_FRAME_LATENT_PIXEL
+    ) or not getattr(vae, "use_tiling", False):
         return False
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True

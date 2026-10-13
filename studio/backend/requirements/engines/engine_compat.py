@@ -9,6 +9,9 @@ so the engine's own dependency graph decides, not the lock's exact pin. The lock
 Studio's choices and are left out. Run after `uv pip compile`:
 
     python studio/backend/requirements/engines/engine_compat.py vllm-linux-cu130-torch213
+
+Packages a lock takes from its engine's own index (TARGETS) are priced from that index; their
+requirements are not read, since such a lock is always an isolated environment.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import hashlib
 import json
 import re
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -24,15 +28,28 @@ from packaging.markers import default_environment
 from packaging.requirements import Requirement
 
 HERE = Path(__file__).resolve().parent
-ENVIRONMENT = {
-    **default_environment(),
-    "implementation_name": "cpython",
-    "platform_machine": "x86_64",
-    "platform_system": "Linux",
-    "python_full_version": "3.13.0",
-    "python_version": "3.13",
-    "sys_platform": "linux",
+# Interpreter, newest manylinux glibc minor and extra index of the locks that differ from the default.
+# Kept equal to the profile in core/inference/engine_install.py (this script imports nothing of Studio's).
+TARGETS = {
+    "vllm-linux-rocm723": {
+        "python": (3, 12),
+        "glibc": 39,
+        "index": "https://wheels.vllm.ai/rocm/0.30.0/rocm723/",
+    },
 }
+DEFAULT_TARGET = {"python": (3, 13), "glibc": 34, "index": None}
+
+
+def environment(python: tuple[int, int]) -> dict:
+    return {
+        **default_environment(),
+        "implementation_name": "cpython",
+        "platform_machine": "x86_64",
+        "platform_system": "Linux",
+        "python_full_version": "{}.{}.0".format(*python),
+        "python_version": "{}.{}".format(*python),
+        "sys_platform": "linux",
+    }
 
 
 def normalize(name: str) -> str:
@@ -65,11 +82,34 @@ def hashes(lock: Path) -> dict[str, set[str]]:
     return found
 
 
-def wheel_size(files: list[dict], allowed: set[str]) -> int | None:
+def index_files(index: str, name: str, version: str) -> list[dict]:
+    """The wheels an extra index lists for one locked version, in PyPI's JSON shape. These indexes
+    publish no digests, so every such wheel is offered and the tag ranking picks the one installed."""
+    page = urllib.parse.urljoin(index, name + "/")
+    with urllib.request.urlopen(page, timeout = 60) as r:
+        hrefs = re.findall(r'href="([^"]+)"', r.read().decode("utf-8"))
+    files = []
+    for href in hrefs:
+        url = urllib.parse.urljoin(page, href.split("#", 1)[0])
+        if f"-{version}-" not in urllib.parse.unquote(url.rsplit("/", 1)[1]).replace("_", "-"):
+            continue
+        with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 60) as r:
+            size = int(r.headers["Content-Length"])
+        filename = urllib.parse.unquote(url.rsplit("/", 1)[1])
+        files.append({"filename": filename, "size": size, "digests": {"sha256": None}})
+    return files
+
+
+def wheel_size(
+    files: list[dict],
+    allowed: set[str] | None,
+    python: tuple[int, int] = (3, 13),
+    glibc: int = 34,
+) -> int | None:
     from packaging.tags import cpython_tags, compatible_tags
     from packaging.utils import parse_wheel_filename
 
-    platforms = [f"manylinux_2_{minor}_x86_64" for minor in range(34, 4, -1)]
+    platforms = [f"manylinux_2_{minor}_x86_64" for minor in range(glibc, 4, -1)]
     platforms += [
         "manylinux2014_x86_64",
         "manylinux2010_x86_64",
@@ -80,14 +120,16 @@ def wheel_size(files: list[dict], allowed: set[str]) -> int | None:
         tag: rank
         for rank, tag in enumerate(
             [
-                *cpython_tags((3, 13), platforms = platforms),
-                *compatible_tags((3, 13), "cp313", platforms),
+                *cpython_tags(python, platforms = platforms),
+                *compatible_tags(python, "cp{}{}".format(*python), platforms),
             ]
         )
     }
     best = None
     for item in files:
-        if item["digests"]["sha256"] not in allowed or not item["filename"].endswith(".whl"):
+        if (allowed is not None and item["digests"]["sha256"] not in allowed) or not item[
+            "filename"
+        ].endswith(".whl"):
             continue
         ranks = [order[t] for t in parse_wheel_filename(item["filename"])[3] if t in order]
         if ranks and (best is None or min(ranks) < best[0]):
@@ -96,17 +138,33 @@ def wheel_size(files: list[dict], allowed: set[str]) -> int | None:
 
 
 def build(stem: str) -> dict:
+    target = TARGETS.get(stem, DEFAULT_TARGET)
     lock = HERE / f"{stem}.txt"
     pins = locked(lock)
     allowed = hashes(lock)
-    releases = {name: release(name, v) for name, v in pins.items()}
+    extra = {}
+    if target["index"]:
+        with urllib.request.urlopen(target["index"], timeout = 60) as r:
+            listed = {
+                normalize(n) for n in re.findall(r'href="([^"/]+)/"', r.read().decode("utf-8"))
+            }
+        extra = {
+            name: index_files(target["index"], name, version)
+            for name, version in pins.items()
+            if name in listed
+        }
+    releases = {name: release(name, v) for name, v in pins.items() if name not in extra}
     metadata = {
         name: [Requirement(r) for r in data["info"]["requires_dist"] or []]
         for name, data in releases.items()
     }
     sizes = {
-        name: wheel_size(data["urls"], allowed.get(name, set())) for name, data in releases.items()
+        name: wheel_size(data["urls"], allowed.get(name, set()), target["python"], target["glibc"])
+        for name, data in releases.items()
     }
+    for name, files in extra.items():
+        sizes[name] = wheel_size(files, None, target["python"], target["glibc"])
+    markers = environment(target["python"])
     extras: dict[str, set[str]] = {name: {""} for name in pins}
     requires: dict[str, set[str]] = {}
     changed = True
@@ -116,7 +174,7 @@ def build(stem: str) -> dict:
             for req in reqs:
                 target = normalize(req.name)
                 if target not in pins or not any(
-                    req.marker is None or req.marker.evaluate({**ENVIRONMENT, "extra": extra})
+                    req.marker is None or req.marker.evaluate({**markers, "extra": extra})
                     for extra in extras[name]
                 ):
                     continue
@@ -129,7 +187,7 @@ def build(stem: str) -> dict:
     return {
         "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
         "requires": {name: sorted(specs) for name, specs in sorted(requires.items())},
-        # Bytes of the wheel installed on CPython 3.13 manylinux x86_64; null when only an sdist fits.
+        # Bytes of the wheel installed on the lock's CPython, manylinux x86_64; null when only an sdist fits.
         "sizes": dict(sorted(sizes.items())),
     }
 

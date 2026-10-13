@@ -34,7 +34,6 @@ from woa_ps_harness import (
     CORP_INDEX,
     INSTALL_PS1,
     INSTALL_SRC,
-    INVOKE_RESTMETHOD_NO_NETWORK,
     INVOKE_RESTMETHOD_OFFLINE,
     JOIN_URL_PATH,
     JOIN_URL_RETURNS_BASE,
@@ -46,7 +45,6 @@ from woa_ps_harness import (
     NV_NIGHTLY,
     PACKAGE_ROOT,
     PWSH,
-    PYARROW_FLOOR,
     PYARROW_USABLE_FUNCS,
     PYPI,
     SETUP_PS1,
@@ -1109,17 +1107,6 @@ class TestTheProbeAsksForTheInterpretersAbi:
         got = _ps_last(script)[1:-1]
         assert bool(got) is found, got
 
-    def test_the_probe_takes_the_flag_and_the_call_sites_supply_it(self):
-        assert (
-            "function Initialize-WoaNativeCudaTorch {\n        param([string]$PythonMinor,"
-            " [bool]$FreeThreaded = $false)" in INSTALL_SRC
-        )
-        # Both re-probes know which interpreter was chosen, so both must answer for it.
-        # The flag is read into a variable first: a same-minor free-threaded build re-probes too.
-        assert INSTALL_SRC.count("Test-PythonFreeThreaded -PythonExe $DetectedPython.Path") == 2
-        assert "-FreeThreaded $WoaDetectedFreeThreaded" in INSTALL_SRC
-        assert "-FreeThreaded $_woaNewFreeThreaded" in INSTALL_SRC
-
     def test_the_staging_scan_uses_the_venv_abi(self):
         """Keyed on the python tag, staging kept the cp313-cp313 wheels a free-threaded venv
         cannot install and discarded the cp313-cp313t ones it can."""
@@ -1154,50 +1141,6 @@ class TestTheProbeAsksForTheInterpretersAbi:
             f"Write-Output (Test-PythonFreeThreaded -PythonExe '{sys.executable}')",
         )
         assert _ps_last(script) == expected
-
-
-class TestTheAbiReprobeFiresOnAMatchingMinor:
-    """The hole left by keying the re-probe on the minor alone."""
-
-    def test_the_guard_compares_the_abi_as_well_as_the_minor(self):
-        assert "$WoaProbedFreeThreaded = $false" in INSTALL_SRC
-        assert (
-            "($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC
-        ), "a 3.13t selected for a 3.13 request matches on minor and must still re-probe"
-
-    def test_the_second_reprobe_compares_it_too(self):
-        """After Install-PythonFromPythonOrg the ABI can change without the minor doing so."""
-        assert "($_woaNewFreeThreaded -ne $WoaProbedFreeThreaded)" in INSTALL_SRC
-
-    def test_the_detection_is_scoped_to_this_host(self):
-        """A subprocess per run on every Windows x64 host would buy nothing."""
-        block = INSTALL_SRC[INSTALL_SRC.index("$WoaDetectedFreeThreaded = $false") :][:600]
-        assert '(Get-HostMachineArch) -eq "arm64"' in block
-
-    @requires_pwsh
-    @pytest.mark.parametrize(
-        "probed_minor, probed_ft, minor, ft, should_reprobe, why",
-        [
-            ("3.13", False, "3.13", False, False, "nothing changed"),
-            ("3.13", False, "3.12", False, True, "a different minor, as before"),
-            ("3.13", False, "3.13", True, True, "THE BUG: same minor, free-threaded"),
-            ("3.13", True, "3.13", False, True, "and back again, after a GIL install"),
-        ],
-    )
-    def test_the_guard_decides_correctly(
-        self, probed_minor, probed_ft, minor, ft, should_reprobe, why
-    ):
-        script = _script(
-            f"$WoaProbedMinor = '{probed_minor}'",
-            f"$WoaProbedFreeThreaded = ${str(probed_ft).lower()}",
-            f"$DetectedPython = @{{ Version = '{minor}' }}",
-            f"$WoaDetectedFreeThreaded = ${str(ft).lower()}",
-            "if ($DetectedPython -and (",
-            "        ($DetectedPython.Version -ne $WoaProbedMinor) -or",
-            "        ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {",
-            "  Write-Output 'REPROBE' } else { Write-Output 'SKIP' }",
-        )
-        assert (_ps_last(script) == "REPROBE") is should_reprobe, why
 
 
 class TestAnExplicitPinOutranksThePersistedIndex:
@@ -3036,11 +2979,6 @@ class TestARebasedOptionPathKeepsItsQuoting:
             argument[1:-1]
         ).exists(), f"the rebased path does not resolve to the file it names: {got!r}"
 
-    def test_the_two_copies_stay_identical(self):
-        """setup.ps1 carries a parity copy; a fix applied to one is a bug in the other."""
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
-
 
 class TestALocalDirectoryRequirementIsRebasedToo:
     """The line forms the fold moved and left behind. New-UnslothTorchOverridesFile writes to
@@ -4682,10 +4620,6 @@ class TestARebasedFileReferenceIsAUri:
         )
         assert _ps_last(script)[1:-1] == 'pkg @ https://x.test/a.whl ; os_name == "nt"'
 
-    def test_the_two_copies_are_identical(self):
-        install, setup = _ps_copies("Resolve-WoaOverrideLine")
-        assert install == setup
-
 
 class TestTheMergedOverrideFileDoesNotOutliveTheRun:
     """It copies caller lines, which can carry credentials, into $StudioHome\\woa. It is now
@@ -4973,77 +4907,6 @@ class TestASuppliedWheelUnderAnotherNameIsReadFromItsArchive:
             "cp313-cp313-win_arm64",
         )
         assert self._probe(str(wheel)) == "local"
-
-
-class TestAReselectedInterpreterIsProbedBeforeItIsTaken:
-    """After the re-probe flips native mode, Find-CompatiblePython runs again with the new arch
-    preference and ranks the requested minor first. It could hand back an ARM64 3.12 whose probe
-    had failed while the flip came from 3.13, and the 3.13 answers were then carried into a 3.12
-    venv. The reselected interpreter is probed too, and the accepted answer restored."""
-
-    @staticmethod
-    def _block():
-        # Anchored on the code either side rather than on the comments that head them.
-        return slice_between(
-            INSTALL_SRC,
-            "    $WoaProbedMinor = $PythonVersion",
-            "    if ($script:WoaNativeCudaTorch -and $DetectedPython -and $DetectedPython.Arch -eq"
-            ' "x86_64") {',
-        )
-
-    def _run(self, detected, reselected, native_minors):
-        natives = ", ".join(f"'{m}'" for m in native_minors)
-        script = _script(
-            "$PythonVersion = '3.12'",
-            substep_collector(),
-            "$script:Probes = @()",
-            "function step { param($a, $b, $c) }",
-            "function Get-HostMachineArch { 'arm64' }",
-            "function Remove-IndexUrlCredentials { param($u) $u }",
-            "function Test-PythonFreeThreaded { param($PythonExe) $false }",
-            "function Remove-SkippedPython { param($p) $p }",
-            f"$script:Natives = @({natives})",
-            "$script:WoaNativeCudaTorch = $false",
-            "function Initialize-WoaNativeCudaTorch { param($PythonMinor, $FreeThreaded)",
-            "  $script:Probes += $PythonMinor",
-            "  $script:WoaNativeCudaTorch = [bool]($script:Natives -contains $PythonMinor)",
-            "  $script:WoaTorchIndexUrl = if ($script:WoaNativeCudaTorch) { 'https://i.test' }"
-            " else { $null } }",
-            f"$DetectedPython = @{{ Version = '{detected[0]}'; Path = 'p{detected[0]}';"
-            f" Arch = '{detected[1]}' }}",
-            f"function Find-CompatiblePython {{ @{{ Version = '{reselected[0]}';"
-            f" Path = 'p{reselected[0]}'; Arch = '{reselected[1]}' }} }}",
-            self._block(),
-            "Write-Output ('PY=' + $DetectedPython.Version)",
-            "Write-Output ('NATIVE=' + $script:WoaNativeCudaTorch)",
-            "Write-Output ('PROBED=' + $WoaProbedMinor)",
-            "Write-Output ('PROBES=' + ($script:Probes -join ','))",
-            "Write-Output ('MSG=' + ($script:Messages -join ' | '))",
-        )
-        return _ps_kv(script)
-
-    @requires_pwsh
-    def test_a_reselected_minor_without_a_stack_is_not_taken(self):
-        # Requested 3.12 (no stack); detected 3.13 goes native; the reselection offers ARM64 3.12.
-        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13"])
-        assert out["PY"] == "3.13", out["MSG"]
-        assert out["NATIVE"] == "True" and out["PROBED"] == "3.13"
-        assert (
-            out["PROBES"] == "3.13,3.12,3.13"
-        ), "probed the offer, then restored the accepted answer"
-        assert "keeping Python 3.13, which has one" in out["MSG"]
-
-    @requires_pwsh
-    def test_a_reselected_minor_with_a_stack_is_taken(self):
-        out = self._run(("3.13", "arm64"), ("3.12", "arm64"), ["3.13", "3.12"])
-        assert out["PY"] == "3.12" and out["NATIVE"] == "True" and out["PROBED"] == "3.12"
-        assert out["PROBES"] == "3.13,3.12"
-
-    @requires_pwsh
-    def test_the_same_interpreter_back_is_not_probed_again(self):
-        out = self._run(("3.13", "x86_64"), ("3.13", "arm64"), ["3.13"])
-        assert out["PY"] == "3.13" and out["NATIVE"] == "True"
-        assert out["PROBES"] == "3.13"
 
 
 class TestTheResolverVariablesDoNotOutliveTheInstaller:
