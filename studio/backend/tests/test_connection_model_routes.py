@@ -321,6 +321,28 @@ def test_responses_reports_the_connection_failure(v1, monkeypatch):
     assert "API key expired." in resp.text
 
 
+def test_responses_tells_codex_a_connection_is_rate_limited(v1, monkeypatch):
+    class Limited(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield 'data: {"error": {"message": "Quota exceeded.", "code": "429"}}'
+
+            return gen()
+
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Limited)
+    body = {"model": CONNECTION_MODEL, "input": "ping", "stream": True}
+    events = _sse(v1.post("/v1/responses", json = body).text)
+    assert events[-1]["response"]["error"] == {
+        "code": "rate_limit_exceeded",
+        "message": "Quota exceeded.",
+    }
+
+    resp = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping"})
+    assert resp.status_code == 429
+
+
 def test_count_tokens_cannot_serve_a_connection_model(v1):
     resp = v1.post("/v1/messages/count_tokens", json = _messages_body())
 

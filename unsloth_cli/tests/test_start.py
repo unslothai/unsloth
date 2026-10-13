@@ -6127,6 +6127,20 @@ def test_a_user_supplied_key_is_warned_it_carries_no_connection_key(fake_studio)
     )
 
 
+def test_a_remembered_user_key_gives_way_to_the_minted_key_for_a_connection(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    first = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--api-key", "sk-unsloth-mine"]
+    )
+    assert first.exit_code == 0, first.output
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "saved API key" not in result.output
+    assert "sk-unsloth-mine" not in result.output
+
+
 def test_claude_subagent_runs_on_a_connection_model(fake_studio, tmp_path):
     fake_studio.state["providers"] = [GEMINI_CONNECTION]
     result = CliRunner().invoke(

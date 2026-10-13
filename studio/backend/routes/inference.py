@@ -39423,6 +39423,9 @@ async def _responses_stream(
                         failed = _failed_response_payload(RuntimeError(error_message))
                         if upstream is not None:
                             failed["response"]["error"]["message"] = error_message
+                            error = chunk_data.get("error")
+                            if isinstance(error, dict) and str(error.get("code")) == "429":
+                                failed["response"]["error"]["code"] = "rate_limit_exceeded"
                         yield _sse("response.failed", failed)
                         return
                     _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
@@ -40041,7 +40044,8 @@ async def _responses_from_stream(response: StreamingResponse, payload: Responses
     if terminal is None or terminal["status"] == "failed":
         error = (terminal or {}).get("error") or {}
         raise HTTPException(
-            status_code = 502, detail = error.get("message") or "The connection failed."
+            status_code = 429 if error.get("code") == "rate_limit_exceeded" else 502,
+            detail = error.get("message") or "The connection failed.",
         )
     terminal.update(
         temperature = payload.temperature,

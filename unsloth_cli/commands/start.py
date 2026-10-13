@@ -1781,6 +1781,7 @@ def _agent_api_key(
     explicit: Optional[str],
     *,
     auto_started: bool = False,
+    minted_only: bool = False,
 ) -> str:
     cache = _key_cache_path()
     if explicit:
@@ -1790,7 +1791,7 @@ def _agent_api_key(
         # The server was auto-started for this run, so an exported UNSLOTH_API_KEY meant for some other server must not fail the launch: the loopback mint path below is guaranteed to work. An explicit key the fresh server accepts is still honored above.
 
     # Replay a key the user saved for THIS EXACT server first (scoped per base, so it only goes back there, including a remote or SSH-tunnelled Unsloth whose secret the local handshake cannot match). Skip ones the server rejects.
-    for key in _cached_keys(cache, base, "saved"):
+    for key in [] if minted_only else _cached_keys(cache, base, "saved"):
         if _key_accepted(base, key):
             _remember_key(cache, base, key, "saved")
             return key
@@ -4464,6 +4465,13 @@ def _connect(
                     "`unsloth start codex` and `unsloth start opencode`."
                 )
             typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
+            if (
+                key not in _cached_keys(_key_cache_path(), base, "minted")
+                and not api_key
+                and is_loopback_url(base)
+                and verify_studio_identity(base)
+            ):
+                key = _agent_api_key(base, None, minted_only = True)
             if key not in _cached_keys(_key_cache_path(), base, "minted"):
                 typer.echo(
                     "Warning: Studio only sends a Connection's saved API key for the key "
