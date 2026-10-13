@@ -948,9 +948,6 @@ def test_transformer_2_counts_only_for_moe(tmp_path):
     assert dcs.video_header_terms(_fam("wan2.2-t2v-a14b"), sizes)[0] == pytest.approx(4.0)
 
 
-# ---- review round 4 ----
-
-
 def test_pytorch_model_stem_and_its_index_are_recognised(tmp_path):
     t = tmp_path / "transformer"
     for i in (1, 2):
@@ -1106,9 +1103,6 @@ def test_sub_byte_floats_count_parameters_by_bit_width(tmp_path):
     assert dcs.FLOAT_BITS["F4"] == 4 and dcs.FLOAT_BITS["F6_E2M3"] == dcs.FLOAT_BITS["F6_E3M2"] == 6
 
 
-# ---- review round 5 ----
-
-
 def test_unresolved_ref_probes_the_hub_and_falls_back_to_local(tmp_path, monkeypatch):
     fam = _fam("wan2.2-ti2v-5b")
     snap = tmp_path / ("a" * 40)
@@ -1175,9 +1169,6 @@ def test_same_stem_order_follows_the_loader(tmp_path):
     # transformers folder: the unsharded file first; diffusers folder: the index first
     assert sizes.get("text_encoder").files == ("model.safetensors",)
     assert sizes.get("transformer").files == ("diffusion_pytorch_model-00001-of-00001.safetensors",)
-
-
-# ---- review round 6 ----
 
 
 def test_hub_skips_folders_the_manifest_does_not_load(monkeypatch):
@@ -1291,9 +1282,6 @@ def test_local_index_read_is_capped(tmp_path, monkeypatch):
     assert sizes is None and "diffusion_pytorch_model.safetensors.index.json" not in reads
 
 
-# ---- review round 7 ----
-
-
 def test_snapshot_missing_a_loaded_role_is_incomplete(tmp_path, monkeypatch):
     import shutil
 
@@ -1348,9 +1336,6 @@ def test_index_fetch_is_bounded_by_the_deadline_while_a_peer_trickles():
     assert _time.monotonic() - start < 5  # the whole fetch, not one 30 s read
     assert resp.closed  # interrupted (no urllib3 raw here, so closed)
     release.set()
-
-
-# ---- review round 8 ----
 
 
 def test_ltx_bundled_connector_tensors_leave_the_denoiser_term(tmp_path):
@@ -1442,9 +1427,6 @@ def test_moe_second_expert_is_optional_unless_shipped(tmp_path):
     assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[
         0
     ] == pytest.approx(28.6)
-
-
-# ---- review round 9 ----
 
 
 def test_partial_term_keeps_its_known_sum_as_a_lower_bound(tmp_path, monkeypatch):
@@ -1580,9 +1562,6 @@ def test_calibration_key_carries_the_revision():
     assert a != vsr.calibration_key("ltx-2", "r", "group", "cuda:0", revision = "b" * 40)
 
 
-# ---- review round 10 ----
-
-
 def test_manifest_predicate_matches_the_loader(tmp_path):
     import inspect
 
@@ -1672,9 +1651,6 @@ def test_retagged_peak_is_recorded_under_the_mode_that_ran(monkeypatch):
     ran = vsr.with_extra(predicted, "transformer_cache", None)
     assert vsr.measured_extra_mib(ran, 64) == 500
     assert vsr.measured_extra_mib(predicted, 64) is None
-
-
-# ---- review round 11 ----
 
 
 def test_pre_download_plan_threads_the_dev_flag():

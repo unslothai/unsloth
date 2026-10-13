@@ -144,6 +144,13 @@ class GgufVariantsResponse(BaseModel):
         None,
         description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
+    variant_format: Optional[str] = Field(
+        None,
+        description = (
+            "'mlx' when the variants are precision folders of an MLX repo rather than GGUF "
+            "quants; None for GGUF"
+        ),
+    )
 
 
 class LocalModelCapabilities(BaseModel):
@@ -329,6 +336,7 @@ class CachedGgufRepo(CachedRepoBase):
             "watching for on-disk change need this to notice it."
         ),
     )
+    umbrella_folder: bool = False
 
 
 class CachedGgufResponse(BaseModel):

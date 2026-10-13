@@ -312,6 +312,76 @@ def _first_mainline_loadable(names: list[str]) -> Optional[str]:
     return next(iter(loadable or names), None)
 
 
+def _repo_id_of(name: object) -> Optional[str]:
+    """*name* as an ``org/repo`` id when it reads as one: a repo id, or an HF cache ``models--org--repo`` folder."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    text = name.strip().rstrip("/\\")
+    for segment in reversed(re.split(r"[/\\]", text)):
+        if segment.startswith("models--"):
+            parts = segment[len("models--") :].split("--", 1)
+            return "/".join(parts) if len(parts) == 2 and all(parts) else None
+    return text
+
+
+def _repo_id_candidates(name: object) -> list:
+    """``_repo_id_of(name)``, plus the trailing ``org/repo`` of a plain local clone such as
+    ``/models/unsloth/LTX-2.5-GGUF``, so a copied curated repo keeps its per-repo defaults."""
+    rid = _repo_id_of(name)
+    out = [rid] if rid else []
+    if rid and rid == str(name).strip().rstrip("/\\"):
+        segments = [s for s in re.split(r"[/\\]", rid) if s]
+        tail = "/".join(segments[-2:])
+        if len(segments) >= 2 and tail != rid:
+            out.append(tail)
+    return out
+
+
+def default_gguf_subdir(*repo_ids: object) -> Optional[str]:
+    """The subdirectory a bare id of *repo_ids* defaults to (``VideoFamily.gguf_default_subdir``), or None."""
+    from core.inference.video_families import gguf_default_subdir_for_repo
+
+    for name in repo_ids:
+        for rid in _repo_id_candidates(name):
+            subdir = gguf_default_subdir_for_repo(rid)
+            if subdir:
+                return subdir
+    return None
+
+
+def gguf_root_label(*repo_ids: object) -> Optional[str]:
+    """``VideoFamily.gguf_root_label`` for *repo_ids*, else None."""
+    from core.inference.video_families import gguf_root_label_for_repo
+
+    for name in repo_ids:
+        for rid in _repo_id_candidates(name):
+            label = gguf_root_label_for_repo(rid)
+            if label:
+                return label
+    return None
+
+
+def default_gguf_scope(
+    items: Iterable,
+    *repo_ids: object,
+    key = None,
+) -> list:
+    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
+
+    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
+    """
+    rows = list(items)
+    key_of = key or (lambda item: item)
+    subdir = default_gguf_subdir(*repo_ids)
+    if subdir:
+        prefix = subdir.strip("/").casefold() + "/"
+        scoped = [item for item in rows if str(key_of(item) or "").casefold().startswith(prefix)]
+        if scoped:
+            return scoped
+    root = [item for item in rows if "/" not in str(key_of(item) or "")]
+    return root or rows
+
+
 def _gguf_stem(filename: str) -> str:
     basename = filename.rsplit("/", 1)[-1]
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
@@ -794,7 +864,9 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
     return f"{parents}/{stem}" if with_stem else parents
 
 
-def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
+def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: object) -> None:
+    """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
+    root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
@@ -831,6 +903,9 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
             variant.display_label = (
                 f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
             )
+        elif root_label and "/" not in variant.filename.replace("\\", "/"):
+            # Else the root quant reads as the default checkpoint.
+            variant.display_label = f"{variant.quant} · {root_label}"
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
@@ -1011,7 +1086,8 @@ def merge_sibling_snapshot_variants(
                 merged_complete.add(variant.quant)
                 whole.add(key)
     if changed:
-        _apply_gguf_display_labels(merged)
+        # Labels disambiguate within a revision, so a merged set can hold names only the merge brings together.
+        _apply_gguf_display_labels(merged, repo_id)
     return merged, has_vision or any(merged_vision.values()), merged_complete, snapshot
 
 
@@ -1118,7 +1194,7 @@ def list_partial_gguf_variants_from_state(
         )
 
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, repo_id)
     return variants, has_vision
 
 
@@ -1226,7 +1302,7 @@ def list_gguf_variants(
     ]
 
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, repo_id)
     return variants, has_vision, list(info.siblings)
 
 
@@ -1317,5 +1393,5 @@ def list_local_gguf_variants(
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants)
+    _apply_gguf_display_labels(variants, directory, model_root)
     return variants, has_vision

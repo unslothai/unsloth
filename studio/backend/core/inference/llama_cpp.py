@@ -578,6 +578,8 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # Slots left at the default: Auto speculation may lower them to keep a drafter (#8872).
+    n_parallel_from_default: bool = False
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
@@ -3738,6 +3740,8 @@ def _auto_mode_drops_mtp(
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
 # Smallest context Auto shrinks to so a fast MLA head still launches.
 _FAST_MTP_MIN_CTX = 65536
+# Max share of the target-only Auto context a drafter may take at one slot.
+_MTP_SLOT_CTX_TRIM = 0.10
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -3772,8 +3776,10 @@ _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 _CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
 # Dense twin of -ncmoe: a positive -ncffn moves the first N layers' FFN to CPU.
 _CPU_FFN_COUNT_FLAGS = frozenset({"-ncffn", "--n-cpu-ffn"})
-# User controls over llama.cpp's fitter; Studio emits none on Metal, so one skips the Metal probe.
-_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target", "-fitc", "--fit-ctx"})
+# User controls over llama.cpp's own fitter. Studio emits neither on Metal, so a launch carrying
+# one is placed by a fitter the Metal memory probe did not run.
+_FIT_CTX_FLAGS = frozenset({"-fitc", "--fit-ctx"})
+_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target"}) | _FIT_CTX_FLAGS
 _FIT_CONTROL_ENV_VARS = ("LLAMA_ARG_FIT_TARGET", "LLAMA_ARG_FIT_CTX")
 _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
     {"-ot", "--override-tensor"}
@@ -5522,6 +5528,23 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+def _with_parallel_slots(
+    cmd: Sequence[str], slots: int, *, n_batch: Optional[int], supports_kv_unified: bool
+) -> list[str]:
+    """``cmd`` relaunched at ``slots``: Unsloth's own --parallel, its batch floor, and the
+    --kv-unified a multi-slot launch adds. Each is emitted before the extras, so the
+    first occurrence is the one to rewrite and a hand-typed flag still last-wins."""
+    out = [str(a) for a in cmd]
+    at = out.index("--parallel")
+    out[at + 1] = str(slots)
+    if n_batch is not None and "--batch-size" in out:
+        b = out.index("--batch-size")
+        out[b + 1] = str(_emitted_n_batch(n_batch, slots))
+    if slots > 1 and supports_kv_unified and "--kv-unified" not in out and "-kvu" not in out:
+        out[at + 2 : at + 2] = ["--kv-unified"]
+    return out
+
+
 def _extra_args_split_mode(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -5881,6 +5904,79 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
+# --moe-cache-mib auto only beats the --fit split at a middling resident expert share r
+# (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
+# r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
+# RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
+_MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
+_MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
+# Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
+# MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
+_MOE_CACHE_WITH_DRAFTER = True
+# Skip the spill micro-batch raise if it pushes more than this share of resident experts
+# off the GPU. L4 gemma-4: r 0.23 lost 14% (decode -3%), r 0.53/0.82 lost 4-6%.
+_MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
+# "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
+_MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
+_MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
+_MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
+_MOE_SWITCH_OFF = frozenset({"0", "off", "false", "no", "never"})
+
+
+def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
+    """``"on"``, ``"off"`` or ``"auto"`` for one of the MoE override env vars."""
+    raw = str((os.environ if env is None else env).get(name) or "").strip().lower()
+    if raw in _MOE_SWITCH_ON:
+        return "on"
+    if raw in _MOE_SWITCH_OFF:
+        return "off"
+    return "auto"
+
+
+def _moe_resident_expert_share(
+    shortfall_bytes: Optional[float], expert_bytes: Optional[int]
+) -> Optional[float]:
+    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown."""
+    if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
+        return None
+    return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
+
+
+def _moe_cache_share_admits(
+    resident_share: Optional[float],
+    *,
+    drafter: bool,
+    switch: str = "auto",
+) -> bool:
+    """Whether ``--moe-cache-mib auto`` beats the --fit split at this resident share."""
+    if switch != "auto":
+        return switch == "on"
+    if drafter and not _MOE_CACHE_WITH_DRAFTER:
+        return False
+    return (
+        resident_share is not None
+        and _MOE_CACHE_MIN_RESIDENT_SHARE <= resident_share <= _MOE_CACHE_MAX_RESIDENT_SHARE
+    )
+
+
+def _moe_spill_raise_keeps_experts(
+    share_before: Optional[float],
+    share_after: Optional[float],
+    *,
+    switch: str = "auto",
+) -> bool:
+    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+    if switch != "auto":
+        return switch == "on"
+    if share_before is None:
+        return True
+    if share_before >= 1.0:
+        return False
+    if share_after is None:
+        return True
+    return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
+
+
 # User placement: the fitter aborts on most of it, and the cache refuses >1 device (--rpc adds one).
 _MOE_CACHE_USER_OWNED_FLAGS = (
     frozenset({"--moe-cache-mib", "-ot", "--override-tensor", "--rpc"})
@@ -6687,6 +6783,9 @@ class LlamaCppBackend:
         self._vram_fit_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
         self._requested_n_parallel: int = 1
+        self._slots_cut_for_drafter: bool = False
+        # Budget the running child was sized against; None before any load, so the
+        # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
         self._vram_fraction_pending: Optional[float] = None
         self._requested_n_batch: Optional[int] = None
@@ -7140,6 +7239,7 @@ class LlamaCppBackend:
     def _reset_effective_parallel_slots(self) -> None:
         self._effective_parallel_slots = 1
         self._requested_n_parallel = 1
+        self._slots_cut_for_drafter = False
         self._requested_n_batch = None
         self._requested_n_ubatch = None
         self._requested_load_mode = None
@@ -7587,6 +7687,13 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        # The same count chosen rather than defaulted is one Auto may not cut.
+        if (
+            not self._is_diffusion
+            and self._slots_cut_for_drafter
+            and not intent.n_parallel_from_default
+        ):
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
@@ -20472,7 +20579,13 @@ class LlamaCppBackend:
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
                 _spec_dropped_no_vram = False
-                # --no-mmproj-offload puts the whole projector on CPU (no VRAM).
+                _mtp_slots_asked: Optional[int] = None
+                _mtp_slots_target_ctx: Optional[int] = None
+                # The projector runs on the CPU and so allocates no VRAM:
+                # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
+                # GPU backend on that, leaving no partial offload. Only the paravirtual
+                # reason is known this early; the fit below may add the automatic one.
+                # Bound before the try, like _spec_dropped_no_vram.
                 _mmproj_cpu_pinned = bool(
                     launch_mmproj_path
                     and _paravirtual_cpu_forced
@@ -20929,7 +21042,21 @@ class LlamaCppBackend:
                             - _cc_bytes(ctx, 1, slots, cache_type),
                         )
 
-                    # Layer-split compute buffer, context-independent; flat fallback when dims are missing.
+                    def _layer_compute_buffer(slots: int) -> int:
+                        cb = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _ubatch_for_slots(slots),
+                            n_parallel = slots,
+                            per_device_tensor = False,
+                        )
+                        return (
+                            cb if cb > 0 else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        )
+
+                    # Layer-split compute buffer (one lump; tensor mode reserves it
+                    # per device in _plan_tensor_parallel). Context-independent, so
+                    # fold it into the model footprint for the branches below. Falls
+                    # back to the flat reserve when dims are missing (returns 0), a
+                    # safe upper bound since the tensor buffer >= the layer one.
                     _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
                         n_ubatch = _effective_ubatch,
                         n_parallel = n_parallel,
@@ -21197,7 +21324,12 @@ class LlamaCppBackend:
                                 else 0.0
                             )
 
-                        def _probe_base(drafter: bool, n: int) -> int:
+                        def _probe_base(
+                            drafter: bool,
+                            n: int,
+                            slots: int = 0,
+                        ) -> int:
+                            # model_size_fit's terms, before it is built below.
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
                             if effective_is_vision and mmproj_size > 0:
                                 _soft += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
@@ -21205,7 +21337,11 @@ class LlamaCppBackend:
                                 _soft += self._MTP_DRAFT_COMPUTE_BYTES
                             return (
                                 model_size
-                                + _compute_buffer_pipeline
+                                + (
+                                    _layer_compute_buffer(slots)
+                                    if slots
+                                    else _compute_buffer_pipeline
+                                )
                                 + _soft
                                 + max(0, n - 1) * _pipeline_overhead_bytes
                             )
@@ -21245,6 +21381,9 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
+                        # (GPU count, target-only ctx, budget with drafter) per drafter-ranked subset.
+                        _target_placements: list[tuple[int, int, float]] = []
+                        _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
@@ -21315,6 +21454,8 @@ class LlamaCppBackend:
                                         _foot_w,
                                         _budget_w,
                                     )
+                                if _probe_ranked is _drafter_order:
+                                    _target_placements.append((_n, _ctx_wo, _budget_w))
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
@@ -21370,6 +21511,104 @@ class LlamaCppBackend:
                                             _budget_w / 1024,
                                         )
                                     break
+                        # Fewer slots before no drafter. The walk takes the first subset holding the
+                        # drafter, so it must keep its target-only ctx (less the trim at one slot).
+                        # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
+                        if (
+                            _target_fits_somewhere
+                            and not _both_fit_somewhere
+                            and n_parallel > 1
+                            and intent.n_parallel_from_default
+                            and _extra_args_n_parallel(extra_args, env = {}) is None
+                        ):
+
+                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                                ub = _ubatch_for_slots(s)
+                                return (
+                                    _probe_base(True, n, s)
+                                    + self._estimate_kv_cache_bytes(
+                                        ctx,
+                                        cache_type_kv,
+                                        n_parallel = s,
+                                        swa_full = swa_full,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = ub,
+                                        flash_attn = planned_flash_attn,
+                                    )
+                                    + _cc_bytes(ctx, n, s)
+                                    + _mtp_bytes(ctx, s, ub)
+                                ) / (1024 * 1024)
+
+                            def _ctx_with_drafter(n: int, ctx: int, budget: float, s: int) -> int:
+                                if explicit_ctx:
+                                    return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
+                                ub = _ubatch_for_slots(s)
+                                fitted = self._fit_context_to_vram(
+                                    ctx,
+                                    budget,
+                                    _probe_base(True, n, s),
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = s,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = ub,
+                                    flash_attn = planned_flash_attn,
+                                    mtp_engaged = True,
+                                    mtp_overhead_fn = (
+                                        functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
+                                        if mtp_overhead_fn is not None
+                                        else None
+                                    ),
+                                    compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
+                                    budget_frac = 1.0,
+                                    pooled = True,
+                                    total_mib = None,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                )
+                                return (
+                                    fitted
+                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
+                                    else 0
+                                )
+
+                            _mtp_slots = _mtp_slots_ctx = 0
+                            for _s in range(n_parallel - 1, 0, -1):
+                                _keep = 1 - (
+                                    _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
+                                )
+                                for _n, _ctx_c, _budget_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s)
+                                    if _c <= 0:
+                                        continue
+                                    if _c >= _ctx_c * _keep:
+                                        _mtp_slots, _mtp_slots_ctx = _s, _c
+                                        _mtp_slots_target_ctx = _ctx_c
+                                    break
+                                if _mtp_slots:
+                                    break
+                            if _mtp_slots:
+                                logger.info(
+                                    "Auto: serving slots reduced %d -> %d so the drafter fits "
+                                    "in VRAM at context %d (target alone: %d). Set Parallel "
+                                    "Slots to keep %d without the drafter.",
+                                    n_parallel,
+                                    _mtp_slots,
+                                    _mtp_slots_ctx,
+                                    _probe_ctx,
+                                    n_parallel,
+                                )
+                                _mtp_slots_asked = n_parallel
+                                n_parallel = _mtp_slots  # allow-slot-clamp: the drafter fits in VRAM only at fewer slots
+                                _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                if mtp_overhead_fn is not None:
+                                    # Its defaults were bound at the requested count.
+                                    mtp_overhead_fn = functools.partial(
+                                        mtp_overhead_fn,
+                                        _np = n_parallel,
+                                        _n_ubatch = _effective_ubatch,
+                                    )
+                                _both_fit_somewhere = True
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
@@ -22158,8 +22397,182 @@ class LlamaCppBackend:
                                 max_available_ctx = _ceiling[0]
                                 _vram_fit_ctx = _ceiling[0]
 
-                    # Raises micro-batch only for host-RAM MoE experts; all later terms price the
-                    # larger buffer.
+                    # Single-GPU VRAM shortfall vs free less --fit-target (None = unpriceable).
+                    _model_size_fit_cb = _compute_buffer_pipeline
+
+                    def _fit_ctx_overridden(
+                        child_extras: Optional[Iterable[str]], child_env: Mapping[str, str]
+                    ) -> bool:
+                        """A --fit-ctx / -fitc (argv, else LLAMA_ARG_FIT_CTX) the child
+                        runs with that is not the value _ctx_integrity_flags emits."""
+                        _studio_fitc: Optional[int] = None
+                        if (
+                            use_fit
+                            and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                            and server_caps.get("supports_fit_ctx")
+                        ):
+                            if requested_ctx > 0 and effective_ctx > 0:
+                                _studio_fitc = int(effective_ctx)
+                            elif gpu_memory_mode == "manual" and gpu_layers < 0:
+                                _studio_fitc = 8192
+                        try:
+                            _raw = _last_flag_value(child_extras, _FIT_CTX_FLAGS)
+                        except ValueError:
+                            return True
+                        # The emitted flag beats the env; argv after it beats both.
+                        if _raw is None and _studio_fitc is None:
+                            _raw = child_env.get("LLAMA_ARG_FIT_CTX")
+                        if _raw is None or not str(_raw).strip():
+                            return False
+                        try:
+                            return int(str(_raw).strip()) != _studio_fitc
+                        except ValueError:
+                            return True
+
+                    def _fitter_vram_shortfall() -> Optional[float]:
+                        if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
+                            return None
+                        # Smart offload may still pin experts to CPU against Unsloth's budget.
+                        from core.inference.offload_planner import smart_offload_enabled
+
+                        if smart_offload_enabled(os.environ):
+                            return None
+                        # A drafter priced with a flat cushion has no draft-KV term here.
+                        if _flat_mtp_engages:
+                            return None
+                        _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        # Per-device placement (common/fit.cpp) can spill despite a pooled fit.
+                        if len(_on) != 1:
+                            return None
+                        _child_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _child_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_child_env)
+                        if _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(_on),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        ):
+                            return None
+                        # Priced at Unsloth's --parallel; any other pass-through one wins.
+                        _np_override = _extra_args_n_parallel(_child_extras, {})
+                        if _np_override is not None and _np_override != n_parallel:
+                            return None
+                        # A later pass-through -c 0 lets llama.cpp pick the context.
+                        if parse_ctx_override(_child_extras) == 0:
+                            return None
+                        # A --fit-ctx Studio did not emit moves llama.cpp's fit.
+                        if _fit_ctx_overridden(_child_extras, _child_env):
+                            return None
+                        # A GPU projector Studio never sized; Vision off keeps only audio-only.
+                        _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
+                        # The emitted --mmproj replaces an inherited path (argv after env).
+                        if effective_is_vision:
+                            _env_mmproj = None
+                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector.
+                        _mmproj_dev = _extra_args_device(
+                            _child_extras, {"--mmproj-device", "-mmdev"}
+                        )
+                        if _mmproj_dev is None:
+                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
+                        _mmproj_dev_gpu = bool(
+                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
+                        )
+                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
+                            if _mmproj_dev_gpu:
+                                return None
+                        elif disable_vision:
+                            if _mmproj_env_is_audio_only(_env_mmproj):
+                                return None
+                        elif (
+                            _env_mmproj
+                            or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                            or (
+                                not launch_mmproj_path
+                                and extra_args_mmproj_auto(_child_extras, _child_env)
+                            )
+                        ):
+                            return None
+                        # --fit-target precedence: argv, Studio's emitted value, env, default.
+                        _supports_fit_target = bool(server_caps.get("supports_fit_target"))
+                        _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                        _managed_mib = self._fit_target_margin_mib(
+                            auto_fit = _auto_fit,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            supports_fit_target = _supports_fit_target,
+                        )
+                        # A per-device list reads as its largest entry (the larger shortfall).
+                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        if _margin_mib is None:
+                            _emits = _supports_fit_target and (
+                                _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
+                            )
+                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            # An inherited 0 is a valid margin, not "unset".
+                            _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                        # A lazily read table stays mmap'd on the host, never on the GPU.
+                        _lazy_host = self._lazy_read_host_bytes(
+                            model_path,
+                            caps = server_caps,
+                            extra_args = _child_extras,
+                            env = _child_env,
+                            auto_resolves_off = self._lazy_auto_resolves_off(
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = is_vulkan_backend,
+                            ),
+                        )
+                        _need = (
+                            model_size_fit
+                            - _lazy_host
+                            - _model_size_fit_cb
+                            + _compute_buffer_pipeline
+                            + (
+                                _kv_bytes(effective_ctx)
+                                if _kv_offload_from_args(_child_extras, _child_env)
+                                else 0
+                            )
+                            + (
+                                _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                if _mtp_will_engage
+                                else 0
+                            )
+                            + _cc_bytes(effective_ctx, len(_on))
+                        )
+                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        return _need - _free * 1024 * 1024
+
+                    def _moe_resident_share_now() -> Optional[float]:
+                        if self.n_moe_layers <= 0:
+                            return None
+                        try:
+                            _short = _fitter_vram_shortfall()
+                            if _short is None:
+                                return None
+                            _scan = self._gguf_tensor_scan(model_path) or (None, {}, 0)
+                            return _moe_resident_expert_share(_short, _scan[2])
+                        except Exception as e:
+                            logger.debug(f"MoE resident share unpriceable ({e})")
+                            return None
+
+                    # MoE experts in host RAM: a larger micro-batch amortises the expert
+                    # copies of prompt processing (see _MOE_SPILL_N_UBATCH). The placement
+                    # verdict above was priced at the default micro-batch, so a model that
+                    # fits keeps today's launch. This runs before every term that reads the
+                    # micro-batch (MTP reserve, KV, compute buffer, spill planner, load mode),
+                    # so the larger buffer is priced: the spill planner keeps fewer experts on
+                    # the GPU, and llama.cpp's fitter measures a --fit on launch at the emitted
+                    # value. Manual pinned layers (--fit off) are the user's placement, where an
+                    # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
+                    # does not count for the same reason. A user --device none / cpu runs on
+                    # the CPU with nothing to stream, like the CPU fallback.
                     _moe_experts_on_host = bool(
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
@@ -22180,14 +22593,18 @@ class LlamaCppBackend:
                         discrete_gpu = _moe_spill_discrete_gpu,
                         user_named_batch = _user_named_batch,
                     )
-                    if _spill_n_ubatch != n_ubatch:
-                        logger.info(
-                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
-                            "%s -> %s for faster prompt processing.",
-                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
-                            _spill_n_ubatch,
+                    _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
+                    if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
+                        _share_before = (
+                            _moe_resident_share_now() if _moe_ub_switch == "auto" else None
                         )
-                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
                         n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         # Same calls and fallbacks as above, at the new micro-batch.
@@ -22201,6 +22618,41 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _share_after = (
+                            _moe_resident_share_now()
+                            if _moe_ub_switch == "auto" and _share_before is not None
+                            else None
+                        )
+                        if _moe_spill_raise_keeps_experts(
+                            _share_before, _share_after, switch = _moe_ub_switch
+                        ):
+                            logger.info(
+                                "MoE experts are offloaded to system RAM; raising "
+                                "--ubatch-size %s -> %s for faster prompt processing.",
+                                (
+                                    _pre_raise[1]
+                                    if _pre_raise[1] is not None
+                                    else _DEFAULT_LLAMA_N_UBATCH
+                                ),
+                                _spill_n_ubatch,
+                            )
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            logger.info(
+                                "MoE experts: keeping the default --ubatch-size; %s would "
+                                "move the GPU's resident share of the routed experts "
+                                "%.0f%% -> %.0f%%.",
+                                _spill_n_ubatch,
+                                100 * (_share_before or 0.0),
+                                100 * (_share_after or 0.0),
+                            )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
@@ -22493,6 +22945,31 @@ class LlamaCppBackend:
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
+                        _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
+                        _moe_share = (
+                            _moe_resident_share_now() if _moe_cache_switch == "auto" else None
+                        )
+                        if not _moe_cache_share_admits(
+                            _moe_share, drafter = _mtp_will_engage, switch = _moe_cache_switch
+                        ):
+                            _moe_cache_candidate = False
+                            if _moe_cache_switch == "off":
+                                _why = f"{_MOE_CACHE_ENV} is off"
+                            elif _moe_share is None:
+                                _why = "the share of routed experts left on the GPU is unknown"
+                            elif _mtp_will_engage and not _MOE_CACHE_WITH_DRAFTER:
+                                _why = "a drafter is engaged"
+                            else:
+                                _why = (
+                                    f"an estimated {100 * _moe_share:.0f}% of the routed "
+                                    "experts stay on the GPU"
+                                )
+                            logger.info(
+                                "MoE cache: %s; keeping the --fit split without "
+                                "--moe-cache-mib.",
+                                _why,
+                            )
+                    if _moe_cache_candidate:
                         # The cache frees no host RAM: every routed expert plus the prompt
                         # cache must fit pinned (moved out of model_size, not counted twice).
                         _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
@@ -22542,7 +23019,17 @@ class LlamaCppBackend:
                     # Nor is a ceiling the fallback's own fitter may spill past.
                     _vram_fit_ctx = None
                     tp_tensor_split = None
-                    effective_ctx = requested_ctx
+                    effective_ctx = requested_ctx  # fall back to original
+                    # Nor is a slot cut for the drafter: requested count, no drafter, as before.
+                    if _mtp_slots_asked is not None:
+                        n_parallel = _mtp_slots_asked
+                        _mtp_slots_asked = _mtp_slots_target_ctx = None
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                        _spec_dropped_no_vram = True
+                        _mtp_will_engage = False
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
 
                 # Raised here so the handler above cannot turn it back into the launch it refuses.
                 if _metal_ctx_refusal:
@@ -25519,12 +26006,88 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    # Restore the cut slots; if they fail (unified KV refused), retry as cut.
+                    _fb_cut = (
+                        (
+                            fallback_cmd,
+                            n_parallel,
+                            effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        )
+                        if _mtp_slots_asked is not None
+                        else None
+                    )
+                    if _fb_cut is not None:
+                        n_parallel = _mtp_slots_asked
+                        fallback_cmd = _with_parallel_slots(
+                            fallback_cmd,
+                            n_parallel,
+                            n_batch = n_batch,
+                            supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
+                        )
+                        # The cut may have bought context; the restored count was priced at this.
+                        if _mtp_slots_target_ctx and "-c" in fallback_cmd:
+                            effective_ctx = _mtp_slots_target_ctx
+                            fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
+                            # The ceiling was priced at the cut count; this is the one proven here.
+                            self._effective_context_length = self._max_context_length = (
+                                effective_ctx
+                            )
+                        # The checkpoint cap is per slot; same re-decide as the single-seq rung.
+                        if _auto_ckpt_emitted:
+                            fallback_cmd = self._without_flag_pairs(
+                                fallback_cmd, _auto_ckpt_emitted
+                            )
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(fallback_cmd)
+                        kv_cache_unified = _kv_unified_from_args(fallback_cmd)
+                        # The plan other loads place against was priced at the cut count.
+                        _fb_cut_plan = dict(self._pending_plan_mib)
+                        if self._pending_plan_mib and self._can_estimate_kv():
+                            kv_cache_bytes = self._estimate_kv_cache_bytes(
+                                effective_ctx,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                swa_full = swa_full,
+                                kv_unified = bool(kv_cache_unified),
+                                n_ubatch = _ubatch_for_slots(n_parallel),
+                                flash_attn = planned_flash_attn,
+                            )
+                            self._pending_plan_mib = _gpu_plan_mib(
+                                gguf_size + mmproj_size + kv_cache_bytes,
+                                list(self._pending_plan_mib),
+                                gpus,
+                            )
                     _unified_withdraw_if_unneeded(
                         fallback_cmd,
                         mtp_engages = False,
                         why = "The retry without speculative decoding",
                     )
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
+                    if not healthy and _fb_cut is not None and not _load_cancelled():
+                        logger.warning(
+                            "The retry without speculative decoding failed at %d slots; "
+                            "retrying at the %d the drafter launch ran.",
+                            n_parallel,
+                            _fb_cut[1],
+                        )
+                        self._kill_process()
+                        (
+                            fallback_cmd,
+                            _fb_slots,
+                            effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        ) = _fb_cut
+                        self._pending_plan_mib = _fb_cut_plan
+                        n_parallel = (
+                            _fb_slots  # allow-slot-clamp: the restored count failed to start
+                        )
+                        kv_cache_unified = _kv_unified_from_args(fallback_cmd)
+                        healthy = _spawn_and_wait(fallback_cmd, label = "-retry-cut")
                     if healthy:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
@@ -25833,6 +26396,13 @@ class LlamaCppBackend:
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._slots_cut_for_drafter = (
+                    _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                )
+                # Commit with the rest of the known-good state: only a launch that got
+                # this far replaced the runtime, so a rejected preflight leaves the old
+                # marker intact, and the diffusion runner returns well before it without
+                # consuming, or paying for, any llama-server capability.
                 self._capability_probe_inconclusive = _launch_probe_inconclusive
                 self._vram_fraction_launched = _budget_priced_placement()
                 self._vram_fraction_pending = None

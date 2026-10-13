@@ -219,6 +219,7 @@ async def _audio_cpp_target(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str] = None,
+    persist: bool = False,
 ) -> tuple[str, Optional[str]]:
     """audio.cpp umbrella folder rows run on the umbrella repo under a path-qualified variant key."""
     text = (repo_id or "").strip()
@@ -227,7 +228,7 @@ async def _audio_cpp_target(
     try:
         from core.inference.audio_cpp_models import download_target
         target = await asyncio.to_thread(
-            download_target, text, (variant or "").strip() or None, hf_token
+            download_target, text, (variant or "").strip() or None, hf_token, persist
         )
     except Exception as exc:  # noqa: BLE001 - an unresolvable row downloads nothing
         logger.warning("Could not resolve the audio model %s for download: %s", text, exc)
@@ -252,7 +253,7 @@ async def download_model_response(
     allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     if body.gguf_variant or not body.scope_id:
         target_repo, target_variant = await _audio_cpp_target(
-            body.repo_id, body.gguf_variant, hf_token
+            body.repo_id, body.gguf_variant, hf_token, persist = True
         )
         if target_repo != body.repo_id.strip():
             body = body.model_copy(update = {"repo_id": target_repo, "gguf_variant": target_variant})

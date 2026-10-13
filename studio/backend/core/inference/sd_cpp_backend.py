@@ -456,7 +456,7 @@ def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None
     if not binary:
         return
     if text is None:
-        _LAST_DEVICE_LISTING.pop(binary, None)
+        # Keep the last good listing; readers check (size, mtime_ns), so a changed binary's listing is never served.
         return
     _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
 
@@ -904,6 +904,108 @@ def rocm_runtime_resolvable() -> Optional[bool]:
         except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
             return None
     return True
+
+
+def rocm_runtime_missing_sonames() -> Optional[list[str]]:
+    """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
+    (Windows, macOS, no ctypes, an unexpected loader error), which says nothing either way."""
+    if os.name != "posix" or sys.platform == "darwin":
+        return None
+    try:
+        import ctypes
+    except Exception:  # noqa: BLE001
+        return None
+    missing = []
+    for soname in _ROCM_RUNTIME_SONAMES:
+        try:
+            ctypes.CDLL(soname)
+        except OSError:
+            missing.append(soname)
+        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
+            return None
+    return missing
+
+
+ACCELERATOR_FALLBACK_CLEAR_HINT = (
+    "to retry the ROCm build after fixing that, clear the record with "
+    "DELETE /api/settings/diffusion-accelerator-fallback (or restart with "
+    "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 to never fall back)"
+)
+
+
+def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
+    """Why the ``accelerator`` build is being replaced, in words a user can act on."""
+    if _accelerator_class_of(accelerator) != "rocm":
+        return "its build did not list a GPU"
+    if os.name == "nt":
+        # The loader cannot be asked ahead of time on Windows; a missing DLL is exit 0xC0000135 with no output.
+        return (
+            "the ROCm build needs the AMD HIP SDK 7.x runtime DLLs (amdhip64_7.dll, hipblas.dll, rocblas.dll) on "
+            "PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or the card's gfx "
+            "target is missing from the prebuilt"
+        )
+    missing = rocm_runtime_missing_sonames()
+    if missing is None:
+        return (
+            "the ROCm build listed no GPU (whether the host ROCm 7 runtime loads could not be checked here, so "
+            "either it is missing or the card's gfx target is not in the prebuilt)"
+        )
+    if missing:
+        return (
+            "the ROCm build needs the host ROCm 7 runtime and the loader cannot find "
+            + ", ".join(missing)
+            + " (install ROCm 7.x userspace or add /opt/rocm/lib to the loader path)"
+        )
+    return (
+        "the ROCm build listed no GPU (the ROCm runtime loads, so the card's gfx target may be missing from the "
+        "prebuilt, or /dev/kfd is not accessible to this user)"
+    )
+
+
+# ggml device-name prefix -> accelerator class, for a build no install record describes.
+_LISTED_DEVICE_CLASSES: dict[str, str] = {
+    "VULKAN": "vulkan",
+    "ROCM": "rocm",
+    "CUDA": "cuda",
+    "SYCL": "sycl",
+    "METAL": "metal",
+    "OPENCL": "opencl",
+}
+
+
+def sd_cpp_listed_device(
+    binary: Optional[str],
+    device_name: Optional[str] = None,
+    *,
+    probe: bool = True,
+) -> "tuple[Optional[str], Optional[str]]":
+    """``(accelerator class, description)`` of the device ``binary`` renders on, from its own ``--list-devices``:
+    ``device_name`` when pinned, else the first non-CPU device (sd.cpp's own default). ``(None, None)`` when the
+    listing is unreadable or names no GPU. What an unowned build (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH) is, since
+    no install record says. ``probe = False`` only reads the listing the last accelerator verdict took of this
+    file (no subprocess)."""
+    if not binary:
+        return None, None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return None, None
+    for line in text.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[0].strip()
+        klass = _LISTED_DEVICE_CLASSES.get(name.rstrip("0123456789").upper())
+        if klass is None:
+            continue
+        if device_name is not None and name != device_name:
+            continue
+        return klass, parts[1].strip() or None
+    return None, None
 
 
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:

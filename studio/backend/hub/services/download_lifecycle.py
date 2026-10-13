@@ -129,17 +129,13 @@ def largest_download_file_bytes(
     )
     if not siblings:
         return None
-    from hub.utils.gguf_plan import (
-        build_gguf_variant_plans,
-        expected_file_from_sibling,
-        plan_for_variant,
-    )
+    from hub.utils.gguf_plan import expected_file_from_sibling, resolve_variant_plan
 
     wanted = {f for f in (files or []) if f}
     if wanted:
         chosen = [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     elif variant:
-        plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+        plan = resolve_variant_plan(siblings, variant)
         if plan is None:
             return None
         chosen = None
@@ -559,10 +555,24 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
+    if repo_type == "model" and state == "complete":
+        # Only on completion: another backend may still be downloading a cancelled key.
+        try:
+            from core.inference.audio_cpp_models import forget_job_row
+            forget_job_row(repo_id, download_registry.variant_from_key(key))
+        except Exception:
+            logger.debug("audio.cpp download row was not pruned", exc_info = True)
     if state == "complete":
         if repo_id and repo_type:
             account_access.record_model_grant(repo_id, repo_type)
         hf_cache_scan.invalidate_hf_cache_scans()
+        if repo_type == "model":
+            # audio.cpp remembers a cache miss (the timing aligner) for 20 s; the UI re-reads it on complete.
+            try:
+                from core.inference.audio_cpp_models import forget
+                forget()
+            except Exception:
+                logger.debug("audio.cpp resolve cache was not cleared", exc_info = True)
         registry.set_job(key, "complete")
         # /v1's resolver has no watcher; note new models (models only, not datasets).
         if repo_type == "model":

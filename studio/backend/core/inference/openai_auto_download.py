@@ -658,7 +658,7 @@ async def _admit_and_start(
             ),
         )
 
-    variant = _match_variant(wanted_variant, variants)
+    variant = _match_variant(wanted_variant, variants, repo_id)
     if variant is None:
         _release(active)
         listed = sorted(variants)
@@ -800,8 +800,18 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     return matches[0] if len(matches) == 1 else None
 
 
-def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
-    """An explicit quant must exist and is never swapped out; a bare id takes the preferred quant."""
+def _match_variant(
+    wanted: Optional[str],
+    variants: dict[str, int],
+    repo_id: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve the requested quant against what the repo actually has.
+
+    An explicit quant matches case-insensitively and must exist: never quietly
+    substitute another, unlike the loader's low-disk fallback. A bare repo id, or a
+    tag that names no quant (":latest", ":8b"), uses the same preference order as a
+    manual load, matching what the local resolver does with the same tag.
+    """
     if wanted:
         # Exact match first: generic names like "llama-13b" are valid keys but not quant-shaped.
         lowered = {name.lower(): name for name in variants}
@@ -811,9 +821,10 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
             exact = _bare_quant_alias(wanted, lowered)
         if exact is not None or looks_like_quant(wanted):
             return exact
-    # Bare org/repo means the root checkpoint; same filter as local_model_resolver._local_gguf_entry.
-    unqualified = {name: size for name, size in variants.items() if "/" not in name}
-    return preferred_quant(unqualified or variants)
+    # A bare id means default_gguf_scope, the same scope every resolver applies (preferred_quant is order-sensitive).
+    from hub.utils.gguf import default_gguf_scope
+
+    return preferred_quant(default_gguf_scope(variants, repo_id))
 
 
 async def _dispatch(

@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal, Optional, Union
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field
 
+from state.tool_policy import tools_force_disabled
 from studio_mcp.caller import current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
@@ -89,13 +90,20 @@ async def chat(
         "model": model or "default",
         "messages": turns,
         "stream": False,
+        # `unsloth studio run` turns tools on for an omitted field; MCP chat never runs them.
+        "enable_tools": False,
         # Per-run id (the route scopes it to the caller's account), so only a cancel aimed at this chat stops it.
         "cancel_id": cancel_id,
         **present(max_tokens = max_tokens, temperature = temperature),
     }
-    payload = await route_json(
-        "POST", "/v1/chat/completions", json_body = body, hint_if = (NOT_LOADED, {400: LOAD_CHAT_HINT})
-    )
+    # Beats a CLI --enable-tools too; forward's task copies this context into the route.
+    with tools_force_disabled():
+        payload = await route_json(
+            "POST",
+            "/v1/chat/completions",
+            json_body = body,
+            hint_if = (NOT_LOADED, {400: LOAD_CHAT_HINT}),
+        )
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ToolError("Unsloth Studio returned no reply")

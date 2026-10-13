@@ -645,7 +645,6 @@ export const sv = {
     queueingHintShared: "Kön behålls.",
   },
   rewind: {
-    menuItem: "Spola tillbaka…",
     title: "Spola tillbaka",
     pickDescription: "Välj ett meddelande att spola tillbaka till.",
     pickEmpty: "Det finns inga meddelanden att spola tillbaka till än.",
@@ -2157,6 +2156,8 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
+        chartToggle: "Diagram",
+        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",

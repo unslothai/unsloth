@@ -532,6 +532,45 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
     assert text == "Preferred"
 
 
+def _legacy_checkbox(state):
+    return (
+        f'<w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>{state}</w:checkBox>'
+        "</w:ffData></w:fldChar></w:r>"
+        '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>'
+        '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>'
+    )
+
+
+def test_docx_keeps_ticked_state_of_legacy_form_checkboxes(tmp_path):
+    ticked = _legacy_checkbox('<w:default w:val="0"/><w:checked/>')
+    unticked = _legacy_checkbox('<w:default w:val="0"/>')
+    ticked_by_default = _legacy_checkbox("<w:default/>")
+    cleared = _legacy_checkbox('<w:default w:val="1"/><w:checked w:val="0"/>')
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('Smoker: ')}{ticked}{_r(' Yes ')}{unticked}{_r(' No')}</w:p>",
+        f"<w:tbl><w:tr><w:tc><w:p>{_r('Allergies')}</w:p></w:tc>"
+        f"<w:tc><w:p>{ticked_by_default}{_r(' Yes ')}{cleared}{_r(' No')}</w:p></w:tc></w:tr></w:tbl>",
+    )
+    assert text == "Smoker: ☒ Yes ☐ No\nAllergies | ☒ Yes ☐ No"
+
+
+def test_docx_legacy_checkbox_sharing_a_run_with_its_label_stays_in_place(tmp_path):
+    def labelled_box(label, state):
+        return (
+            f'<w:r><w:t xml:space="preserve">{label}</w:t><w:fldChar w:fldCharType="begin">'
+            f"<w:ffData><w:checkBox>{state}</w:checkBox></w:ffData></w:fldChar></w:r>"
+            '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        )
+
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{labelled_box('Smoker: ', '')}{labelled_box(' Yes ', '<w:checked/>')}{_r(' No')}</w:p>",
+    )
+    assert text == "Smoker: ☐ Yes ☒ No"
+
+
 def _m(text):
     return f'<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>{text}</m:t></m:r>'
 

@@ -2984,11 +2984,13 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    if any(
-        (snap / name).is_file()
-        for snap in _iter_hf_cache_snapshots(repo_id)
-        for name in ("config.json", "model_index.json", "adapter_config.json")
-    ):
+    from hub.utils.mlx_variants import is_precision_folder
+
+    # A cached Transformers, diffusers, adapter or MLX precision-folder checkpoint can still load.
+    names = ["config.json", "model_index.json", "adapter_config.json"]
+    if is_precision_folder(gguf_variant):
+        names.append(f"{gguf_variant.strip()}/config.json")
+    if any((snap / name).is_file() for snap in _iter_hf_cache_snapshots(repo_id) for name in names):
         return False
     return bool(gguf_variant) or bool(
         _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
@@ -3088,11 +3090,15 @@ def _refused_repo_cached_gguf(
         return None
     remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
     while remaining:
-        # Repo-root checkpoint first, as the healthy-Hub pick does.
-        root_rows = [
-            f for f in remaining if "/" not in _qualified_variant_name(f, _extract_quant_label(f))
-        ]
-        best = _pick_best_gguf(root_rows or remaining)
+        from hub.utils.gguf import default_gguf_scope
+
+        best = _pick_best_gguf(
+            default_gguf_scope(
+                remaining,
+                repo_id,
+                key = lambda f: _qualified_variant_name(f, _extract_quant_label(f)),
+            )
+        )
         if not best:
             return None
         label = _extract_quant_label(best)
@@ -4189,14 +4195,18 @@ class ModelConfig:
                                 f"GGUF variant '{variant}' not found in {identifier}. "
                                 f"Available variants: {available}"
                             )
-                if not variant:
-                    # Root rows first: a bare id means the root checkpoint everywhere else too.
-                    root_rows = [
+                if not variant:  # auto-select best quant
+                    # _pick_best_gguf is order-sensitive: use the scope every resolver uses.
+                    from hub.utils.gguf import default_gguf_scope
+
+                    variant_filenames = [
                         v.filename
-                        for v in variants
-                        if "/" not in _qualified_variant_name(v.filename, v.quant)
+                        for v in default_gguf_scope(
+                            variants,
+                            identifier,
+                            key = lambda v: _qualified_variant_name(v.filename, v.quant),
+                        )
                     ]
-                    variant_filenames = root_rows or [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
                     if best:
                         # Use the same qualified identity the lister advertised; a bare label is ambiguous.
@@ -4308,6 +4318,14 @@ class ModelConfig:
         else:
             check_model = identifier
 
+        precision_folder = None
+        if gguf_variant and not is_local and not is_lora:
+            from hub.utils.mlx_variants import precision_folder_config_dir
+            folder_config = precision_folder_config_dir(identifier, gguf_variant.strip(), hf_token)
+            if folder_config is not None:
+                precision_folder = gguf_variant.strip()
+                check_model = str(folder_config)
+
         with _offline_while_reading(check_model):
             vision = is_vision_model(check_model, hf_token = hf_token)
             audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
@@ -4316,6 +4334,7 @@ class ModelConfig:
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
         return cls(
+            gguf_variant = precision_folder,
             identifier = identifier,
             display_name = display_name,
             path = path,
