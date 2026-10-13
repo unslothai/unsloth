@@ -176,6 +176,9 @@ def validate_model(
     engine = "vllm",
     precision = "auto",
     parallelism = "tensor",
+    kv_cache_dtype = "auto",
+    seed = None,
+    gpu_memory_utilization = None,
 ) -> dict:
     """Check plain metadata before releasing the previous resident model."""
     if config.is_local:
@@ -236,6 +239,13 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
+    # Unset options stay out of the dict, so a default load keeps today's argv and cache key.
+    if kv_cache_dtype != "auto":
+        options["kv_cache_dtype"] = kv_cache_dtype
+    if seed is not None:
+        options["seed"] = seed
+    if gpu_memory_utilization is not None:
+        options["gpu_memory_utilization"] = gpu_memory_utilization
     if precision == "fp8" and profile(engine)["platform"] == "cuda":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
         from utils.hardware.nvidia import _nvidia_smi_executable
@@ -407,6 +417,8 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
+# Launch options that change no compiled artifact, so they share the compile cache.
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -721,7 +733,15 @@ class ManagedEngine:
         return hashlib.sha256(
             policy
             + json.dumps(
-                [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                [
+                    info.get("profile_digest"),
+                    model,
+                    self.context,
+                    gpu_ids,
+                    {k: v for k, v in options.items() if k not in _UNCACHED_OPTIONS}
+                    if options
+                    else options,
+                ],
                 sort_keys = True,
             ).encode()
         ).hexdigest()[:16]

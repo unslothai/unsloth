@@ -503,6 +503,17 @@ export const sv = {
     precisionAuto: "Modellens standard",
     precisionHelp:
       "Modellens standard behåller lagrad precision. Andra alternativ konverterar okvantiserade vikter vid inläsning.",
+    kvCache: "KV-cache",
+    kvCacheFp8: "FP8 (halva minnet)",
+    kvCacheHelp:
+      "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne.",
+    gpuMemory: "GPU-minnesgräns",
+    gpuMemoryAuto: "Automatisk",
+    gpuMemoryHelp:
+      "Det mesta av varje vald GPU som motorn får använda. Automatisk använder det som är ledigt; sänk den för att lämna plats åt andra program.",
+    seed: "Seed",
+    seedPlaceholder: "Motorns standard",
+    seedHelp: "Låser motorns slumpfrö så att samplade svar upprepas mellan inläsningar.",
     default: "Standard",
     installRequired: "installation krävs",
     ownerRequired: "Be Studio-ägaren att installera den här motorn.",

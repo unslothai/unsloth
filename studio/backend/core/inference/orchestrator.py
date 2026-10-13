@@ -2474,6 +2474,9 @@ class InferenceOrchestrator:
                     "engine": engine,
                     "engine_parallelism": (options or {}).get("parallelism", "tensor"),
                     "engine_precision": (options or {}).get("precision", "auto"),
+                    "engine_kv_cache_dtype": (options or {}).get("kv_cache_dtype", "auto"),
+                    "engine_seed": (options or {}).get("seed"),
+                    "engine_gpu_memory_utilization": (options or {}).get("gpu_memory_utilization"),
                     "is_vision": (options or {}).get("is_vision", config.is_vision),
                     "chat_template_info": {
                         "accepts_multiple_images": bool(

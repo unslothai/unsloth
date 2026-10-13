@@ -87,6 +87,9 @@ class EngineAdapter:
         served_model_name = None,
     ):
         options = options or {}
+        if options.get("gpu_memory_utilization"):
+            # A user ceiling only lowers Studio's measured budget: above it the engine would OOM.
+            memory_fraction = min(memory_fraction, options["gpu_memory_utilization"])
         tool_args = []
         if options.get("tool_parser"):
             tool_args = ["--tool-call-parser", options["tool_parser"]]
@@ -212,6 +215,20 @@ class EngineAdapter:
             *(
                 ["--max-num-seqs", str(options["max_num_seqs"])]
                 if self.name == "vllm" and options.get("max_num_seqs")
+                else []
+            ),
+            *(
+                [
+                    "--kv-cache-dtype",
+                    # SGLang names the FP8 format; vLLM's "fp8" is the same E4M3 cache.
+                    "fp8_e4m3" if self.name == "sglang" else options["kv_cache_dtype"],
+                ]
+                if options.get("kv_cache_dtype")
+                else []
+            ),
+            *(
+                ["--random-seed" if self.name == "sglang" else "--seed", str(options["seed"])]
+                if options.get("seed") is not None
                 else []
             ),
             *(["--trust-remote-code"] if trust_remote_code else []),

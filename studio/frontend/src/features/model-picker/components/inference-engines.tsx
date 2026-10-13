@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -36,6 +37,8 @@ const PRECISION_LABELS = [
   ["int8", "INT8 (8-bit)"],
   ["fp8", "FP8 (8-bit)"],
 ] as const;
+// Ceilings below Studio's measured budget; it never raises the engine past what is free.
+const GPU_MEMORY_LIMITS = [0.95, 0.9, 0.8, 0.7, 0.5, 0.3] as const;
 
 export function EngineInstall({
   engine,
@@ -268,6 +271,12 @@ export function InferenceEnginePicker({
   onParallelismChange,
   precision = "auto",
   onPrecisionChange,
+  kvCacheDtype = "auto",
+  onKvCacheDtypeChange,
+  gpuMemoryUtilization = null,
+  onGpuMemoryUtilizationChange,
+  seed = null,
+  onSeedChange,
   onGpuChange,
 }: {
   value: InferenceEngine;
@@ -281,6 +290,12 @@ export function InferenceEnginePicker({
   onPrecisionChange: (
     precision: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8",
   ) => void;
+  kvCacheDtype?: "auto" | "fp8";
+  onKvCacheDtypeChange: (dtype: "auto" | "fp8") => void;
+  gpuMemoryUtilization?: number | null;
+  onGpuMemoryUtilizationChange: (fraction: number | null) => void;
+  seed?: number | null;
+  onSeedChange: (seed: number | null) => void;
   onGpuChange: (ids: number[]) => void;
 }) {
   const { engines, error } = useEngines();
@@ -474,6 +489,113 @@ export function InferenceEnginePicker({
             </div>
             <p className="text-ui-12 text-muted-foreground">
               {t("managedEngines.precisionHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.kvCache")}</span>
+              <Select
+                value={kvCacheDtype}
+                onValueChange={(value) =>
+                  onKvCacheDtypeChange(value as typeof kvCacheDtype)
+                }
+              >
+                <SelectTrigger
+                  className="w-44"
+                  aria-label={t("managedEngines.kvCache")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("managedEngines.precisionAuto")}
+                  </SelectItem>
+                  <SelectItem value="fp8">
+                    {t("managedEngines.kvCacheFp8")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.kvCacheHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.gpuMemory")}</span>
+              <Select
+                value={
+                  gpuMemoryUtilization == null
+                    ? "auto"
+                    : String(gpuMemoryUtilization)
+                }
+                onValueChange={(value) =>
+                  onGpuMemoryUtilizationChange(
+                    value === "auto" ? null : Number(value),
+                  )
+                }
+              >
+                <SelectTrigger
+                  className="w-44"
+                  aria-label={t("managedEngines.gpuMemory")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("managedEngines.gpuMemoryAuto")}
+                  </SelectItem>
+                  {/* A stored value off the preset list stays selectable. */}
+                  {[
+                    ...new Set([
+                      ...GPU_MEMORY_LIMITS,
+                      ...(gpuMemoryUtilization == null
+                        ? []
+                        : [gpuMemoryUtilization]),
+                    ]),
+                  ]
+                    .sort((a, b) => b - a)
+                    .map((fraction) => (
+                      <SelectItem key={fraction} value={String(fraction)}>
+                        {`${Math.round(fraction * 100)}%`}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.gpuMemoryHelp")}
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 text-ui-13">
+              <span>{t("managedEngines.seed")}</span>
+              <Input
+                className="w-44"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={2 ** 31 - 1}
+                step={1}
+                aria-label={t("managedEngines.seed")}
+                placeholder={t("managedEngines.seedPlaceholder")}
+                value={seed ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value.trim();
+                  const next = Number(raw);
+                  onSeedChange(
+                    raw !== "" &&
+                      Number.isInteger(next) &&
+                      next >= 0 &&
+                      next <= 2 ** 31 - 1
+                      ? next
+                      : null,
+                  );
+                }}
+              />
+            </div>
+            <p className="text-ui-12 text-muted-foreground">
+              {t("managedEngines.seedHelp")}
             </p>
           </div>
           <EngineInstall
