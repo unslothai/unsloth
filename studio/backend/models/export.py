@@ -59,6 +59,19 @@ class LoadCheckpointRequest(BaseModel):
         None,
         description = "Hugging Face token used to scan/load gated checkpoints and their base models.",
     )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
+
+
+class ExportCancelRequest(BaseModel):
+    expected_op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Stop only the operation started with this op_id; one not started yet is refused when it starts.",
+    )
 
 
 class ExportStatusResponse(BaseModel):
@@ -186,6 +199,17 @@ class ExportCommonOptions(BaseModel):
         None,
         description = "HuggingFace model ID of the base model (for model card metadata)",
     )
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
 
 class ExportMergedModelRequest(ExportCommonOptions):
@@ -223,6 +247,18 @@ class ExportBaseModelRequest(ExportCommonOptions):
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
+
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
     save_directory: str = Field(
         ...,

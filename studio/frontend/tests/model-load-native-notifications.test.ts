@@ -40,6 +40,8 @@ type EnvOptions = {
   pluginGranted?: boolean;
   answer?: "granted" | "denied";
   stub?: StubMode;
+  /** What the plugin's desktop backend answers to is_permission_granted; unset = no backend. */
+  backend?: boolean;
 };
 
 type Control = {
@@ -47,6 +49,7 @@ type Control = {
   granted: boolean;
   mode: StubMode;
   requests: number;
+  backend?: boolean;
 };
 
 let generation = 0;
@@ -66,6 +69,7 @@ async function load(options: EnvOptions) {
     pluginGranted = false,
     answer = "granted",
     stub = "ok",
+    backend,
   } = options;
 
   const webviewRequests = { count: 0 };
@@ -95,6 +99,7 @@ async function load(options: EnvOptions) {
   control.granted = pluginGranted;
   control.mode = stub;
   control.requests = 0;
+  control.backend = backend;
 
   const mod = (await import(`${MODULE}?bust=${generation}`)) as {
     notifyNative: (options: {
@@ -240,19 +245,27 @@ test("a denied grant sends nothing and does not reject", async () => {
   assert.deepEqual(mod.control.sent, [], "sent a notification after a denial");
 });
 
-// The plugin shim reports granted on Linux/macOS and denied on Windows (plugins-workspace#3512).
+// tauri_plugin_notification replaces window.Notification with its own shim, so
+// these are the shim's states, not hypothetical browser ones: Linux and macOS
+// report "granted" with no prompt (desktop request_permission is hardcoded to
+// Granted), Windows reports "denied" because the shim short-circuits its own
+// bootstrap (tauri-apps/plugins-workspace#3512) while the backend still grants,
+// so the backend's answer wins. Moving the prime off the chat path must not
+// change what training does.
 test("each desktop platform's shim state behaves the same with and without a chat prime", async () => {
   const platforms = [
     { name: "linux/macOS", webview: "granted" as const, expected: ["Training finished"] },
-    { name: "windows", webview: "denied" as const, expected: [] },
+    { name: "windows", webview: "denied" as const, expected: ["Training finished"] },
   ];
 
   for (const platform of platforms) {
-    const primedByChat = await load({ tauri: true, webview: platform.webview });
+    // A chat-side prime first, as the app behaved before the split.
+    const primedByChat = await load({ tauri: true, webview: platform.webview, backend: true });
     await primedByChat.primeNativeNotificationPermission();
     await trainingFinished(primedByChat);
 
-    const trainingOnly = await load({ tauri: true, webview: platform.webview });
+    // Training on its own, as it behaves now.
+    const trainingOnly = await load({ tauri: true, webview: platform.webview, backend: true });
     await trainingOnly.primeNativeNotificationPermission();
     await trainingFinished(trainingOnly);
 

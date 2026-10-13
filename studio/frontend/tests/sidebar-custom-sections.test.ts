@@ -693,9 +693,11 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
   ]);
   assert.equal((menu.match(/<DropdownMenuSeparator \/>/g) ?? []).length, 2);
   assert.match(menu, /row\.kind === "chat" \? \[row\.item\] : \[\]/);
-  assert.match(menu, /disabled=\{!threadIds\.some\(\(id\) => unreadThreadIds\.has\(id\)\)\}/);
-  assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(threadIds\)\}/);
-  assert.match(menu, /disabled=\{chats\.length === 0\} onSelect=\{\(\) => void archiveChatItems\(chats\)\}/);
+  // the whole section's unread chats, not only its loaded pages
+  assert.match(menu, /disabled=\{unreadInSection\.length === 0\}/);
+  assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(unreadInSection\)\}/);
+  assert.match(menu, /disabled=\{chats\.length === 0\}\n\s*onSelect=\{\(\) => void archiveSection\(\)\.catch\(\(\) => undefined\)\}/);
+  assert.match(menu, /await archiveChatItems\(all\);/);
   assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*icon=\{Tick02Icon\}[\s\S]*icon=\{Archive03Icon\}[\s\S]*icon=\{Cancel01Icon\}/);
   assert.doesNotMatch(menu, /variant="destructive"|renderSortSubmenu/);
 });

@@ -42,6 +42,8 @@ export interface ManagedDownload {
   external?: boolean;
   activity?: string;
   details?: string[];
+  /** Folder this job downloads into; null means the Models folder. */
+  downloadDir?: string | null;
 }
 
 export interface DownloadRequest {
@@ -56,6 +58,8 @@ export interface DownloadRequest {
   checkpoint?: boolean;
   callerToast?: CallerToast;
   skipXetNotice?: boolean;
+  /** Download to folder captured when the start was requested; null means the Models folder. */
+  downloadDir?: string | null;
 }
 
 export interface DownloadPresentation {

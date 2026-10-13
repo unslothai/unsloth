@@ -3,6 +3,7 @@
 
 import {
   getViewportBackdropOpen,
+  getViewportBackdropTone,
   subscribeViewportBackdrop,
 } from "@/components/tauri/viewport-backdrop";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -31,6 +32,10 @@ const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
 
 function subscribeNever(): () => void {
   return () => undefined;
+}
+
+function noBackdropTone(): null {
+  return null;
 }
 
 function backdropClosed(): boolean {
@@ -300,6 +305,11 @@ export function WindowTitlebar({
     enabled ? getViewportBackdropOpen : backdropClosed,
     backdropClosed,
   );
+  const backdropTone = useSyncExternalStore(
+    enabled ? subscribeViewportBackdrop : subscribeNever,
+    enabled ? getViewportBackdropTone : noBackdropTone,
+    noBackdropTone,
+  );
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -492,6 +502,7 @@ export function WindowTitlebar({
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
         data-viewport-backdrop-open={backdropOpen ? "" : undefined}
+        data-viewport-backdrop-tone={backdropTone ?? undefined}
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (

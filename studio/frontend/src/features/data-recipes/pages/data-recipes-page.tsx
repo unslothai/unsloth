@@ -551,7 +551,7 @@ export function DataRecipesPage(): ReactElement {
       <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
         <DialogContent
           className="sm:max-w-5xl"
-          overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+          overlayClassName="bg-background/45"
         >
           <DialogHeader>
             <DialogTitle>Learning Recipes</DialogTitle>

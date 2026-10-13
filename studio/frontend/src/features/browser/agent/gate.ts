@@ -206,10 +206,11 @@ export function gateElement(
     if (blocked) return { kind: "block", reason: blocked };
   }
   if (ruleFor(pageUrl, permissions).rule.actions === "allow") return ALLOW;
-  if (submits && info.formHasPassword) {
+  // Only a filled password makes it a sign-in; with the field empty, it still asks as any form send.
+  if (submits && info.formHasPassword && info.formPasswordFilled) {
     return { kind: "ask", ask: "signIn", host, name: "", prompt: `Sign in on ${host}?`, detail: describe(info) };
   }
-  if (submits && info.formMethod === "post") {
+  if (submits && (info.formHasPassword || info.formMethod === "post")) {
     return { kind: "ask", ask: "submit", host, name: "", prompt: `Submit this form on ${host}?`, detail: describe(info) };
   }
   // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.

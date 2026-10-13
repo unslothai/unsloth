@@ -368,7 +368,7 @@ export function TrainingStartOverlay({
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
             </Button>
-            <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+            <AlertDialogContent overlayClassName="bg-background/40">
               <AlertDialogHeader>
                 <AlertDialogTitle>{t("studio.training.cancelTitle")}</AlertDialogTitle>
                 <AlertDialogDescription>

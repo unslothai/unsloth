@@ -2350,7 +2350,7 @@ export function DiffusionTrainPanel({
       </div>
 
       <AlertDialog open={stopDialogOpen} onOpenChange={setStopDialogOpen}>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent overlayClassName="bg-background/40">
           <AlertDialogHeader>
             <AlertDialogTitle>Stop training?</AlertDialogTitle>
             <AlertDialogDescription>

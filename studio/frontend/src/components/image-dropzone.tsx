@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageAdd02Icon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { useImageCrop } from "@/hooks/use-image-crop";
+import { MAX_UPLOAD_IMAGE_SIDE, fitImageDataUrl } from "@/lib/image-fit";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -27,12 +29,17 @@ export function ImageDropzone({
   label = "Click or drop an image",
   removeLabel = "Remove source image",
   className,
+  maxSide = MAX_UPLOAD_IMAGE_SIDE,
+  cropSubject,
 }: {
   value: string | null;
   onChange: (dataUrl: string | null) => void;
   label?: string;
   removeLabel?: string;
   className?: string;
+  /** Larger uploads are downscaled to this per side; null keeps them as chosen. */
+  maxSide?: number | null;
+  cropSubject?: string;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -63,14 +70,20 @@ export function ImageDropzone({
       selection.current += 1;
       const claimed = selection.current;
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         if (claimed !== selection.current) return;
-        onChange(typeof reader.result === "string" ? reader.result : null);
+        if (typeof reader.result !== "string") {
+          onChange(null);
+          return;
+        }
+        const dataUrl = maxSide ? await fitImageDataUrl(reader.result, maxSide) : reader.result;
+        if (!mounted.current || claimed !== selection.current) return;
+        onChange(dataUrl);
       };
       reader.onerror = () => toast.error("Could not read the image");
       reader.readAsDataURL(file);
     },
-    [onChange],
+    [onChange, maxSide],
   );
 
   // Tauri suppresses the webview drop event; desktop drops arrive as native paths.
@@ -89,15 +102,27 @@ export function ImageDropzone({
         const intent = await registerNativeAttachmentPath(path);
         const file = await readNativeAttachmentFile(intent.path.token);
         if (!mounted.current || claimed !== selection.current) return;
-        onChange(`data:${file.mimeType};base64,${file.base64}`);
+        const raw = `data:${file.mimeType};base64,${file.base64}`;
+        const dataUrl = maxSide ? await fitImageDataUrl(raw, maxSide) : raw;
+        if (!mounted.current || claimed !== selection.current) return;
+        onChange(dataUrl);
       } catch (error) {
         toast.error("Could not read the image", {
           description: error instanceof Error ? error.message : String(error),
         });
       }
     },
+    [onChange, maxSide],
+  );
+
+  const applyCrop = useCallback(
+    (dataUrl: string) => {
+      selection.current += 1;
+      onChange(dataUrl);
+    },
     [onChange],
   );
+  const { openCrop, cropDialog } = useImageCrop(value, applyCrop, cropSubject ?? "");
 
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => void readNativePath(paths[0]),
@@ -121,6 +146,26 @@ export function ImageDropzone({
             backgroundSize: "16px 16px",
           }}
         />
+        {cropSubject && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  aria-label={`Crop ${cropSubject.charAt(0).toLowerCase()}${cropSubject.slice(1)}`}
+                  className="absolute right-10 top-1.5 size-7"
+                  onClick={openCrop}
+                >
+                  <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Crop</TooltipContent>
+            </Tooltip>
+            {cropDialog}
+          </>
+        )}
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button

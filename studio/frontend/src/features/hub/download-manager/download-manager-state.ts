@@ -164,6 +164,9 @@ function sanitizePersistedJob(
     ...(isResolvedTransport(value.cancelTransport)
       ? { cancelTransport: value.cancelTransport }
       : {}),
+    ...(typeof value.downloadDir === "string" || value.downloadDir === null
+      ? { downloadDir: value.downloadDir }
+      : {}),
   };
 }
 
@@ -222,6 +225,7 @@ function toPersistedJob(
     ...(job.cancelTransport !== undefined
       ? { cancelTransport: job.cancelTransport }
       : {}),
+    ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
   };
 }
 

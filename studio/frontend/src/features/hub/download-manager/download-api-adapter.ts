@@ -35,6 +35,7 @@ import type {
   ManagedDownload,
   ProgressLike,
 } from "./download-manager-types";
+import { downloadDirForRequest } from "./download-location";
 import {
   type PollSignal,
   disposableTimeoutSignal,
@@ -112,6 +113,7 @@ export function apiStart(
         hf_token: hfToken,
         use_xet: useXet,
         transport_mode,
+        download_dir: downloadDirForRequest(req.downloadDir),
       });
 }
 

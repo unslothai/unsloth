@@ -19,7 +19,7 @@ import {
   referenceImageDataUrlError,
   referenceImageDataUrls,
   stageReferenceImage,
-} from "../src/features/video/reference-image-crop.ts";
+} from "../src/lib/image-crop.ts";
 
 test("crop rectangles stay within natural image pixels in either drag direction", () => {
   assert.deepEqual(

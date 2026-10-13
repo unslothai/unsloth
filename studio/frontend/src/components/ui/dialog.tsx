@@ -64,7 +64,7 @@ function DialogOverlay({
       data-slot="dialog-overlay"
       data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
-        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 supports-backdrop-filter:backdrop-blur-[2px] duration-100  inset-0 isolate z-50",
+        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100  inset-0 isolate z-50",
         position === "fixed" ? "fixed" : "absolute",
         className,
       )}
@@ -81,6 +81,7 @@ function DialogContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  overlayTone,
   onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
@@ -89,6 +90,8 @@ function DialogContent({
   position?: "fixed" | "absolute";
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
+  /** A darker overlay names it, so the custom titlebar dims to match. */
+  overlayTone?: "strong";
 }) {
   const resolvedContainer = container ?? null;
   const inheritedGlow = useContext(DropdownGlowContext);
@@ -102,6 +105,7 @@ function DialogContent({
         <DialogOverlay
           className={overlayClassName}
           position={overlayPosition ?? position}
+          data-viewport-backdrop-tone={overlayTone}
         />
         <DialogPrimitive.Content
           data-slot="dialog-content"

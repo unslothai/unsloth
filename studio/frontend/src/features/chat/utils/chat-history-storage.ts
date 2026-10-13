@@ -489,6 +489,13 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
+/** Runs this session's legacy import; true once the server alone holds every chat. */
+export async function settleLegacyChatImport(): Promise<boolean> {
+  await importLegacyChatsIfNeeded().catch(() => undefined);
+  await Promise.allSettled([...pendingLegacyThreadImports]);
+  return isLegacyChatImportDone();
+}
+
 async function importLegacyChatsIfNeeded(): Promise<void> {
   // Session cache only; localStorage is not consulted so a studio.db wipe re-imports.
   if (legacyChatImportPromise) return legacyChatImportPromise;

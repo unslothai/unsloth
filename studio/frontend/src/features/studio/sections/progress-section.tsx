@@ -690,7 +690,7 @@ function TrainingHeaderActions({
         </Button>
         <AlertDialogContent
           className="w-max max-w-[95vw]"
-          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+          overlayClassName="bg-background/40"
         >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>

@@ -158,7 +158,7 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /visibleProjectRecords\.map\(\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
+    /items=\{visibleProjectRecords\}[\s\S]{0,200}renderItem=\{\(project\) =>\n\s*renderProjectFolderRow\(project, \{\n\s*scope: PROJECT_ORDER_SCOPE,\n\s*orderedIds: projectRowIds,/,
   );
   const records = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
@@ -333,7 +333,7 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
     /if \(listsChats\) toggleProjectCollapsed\(project\.id\);\n\s*else openProject\(project\.id\);/,
   );
   for (const gated of [
-    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && \(\n\s*<ProgressiveRows\n\s*items=\{visibleChats\}/,
     /\{expanded && projectChats\.length === 0 && \(/,
     /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
   ]) {

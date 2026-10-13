@@ -1421,8 +1421,12 @@ test("the published chat lists stop where the sidebar stops", async () => {
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
-  assert.ok(selectAll !== -1, "selectAllChats moved");
+  assert.match(
+    APP_SIDEBAR,
+    /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
+  );
+  const selectAll = APP_SIDEBAR.indexOf("const selectRenderedChats = useCallback(");
+  assert.ok(selectAll !== -1, "selectRenderedChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
     /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,

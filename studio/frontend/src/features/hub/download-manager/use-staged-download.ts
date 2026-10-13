@@ -6,6 +6,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { toast } from "@/lib/toast";
 
 import { DOWNLOAD_KIND } from "./constants";
+import { downloadDirForRequest } from "./download-location";
 import { downloadManager } from "./download-manager-controller";
 import {
   scopedDownloadInventoryKind,
@@ -29,6 +30,8 @@ export interface StagedDownloadEntry {
   /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
    *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
   ggufVariant?: string | null;
+  /** Download to folder pinned when the plan was staged, so one model never spans two folders. */
+  downloadDir?: string | null;
 }
 
 function entryKey(entry: StagedDownloadEntry): string {
@@ -130,6 +133,7 @@ export function useStagedDownload({
               variant: current.ggufVariant,
               expectedBytes: current.bytes,
               skipXetNotice: laterEntry,
+              downloadDir: current.downloadDir,
             }
           : {
               kind: DOWNLOAD_KIND.MODEL,
@@ -141,6 +145,7 @@ export function useStagedDownload({
               files: current.files,
               checkpoint: current.checkpoint,
               skipXetNotice: laterEntry,
+              downloadDir: current.downloadDir,
             },
       );
       if (!active) return;
@@ -173,7 +178,12 @@ export function useStagedDownload({
   const stage = useCallback((entries: StagedDownloadEntry[]): number => {
     generation.current += 1;
     inFlight.current = null;
-    setQueue(entries.length > 0 ? entries : null);
+    const downloadDir = downloadDirForRequest() ?? null;
+    setQueue(
+      entries.length > 0
+        ? entries.map((entry) => ({ downloadDir, ...entry }))
+        : null,
+    );
     setStaged({
       bytes: entries.reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0),
       plan: generation.current,

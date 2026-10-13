@@ -205,6 +205,7 @@ export async function startModelDownload(payload: {
   scope_id?: string | null;
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
+  download_dir?: string;
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {

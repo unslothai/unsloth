@@ -131,6 +131,50 @@ def test_hopper_auto_prefers_fa3_then_fa4(fake, monkeypatch):
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
 
 
+@pytest.mark.parametrize("hidden_size", [896, 1024, fi._HOPPER_AUTO_MIN_HIDDEN - 8])
+def test_hopper_auto_keeps_bundled_flash_for_narrow_models(fake, monkeypatch, hidden_size):
+    # H100: FA3's extra host time per call outweighs its kernel win while a narrow model is launch bound.
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    narrow = _model(hidden_size = hidden_size, head_dim = 128)
+    assert fi.maybe_activate_flash_attention_impl(narrow) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert str(hidden_size) in fi.FLASH_IMPL_STATE["reason"]
+    # No model: nothing to size, so auto stays off on sm90.
+    assert fi.maybe_activate_flash_attention_impl(None) is None
+    # fa3 / fa4 still opt in for any width.
+    for value, impl in (("fa3", "FA3"), ("fa4", "FA4")):
+        monkeypatch.setenv(fi._ENV, value)
+        assert fi.maybe_activate_flash_attention_impl(narrow) == impl
+        fi.deactivate_flash_attention_impl()
+    # sm100 is not gated on width.
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(narrow) == "FA4"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_hopper_auto_width_gate_reads_text_config_and_restores(fake, monkeypatch):
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    wide = fi._HOPPER_AUTO_MIN_HIDDEN
+    multimodal = types.SimpleNamespace(
+        config = types.SimpleNamespace(
+            text_config = _config(hidden_size = wide),
+            vision_config = types.SimpleNamespace(
+                hidden_size = 1152, num_attention_heads = 16, head_dim = 72
+            ),
+        ),
+        dtype = torch.bfloat16,
+    )
+    assert fi.maybe_activate_flash_attention_impl(multimodal) == "FA3"
+    # A later narrow model restores torch's bundled flash.
+    assert fi.maybe_activate_flash_attention_impl(_model(hidden_size = 1024)) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    assert (
+        fi._hidden_size(types.SimpleNamespace(config = types.SimpleNamespace(hidden_size = True)))
+        is None
+    )
+
+
 def test_hopper_auto_tries_fa4_when_fa3_fails_its_probe(fake, monkeypatch):
     monkeypatch.setattr(fi, "_device_majors", lambda: {9})
     tried = []
@@ -607,3 +651,21 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(
         assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before + 1
     else:
         assert out == ("orig", None) and not used
+
+
+@pytest.mark.parametrize("key", ["llm_config", "language_config"])
+def test_hidden_size_reads_a_decoder_exposed_only_as_llm_or_language_config(key):
+    # InternVL / Nemotron-style: a narrow vision tower, the wide decoder only under llm_config / language_config.
+    config = types.SimpleNamespace(vision_config = types.SimpleNamespace(hidden_size = 1024))
+    setattr(config, key, types.SimpleNamespace(hidden_size = 4096))
+    assert fi._hidden_size(types.SimpleNamespace(config = config)) == 4096
+
+
+def test_hidden_size_follows_get_text_config():
+    class Config:
+        vision_config = types.SimpleNamespace(hidden_size = 1152)
+
+        def get_text_config(self):
+            return types.SimpleNamespace(hidden_size = 3072)
+
+    assert fi._hidden_size(types.SimpleNamespace(config = Config())) == 3072

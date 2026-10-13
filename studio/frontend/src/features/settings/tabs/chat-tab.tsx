@@ -16,6 +16,7 @@ import {
   type PlusMenuItemId,
   normaliseDisplayVisibility,
   refreshModelDisclaimerPreference,
+  requestReplyFinishedPermission,
   saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -327,6 +328,12 @@ export function ChatTab() {
   const setShowScrollToBottomButton = useChatPreferencesStore(
     (state) => state.setShowScrollToBottomButton,
   );
+  const notifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.notifyWhenReplyFinishes,
+  );
+  const setNotifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.setNotifyWhenReplyFinishes,
+  );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
   );
@@ -528,6 +535,24 @@ export function ChatTab() {
             aria-label={t("settings.chat.scrollToBottomButton")}
             checked={showScrollToBottomButton}
             onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
           />
         </SettingsRow>
       </SettingsSection>

@@ -54,11 +54,19 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
+  samplers?: DiffusionSamplerOption[];
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
+}
+
+export interface DiffusionSamplerOption {
+  id: string;
+  label: string;
+  schedule_types: string[];
 }
 
 export interface DiffusionConditioning {
@@ -162,6 +170,8 @@ export interface DiffusionGenerateRequest {
   localized_edit?: { mode: LocalizedEditMode; image: string };
   loras?: LoraSpecInput[];
   controlnet?: ControlNetSpecInput;
+  sampler?: string;
+  schedule_type?: string;
 }
 
 export interface LoraSpecInput {
@@ -234,6 +244,9 @@ export interface GalleryImage {
   reference_image_count?: number | null;
   reference_resolution?: number | null;
   localized_edit?: LocalizedEditMode | null;
+  // null = the model's shipped scheduler; schedule_type is the resolved schedule.
+  sampler?: string | null;
+  schedule_type?: string | null;
   created_at: number;
   pinned?: boolean;
   archived?: boolean;

@@ -33,7 +33,7 @@ import {
   moveCropRect,
   rasterizeReferenceImageCrop,
   referenceImageDataUrlError,
-} from "./reference-image-crop";
+} from "@/lib/image-crop";
 
 type CropHandle = "north-west" | "north-east" | "south-west" | "south-east";
 
@@ -68,16 +68,19 @@ function arrowDelta(key: string, step: number): CropPoint | null {
   return null;
 }
 
+/** A local freeform crop editor for MiniMax-H3 picture references and image page inputs. */
 export function ReferenceImageEditor({
   open,
   picture,
   pictureNumber,
+  subject,
   onOpenChange,
   onApply,
 }: {
   open: boolean;
   picture: StagedReferenceImage | null;
-  pictureNumber: number;
+  pictureNumber?: number;
+  subject?: string;
   onOpenChange: (open: boolean) => void;
   onApply: (dataUrl: string, crop: CropRect | null) => void;
 }) {
@@ -97,6 +100,10 @@ export function ReferenceImageEditor({
     message: string;
   } | null>(null);
   const [applying, setApplying] = useState(false);
+  const name = subject
+    ? subject.charAt(0).toLowerCase() + subject.slice(1)
+    : `Picture ${pictureNumber ?? 1}`;
+  const lowerName = name.charAt(0).toLowerCase() + name.slice(1);
   const editorActions = useMemo(
     () => createReferenceImageEditorActions({ onApply, onOpenChange }),
     [onApply, onOpenChange],
@@ -298,7 +305,7 @@ export function ReferenceImageEditor({
     >
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Crop Picture {pictureNumber}</DialogTitle>
+          <DialogTitle>Crop {name}</DialogTitle>
           <DialogDescription>
             Drag over the picture to choose what to keep. Move the selection or
             resize it from its corners. Choose Use full image to clear any crop.
@@ -311,7 +318,7 @@ export function ReferenceImageEditor({
               <div className="relative inline-block max-h-full max-w-full shrink-0">
                 <img
                   src={picture.originalDataUrl}
-                  alt={`Crop source ${pictureNumber}`}
+                  alt={subject ? `Crop source for ${lowerName}` : `Crop source ${pictureNumber}`}
                   draggable={false}
                   className="block max-h-[48vh] max-w-full select-none object-contain"
                 />
@@ -319,7 +326,7 @@ export function ReferenceImageEditor({
                   <div
                     role="group"
                     tabIndex={0}
-                    aria-label={`Crop selection for picture ${pictureNumber}. Drag to select an area. Drag the selection to move it, or drag a corner to resize it.`}
+                    aria-label={`Crop selection for ${lowerName}. Drag to select an area. Drag the selection to move it, or drag a corner to resize it.`}
                     onPointerDown={handlePointerDown}
                     onPointerMove={handlePointerMove}
                     onPointerUp={finishPointer}

@@ -26,6 +26,7 @@ export interface ProjectRecord {
   archived: boolean;
   createdAt: number;
   updatedAt: number;
+  lastActivityAt?: number | null;
 }
 
 export interface ThreadRecord {

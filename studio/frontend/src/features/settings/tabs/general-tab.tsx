@@ -74,7 +74,10 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
-import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import {
+  DOWNLOAD_DIR_STORAGE_KEY,
+  TRANSPORT_MODE_STORAGE_KEY,
+} from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
@@ -110,6 +113,8 @@ const PREFS_KEYS: string[] = [
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
   // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
+  // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
