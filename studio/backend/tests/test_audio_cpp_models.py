@@ -2182,7 +2182,6 @@ def test_a_failed_hub_listing_does_not_record_a_cached_guess(hub, monkeypatch):
     assert acm._job_rows == {}
 
 
-
 def test_a_folder_of_an_unknown_family_still_records_its_row(hub, monkeypatch):
     _online(monkeypatch, "Mystery-GGUF/mystery-q8_0.gguf")
     row = f"{AUDIO_CPP_REPO}/Mystery-GGUF"
@@ -2190,6 +2189,7 @@ def test_a_folder_of_an_unknown_family_still_records_its_row(hub, monkeypatch):
     target = acm.download_target(row, "Q8_0")
     assert target == (AUDIO_CPP_REPO, "Mystery-GGUF/mystery-q8_0")
     assert acm._job_rows == {(AUDIO_CPP_REPO.lower(), "mystery-gguf/mystery-q8_0"): (row, "Q8_0")}
+
 
 def test_active_downloads_name_umbrella_jobs_by_row(hub, monkeypatch):
     import asyncio
