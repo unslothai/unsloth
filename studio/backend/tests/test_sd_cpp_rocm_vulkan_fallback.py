@@ -106,6 +106,14 @@ def fake_settings(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _roomy_host_ram(monkeypatch):
+    """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    from utils import host_memory
+    monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+
+
+@pytest.fixture(autouse = True)
 def _clean_process_state(monkeypatch):
     """raising = False so these still report what they measured on a tree without the note."""
     from core.inference import sd_cpp_backend
@@ -2467,7 +2475,8 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
     source = inspect.getsource(video_mod)
     load = source[source.index("allow_install = _install_allowed()") :]
     assert "selected_card = selected_card_identity(gpu_ordinal)" in load
-    assert "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
+    assert "requested_accelerator = _install_accelerator_for(target.backend)" in load
+    assert "preferred_accelerator(requested_accelerator, selected_card)" in load
     start = 0
     guarded = 0
     while True:

@@ -20,6 +20,7 @@ interface scope.
 from __future__ import annotations
 
 import asyncio
+import functools
 import ipaddress
 import platform
 import socket
@@ -229,7 +230,15 @@ def _bind_listener(address: str, port: int) -> socket.socket:
 
 def _listener_config(app, host: str, port: int):
     from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
-    return uvicorn.Config(
+
+    # a TLS launch must not reopen plain HTTP on the network
+    tls = getattr(getattr(app, "state", None), "studio_tls", None)
+    if tls is not None:
+        from utils.studio_tls import StudioTLSConfig
+        config_class = functools.partial(StudioTLSConfig, tls = tls)
+    else:
+        config_class = uvicorn.Config
+    return config_class(
         app,
         host = host,
         port = port,

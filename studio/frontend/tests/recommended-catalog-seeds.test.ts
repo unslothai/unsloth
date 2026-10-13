@@ -14,6 +14,8 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import { classifyGgufFit } from "../src/lib/gguf-fit.ts";
 import {
+  coerceFormatFilter,
+  formatFilterValues,
   hfModelFitsDevice,
   loadScopedGpu,
   orderRecommendedRows,
@@ -674,4 +676,33 @@ test("an empty Recommended list names a failed search or unreachable hub, not an
     [state(false, null, "available"), state(false, "Failed to fetch", "available"), state(false, null, "unavailable"), state(false, null, "probing"), state(true, "Failed to fetch", "unavailable")],
     ["empty", "failed", "failed", "failed", "loading"],
   );
+});
+
+test("the format menu offers MLX and NPU only where they can run", () => {
+  assert.deepEqual(formatFilterValues({ npu: true, mlx: true }), [
+    "all",
+    "gguf",
+    "mlx",
+    "safetensors",
+    "npu",
+  ]);
+  assert.deepEqual(formatFilterValues({ npu: false, mlx: false }), [
+    "all",
+    "gguf",
+    "safetensors",
+  ]);
+  assert.deepEqual(formatFilterValues({ npu: true, mlx: false }), [
+    "all",
+    "gguf",
+    "safetensors",
+    "npu",
+  ]);
+});
+
+test("a remembered filter the menu no longer offers falls back to All", () => {
+  const linux = formatFilterValues({ npu: false, mlx: false });
+  assert.equal(coerceFormatFilter("mlx", linux), "all");
+  assert.equal(coerceFormatFilter("npu", linux), "all");
+  assert.equal(coerceFormatFilter("gguf", linux), "gguf");
+  assert.equal(coerceFormatFilter("mlx", formatFilterValues({ npu: false, mlx: true })), "mlx");
 });

@@ -231,25 +231,51 @@ def test_an_older_unsloth_zoo_degrades_instead_of_crashing(modules_json):
 
 
 def test_both_weights_at_root_call_sites_go_through_the_check():
-    """`weights_at_root = True` is passed from exactly two places (vision.py and
-    llama.py), both reaching the prune through maybe_prefetch_hf_snapshot, so one
-    carve-out covers both. A third call site, or an inlined copy of the patterns,
-    fails here instead of leaving half the loaders pruning ST weights."""
+    """`weights_at_root = True` is passed only from vision.py and llama.py, and every
+    such call reaches the prune through maybe_prefetch_hf_snapshot (directly, or via
+    resolve_vllm_model_path for the vLLM path, #13486), so one carve-out covers them
+    all. A call into anything else, or an inlined copy of the patterns, fails here
+    instead of leaving some loader pruning ST weights."""
+    # AST, not grep: the names also appear in docstring prose.
+    import ast
+
+    routed = {"maybe_prefetch_hf_snapshot", "resolve_vllm_model_path"}
     root = Path(U.__file__).resolve().parents[1]
     sites = []
     for p in root.rglob("*.py"):
         if "tests" in p.parts:
             continue
-        for n, line in enumerate(p.read_text(encoding = "utf-8").splitlines(), 1):
-            if "weights_at_root = True" in line:
-                sites.append(f"{p.name}:{n}")
-    assert sorted(s.split(":")[0] for s in sites) == ["llama.py", "vision.py"], sites
-
-    # AST, not grep: the name also appears in prose inside a docstring, and a text count would police the documentation
-    # instead of the code.
-    import ast
+        for n in ast.walk(ast.parse(p.read_text(encoding = "utf-8"))):
+            if not isinstance(n, ast.Call):
+                continue
+            for k in n.keywords:
+                if (
+                    k.arg == "weights_at_root"
+                    and isinstance(k.value, ast.Constant)
+                    and k.value.value is True
+                ):
+                    callee = getattr(n.func, "id", getattr(n.func, "attr", None))
+                    sites.append((p.name, n.lineno, callee))
+    assert {s[0] for s in sites} == {"llama.py", "vision.py"}, sites
+    assert all(s[2] in routed for s in sites), sites
+    # Each loader's normal and vLLM paths, so losing the keyword on either one fails too.
+    expected = {(f, callee) for f in ("llama.py", "vision.py") for callee in routed}
+    assert expected <= {(s[0], s[2]) for s in sites}, sites
 
     tree = ast.parse(Path(U.__file__).read_text(encoding = "utf-8"))
+    resolver = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "resolve_vllm_model_path"
+    )
+    # `**kwargs` forwarded, or the resolver could drop weights_at_root on the way.
+    assert any(
+        isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "maybe_prefetch_hf_snapshot"
+        and any(k.arg is None for k in c.keywords)
+        for c in ast.walk(resolver)
+    ), "resolve_vllm_model_path no longer forwards its kwargs to maybe_prefetch_hf_snapshot"
+
     loads = [
         n
         for n in ast.walk(tree)

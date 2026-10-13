@@ -39,14 +39,14 @@ register("image", "png jpg jpeg gif webp avif bmp svg heic heif tif tiff ico");
 register("pdf", "pdf");
 register(
   "audio",
-  "mp3 mp2 wav m4a ogg oga opus flac aac aiff aif aifc caf wma amr",
+  "mp3 mp2 wav m4a m4b ogg oga opus flac aac aiff aif aifc caf wma amr weba mka",
 );
 register("video", "mp4 m4v mov mkv avi webm 3gp 3g2 mpg mpeg wmv");
 register("word", "doc docx docm dot dotx dotm odt ott rtf gdoc");
-register("document", "pages epub");
-register("spreadsheet", "csv tsv xls xlsx xlsm ods numbers");
-register("presentation", "ppt pptx odp key");
-register("web", "html htm xhtml mhtml");
+register("document", "pages epub msg eml");
+register("spreadsheet", "csv tsv xls xlsx xlsm xltx xltm ods ots numbers");
+register("presentation", "ppt pptx pptm ppsx ppsm potx potm odp otp key");
+register("web", "html htm xhtml xht mht mhtml");
 register(
   "code",
   "py pyi ipynb js mjs cjs ts mts cts tsx jsx json jsonl c h cc cpp cxx hpp cs java kt kts go rs rb php swift scala sh bash zsh fish ps1 bat cmd css scss sass less sql yaml yml toml ini cfg conf xml r lua dart vue svelte gradle cmake proto graphql gql pl hs ex exs erl clj zig nim jl m mm",
