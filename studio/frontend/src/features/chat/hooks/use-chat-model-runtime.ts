@@ -2411,12 +2411,30 @@ export function useChatModelRuntime() {
                 ? validation.managed_engine_offer
                 : null;
             if (engineOffer) {
+              // Nothing loads until the dialog is answered; the toast must not say otherwise.
+              toast(null, {
+                id: toastId,
+                ...modelLoadToastOptions(
+                  renderLoadDescription(
+                    "Waiting for an engine…",
+                    `Choose how to run ${displayName}.`,
+                  ),
+                ),
+              });
               const engine = await confirmManagedEngineIfNeeded(
                 modelId,
                 engineOffer,
                 abortCtrl.signal,
               );
               if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+              if (engine) {
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription("Starting model…", loadingDescription),
+                  ),
+                });
+              }
               if (!engine) {
                 throw new Error(
                   `${displayName} is quantized with ${engineOffer.quantization}, which the default engine cannot run. Set Inference engine to ${engineOffer.engines[0] === "sglang" ? "SGLang" : "vLLM"} in its run settings to load it.`,

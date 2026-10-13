@@ -16,6 +16,7 @@ import { SettingsSection } from "@/features/settings/components/settings-section
 import { useT } from "@/i18n";
 import { isEngineGpuDevice, useGpuDevices } from "@/hooks/use-gpu-info";
 import { formatGiB } from "@/lib/memory/format";
+import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import {
   type EngineStatus,
@@ -40,10 +41,13 @@ const PRECISION_LABELS = [
 export function EngineInstall({
   engine,
   management = false,
+  centered = false,
   onUse,
 }: {
   engine: EngineStatus;
   management?: boolean;
+  /** Centre text and buttons, for the load dialog; Settings keeps its row layout. */
+  centered?: boolean;
   onUse?: () => void;
 }) {
   const t = useT();
@@ -92,7 +96,7 @@ export function EngineInstall({
     }
   };
   return (
-    <div className="space-y-2 text-ui-12">
+    <div className={cn("space-y-2 text-ui-12", centered && "text-center")}>
       {/* Settings shows these under the engine name (engineNote). */}
       {!management && !(isOwner || engine.installed) && (
         <p className="text-muted-foreground">
@@ -105,7 +109,10 @@ export function EngineInstall({
       {running ? (
         <output
           aria-live="polite"
-          className="flex items-center justify-between gap-3"
+          className={cn(
+            "flex items-center gap-3",
+            centered ? "justify-center" : "justify-between",
+          )}
         >
           <span>{t("managedEngines.installing")}</span>
           <Button
@@ -118,7 +125,12 @@ export function EngineInstall({
           </Button>
         </output>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            centered && "justify-center",
+          )}
+        >
           {engine.installed && (
             <span>
               {t("managedEngines.installed", {
@@ -192,7 +204,7 @@ export function EngineInstall({
             <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
           )}
           <p>{t("managedEngines.background")}</p>
-          <div className="flex gap-2">
+          <div className={cn("flex gap-2", centered && "justify-center")}>
             <Button
               size="sm"
               disabled={busy}
