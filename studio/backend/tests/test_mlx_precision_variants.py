@@ -14,10 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hub.services.models import gguf_variants
-from hub.utils import mlx_variants
 from hub.utils.snapshot_filters import (
-    PRECISION_FOLDER_SOURCE,
-    precision_variant_subfolders,
     resolve_snapshot_ignore_patterns_for_files,
     snapshot_download_size,
 )
@@ -56,6 +53,8 @@ def _siblings(sizes = _SIZES):
 
 
 def test_precision_folders_are_whole_checkpoints_with_a_precision_name():
+    from hub.utils.snapshot_filters import precision_variant_subfolders
+
     folders = precision_variant_subfolders(_SIZES)
     assert sorted(folders) == ["2-bit", "4-bit", "6-bit", "8-bit"]
     for name in ("4bit", "8bit", "mlx-4bit", "2bit-lite", "bf16", "MLX-8BIT", "q4"):
@@ -86,6 +85,7 @@ def test_root_download_skips_the_other_precisions():
 
 
 def test_frontend_size_estimate_mirrors_the_precision_folder_rule():
+    from hub.utils.snapshot_filters import PRECISION_FOLDER_SOURCE
     source = (
         Path(__file__).resolve().parents[2]
         / "frontend"
@@ -126,15 +126,26 @@ def _fake_hub(
             )
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr(mlx_variants, "cached_precision_folder", lambda repo, folder: None)
+    # Nothing on disk, so no folder reads as downloaded.
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
     return calls
 
 
+def _no_gguf_rows(monkeypatch):
+    empty = gguf_variants.VariantsAnswer(gguf_variants.GgufVariantsResponse(repo_id = _REPO), None)
+
+    async def _scan(key, compute):
+        return empty
+
+    monkeypatch.setattr(gguf_variants, "_shared_variants_scan", _scan)
+    return empty
+
+
 def test_mlx_repo_lists_its_precision_folders_as_variants(monkeypatch):
+    _no_gguf_rows(monkeypatch)
     _fake_hub(monkeypatch)
-    answer = asyncio.run(gguf_variants._mlx_precision_variants_answer(_REPO, None, False))
+    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO))
     response = answer.response
-    assert response.variant_format == "mlx"
     assert [(v.quant, v.filename) for v in response.variants] == [
         ("2-bit", "2-bit/"),
         ("4-bit", "4-bit/"),
@@ -148,16 +159,17 @@ def test_mlx_repo_lists_its_precision_folders_as_variants(monkeypatch):
     assert response.default_variant == "4-bit"
     assert response.has_vision is True
     assert not any(v.downloaded for v in response.variants)
+    assert response.variant_format == "mlx"
     # No GGUF metadata to read a context window from.
     assert answer.cache_authorized is False
 
 
 def test_non_mlx_repo_and_repo_without_folders_get_no_mlx_listing(monkeypatch):
+    empty = _no_gguf_rows(monkeypatch)
     _fake_hub(monkeypatch, tags = ("safetensors",), library = "transformers")
-    assert asyncio.run(gguf_variants._mlx_precision_variants_answer(_REPO, None, False)) is None
+    assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
     _fake_hub(monkeypatch, sizes = _folder("", [GB]))
-    assert asyncio.run(gguf_variants._mlx_precision_variants_answer(_REPO, None, False)) is None
-    assert asyncio.run(gguf_variants._mlx_precision_variants_answer("/tmp/x", None, False)) is None
+    assert asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)) is empty
 
 
 def test_gguf_listing_is_answered_without_asking_for_mlx_folders(monkeypatch):
@@ -169,28 +181,18 @@ def test_gguf_listing_is_answered_without_asking_for_mlx_folders(monkeypatch):
     async def _scan(key, compute):
         return gguf
 
-    async def _never(*args, **kwargs):
-        raise AssertionError("a GGUF repo must not be listed as MLX")
+    class _NoHub:
+        def __init__(self, token = None):
+            raise AssertionError("a GGUF repo must not be listed as MLX")
 
     monkeypatch.setattr(gguf_variants, "_shared_variants_scan", _scan)
-    monkeypatch.setattr(gguf_variants, "_mlx_precision_variants_answer", _never)
+    monkeypatch.setattr("huggingface_hub.HfApi", _NoHub)
     assert asyncio.run(gguf_variants.get_gguf_variants_answer("a/b-GGUF")) is gguf
 
 
-def test_empty_gguf_listing_falls_back_to_mlx_folders(monkeypatch):
-    empty = gguf_variants.VariantsAnswer(gguf_variants.GgufVariantsResponse(repo_id = _REPO), None)
-
-    async def _scan(key, compute):
-        return empty
-
-    monkeypatch.setattr(gguf_variants, "_shared_variants_scan", _scan)
-    _fake_hub(monkeypatch)
-    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO))
-    assert answer.response.variant_format == "mlx"
-    assert len(answer.response.variants) == 4
-
-
 def test_download_fetches_only_the_picked_folder(monkeypatch, tmp_path):
+    from hub.utils import mlx_variants
+
     snapshot = tmp_path / "snapshots" / "abc"
     calls = []
 
@@ -220,6 +222,8 @@ def test_download_fetches_only_the_picked_folder(monkeypatch, tmp_path):
 
 
 def test_cached_precision_folder_needs_every_shard(monkeypatch, tmp_path):
+    from hub.utils import mlx_variants
+
     folder = tmp_path / "8-bit"
     folder.mkdir()
     (folder / "config.json").write_text("{}")
@@ -241,6 +245,7 @@ def test_cached_precision_folder_needs_every_shard(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("variant", ["Q4_K_M", "UD-Q4_K_XL", "../6-bit", "6-bit/../x"])
 def test_gguf_quant_names_never_resolve_as_folders(monkeypatch, variant):
+    from hub.utils import mlx_variants
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no Hub read")),
@@ -255,11 +260,23 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
     folder.mkdir()
     (folder / "config.json").write_text(json.dumps({"model_type": "qwen3_5", "vision_config": {}}))
     checked = []
-    monkeypatch.setattr(
-        mlx_variants,
-        "precision_folder_config_dir",
-        lambda repo, variant, token: folder if variant == "6-bit" else None,
-    )
+    fetched = []
+
+    def _hf_hub_download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        **_,
+    ):
+        fetched.append(filename)
+        if filename != "6-bit/config.json":
+            raise FileNotFoundError(filename)
+        return str(folder / "config.json")
+
+    # Only the folder's config.json is fetched to classify it; its weights wait for the load.
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _hf_hub_download)
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
     monkeypatch.setattr(model_config, "detect_gguf_model_remote", lambda *a, **k: None)
     monkeypatch.setattr(
         model_config, "is_vision_model", lambda name, hf_token = None: checked.append(name) or True
@@ -272,6 +289,7 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
     assert config.gguf_variant == "6-bit"
     assert config.is_gguf is False
     assert checked == [str(folder)]
+    assert fetched == ["6-bit/config.json"]
 
     checked.clear()
     plain = model_config.ModelConfig.from_identifier(_REPO)
