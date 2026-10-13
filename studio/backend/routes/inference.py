@@ -36797,7 +36797,10 @@ async def loaded_inference_models(current_subject: str = Depends(get_current_sub
 async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
     from utils.model_aliases import alias_model_objects
 
-    objects = await _openai_catalog_objects(quant_pins = quant_pins)
+    if quant_pins:
+        objects = await _openai_catalog_objects(quant_pins = True)
+    else:
+        objects = await _openai_catalog_objects()
     aliases = await asyncio.to_thread(alias_model_objects, objects, _pinned_quant_object)
     # The rewrite gives an alias precedence, so a same-named model row would never be served.
     shadowed = {row["id"].lower() for row in aliases}
