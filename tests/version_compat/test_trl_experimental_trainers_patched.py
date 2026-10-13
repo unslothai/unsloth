@@ -78,8 +78,8 @@ for pkg, prefix in MOVED:
         "config_has_unsloth_fields": "unsloth_num_chunks" in getattr(config, "__dataclass_fields__", {}),
         "mro": [f"{c.__module__}.{c.__name__}" for c in trainer.__mro__],
         "num_generations": [
-            getattr(c, "__dataclass_fields__", {}).get("num_generations", None) and c.__dataclass_fields__["num_generations"].default
-            for c in (config, config.__mro__[1])
+            getattr(inspect.signature(config.__init__).parameters.get("num_generations"), "default", None),
+            getattr(getattr(config.__mro__[1], "__dataclass_fields__", {}).get("num_generations"), "default", None),
         ],
         "relative_imports": re.findall(r"^\s*from \.+[\w.]* import .*$", inspect.getsource(sys.modules[trainer.__module__]), re.M),
         "leaked": [x for x in (f"{prefix}Trainer", f"{prefix}Config") if x in vars(trl) or x in vars(trl.trainer)]
