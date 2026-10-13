@@ -37,6 +37,15 @@ import pytest
 from core.inference import diffusion_memory as dm
 from utils.hardware import hardware as hw
 
+
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch(24 * GiB, free_bytes = 24 * GiB, reserved_bytes = 20 * GiB),
+    )
+
+
 MiB = 1024**2
 GiB = 1024**3
 
@@ -100,11 +109,7 @@ def test_activation_guard_fires_on_a_full_card_that_reports_itself_empty(win_roc
     card free. 1536x1536 does not fit the 4 GiB that is actually left, and on
     Windows nothing else will refuse it: WDDM spills to host RAM instead of
     raising. Before the fix the guard saw 24 GiB free and said nothing."""
-    monkeypatch.setitem(
-        sys.modules,
-        "torch",
-        _fake_torch(24 * GiB, free_bytes = 24 * GiB, reserved_bytes = 20 * GiB),
-    )
+    _shared_setup_1(monkeypatch)
 
     memory = dm.snapshot_device_memory(_Target())
     assert memory.free_mib == 4 * 1024  # not the driver's 24576
@@ -123,11 +128,7 @@ def test_activation_guard_still_silent_at_the_default_resolution(win_rocm, monke
     """The correction must not turn the guard into a nuisance: a request at or
     below what the load itself budgeted is exempt by the `needed <= planned` arm,
     which the tighter free reading does not touch."""
-    monkeypatch.setitem(
-        sys.modules,
-        "torch",
-        _fake_torch(24 * GiB, free_bytes = 24 * GiB, reserved_bytes = 20 * GiB),
-    )
+    _shared_setup_1(monkeypatch)
     memory = dm.snapshot_device_memory(_Target())
     assert (
         dm.image_activation_shortfall_message(
@@ -170,11 +171,7 @@ def test_memory_plan_budget_sees_the_corrected_free(win_rocm, monkeypatch):
     tier was picked against a card that claimed to be empty. The settling loop's
     early exit (free >= total - headroom) also trips instantly on the sentinel,
     which is why the plan never even retried."""
-    monkeypatch.setitem(
-        sys.modules,
-        "torch",
-        _fake_torch(24 * GiB, free_bytes = 24 * GiB, reserved_bytes = 20 * GiB),
-    )
+    _shared_setup_1(monkeypatch)
     memory = dm.settled_snapshot_device_memory(_Target(), attempts = 1)
     assert memory.free_mib == 4 * 1024
     assert dm._safe_device_budget_mib(memory) < 4 * 1024

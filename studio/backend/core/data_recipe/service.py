@@ -3,18 +3,29 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
+import functools
 import io
+import json
+import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 from utils.paths import recipe_datasets_root
 
-from .jsonable import to_jsonable
+from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
+)
+from .text_format_validators import (
+    register_text_format_local_callable_validators,
+    split_text_format_local_callable_validators,
 )
 
 _IMAGE_CONTEXT_PATCHED = False
@@ -25,6 +36,11 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
 
 
 def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+    account_path(
+        Path(base_path) / path_value
+        if base_path and not Path(path_value).is_absolute()
+        else path_value
+    )
     try:
         path = Path(path_value)
         candidates: list[Path] = []
@@ -37,6 +53,11 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
 
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
+                continue
+            # The cwd fallback is a different file from the one checked above.
+            try:
+                account_path(candidate)
+            except HTTPException:
                 continue
             with candidate.open("rb") as f:
                 return _encode_bytes_to_base64(f.read())
@@ -128,14 +149,349 @@ def _apply_data_designer_image_context_patch() -> None:
     _IMAGE_CONTEXT_PATCHED = True
 
 
+def _blank_missing_prompt_value(value: Any) -> Any:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return value
+
+
+def _allow_empty_prompt(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
+_STRINGIFYING_FILTERS = (
+    "capitalize",
+    "escape",
+    "forceescape",
+    "lower",
+    "replace",
+    "string",
+    "title",
+    "trim",
+    "truncate",
+    "urlencode",
+)
+
+
+def _blank_missing_filter_input(filter_func: Any) -> Any:
+    value_index = 1 if hasattr(filter_func, "jinja_pass_arg") else 0
+
+    @functools.wraps(filter_func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if len(args) > value_index:
+            args = (
+                *args[:value_index],
+                _blank_missing_prompt_value(args[value_index]),
+                *args[value_index + 1 :],
+            )
+        return filter_func(*args, **kwargs)
+
+    return wrapper
+
+
+def _apply_data_designer_prompt_blank_patch() -> None:
+    try:
+        from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
+            RecordBasedPromptRenderer,
+        )
+    except ImportError:
+        return
+
+    if getattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", False):
+        return
+
+    original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
+
+    def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
+        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
+        already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
+        original_prepare(self, template_name, *args, **kwargs)
+        if already_prepared:
+            return
+        env = self._render_func_registry[template_name].func.__self__
+        env.finalize = _blank_missing_prompt_value
+        env._assert_rendered_text_not_empty = _allow_empty_prompt
+        for name in _STRINGIFYING_FILTERS:
+            if name in env.filters:
+                env.filters[name] = _blank_missing_filter_input(env.filters[name])
+
+    RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
+    setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
+
+
+def _is_none(value: Any) -> bool:
+    return value is None
+
+
+def _apply_data_designer_expression_blank_patch() -> None:
+    # "" is a real text Expression value (an unanswered optional field); data-designer 0.5 fails the run on it and
+    # later releases drop the row. Number / bool dtypes keep that, since "" cannot be cast.
+    try:
+        from data_designer.engine.column_generators.generators.expression import (  # pyright: ignore[reportMissingImports]
+            ExpressionColumnGenerator,
+        )
+    except ImportError:
+        return
+
+    if getattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", False):
+        return
+
+    original_prepare = ExpressionColumnGenerator.prepare_jinja2_template_renderer
+
+    @functools.wraps(original_prepare)
+    def _patched_prepare(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_prepare(self, *args, **kwargs)
+        env = getattr(getattr(self, "_template_render_fn", None), "func", None)
+        env = getattr(env, "__self__", None)
+        if env is not None and self.config.dtype == "str":
+            env._assert_rendered_text_not_empty = _allow_empty_prompt
+            self._is_empty_rendered_expression = _is_none
+
+    ExpressionColumnGenerator.prepare_jinja2_template_renderer = _patched_prepare
+    setattr(ExpressionColumnGenerator, "_unsloth_expression_blank_patch_applied", True)
+
+
+def _is_missing_cell(value: Any) -> bool:
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or _is_pandas_missing(value)
+    )
+
+
+def _as_json_text(value: Any) -> Any:
+    if _is_missing_cell(value):
+        return None
+    if isinstance(value, str):
+        return value
+    value = to_jsonable(value)
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii = False, default = str)
+
+
+def _unify_cell_types(values: list[Any]) -> list[Any]:
+    """Make one path of a column Arrow-writable: dicts and lists recurse, and a path whose rows disagree
+    (text in one row, an object in another) is stored as JSON text instead of failing the batch."""
+    import pyarrow
+
+    present = [value for value in values if not _is_missing_cell(value)]
+    if not present:
+        return values
+    if all(isinstance(value, dict) for value in present):
+        keys = list(dict.fromkeys(key for value in present for key in value))
+        if keys and all(isinstance(key, str) for key in keys):
+            fields = {
+                key: _unify_cell_types(
+                    [value.get(key) if isinstance(value, dict) else None for value in values]
+                )
+                for key in keys
+            }
+            return [
+                {key: fields[key][index] for key in value} if isinstance(value, dict) else value
+                for index, value in enumerate(values)
+            ]
+    elif all(isinstance(value, (list, tuple)) for value in present):
+        flat = _unify_cell_types([item for value in present for item in value])
+        result, offset = [], 0
+        for value in values:
+            if isinstance(value, (list, tuple)):
+                result.append(flat[offset : offset + len(value)])
+                offset += len(value)
+            else:
+                result.append(value)
+        return result
+    elif not any(isinstance(value, (dict, list, tuple)) for value in present):
+        kinds = {type(value) for value in present}
+        # Arrow infers a mixed path from its first value (a date then a datetime drops the time); int/float is safe.
+        if len(kinds) > 1 and not kinds <= {int, float}:
+            return [_as_json_text(value) for value in values]
+        try:
+            pyarrow.array(present, from_pandas = True)
+            return values
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            pass
+    return [_as_json_text(value) for value in values]
+
+
+def _unify_dataframe_cell_types(dataframe: Any) -> tuple[Any, list[str]]:
+    import pyarrow
+
+    unified = dataframe.copy()
+    changed: list[str] = []
+    for column in unified.columns:
+        if unified[column].dtype != object:
+            continue
+        values = unified[column].tolist()
+        try:
+            pyarrow.array(values, from_pandas = True)
+            continue
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            pass
+        unified[column] = _unify_cell_types(values)
+        changed.append(str(column))
+    return unified, changed
+
+
+_MIXED_TYPE_WARNED: set[tuple[str, ...]] = set()
+
+
+def write_parquet_with_unified_types(dataframe: Any, path: Any, write: Any) -> Any:
+    """Run ``write(dataframe)``; if Arrow refuses a column whose rows hold different types at the same path
+    (unslothai/unsloth#5848: an LLM Structured field returned as text in one row and an object in another),
+    store those paths as JSON text and write again."""
+    import pyarrow
+    try:
+        return write(dataframe)
+    except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError) as exc:
+        unified, changed = _unify_dataframe_cell_types(dataframe)
+        if not changed:
+            raise
+        try:
+            result = write(unified)
+        except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError):
+            raise exc from None
+        # data-designer rewrites a batch once per column stage; say it once.
+        key = (str(path), *changed)
+        if key not in _MIXED_TYPE_WARNED:
+            _MIXED_TYPE_WARNED.add(key)
+            logging.getLogger("data_designer.unsloth").warning(
+                "Column(s) %s returned different value types across rows; mismatched fields were "
+                "saved as JSON text.",
+                ", ".join(repr(name) for name in changed),
+            )
+        return result
+
+
+def _apply_data_designer_mixed_type_parquet_patch() -> None:
+    try:
+        from data_designer.engine.storage.artifact_storage import (  # pyright: ignore[reportMissingImports]
+            ArtifactStorage,
+        )
+    except ImportError:
+        return
+
+    if getattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", False):
+        return
+
+    original_write = ArtifactStorage.write_parquet_file
+
+    @functools.wraps(original_write)
+    def _patched_write(
+        self: Any,
+        parquet_file_name: str,
+        dataframe: Any,
+        batch_stage: Any,
+        subfolder: str | None = None,
+    ) -> Any:
+        return write_parquet_with_unified_types(
+            dataframe,
+            Path(str(getattr(self, "base_dataset_path", ""))) / parquet_file_name,
+            lambda frame: original_write(
+                self, parquet_file_name, frame, batch_stage, subfolder = subfolder
+            ),
+        )
+
+    ArtifactStorage.write_parquet_file = _patched_write
+    setattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", True)
+
+
+def _require_public_provider_endpoint(endpoint: str) -> None:
+    """The recipe engine dials providers itself, so a managed account's endpoint cannot use the pinned
+    transport: require HTTPS, which binds the peer to its certificate rather than to a DNS answer that
+    may rebind to loopback or the LAN after this public-address check.
+
+    With the switch on, the HTTPS and public-address rules stand down so a saved connection is one
+    a recipe can run on. The metadata rule does not: this path has no validator behind it."""
+    if not managed_account():
+        return
+    from urllib.parse import urlsplit
+
+    from core.inference.providers import (
+        managed_private_url_hint,
+        provider_address_excluding_metadata,
+        public_provider_address,
+    )
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    url = str(endpoint or "")
+    if get_managed_private_provider_urls_allowed():
+        try:
+            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
+            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            if urlsplit(url).scheme not in ("http", "https"):
+                raise ValueError("Provider endpoints must use http or https.")
+            provider_address_excluding_metadata(url)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+            ) from exc
+        return
+
+    try:
+        if urlsplit(url).scheme != "https":
+            raise ValueError(
+                "Managed accounts may only use HTTPS provider endpoints."
+                + managed_private_url_hint()
+            )
+        public_provider_address(url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code = 403, detail = f"Recipe provider endpoint refused: {exc}"
+        ) from exc
+
+
+def install_public_egress_guard() -> None:
+    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
+    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess.
+
+    With the switch on the guard narrows to the metadata services rather than standing down: a
+    worker whose engine dials for itself has nothing else between it and that address."""
+    if not managed_account():
+        return
+    from utils.managed_provider_url_settings import get_managed_private_provider_urls_allowed
+
+    import ipaddress
+    import socket
+
+    from core.inference.providers import _metadata_address
+
+    resolve = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # Per lookup, not captured at install: a worker outlives the switch it started under.
+        private_allowed = get_managed_private_provider_urls_allowed()
+        infos = resolve(host, port, *args, **kwargs)
+        for info in infos:
+            address = str(info[4][0]).split("%", 1)[0]
+            if _metadata_address(address):
+                raise socket.gaierror(
+                    f"Managed accounts may not reach cloud metadata services: {host!r}"
+                )
+            if not private_allowed and not ipaddress.ip_address(address).is_global:
+                raise socket.gaierror(
+                    f"Managed accounts may only reach public-network addresses: {host!r}"
+                )
+        return infos
+
+    def guarded_gethostbyname(host):
+        return str(guarded_getaddrinfo(host, None, socket.AF_INET)[0][4][0])
+
+    socket.getaddrinfo = guarded_getaddrinfo
+    socket.gethostbyname = guarded_gethostbyname
+
+
 def build_model_providers(recipe: dict[str, Any]):
     from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 
     providers: list[ModelProvider] = []
     for provider in recipe.get("model_providers", []):
+        _require_public_provider_endpoint(provider.get("endpoint"))
         api_key = provider.get("api_key")
         api_key_env = provider.get("api_key_env")
-        if not api_key and api_key_env:
+        if not api_key and api_key_env and not managed_account():
             api_key = os.getenv(api_key_env)
         providers.append(
             ModelProvider(
@@ -178,6 +534,19 @@ def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
     )
 
 
+def _require_confinable_mcp_transport(provider_type: str) -> None:
+    """Refuse network MCP for managed accounts: the engine opens its own connections and cannot use chat's confined transport."""
+    if provider_type not in {"sse", "streamable_http"} or not managed_account():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Recipe MCP servers are unavailable for managed accounts until the recipe "
+            "engine uses the account-confined MCP transport."
+        ),
+    )
+
+
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
@@ -212,9 +581,10 @@ def build_mcp_providers(recipe: dict[str, Any]) -> list:
             continue
 
         if provider_type in {"sse", "streamable_http"}:
+            _require_confinable_mcp_transport(provider_type)
             api_key = provider.get("api_key")
             api_key_env = provider.get("api_key_env")
-            if not api_key and api_key_env:
+            if not api_key and api_key_env and not managed_account():
                 api_key = os.getenv(str(api_key_env))
             providers.append(
                 MCPProvider(
@@ -253,6 +623,7 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 
 
 def build_config_builder(recipe: dict[str, Any]):
+    validate_recipe_access(recipe)
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
     from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
@@ -264,10 +635,15 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, text_format_specs = split_text_format_local_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_text_format_local_callable_validators(
+        builder = builder,
+        specs = text_format_specs,
     )
 
     # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
@@ -288,7 +664,12 @@ def build_config_builder(recipe: dict[str, Any]):
 
 
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
+    validate_recipe_access(recipe)
+    account_path(artifact_path)
     _apply_data_designer_image_context_patch()
+    _apply_data_designer_prompt_blank_patch()
+    _apply_data_designer_expression_blank_patch()
+    _apply_data_designer_mixed_type_parquet_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:

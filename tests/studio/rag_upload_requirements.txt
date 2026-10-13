@@ -33,7 +33,7 @@ pycparser==3.0
 pydantic==2.13.5
 pydantic-core==2.46.5
 pygments==2.21.0
-pyjwt==2.13.0
+pyjwt==2.15.1
 pymupdf==1.27.2.3
 pymupdf4llm==0.3.4
 pytest==9.1.1
@@ -52,7 +52,7 @@ tabulate==0.10.0
 tqdm==4.70.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
-urllib3==2.7.0
+urllib3==2.8.0
 hypothesis==6.167.1
 playwright==1.62.0
 selenium==4.48.0

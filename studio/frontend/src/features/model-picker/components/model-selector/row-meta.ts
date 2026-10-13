@@ -4,14 +4,19 @@
 // Pure helpers for model-row presentation: owner/name split, lora trigger label, format pills,
 // param chip, tabular size. No React/DOM deps so they stay easy to test.
 
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import type { LoraModelOption } from "./types";
 
-export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
+export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter" | "npu";
 
 // Format keyword to DotTag tone. Looked up by full token and by first word, so "Full finetune" resolves via "full".
 export const FORMAT_TONE: Record<string, FormatTone> = {
   gguf: "gguf",
   mlx: "mlx",
+  npu: "npu",
   local: "checkpoint",
   safetensors: "checkpoint",
   checkpoint: "checkpoint",
@@ -39,6 +44,16 @@ export function splitRepoLabel(label: string): {
 export function isUnslothOwner(owner: string | null | undefined): boolean {
   const normalized = owner?.toLowerCase();
   return normalized === "unsloth" || normalized === "unslothai";
+}
+
+/** On Device label: an audio.cpp umbrella folder reads as its folder, any other id as itself. */
+export function onDeviceRepoLabel(id: string): string {
+  return isAudioCppFolderId(id) ? audioCppDisplayName(id) : id;
+}
+
+/** On Device rows grouped with Unsloth's: our Hub owners and the audio.cpp catalog folders. */
+export function isFeaturedOnDeviceRepoId(id: string): boolean {
+  return isUnslothOwner(splitRepoLabel(id).owner) || isAudioCppFolderId(id);
 }
 
 /** Selector trigger label. Training and exported runs are named "<run>/<model>", so the run is the

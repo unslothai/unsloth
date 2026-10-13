@@ -5,7 +5,7 @@ import { isTauri } from "@/lib/api-base";
 
 const MAX_BODY_LENGTH = 200;
 const MAX_SENT_KEYS = 200;
-const HF_TOKEN_PATTERN = /\bhf_[A-Za-z0-9]{20,}\b/g;
+const HF_TOKEN_PATTERN = /\bhf_(?:oauth_)?[A-Za-z0-9]{20,}\b/g;
 const GITHUB_TOKEN_PATTERN = /\bghp_[A-Za-z0-9_]{20,}\b/g;
 const GITHUB_PAT_PATTERN = /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g;
 const OPENAI_KEY_PATTERN = /\bsk-[A-Za-z0-9_-]{20,}\b/g;
@@ -20,7 +20,7 @@ const WHITESPACE_PATTERN = /\s+/g;
 const LOCAL_PATH_PATTERN = /^(?:\/|~[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/]|\\\\)/;
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
 const SENSITIVE_TOKEN_PATTERN =
-  /\bhf_[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b/;
+  /\bhf_(?:oauth_)?[A-Za-z0-9]{20,}\b|\bghp_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b/;
 
 type PermissionState = "unknown" | "granted" | "denied";
 
@@ -61,9 +61,25 @@ function rememberSentKey(key: string): void {
   }
 }
 
+// The plugin's webview shim reports "denied" on Windows although the desktop backend grants
+// (tauri-apps/plugins-workspace#3512), so the backend answers before a shim "denied" is trusted.
+async function backendGrantsPermission(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return (await invoke("plugin:notification|is_permission_granted")) === true;
+  } catch {
+    return false;
+  }
+}
+
 async function checkNativePermission(allowRequest: boolean): Promise<boolean> {
   const notification = getBrowserNotificationApi();
   if (notification?.permission === "granted") {
+    permissionState = "granted";
+    return true;
+  }
+
+  if (await backendGrantsPermission()) {
     permissionState = "granted";
     return true;
   }
@@ -119,9 +135,12 @@ async function ensurePermission(allowRequest: boolean): Promise<boolean> {
   return checkNativePermission(allowRequest);
 }
 
-export async function primeNativeNotificationPermission(): Promise<void> {
-  if (!isTauri || permissionState !== "unknown") {
-    return;
+export async function primeNativeNotificationPermission(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  if (permissionState !== "unknown") {
+    return hasGrantedPermission();
   }
 
   if (!permissionPrimeInFlight) {
@@ -133,6 +152,7 @@ export async function primeNativeNotificationPermission(): Promise<void> {
   }
 
   await permissionPrimeInFlight;
+  return hasGrantedPermission();
 }
 
 export async function notifyNative(

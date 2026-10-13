@@ -12,16 +12,11 @@
 // assert the cheap path, and assert the expensive one is gone.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const HOOK = readFileSync(
-  new URL(
-    "../src/components/assistant-ui/use-intent-aware-autoscroll.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const HOOK = readSrc("components/assistant-ui/use-intent-aware-autoscroll.tsx");
 
 /** The body of `tick`, which is the only place the chain re-arms. */
 function tickBody(): string {

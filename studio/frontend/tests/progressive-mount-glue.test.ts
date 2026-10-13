@@ -6,11 +6,9 @@
 // chat-autoscroll-frame-budget.test.ts). Each is a real invariant with a real failure behind it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const read = (path: string): string =>
-  readFileSync(new URL(path, import.meta.url), "utf8");
+import { readText } from "./helpers/kit.ts";
 
 /**
  * Source with comments removed. The "must not appear" assertions run against this: these files
@@ -21,12 +19,12 @@ const code = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
 const GLUE = code(
-  read("../src/components/assistant-ui/progressive-messages.tsx"),
+  readText("../src/components/assistant-ui/progressive-messages.tsx"),
 );
 const HOOK = code(
-  read("../src/components/assistant-ui/use-intent-aware-autoscroll.tsx"),
+  readText("../src/components/assistant-ui/use-intent-aware-autoscroll.tsx"),
 );
-const THREAD = code(read("../src/components/assistant-ui/thread.tsx"));
+const THREAD = code(readText("../src/components/assistant-ui/thread.tsx"));
 
 /**
  * The region of `source` between two markers, with BOTH required. A bare
@@ -58,7 +56,10 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
   // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row map
   // renders MessageByIndexProvider -> children. Switching between the two on convergence would
   // change the element type at that position, so React would unmount and rebuild every message.
-  assert.match(GLUE, /<MessageByIndexProvider key=\{index\} index=\{index\}>/);
+  assert.match(
+    GLUE,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
+  );
   assert.doesNotMatch(
     GLUE,
     /<ThreadPrimitive\.Messages\b/,
@@ -311,7 +312,11 @@ test("the row map is memoized on the slot identity", () => {
   // identity; rebuilding 220 elements per Thread re-render hands back what the windowing collects.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, gate\]\)/,
+  );
+  assert.match(
+    GLUE,
+    /const gate = useMemo\(\(\) => createRowNotificationGate\(aui\), \[aui\]\)/,
   );
   assert.match(GLUE, /prev\.renderMessage === next\.renderMessage/);
   assert.match(THREAD, /const renderThreadMessage = proplessSlot\(/);

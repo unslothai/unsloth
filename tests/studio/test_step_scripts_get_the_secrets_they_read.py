@@ -1,0 +1,492 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A step that reads a secret from its environment has to be given it.
+
+Secrets here are step-scoped on purpose (test_cached_paths_hold_no_credentials.py says why),
+and scripts read them through the environment rather than a `${{ secrets.* }}` expression
+spliced into the script, so the value never lands in the step's temporary shell file or in
+argv. That leaves one way to get it wrong that nothing else sees: a script that reads
+`os.environ["DOCKER_API_KEY"]` or `$DOCKER_API_KEY` in a step whose `env:` never maps it.
+Python raises KeyError, the shell expands to an empty string, and the step fails or quietly
+does nothing, only on the privileged run that holds the secret, which a pull request never
+exercises.
+
+That is what happened when the Docker Hub token exchanges moved to the environment: the Hub
+README step was given `DOCKER_API_KEY`, the cleanup step beside it and the ROCm workflow's
+README step were not, and every publish run from then on left its handle tags on Docker Hub.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+import yaml
+
+WORKFLOWS = sorted((Path(__file__).resolve().parents[2] / ".github" / "workflows").glob("*.yml"))
+
+_SECRET = re.compile(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)")
+_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+def _strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield from _strings(key)
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _strings(item)
+
+
+def _reads(script: str, name: str) -> bool:
+    """Whether a run script reads NAME from its environment, in shell or in inline Python.
+
+    Includes bash indirect expansion over a list of names, the shape release-desktop.yml's
+    notarization check uses: `for required in APPLE_ID ...; do [ -z "${!required:-}" ]`.
+    """
+    n = re.escape(name)
+    if (
+        re.search(rf"os\.environ\[\s*['\"]{n}['\"]\s*\]", script)
+        or re.search(rf"os\.(?:environ\.get|getenv)\(\s*['\"]{n}['\"]", script)
+        or re.search(rf"\$\{{?{n}(?![A-Za-z0-9_])", script)
+        # PowerShell and cmd, for the Windows steps.
+        or re.search(rf"\$env:{n}(?![A-Za-z0-9_])", script, re.I)
+        or re.search(rf"\$\{{env:{n}\}}", script, re.I)
+        or re.search(rf"%{n}%", script)
+        or re.search(rf"GetEnvironmentVariable\(\s*['\"]{n}['\"]", script)
+    ):
+        return True
+    for var, words in re.findall(r"\bfor\s+(\w+)\s+in\s+([^;\n]+)", script):
+        if name in words.split() and re.search(rf"\$\{{!{var}(?![A-Za-z0-9_])", script):
+            return True
+    return False
+
+
+def _env_blocks(doc: dict):
+    yield doc.get("env") or {}
+    for job in (doc.get("jobs") or {}).values():
+        yield (job or {}).get("env") or {}
+        for step in (job or {}).get("steps") or []:
+            yield step.get("env") or {}
+
+
+# The secret each env key is supplied from, as every workflow maps it today. GitHub expands an
+# unknown `secrets.*` name to an empty string without complaint, and CI cannot list the
+# repository's secret names to check against, so a typo (`secrets.DOCKER_API_KE`) or a mapping to
+# the wrong existing secret reads as a valid expression everywhere except the privileged run that
+# needs it. Pinning the pairs turns both into a failure here. A genuinely new secret goes in this
+# table in the same change that adds it, once it is confirmed to exist.
+_SECRET_FOR = {
+    "APPLE_CERTIFICATE": "APPLE_CERTIFICATE",
+    "APPLE_CERTIFICATE_PASSWORD": "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_ID": "APPLE_ID",
+    "APPLE_PASSWORD": "APPLE_PASSWORD",
+    "APPLE_SIGNING_IDENTITY": "APPLE_SIGNING_IDENTITY",
+    "APPLE_TEAM_ID": "APPLE_TEAM_ID",
+    "AZURE_CERTIFICATE_PROFILE_NAME": "AZURE_CERTIFICATE_PROFILE_NAME",
+    "AZURE_CLIENT_ID": "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET": "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID": "AZURE_TENANT_ID",
+    "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME": "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+    "DOCKER_API_KEY": "DOCKER_API_KEY",
+    "GH_TOKEN": "GITHUB_TOKEN",
+    "GITHUB_TOKEN": "GITHUB_TOKEN",
+    "HF_TOKEN": "HF_TOKEN",
+    "KAGGLE_API_TOKEN": "KAGGLE_API_TOKEN",
+    "KAGGLE_API_TOKEN_2": "KAGGLE_API_TOKEN_2",
+    "KEYCHAIN_PASSWORD": "KEYCHAIN_PASSWORD",
+    "TAURI_SIGNING_PRIVATE_KEY": "TAURI_SIGNING_PRIVATE_KEY",
+    "VT_API_KEY": "VIRUS_TOTAL_API_TOKEN",
+}
+
+# Indexed lookups, `${{ secrets[matrix.secret_name] }}`: the Kaggle jobs pick an account at run
+# time, so the name is a matrix value. Each key pins the one index expression it may use and the
+# secrets that index may resolve to; a static matrix is checked value by value.
+_INDEXED_FOR = {
+    "KAGGLE_API_TOKEN": ("matrix.secret_name", {"KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"}),
+}
+# Known secret keys a step empties on purpose. The Tauri smoke build blanks the signing key so
+# tauri never signs a debug build; that is a statement, not a lost mapping.
+_DELIBERATELY_BLANK = {
+    ("studio-tauri-smoke.yml", "TAURI_SIGNING_PRIVATE_KEY"),
+}
+_INDEXED = re.compile(r"secrets\[\s*([^\]]+?)\s*\]")
+
+
+def _secret_backed_names() -> frozenset[str]:
+    """Every name a step could be expected to receive a secret under, across all workflows.
+
+    A secret's own name, and every env key any workflow maps from a `secrets.*` expression:
+    `VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}` makes VT_API_KEY secret-backed even in a
+    workflow that has lost its only mapping of it, which is exactly the file a per-file scan
+    would call clean.
+    """
+    # Seeded from the reviewed table, so a name whose only reference was the mapping that got
+    # deleted is still tracked.
+    names = set(_SECRET_FOR) | set(_SECRET_FOR.values())
+    for allowed in _INDEXED_FOR.values():
+        names |= allowed[1]
+    for path in WORKFLOWS:
+        doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        # From parsed values, not the raw text: a comment that explains `secrets.A || secrets.B`
+        # would otherwise make B a secret.
+        for value in _strings(doc):
+            for expression in _EXPRESSION.findall(value):
+                names.update(_SECRET.findall(expression))
+        for env in _env_blocks(doc):
+            for key, value in env.items():
+                if isinstance(value, str) and any(
+                    _SECRET.search(e) or _INDEXED.search(e) for e in _EXPRESSION.findall(value)
+                ):
+                    names.add(key)
+    return frozenset(names)
+
+
+SECRET_BACKED = _secret_backed_names()
+
+
+def _supplies_a_secret(value, key: str | None = None) -> bool:
+    """An env entry counts only when its value draws on a `secrets.*` expression: an empty
+    string, a `vars.*` lookup or a misspelled expression is present and still hands the
+    script nothing. `github.token` is the run's own token, and counts only for a key pinned to
+    GITHUB_TOKEN: handed to DOCKER_API_KEY it is a real token for the wrong service."""
+    token_ok = key is not None and _SECRET_FOR.get(key) == "GITHUB_TOKEN"
+    return isinstance(value, str) and any(
+        _SECRET.search(expression)
+        or _INDEXED.search(expression)
+        or (token_ok and re.search(r"\bgithub\.token\b", expression))
+        for expression in _EXPRESSION.findall(value)
+    )
+
+
+def _unmapped(path: Path) -> list[str]:
+    doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+    workflow_env = doc.get("env") or {}
+    found = []
+    for job_name, job in (doc.get("jobs") or {}).items():
+        job_env = (job or {}).get("env") or {}
+        for index, step in enumerate((job or {}).get("steps") or []):
+            script = step.get("run")
+            if not isinstance(script, str):
+                continue
+            env = {**workflow_env, **job_env, **(step.get("env") or {})}
+            for name in sorted(SECRET_BACKED):
+                if _reads(script, name) and not _supplies_a_secret(env.get(name), name):
+                    label = step.get("name") or f"step {index}"
+                    why = (
+                        "without mapping it" if name not in env else f"but maps it to {env[name]!r}"
+                    )
+                    found.append(f"{path.name} :: {job_name} :: {label} reads {name} {why}")
+    return found
+
+
+def test_the_workflows_are_found():
+    assert len(WORKFLOWS) > 20, "the glob stopped finding the workflows"
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
+def test_every_secret_a_step_reads_is_in_its_env(path):
+    unmapped = _unmapped(path)
+    assert not unmapped, (
+        "these steps read a secret from the environment without an env: entry that supplies it, "
+        "so it is empty or a KeyError on the run that holds it:\n  " + "\n  ".join(unmapped)
+    )
+
+
+def test_the_reader_sees_every_spelling_the_workflows_use():
+    assert _reads("python3 -c 'import os; os.environ[\"K\"]'", "K")
+    assert _reads("os.environ.get('K', '')", "K")
+    assert _reads('os.getenv("K")', "K")
+    assert _reads('curl -H "Bearer $K"', "K")
+    assert _reads('echo "${K}"', "K")
+    assert _reads("Write-Host $env:K", "K")
+    assert _reads("Write-Host ${env:K}", "K")
+    assert _reads("echo %K%", "K")
+    assert _reads("[Environment]::GetEnvironmentVariable('K')", "K")
+    assert not _reads("Write-Host $env:K_OTHER", "K")
+    assert _reads('for v in J K L; do [ -z "${!v:-}" ] && exit 1; done', "K")
+    # A plain loop over the names, with no indirect read, reads none of them.
+    assert not _reads("for v in J K L; do echo $v; done", "K")
+    # A longer name that starts with K is not K, and an expression is not an env read.
+    assert not _reads('echo "$K_OTHER"', "K")
+    assert not _reads("echo ${{ secrets.K }}", "K")
+
+
+def test_an_aliased_secret_is_tracked_under_the_name_the_script_reads():
+    # The repository secret is VIRUS_TOTAL_API_TOKEN and the scripts read VT_API_KEY.
+    assert "VT_API_KEY" in SECRET_BACKED
+    assert "VIRUS_TOTAL_API_TOKEN" in SECRET_BACKED
+    # kaggle-t4-notebook-ci.yml explains `secrets.A || secrets.B` in a comment; neither is real.
+    assert "A" not in SECRET_BACKED and "B" not in SECRET_BACKED
+    # GitHub does not export the run token to the environment by itself; a script reading
+    # $GITHUB_TOKEN needs the mapping like any other secret.
+    assert "GITHUB_TOKEN" in SECRET_BACKED
+
+
+def test_an_inline_read_of_an_alias_is_caught_in_a_workflow_that_never_maps_it(tmp_path):
+    """The alias is known from the workflow that maps it, so a file that lost its only mapping
+    is still checked. Scripts the step merely invokes are out of scope: many read a secret
+    optionally by design (the pinned-symbol suites read GH_TOKEN only when present), and from
+    the file alone an intended absence and a lost mapping look the same."""
+    workflow = tmp_path / "w.yml"
+    workflow.write_text(
+        "on: push\n"
+        "jobs:\n"
+        "  scan:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Scan\n"
+        "        run: |\n"
+        '          curl -H "x-apikey: $VT_API_KEY" https://example.invalid\n',
+        encoding = "utf-8",
+    )
+    assert _unmapped(workflow) == ["w.yml :: scan :: Scan reads VT_API_KEY without mapping it"]
+    mapped = workflow.read_text(encoding = "utf-8").replace(
+        "      - name: Scan\n",
+        "      - name: Scan\n        env:\n          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}\n",
+    )
+    workflow.write_text(mapped, encoding = "utf-8")
+    assert _unmapped(workflow) == []
+
+
+def test_an_entry_that_supplies_no_secret_does_not_count():
+    assert _supplies_a_secret("${{ secrets.DOCKER_API_KEY }}")
+    assert _supplies_a_secret("${{ github.event_name == 'push' && secrets.HF_TOKEN || '' }}")
+    assert not _supplies_a_secret("")
+    assert not _supplies_a_secret(None)
+    assert not _supplies_a_secret("${{ vars.DOCKER_API_KEY }}")
+    assert not _supplies_a_secret("${{ secret.DOCKER_API_KEY }}")
+    assert not _supplies_a_secret("secrets.DOCKER_API_KEY")
+    assert _supplies_a_secret("${{ github.token }}", "GH_TOKEN")
+    assert not _supplies_a_secret("${{ github.token }}", "DOCKER_API_KEY")
+    assert not _supplies_a_secret("${{ github.token }}")
+
+
+def _static_matrix_values(job: dict, field: str):
+    """The values a static matrix gives `field`, or None when the matrix is built at run time."""
+    matrix = ((job or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        return None
+    values = []
+    if isinstance(matrix.get(field), list):
+        values += matrix[field]
+    for entry in matrix.get("include") or []:
+        if isinstance(entry, dict) and field in entry:
+            values.append(entry[field])
+    return values
+
+
+_WHOLE_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+_WITHHELD_ON_PULL_REQUESTS = "github.event_name != 'pull_request' && {} || ''"
+
+
+def _allowed_shapes(key: str) -> set[str]:
+    """The expressions a known secret key may be given, whitespace-normalised.
+
+    The secret itself, or the one conditional this repository uses: withheld on pull_request
+    and supplied on every other event. Any other condition is a mapping this guard cannot read,
+    and `== 'pull_request' && secrets.X || ''` would starve exactly the privileged runs.
+    """
+    shapes = set()
+    if key in _SECRET_FOR:
+        source = f"secrets.{_SECRET_FOR[key]}"
+        shapes |= {source, _WITHHELD_ON_PULL_REQUESTS.format(source)}
+        if _SECRET_FOR[key] == "GITHUB_TOKEN":
+            shapes.add("github.token")
+    if key in _INDEXED_FOR:
+        source = f"secrets[{_INDEXED_FOR[key][0]}]"
+        shapes |= {source, _WITHHELD_ON_PULL_REQUESTS.format(source)}
+    return shapes
+
+
+def _check_mapping(key, value, job, name, wrong):
+    before = len(wrong)
+    _check_source(key, value, job, name, wrong)
+    known = key in _SECRET_FOR or key in _INDEXED_FOR
+    if len(wrong) == before and known and isinstance(value, str) and _EXPRESSION.search(value):
+        # The whole value, not an expression found inside it: `junk-${{ secrets.X }}` or a block
+        # scalar's trailing newline exports an altered credential.
+        whole = _WHOLE_EXPRESSION.fullmatch(value)
+        shape = " ".join(whole.group(1).split()) if whole else None
+        if shape is None:
+            wrong.append(f"{name}: {key} is {value!r}, which is not a single ${{{{ }}}} expression")
+        elif shape not in _allowed_shapes(key):
+            wrong.append(
+                f"{name}: {key} is given `${{{{ {shape} }}}}`, not a shape this guard reads"
+            )
+
+
+def _check_source(key, value, job, name, wrong):
+    if not isinstance(value, str):
+        # YAML reads `false` or `1` as a non-string; for a known secret key that is still a
+        # value that supplies nothing, and a `uses:` step has no script for _unmapped to read.
+        if key in _SECRET_FOR or key in _INDEXED_FOR:
+            wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
+        return
+    expressions = _EXPRESSION.findall(value)
+    drawn = {n for e in expressions for n in _SECRET.findall(e)}
+    indexed = [x for e in expressions for x in _INDEXED.findall(e)]
+    if not drawn and not indexed:
+        # A key this table knows is a secret must still get one: `${{ vars.HF_TOKEN }}` or a
+        # plain string is a valid expression that hands the step nothing, and a script the step
+        # only invokes (mlx-ci.yml's smoke runner reads HF_TOKEN) is out of _unmapped's sight.
+        known = key in _SECRET_FOR or key in _INDEXED_FOR
+        deliberate = value == "" and (name, key) in _DELIBERATELY_BLANK
+        if known and not deliberate and not _supplies_a_secret(value, key):
+            wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
+        return
+    if drawn:
+        if key not in _SECRET_FOR:
+            wrong.append(f"{name}: {key} is a new secret mapping; add it to _SECRET_FOR")
+        elif drawn != {_SECRET_FOR[key]}:
+            wrong.append(f"{name}: {key} draws on {sorted(drawn)}, not {_SECRET_FOR[key]}")
+    for index in indexed:
+        if key not in _INDEXED_FOR:
+            wrong.append(f"{name}: {key} is a new indexed secret mapping; add it to _INDEXED_FOR")
+            continue
+        expected, allowed = _INDEXED_FOR[key]
+        if index != expected:
+            wrong.append(f"{name}: {key} indexes secrets with {index}, not {expected}")
+            continue
+        field = expected.split(".", 1)[1]
+        values = _static_matrix_values(job, field)
+        if values is not None:
+            if not values:
+                wrong.append(f"{name}: {key} indexes {expected}, which the matrix never sets")
+            for v in values:
+                if v not in allowed:
+                    wrong.append(f"{name}: {key} resolves to {v!r}, not one of {sorted(allowed)}")
+
+
+def _misdrawn(doc: dict, name: str) -> list[str]:
+    wrong = []
+    for key, value in (doc.get("env") or {}).items():
+        _check_mapping(key, value, None, name, wrong)
+    for job in (doc.get("jobs") or {}).values():
+        for key, value in ((job or {}).get("env") or {}).items():
+            _check_mapping(key, value, job, name, wrong)
+        for step in (job or {}).get("steps") or []:
+            for key, value in (step.get("env") or {}).items():
+                _check_mapping(key, value, job, name, wrong)
+    return wrong
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
+def test_every_secret_mapping_draws_on_the_secret_its_key_is_known_by(path):
+    wrong = _misdrawn(yaml.safe_load(path.read_text(encoding = "utf-8")) or {}, path.name)
+    assert not wrong, "\n".join(wrong)
+
+
+def test_a_misspelled_or_swapped_secret_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KE }}"), "w") == [
+        "w: DOCKER_API_KEY draws on ['DOCKER_API_KE'], not DOCKER_API_KEY"
+    ]
+    assert _misdrawn(doc("${{ secrets.HF_TOKEN }}"), "w") == [
+        "w: DOCKER_API_KEY draws on ['HF_TOKEN'], not DOCKER_API_KEY"
+    ]
+
+
+def test_a_step_reading_the_run_token_must_map_it(tmp_path):
+    workflow = tmp_path / "t.yml"
+    workflow.write_text(
+        "on: push\n"
+        "jobs:\n"
+        "  api:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: Call\n"
+        "        run: |\n"
+        '          curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com\n',
+        encoding = "utf-8",
+    )
+    assert _unmapped(workflow) == ["t.yml :: api :: Call reads GITHUB_TOKEN without mapping it"]
+
+
+def test_a_deleted_only_mapping_is_still_tracked():
+    # APPLE_CERTIFICATE has one reference in the whole repository, the mapping itself.
+    assert {"APPLE_CERTIFICATE", "KAGGLE_API_TOKEN_2"} <= SECRET_BACKED
+
+
+def test_an_indexed_lookup_is_checked():
+    def doc(index, values):
+        return {
+            "jobs": {
+                "j": {
+                    "strategy": {"matrix": {"include": [{"secret_name": v} for v in values]}},
+                    "steps": [{"env": {"KAGGLE_API_TOKEN": "${{ secrets[" + index + "] }}"}}],
+                }
+            }
+        }
+
+    good = ["KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"]
+    assert _misdrawn(doc("matrix.secret_name", good), "w") == []
+    assert _misdrawn(doc("matrix.secert_name", good), "w") == [
+        "w: KAGGLE_API_TOKEN indexes secrets with matrix.secert_name, not matrix.secret_name"
+    ]
+    assert _misdrawn(doc("matrix.secret_name", ["KAGGLE_API_TOKN"]), "w") == [
+        "w: KAGGLE_API_TOKEN resolves to 'KAGGLE_API_TOKN', not one of "
+        "['KAGGLE_API_TOKEN', 'KAGGLE_API_TOKEN_2']"
+    ]
+    assert _supplies_a_secret("${{ secrets[matrix.secret_name] }}")
+
+
+def test_a_known_key_mapped_to_a_non_secret_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"HF_TOKEN": value}, "run": "python smoke.py"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.HF_TOKEN }}"), "w") == []
+    assert _misdrawn(doc("${{ vars.HF_TOKEN }}"), "w") == [
+        "w: HF_TOKEN is mapped to '${{ vars.HF_TOKEN }}', which supplies no secret"
+    ]
+    assert _misdrawn(doc(""), "w") == ["w: HF_TOKEN is mapped to '', which supplies no secret"]
+    # An unknown key with a plain value is not a secret mapping at all.
+    plain = {"jobs": {"j": {"steps": [{"env": {"NIGHTLY_KEEP_DAYS": "60"}, "run": "true"}]}}}
+    assert _misdrawn(plain, "w") == []
+
+
+def test_the_run_token_and_non_string_values_do_not_pass_for_other_keys():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"uses": "x/y@v1", "env": {"DOCKER_API_KEY": value}}]}}}
+
+    assert _misdrawn(doc("${{ github.token }}"), "w") == [
+        "w: DOCKER_API_KEY is mapped to '${{ github.token }}', which supplies no secret"
+    ]
+    assert _misdrawn(doc(False), "w") == [
+        "w: DOCKER_API_KEY is mapped to False, which supplies no secret"
+    ]
+    gh = {"jobs": {"j": {"steps": [{"env": {"GH_TOKEN": "${{ github.token }}"}, "run": "true"}]}}}
+    assert _misdrawn(gh, "w") == []
+
+
+def test_a_condition_that_withholds_the_secret_from_the_privileged_run_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    withheld_on_prs = "${{ github.event_name != 'pull_request' && secrets.DOCKER_API_KEY || '' }}"
+    assert _misdrawn(doc(withheld_on_prs), "w") == []
+    only_on_prs = "${{ github.event_name == 'pull_request' && secrets.DOCKER_API_KEY || '' }}"
+    assert _misdrawn(doc(only_on_prs), "w") == [
+        "w: DOCKER_API_KEY is given `${{ github.event_name == 'pull_request' "
+        "&& secrets.DOCKER_API_KEY || '' }}`, not a shape this guard reads"
+    ]
+
+
+def test_the_whole_value_must_be_the_expression():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"DOCKER_API_KEY": value}, "run": "true"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.DOCKER_API_KEY }}"), "w") == []
+    for altered in ("junk-${{ secrets.DOCKER_API_KEY }}", "${{ secrets.DOCKER_API_KEY }}\n"):
+        assert _misdrawn(doc(altered), "w") == [
+            f"w: DOCKER_API_KEY is {altered!r}, which is not a single ${{{{ }}}} expression"
+        ]

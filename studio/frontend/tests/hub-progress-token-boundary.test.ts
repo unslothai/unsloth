@@ -5,18 +5,16 @@
 // if the header is dropped, blanked, or eaten by authFetch's own merge.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { hubTokenHeader } from "../src/features/hub/lib/hub-token-header.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+import { readText } from "./helpers/kit.ts";
+
 type AuthApi = {
   authFetch: (input: string, init?: RequestInit) => Promise<Response>;
 };
-
-const read = (relativePath: string): string =>
-  readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
 async function emittedHeaders(init?: RequestInit): Promise<Headers> {
   const originalFetch = globalThis.fetch;
@@ -30,6 +28,7 @@ async function emittedHeaders(init?: RequestInit): Promise<Headers> {
       new URL("../src/features/auth/api.ts", import.meta.url),
       {
         "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+        "@/lib/account-transition": { accountTransitionPending: () => false },
         "./session": {
           clearAuthTokens: () => {},
           getAuthToken: () => "access-token",
@@ -85,7 +84,7 @@ test("hubTokenHeader never leaks the token anywhere but its own header", async (
 
 test("the progress callers accept and forward a request-scoped token", () => {
   // Whitespace-insensitive: the transport tests cannot prove these callers send one.
-  const api = read("../src/features/chat/api/chat-api.ts");
+  const api = readText("../src/features/chat/api/chat-api.ts");
   for (const name of [
     "getGgufDownloadProgress",
     "getDownloadProgress",
@@ -106,7 +105,7 @@ test("the progress callers accept and forward a request-scoped token", () => {
 
 test("a local load is not gated behind Hub token preparation", () => {
   // prepareHfTokenForUse validates over the network and can block on a dialog.
-  const chatRuntime = read(
+  const chatRuntime = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
   const start = chatRuntime.indexOf("const mayReachHub");
@@ -116,7 +115,7 @@ test("a local load is not gated behind Hub token preparation", () => {
   // An Ollama row is local too, but its id is an opaque reference rather than a path,
   // so isLocalModelPath alone lets it through. chat-load-hub-token-reach.test.ts pins
   // what the predicate itself classifies.
-  assert.match(guarded, /!isOllamaLinkPath\(modelId\)/);
+  assert.match(guarded, /!isOllamaModelId\(modelId\)/);
   assert.match(guarded, /nativePathToken\s*==\s*null/);
   assert.match(guarded, /if\s*\(mayReachHub\)\s*\{[\s\S]*prepareHfTokenForUse\(hfToken\)/);
 });

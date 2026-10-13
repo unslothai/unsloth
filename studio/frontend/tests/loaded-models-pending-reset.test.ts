@@ -14,9 +14,7 @@
 // the hook into.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   type LoadedModelEntry,
@@ -24,15 +22,9 @@ import {
   withPendingLoads,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
 
-const SOURCE = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/loaded-models/use-loaded-models.ts",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SOURCE = readSrc("features/loaded-models/use-loaded-models.ts");
 
 test("a stale pending entry outlives every poll, so it must not survive a disable", () => {
   const pending = new Map<LoadedModelSource, string | null>([
@@ -173,15 +165,7 @@ test("an unnamed announcement defers to any row for its runtime", () => {
 // on, since the poll synthesises their loading rows; images and video have no
 // such fallback, so the card stayed hidden for the whole load.
 test("recording is gated on the preference, not on whether the card shows", () => {
-  const SOURCE = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/loaded-models/use-loaded-models.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const SOURCE = readSrc("features/loaded-models/use-loaded-models.ts");
   assert.match(
     SOURCE,
     /track: boolean = enabled/,
@@ -194,14 +178,8 @@ test("recording is gated on the preference, not on whether the card shows", () =
   assert.match(subscribe, /if \(!track\) return;/);
   assert.doesNotMatch(subscribe, /if \(!enabled\) return;/);
 
-  const INDICATOR = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/loaded-models/loaded-models-indicator.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
+  const INDICATOR = readSrc(
+    "features/loaded-models/loaded-models-indicator.tsx",
   );
   // Dismissal must not stop the recording, or the card cannot reopen for the
   // load. Reachability must, since it carries the auth gate: tracking on the

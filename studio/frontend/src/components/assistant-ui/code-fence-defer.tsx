@@ -3,69 +3,69 @@
 
 "use client";
 
+import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
   type RefObject,
+  startTransition,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { flushSync } from "react-dom";
 
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { FENCE_HEIGHT_PROPERTY } from "./code-block-containment-mode";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
-import { normalizeLanguage } from "./code-plugin";
+import {
+  EMPTY_LINE_WINDOW,
+  HYSTERESIS_VIEWPORTS,
+  isBlankLine,
+  type LineWindow,
+  type LinePins,
+  lineRendered,
+  pinBoundaryLines,
+  samePins,
+  OVERSCAN_VIEWPORTS,
+  plainLineText,
+  selectLineWindow,
+  WINDOW_CAP_LINES,
+} from "./code-fence-window";
+import { planPrintTokenization } from "./code-fence-print";
+import { createFenceSpeculator } from "./fence-speculation";
+import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
+import { inputQuietIn, scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
+import {
+  MAX_CACHED_CHARACTERS,
+  MAX_FENCES,
+  normalizeLanguage,
+} from "./code-plugin";
 
 /*
- * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
- * first time it comes near the viewport, and from that moment it is highlighted
- * for the rest of its mount. There is no reverse edge.
- *
- * WHY THE DIRECTION MATTERS. The previous attempt at this gated on viewport
- * entry AND on viewport EXIT, so scrolling away from a fence, or collapsing the
- * pane holding it, tore the highlighted subtree down and scrolling back built
- * it again. That makes the gate BIDIRECTIONAL: a user gesture that ought to
- * cost nothing instead schedules a full re-tokenize and a re-mount of every
- * span in the block. It was predicted to save 55% and measured slower.
- *
- * Here the only transition is cheap -> expensive, taken at most once per mount.
- * Scrolling away costs nothing, because there is nothing to undo; the observer
- * has already been disconnected and the component has no effect left running.
- * The worst case is therefore exactly today's cost (every fence looked at), and
- * every fence the reader never reaches is saved outright.
- *
- * WHAT THE SHELL IS. The same text, in the same elements streamdown's own
- * unhighlighted fallback would use, carrying the same `data-streamdown`
- * attributes so every rule in index.css that sizes a code block applies to it
- * unchanged. The text is present in the DOM and selectable, which is the
- * property `content-visibility: auto` does not have: skipped content has to be
- * rendered before it can be selected, and that was measured at +28.8% on
- * `select_all_copy.select_all_ms`. Selection, clipboard and native find-in-page
- * see the same characters here whether the fence has upgraded or not.
- *
- * A STREAMING fence never defers. The block being written is by definition the
- * one the reader is looking at, and deferring it would change what streaming
- * renders rather than what a settled thread costs.
+ * MONOTONIC fence highlighting: a fence renders as a plain shell until the first time it comes near
+ * the viewport, and is highlighted for the rest of its mount. There is no reverse edge.
+ * An earlier attempt gated on viewport entry AND exit, so scrolling away tore the highlighted
+ * subtree down and scrolling back rebuilt it: a gesture that ought to cost nothing scheduled a full
+ * re-tokenize, and it measured slower. Here the only transition is cheap -> expensive, at most once
+ * per mount, so the worst case is exactly today's cost and every fence never reached is saved.
+ * The shell is the same text in the same elements streamdown's own unhighlighted fallback would
+ * use, carrying the same `data-streamdown` attributes so index.css sizes it unchanged. The text is
+ * in the DOM and selectable, which `content-visibility: auto` is not (skipped content has to be
+ * rendered before it can be selected, +28.8% on select_all_ms).
+ * A STREAMING fence never defers: the block being written is the one the reader is looking at.
  */
 
 /*
  * How far outside the viewport a fence counts as "reached": one viewport of slack each way, so the
- * upgrade lands a frame or two before the block is on screen and the reader never sees the swap.
- *
- * THE PERCENTAGE RESOLVES AGAINST THE ROOT'S HEIGHT, and the spec says otherwise. Intersection
- * Observer 2.2 says percentages "are resolved relative to the width of the undilated rectangle"
- * for all four sides; no engine does that for top and bottom, and w3c/IntersectionObserver#391 is
- * open on exactly that. Measured on a synthetic scroller, with `0px 0px` and `300px 0px` alongside
- * as controls that must come back 0 and 300:
- *
- *   root 300x800 -> 800 px    root 1600x600 -> 600 px    root 600x1400 -> 1400 px
- *
- * on Chromium, Firefox and WebKit alike, nine rows, every control reproduced. So it is the HEIGHT,
- * which `inBand` and the jump test below both assume. That is today's engines against a spec that
- * reads otherwise, so it is guarded rather than trusted: `pf9462_parity.py` re-measures two
- * geometries every run and fails if the observer's lookahead and the pre-paint band stop agreeing,
- * which is what an engine moving to the spec's reading would look like.
+ * upgrade lands a frame or two before the block is on screen.
+ * THE PERCENTAGE RESOLVES AGAINST THE ROOT'S HEIGHT, and the spec says otherwise: Intersection
+ * Observer 2.2 resolves percentages against the undilated rectangle's WIDTH for all four sides, no
+ * engine does that for top and bottom, and w3c/IntersectionObserver#391 is open on it. Measured as
+ * the height on Chromium, Firefox and WebKit alike, which `inBand` and the jump test both assume.
+ * Guarded rather than trusted: `pf9462_parity.py` re-measures two geometries every run and fails if
+ * the observer's lookahead and the pre-paint band stop agreeing.
  */
 const REACH_MARGIN = "100% 0px";
 
@@ -89,11 +89,10 @@ const readBuildFlag = (): string => {
   }
 };
 
-// Streamdown trims trailing newlines off a fence body before rendering it, so
-// the shell has to as well or the two differ by a blank line of height.
-//
-// The length is split out because `warmGrammars` needs the size of what a warm WOULD tokenize on
-// every render, and slicing a 20,000 character fence to measure it is a copy per render.
+// Streamdown trims trailing newlines off a fence body before rendering it, so the shell has to as
+// well or the two differ by a blank line of height. The length is split out because `warmGrammars`
+// needs the size of what a warm WOULD tokenize, and slicing a 20,000 character fence to measure it
+// is a copy per render.
 export const trimmedLength = (text: string): number => {
   let end = text.length;
   while (end > 0 && text[end - 1] === "\n") end -= 1;
@@ -104,36 +103,41 @@ export const trimTrailingNewlines = (text: string): string =>
   text.slice(0, trimmedLength(text));
 
 /*
- * AN EMPTY FENCE IS ONE LINE TALL, not nothing.
- *
- * Streamdown renders a code block as one span per token line, and it special-cases the empty line:
- *
- *   children: c.length === 0 || (c.length === 1 && c[0].content === "") ? `\n` : c.map(...)
- *
- * It also trims trailing newlines off the source first, exactly as `trimTrailingNewlines` does
- * here, so a fence whose body is empty or is nothing but newlines tokenizes to a single empty line
- * and renders as one newline: one line box of height. A `<code>` holding an empty text node has no
- * line box at all, so without this the shell is one line shorter than the block it stands in for
- * and the fence grows by a line when it upgrades, moving everything below it.
+ * AN EMPTY FENCE IS ONE LINE TALL, not nothing. Streamdown renders one span per token line and
+ * special-cases the empty line to a single newline, having trimmed trailing newlines first exactly as
+ * `trimTrailingNewlines` does here, so an empty body renders as one line box of height. A `<code>`
+ * holding an empty text node has no line box at all, so without this the shell is one line shorter
+ * than the block it stands in for and everything below it moves when the fence upgrades.
  */
 const shellBody = (source: string): string => {
   const trimmed = trimTrailingNewlines(source);
   return trimmed === "" ? "\n" : trimmed;
 };
 
+const shellLines = (source: string): string[] => {
+  const nodes: string[] = [];
+  for (const [index, line] of shellBody(source).split("\n").entries()) {
+    if (index > 0) nodes.push("\n");
+    if (line !== "") nodes.push(line);
+  }
+  return nodes;
+};
+
 function FenceShell({
   language,
   source,
+  plain = false,
 }: {
   language: string | null;
   source: string;
+  plain?: boolean;
 }) {
   return (
     <div
       className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
       data-language={language ?? undefined}
       data-streamdown="code-block"
-      data-unsloth-fence-deferred="true"
+      data-unsloth-fence-deferred={plain ? undefined : "true"}
     >
       <div
         className="flex h-8 items-center text-muted-foreground text-xs"
@@ -148,7 +152,7 @@ function FenceShell({
         data-streamdown="code-block-body"
       >
         <pre>
-          <code>{shellBody(source)}</code>
+          <code>{plain ? shellLines(source) : shellBody(source)}</code>
         </pre>
       </div>
     </div>
@@ -158,28 +162,26 @@ function FenceShell({
 /**
  * Has this fence been reached yet? Latches true and never returns false again.
  *
- * Takes a ref to an element the CALLER already renders rather than mounting a
- * wrapper of its own. An extra div here would sit between a list item and its
- * code block and break `[data-streamdown="list-item"] > [data-streamdown=
- * "code-block"]`, and would push the block one level deeper than the
- * `:last-child` margin chain in index.css walks -- a layout change smuggled in
- * by a performance change, which is the one thing an A/B must not carry.
+ * Takes a ref to an element the CALLER already renders rather than mounting a wrapper: an extra div
+ * would sit between a list item and its code block, breaking
+ * `[data-streamdown="list-item"] > [data-streamdown="code-block"]`, and would push the block one
+ * level deeper than index.css's `:last-child` margin chain walks. That is a layout change smuggled
+ * in by a performance change, which is the one thing an A/B must not carry.
  */
-// No IntersectionObserver, no gate. Read once at module scope so the decision
-// is part of the rendered value rather than a state write from inside an
-// effect, which would cost a cascading render on every fence in the thread.
+// No IntersectionObserver, no gate. Read once at module scope so the decision is part of the
+// rendered value rather than a state write from inside an effect, which would cost a cascading
+// render on every fence in the thread.
 const CAN_OBSERVE =
   typeof IntersectionObserver !== "undefined" &&
   typeof globalThis !== "undefined";
 
 /*
- * THE REGISTER OF FENCES THAT HAVE NOT BEEN REACHED YET, for the two things that must reach across
- * all of them at once without waiting for a React render: a discontinuous scroll, and a print,
- * which puts the WHOLE document on the page. Both go through `latchNow` below.
- *
- * A gate carries the two elements its observers were built against, resolved at the same moment
- * and rebuilt with them, so nothing here re-walks the ancestor chain or re-reads a computed style.
- * `warm` comes from the caller because the highlighter instance lives with the block's component.
+ * THE REGISTER OF FENCES NOT YET REACHED, for the two things that must reach across all of them at
+ * once without waiting for a React render: a discontinuous scroll, and a print, which puts the
+ * WHOLE document on the page. Both go through `latchNow`. A gate carries the two elements its
+ * observers were built against, resolved at the same moment and rebuilt with them, so nothing here
+ * re-walks the ancestor chain or re-reads a computed style. `warm` comes from the caller because
+ * the highlighter instance lives with the block's component.
  */
 type FenceGate = {
   node: HTMLElement;
@@ -190,6 +192,7 @@ type FenceGate = {
   chars: number;
   /** `true` tokenizes this fence's source now; `false` only loads its grammar. */
   warm: (tokens: boolean) => void;
+  speculate: (settle: (seeded: boolean) => void) => (() => void) | null;
   latch: () => void;
   /** A state write that changes nothing, whose only job is to give React sync work to do. */
   poke: () => void;
@@ -203,37 +206,28 @@ const gateOpen = (gate: FenceGate): boolean =>
   && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer));
 
 /*
- * UPGRADE THESE FENCES INSIDE THIS TASK, so the browser paints them highlighted instead of
- * painting the plain shell and correcting it a few frames later. Dropping any of the three steps
- * was measured to put a painted plain frame back:
- *
- *   1. `warm(true)`. Streamdown's highlighted body renders its own plain fallback whenever the
- *      plugin answers `null`, which it does only while a grammar is loading; with the grammar in
- *      hand it tokenizes in the same call. Warming makes the render below a cache hit.
- *   2. The inner `flushSync(latch)`. A normally scheduled update lands after the next paint, which
- *      is the whole defect. This commits the shell-to-block swap in this task.
+ * UPGRADE THESE FENCES INSIDE THIS TASK, so the browser paints them highlighted rather than
+ * painting the plain shell and correcting it frames later. Dropping any of the three steps was
+ * measured to put a painted plain frame back:
+ *   1. `warm(true)`. Streamdown's highlighted body falls back to plain whenever the plugin answers
+ *      `null`, which it does only while a grammar loads; with the grammar in hand it tokenizes in
+ *      the same call, so the render below is a cache hit.
+ *   2. The inner `flushSync(latch)`, since a normally scheduled update lands after the next paint.
  *   3. The inner `flushSync(poke)`, INSIDE an outer `flushSync`. Step 2 does not produce the
  *      COLOURED commit: `HighlightedCodeBlockBody` starts at `useState(raw)` and asks for tokens
- *      from a PASSIVE effect, so every newly mounted block renders unhighlighted once. Off screen
- *      at thread mount that is invisible; deferred, it is a plain frame on the reader's screen.
- *
- * WHY THE POKE AND THE NESTING, since an empty `flushSync(() => {})` does neither:
- *
- *   - React runs pending passive effects from `performSyncWorkOnRoot`, reached only when sync work
- *     is waiting, so a flush with nothing to do never runs the effect that colours the block.
- *     `poke` is that work: a state write on an already-latched fence whose own effects all
- *     early-return.
- *   - `flushSync` restores React's update priority BEFORE performing the flush, so the passive
- *     effect's update resolves against the ambient priority, and a scroll is continuous rather
- *     than discrete, so it is not flushed and lands next frame after all. The outer call holds the
- *     priority discrete across its whole body, so the inner flushes carry the effect's update too.
- *
+ *      from a PASSIVE effect, so every newly mounted block renders unhighlighted once.
+ * Why the poke and the nesting, since an empty `flushSync(() => {})` does neither: React runs
+ * pending passive effects from `performSyncWorkOnRoot`, reached only when sync work is waiting, and
+ * `poke` is that work. And `flushSync` restores update priority BEFORE performing the flush, so the
+ * passive effect's update would resolve against the ambient priority (a scroll is continuous, so
+ * not flushed); the outer call holds the priority discrete across its whole body.
  * One way only. Nothing here can clear a latch.
  */
 const latchNow = (arrived: readonly FenceGate[]): void => {
   if (arrived.length === 0) return;
   for (const gate of arrived) {
     unreached.delete(gate);
+    fenceSpeculator.remove(gate);
     gate.warm(true);
   }
   flushSync(() => {
@@ -248,26 +242,19 @@ const latchNow = (arrived: readonly FenceGate[]): void => {
 
 /*
  * A DISCONTINUOUS SCROLL: a scrollbar drag, Ctrl+End, an anchor jump, a restored position.
- *
  * Neither the observers' one root height of lookahead (`REACH_MARGIN`) nor the render-time
  * pre-paint gate covers a jump: the viewport can move further than the lookahead in one step with
  * no React render in between, and an IntersectionObserver record is delivered one or more frames
- * AFTER the paint. Chromium at the 100K rung, 16 seeded jumps: 8 painted 3 to 4 frames of plain
- * code, 50 to 190 ms.
- *
- * A SCROLL LISTENER IS ENOUGH AND IS IN TIME: scroll events are dispatched in the "run the scroll
+ * AFTER the paint (measured: 8 of 16 seeded jumps painted 3 to 4 frames of plain code).
+ * A scroll listener is enough and is in time: scroll events are dispatched in the "run the scroll
  * steps" of the same update-the-rendering pass that will paint the new position, before
  * animation-frame callbacks and before style, layout and paint, so a `flushSync` from here is part
- * of the frame the reader is about to see. `scrollTo`, wheel, drag and keyboard all arrive here.
- *
- * THE THRESHOLD IS DERIVED, NOT TUNED. The band is one root height `h` bigger each way, so after a
+ * of the frame the reader is about to see.
+ * The threshold is derived, not tuned: the band is one root height `h` bigger each way, so after a
  * scroll of `d` the newly visible strip `[d, d + h]` is inside the old band exactly when `d <= h`.
- * The pass therefore runs only when the lookahead provably did not cover the movement, and a
- * continuous scroll pays one subtraction per event.
- *
- * ONE LISTENER, NOT ONE PER FENCE. Scroll does not bubble but does capture, so one capturing
+ * One listener, not one per fence: scroll does not bubble but does capture, so one capturing
  * document listener sees every element including nested reasoning panes. Attached when the first
- * fence registers and removed when the last latches, so nothing left to defer costs nothing.
+ * fence registers and removed when the last latches.
  */
 const lastScrollTop = new WeakMap<EventTarget, number>();
 let scrollWatched = false;
@@ -289,6 +276,7 @@ const onScroll = (event: Event): void => {
     if (gateOpen(gate)) arrived.push(gate);
   }
   latchNow(arrived);
+  fenceSpeculator.rerank();
 };
 
 const watchScrolling = (): void => {
@@ -305,35 +293,23 @@ const unwatchScrolling = (): void => {
 
 /*
  * PRINT, the one gesture that puts every deferred fence on the page at once.
- *
- * Colour is all deferral costs a printed page -- the shell holds a live text node, so it prints
- * complete, in order and in the right font -- but a page that lost the colour on fences the reader
- * never scrolled past is a defect they can see and keep. Nor does the printed window match the
- * reader's: a print lays out at PAPER width while the scroll offset carries across as raw pixels,
- * so the page lands several fences away. Letter against a 1280 px window: 1 to 2 deferred fences
- * on every sampled page, 6.6% pixel difference against the same page with the flag off; matching
- * paper to window removes it, which identifies the cause and is why chasing the window is the
- * wrong fix. The whole document is on the page, so the whole document has to be highlighted.
- *
- * WHY AN EARLIER ATTEMPT FAILED and was reported as impossible: it latched every fence from
- * `beforeprint` with `flushSync`, the blocks swapped, and 53 of 56 still printed on streamdown's
- * raw fallback, because the swap alone renders UNHIGHLIGHTED while the passive effect waits on a
- * grammar. `latchNow` closes both halves (warm, then flush the colouring render as well as the
- * swap) and `warmGrammars` below keeps a loading grammar from being what is missing at snapshot.
- *
+ * Colour is all deferral costs a printed page, since the shell holds a live text node, but a page
+ * that lost the colour on fences the reader never scrolled past is a defect they keep. Nor does the
+ * printed window match the reader's: a print lays out at PAPER width while the scroll offset
+ * carries across as raw pixels, so the page lands several fences away (matching paper to window
+ * removes the difference, which is why chasing the window is the wrong fix). The whole document is
+ * on the page, so every fence is revealed (highlighting capped by PRINT_TOKENIZE_CHARS).
+ * An earlier attempt latched every fence from `beforeprint` with `flushSync` and 53 of 56 still
+ * printed on streamdown's raw fallback, because the swap alone renders UNHIGHLIGHTED while the
+ * passive effect waits on a grammar. `latchNow` closes both halves and `warmGrammars` keeps a
+ * loading grammar from being what is missing at snapshot.
  * BOTH DOORS: `beforeprint` covers Ctrl+P and the print menu; headless `page.pdf()` and DevTools
- * print emulation change the media query without firing it, and a PDF export is how a reader keeps
- * a copy.
- *
+ * print emulation change the media query without firing it.
  * A PRINT UPGRADES THE DOCUMENT THAT WAS PRINTED, AND NOTHING ELSE. This was a module-global
- * `printed` folded into every future fence's `reached`, a session-wide latch rather than a
- * monotonic one: at the 100K rung a thread with 53 of 56 fences deferred, 2,458 spans and 22,794
- * elements printed once, then after navigating away inside the app and back remounted with 0
- * deferred, 41,410 spans and 61,747 elements. One Ctrl+P turned the default off for the tab's
- * life, including threads never on the printed page. So a print latches what is on the page WHEN
- * IT HAPPENS and a fence mounted afterwards defers again; every print does it again, so print,
- * scroll, print gives a second page as complete as the first. Still one way only: `latchNow` can
- * only latch, and reverting on `afterprint` would be the bidirectional edge this design avoids.
+ * `printed` folded into every future fence's `reached`, so one Ctrl+P turned the default off for
+ * the tab's life, including threads never on the printed page. So a print latches what is on the
+ * page WHEN IT HAPPENS and a fence mounted afterwards defers again. Still one way only: reverting
+ * on `afterprint` would be the bidirectional edge this design avoids.
  */
 const upgradeEverythingForPrint = (): void => {
   latchNow([...unreached]);
@@ -341,63 +317,45 @@ const upgradeEverythingForPrint = (): void => {
 
 /*
  * GRAMMARS, WARMED AT IDLE, ON REAL TEXT, ONE TOKENIZATION PER TASK.
- *
  * One fence per language, so `latchNow`'s synchronous path cannot be defeated by a still-loading
  * grammar: on a jump into a language the reader has not met, and on a print, where there is no
  * later frame to correct in. Nothing runs when nothing is deferred. "Per language" means per
- * GRAMMAR, `normalizeLanguage`, not per fence tag: ```py and ```python are one grammar to the
- * highlighter, and two keys here would warm it twice, on two different fences.
- *
- * IT USED TO WARM ON AN EMPTY STRING. Loading a grammar is the cheap half; running it over text
- * the first time is not, and `""` never does the second. So the first REAL tokenization still paid
- * the whole one-off cost, and with deferral on that landed in one frame, during a scroll, on the
- * fence the reader had just reached. Three arms out of ONE build at the 100K rung on WebKitGTK
- * 2.50.4, two reps each, so a difference between arms cannot be a build difference:
- *
- *                          worst scroll frame   warm callbacks, ms
- *   warm on ""                 1200, 1085 ms     1                and 1
- *   warm on real text           183,  190 ms     1                and 2
- *   this: split, eager loads    187,  183 ms     1/64/21/32/1016  and 2/68/36/52/1104
- *
- * The 1,016 ms is ONE tokenize call, typescript's first, which nothing here can subdivide; the
- * split only keeps the other four off it. Every arm pays that call: unsplit at t=6.5 s inside a
- * grammar-load callback, which is why its warm reads 1 ms, and on the `""` arm at t=36.5 s, inside
- * the scroll, where it IS the worst frame. Moved, not skipped, and the totals say so: tokenize time
- * RISES, 1607-1746 ms to 1917-2039 ms, because a warmed fence is tokenized once and read from cache
- * later. Mount is unaffected, worst idle frame is best here (25 and 32 ms against 46/37 unsplit and
- * 38/43 on `""`), idle is 62.5 fps and 7.1 to 7.4% busy on every arm, the three arms render the
- * same document (7,259 spans, 27,045 elements, 56 code blocks), and the rig is jam-controlled: a
- * 200 ms/250 ms hog reads 81% busy.
- *
+ * GRAMMAR, `normalizeLanguage`, not per fence tag: ```py and ```python are one grammar, and two
+ * keys here would warm it twice on two different fences.
+ * IT USED TO WARM ON AN EMPTY STRING. Loading a grammar is the cheap half; running it over text the
+ * first time is not, and `""` never does the second, so the first REAL tokenization still paid the
+ * whole one-off cost, landing in one frame during a scroll (worst scroll frame 1200 ms against
+ * 185 ms warming on real text, three arms out of one build). Moved, not skipped: total tokenize
+ * time RISES, because a warmed fence is tokenized once and read from cache later.
  * WHY THE TOKENIZATIONS YIELD AND THE LOADS DO NOT. An idle callback only chooses when it STARTS:
  * nothing yields once it runs, its 2,000 ms timeout can start it on a busy thread, and WebKitGTK
- * has no `requestIdleCallback` at all, so this venue takes the `setTimeout` fallback and cannot
- * even pick a quiet moment. With a grammar already loaded `code.highlight` tokenizes INLINE and N
- * languages concatenate -- driving shiki with this component's configuration, the five languages
- * here (c, python, go, typescript, rust) cost 746 ms back to back. But `highlight` answers `null`
- * WHILE a grammar loads, so yielding the loads too would put the fifth grammar 500 ms x N away and
- * a jump or a print inside that window would get streamdown's plain fallback out of `latchNow`'s
- * flush -- the defect this whole pre-warm exists to prevent. So every load starts in the first
- * pass and only the tokenizing is spread out.
- *
- * NOTHING BOUNDED THE SIZE OF A WARM, and this comment used to claim `MAX_HIGHLIGHT_CHARS` did.
- * It does not reach here: `markdownPluginNeeds` applies it in `markdown-preview.tsx` and
- * `model-readme.tsx`, `tool-code-cell.tsx` and `attachment-preview.tsx` apply it to their own
- * source, but `markdown-text.tsx` supplies the code plugin unconditionally and `FenceBlock` warms
- * the whole body -- and `code-plugin.ts`'s `evict` keeps the last fence whatever its size. A LATCH
- * is demanded work and stays uncapped; a warm is SPECULATIVE, on a fence the reader may never
- * reach, so it is capped at the same 20,000 characters. Over the cap, and for a fence that is
- * EMPTY or nothing but newlines, the grammar loads and nothing is tokenized; neither marks the
- * language warmed, so a later fence that can warm it still does. The cap costs the measurement
- * nothing: the largest fence at this rung is 2,817 characters.
+ * has no `requestIdleCallback` at all. With a grammar already loaded `code.highlight` tokenizes
+ * INLINE and N languages concatenate. But `highlight` answers `null` WHILE a grammar loads, so
+ * yielding the loads too would put the fifth grammar 500 ms x N away and a jump or print inside
+ * that window would get the plain fallback out of `latchNow`'s flush, the defect this pre-warm
+ * exists to prevent. So every load starts in the first pass and only the tokenizing is spread out.
+ * NOTHING BOUNDED THE SIZE OF A WARM, and this comment used to claim `MAX_HIGHLIGHT_CHARS` did. It
+ * does not reach here: `markdown-text.tsx` supplies the code plugin unconditionally, `FenceBlock`
+ * warms the whole body, and `code-plugin.ts`'s `evict` keeps the last fence whatever its size. A
+ * LATCH is demanded work and stays uncapped; a warm is SPECULATIVE, so it is capped at the same
+ * 20,000 characters. Over the cap, and for a fence that is empty or nothing but newlines, the
+ * grammar loads and nothing is tokenized; neither marks the language warmed, so a later fence that
+ * can warm it still does.
  */
 const grammarsWarmed = new Set<string>();
 const grammarsLoaded = new Set<string>();
 let warmScheduled = false;
 
+export const grammarWarmed = (language: string | null): boolean =>
+  grammarsWarmed.has(normalizeLanguage(language ?? "text"));
+
 // Keyed the way `highlight` keys it, or `py` and `Python` are two keys for one grammar.
 const grammarOf = (gate: FenceGate): string =>
   normalizeLanguage(gate.language ?? "text");
+
+const warmMustWait = (): boolean =>
+  typeof (globalThis as Record<string, unknown>).requestIdleCallback !== "function"
+  && (streamActive() || inputQuietIn() > 0);
 
 const warmGrammars = (): void => {
   warmScheduled = false;
@@ -416,6 +374,10 @@ const warmGrammars = (): void => {
     // ours to tokenize speculatively. Neither marks the grammar warmed, so a later fence in the
     // same language still gets its real warm.
     if (gate.chars === 0 || gate.chars > MAX_HIGHLIGHT_CHARS) continue;
+    if (warmMustWait()) {
+      scheduleGrammarWarm();
+      return;
+    }
     grammarsWarmed.add(language);
     // TRUE, not false: real text is what takes the one-off tokenizer cost off the scroll.
     gate.warm(true);
@@ -436,42 +398,93 @@ const scheduleGrammarWarm = (): void => {
   else setTimeout(warmGrammars, 500);
 };
 
+const rankGates = (gates: readonly FenceGate[]): number[] => {
+  const boxes = new Map<HTMLElement | null, DOMRect>();
+  return gates.map((gate) => {
+    let box = boxes.get(gate.outer);
+    if (box === undefined) {
+      box = gate.outer
+        ? gate.outer.getBoundingClientRect()
+        : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+      boxes.set(gate.outer, box);
+    }
+    const rect = gate.node.getBoundingClientRect();
+    if (rect.bottom < box.top) return box.top - rect.bottom;
+    if (rect.top > box.bottom) return rect.top - box.bottom;
+    return 0;
+  });
+};
+
+const SPECULATION_IN_FLIGHT = 3;
+
+const fenceSpeculator = createFenceSpeculator<FenceGate>({
+  idle: (callback, timeout) => scheduleQuietIdleTask(callback, timeout),
+  wait: (callback, ms) => {
+    const timer = setTimeout(callback, ms);
+    return () => clearTimeout(timer);
+  },
+  enabled: () =>
+    fenceMode() !== "off" && highlightWorkerState() !== "unavailable",
+  busy: () => streamActive() || highlightWorkerState() === "stalled",
+  eligible: (gate) => grammarsWarmed.has(grammarOf(gate)),
+  rank: rankGates,
+  maxChars: MAX_HIGHLIGHT_CHARS,
+  budgetChars: MAX_CACHED_CHARACTERS / 2,
+  budgetFences: MAX_FENCES / 2,
+  maxInFlight: SPECULATION_IN_FLIGHT,
+});
+
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeprint", upgradeEverythingForPrint);
+  window.addEventListener("beforeprint", () => {
+    upgradeEverythingForPrint();
+    setPrinting(true);
+  });
+  window.addEventListener("afterprint", () => setPrinting(false));
   window.matchMedia?.("print")?.addEventListener?.("change", (event) => {
-    if (event.matches) upgradeEverythingForPrint();
+    if (event.matches) {
+      upgradeEverythingForPrint();
+      setPrinting(true);
+    } else {
+      setPrinting(false);
+    }
   });
 }
 
 /*
  * THE NEAREST SCROLLING ANCESTOR, found rather than named.
- *
- * This used to match two known selectors, `[data-slot='thread-viewport']` and
- * `.aui-thread-viewport`, and `closest()` walks straight past anything that matches neither. The
- * one that matters is the reasoning pane: while a reply streams, `reasoning.tsx` gives its trace
- * `overflow-y-auto` and `max-h-64` and pins it to the bottom, so the reader is looking at an
+ * This used to match two known selectors and `closest()` walks straight past anything matching
+ * neither. The one that matters is the reasoning pane: while a reply streams, `reasoning.tsx` gives
+ * its trace `overflow-y-auto` and `max-h-64` and pins it to the bottom, so the reader looks at an
  * arbitrarily long trace through a 256 px window nested inside the thread scroller.
- *
- * What this is NOT. It is not a correctness fix. Intermediate scrollers clip, so intersection was
- * always computed correctly and fences inside that pane were always deferred properly; measured in
- * Chromium with ten fences in a 256 px inner scroller inside a 400 px outer one, 3 of 10 reported
- * intersecting either way. It is a LOOKAHEAD fix. `rootMargin` expands the ROOT's rectangle, so
- * rooting at the thread viewport expanded a rectangle the reader is not looking through and the
- * one-viewport warning was worth nothing inside the pane: the "100% 0px" column and the no-margin
- * column were identical at 3 of 10, while rooting at the inner scroller gave 5 of 10. The
- * user-visible consequence of getting it wrong is narrow and real: a fence scrolling into the
- * 256 px window gets no pre-warm and shows the plain shell for the frames the upgrade takes.
- *
- * `null` is deliberately still possible and is deliberately NOT the default: a fence with no
- * scrolling ancestor really is clipped by the document viewport, but assuming that when a scroller
- * exists is the bug the review caught.
+ * Not a correctness fix: intermediate scrollers clip, so intersection was always computed
+ * correctly. It is a LOOKAHEAD fix. `rootMargin` expands the ROOT's rectangle, so rooting at the
+ * thread viewport expanded a rectangle the reader is not looking through and the one-viewport
+ * warning was worth nothing inside the pane (3 of 10 with and without the margin, against 5 of 10
+ * rooted at the inner scroller). Getting it wrong shows the plain shell for the frames the upgrade
+ * takes.
+ * `null` is deliberately still possible and deliberately NOT the default: a fence with no scrolling
+ * ancestor really is clipped by the document viewport, but assuming that when a scroller exists is
+ * the bug the review caught.
  */
+let scrollableNow: WeakMap<Element, boolean> | null = null;
+
+const forgetScrollable = (): void => {
+  scrollableNow = null;
+};
+
 const isScrollable = (el: HTMLElement): boolean => {
+  if (scrollableNow === null) {
+    scrollableNow = new WeakMap();
+    queueMicrotask(forgetScrollable);
+  }
+  const known = scrollableNow.get(el);
+  if (known !== undefined) return known;
   const overflowY = getComputedStyle(el).overflowY;
-  return (
+  const scrollable =
     (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
-    && el.scrollHeight > el.clientHeight
-  );
+    && el.scrollHeight > el.clientHeight;
+  scrollableNow.set(el, scrollable);
+  return scrollable;
 };
 
 const scrollerOf = (node: HTMLElement): HTMLElement | null => {
@@ -483,48 +496,27 @@ const scrollerOf = (node: HTMLElement): HTMLElement | null => {
 
 /*
  * THE OUTERMOST ONE TOO, and why the nearest is not enough on its own.
- *
  * An explicit root is clipped by the ancestors BETWEEN the target and the root, and by NOTHING
- * above it. Rooting at the reasoning pane therefore asks "is this fence inside the pane's own
- * window" and never "is the pane itself anywhere near the reader". Two ways that goes wrong, and
- * the second one undoes the whole change on the pane most likely to hold the spans:
- *
- *   1. A pane scrolled far out of the thread still reports the two or three fences inside its
- *      256 px window as intersecting, so they upgrade where nobody can see them.
- *   2. `reasoning.tsx` drops `max-h-64` when the stream ends but KEEPS `overflow-y-auto`, so the
- *      pane stops being scrollable and its box becomes the whole trace. An observer still rooted
- *      at it from the streaming frames then reports EVERY fence in that trace as intersecting at
- *      once.
- *
- * Rooting at the outermost scroller instead would fix both and cost the lookahead that rooting at
- * the nearest one bought: measured in Chromium with ten fences in a 256 px inner scroller inside a
- * 400 px outer one, the inner root reports 5 of 10 with a one-window margin against 3 of 10 for
- * the outer root, and the difference is exactly the pre-warm that keeps a fence from showing its
- * plain shell as it scrolls into the pane.
- *
- * So when the two differ there are two gates, watching two different elements, and the latch needs
- * both: the FENCE against the nearest scroller answers "the reader is about to reach it inside the
- * pane", and the PANE against the outermost scroller answers "the pane is somewhere the reader can
- * see". Watching the fence through the outer root instead would clip it at the pane on the way and
- * go false exactly where the inner lookahead was doing its work -- 2 of 10 against 4, measured with
- * the pane fully in view. When the two scrollers are the same element, which is every fence outside
- * a nested scroller, there is exactly one observer and this costs nothing.
- *
- * THE CONJUNCTION IS NOT ENOUGH ON ITS OWN, which took a measurement to see. A stale inner root
- * is too permissive, and the outer gate only covers that while the pane is out of view. Scroll the
- * expanded pane so much as partly on screen and the outer gate is true, so the stale inner root
- * decides alone and reports the WHOLE trace: 10 of 10 in both engines, on a 4,080 px trace against
- * a 900 px viewport where the right answer is about 3. So the inner root is re-resolved when the
- * pane stops scrolling, which collapses the fence back to the single-gate case where the outermost
- * scroller is the root and nothing can be stale.
- *
- * Watched with a ResizeObserver on the pane rather than by re-resolving on every frame, and only
- * for fences that actually have a nested scroller. The callback reads one `overflow-y` on one
- * element, so a streaming pane resizing every frame costs one computed-style read per fence per
- * frame and rebinds nothing until the cap actually comes off.
- *
- * Still one-way. Nothing here can clear a latch; the extra gate and the rebind can only withhold
- * one.
+ * above it, so rooting at the reasoning pane asks "is this fence inside the pane's window" and
+ * never "is the pane anywhere near the reader". A pane scrolled far out of the thread still reports
+ * the fences inside its 256 px window as intersecting, and `reasoning.tsx` drops `max-h-64` when
+ * the stream ends but KEEPS `overflow-y-auto`, so the pane stops being scrollable, its box becomes
+ * the whole trace, and an observer still rooted at it reports EVERY fence at once.
+ * Rooting at the outermost scroller instead would fix both and cost the lookahead the nearest one
+ * bought (5 of 10 inner against 3 of 10 outer, measured). So when the two differ there are two
+ * gates and the latch needs both: the FENCE against the nearest scroller answers "the reader is
+ * about to reach it inside the pane", and the PANE against the outermost answers "the pane is
+ * somewhere the reader can see". Watching the fence through the outer root instead would clip it at
+ * the pane on the way and go false exactly where the inner lookahead works. When the two scrollers
+ * are the same element there is one observer and this costs nothing.
+ * THE CONJUNCTION IS NOT ENOUGH ON ITS OWN. A stale inner root is too permissive and the outer gate
+ * only covers that while the pane is out of view: scroll the expanded pane partly on screen and the
+ * stale inner root decides alone and reports the WHOLE trace (10 of 10 in both engines where the
+ * right answer is about 3). So the inner root is re-resolved when the pane stops scrolling, which
+ * collapses the fence back to the single-gate case.
+ * Watched with a ResizeObserver on the pane rather than by re-resolving every frame, and only for
+ * fences that have a nested scroller: the callback reads one `overflow-y` on one element.
+ * Still one-way. The extra gate and the rebind can only withhold a latch.
  */
 const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   let found: HTMLElement | null = null;
@@ -544,27 +536,71 @@ const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
 };
 
 /**
- * @param enabled  false on the shipped default, where this hook must cost nothing at all: no
- *                 state is ever written, no observer is built and no layout is read.
+ * @param enabled  false on the shipped default, where this hook must cost nothing at all: no state
+ *                 is written, no observer is built and no layout is read.
  * @param streaming  the fence is still being written. It is highlighted while it streams AND it
  *                 latches, so that finishing cannot take the highlighting back.
  * @param language  used only to load one grammar per language rather than one per fence; `null`
  *                 warms plain text.
- * @param chars  this fence's source length, read only by `warmGrammars` to keep a SPECULATIVE
- *                 warm inside `MAX_HIGHLIGHT_CHARS`. A latch is demanded work and is not capped.
+ * @param chars  this fence's source length, read only by `warmGrammars` to keep a SPECULATIVE warm
+ *                 inside `MAX_HIGHLIGHT_CHARS`. A latch is demanded work and is not capped.
  * @param warm  drive the highlighter over this fence: `true` for tokens, `false` for the grammar
- *                 alone. See `latchNow`. Held in a ref, not an effect dependency, so an
- *                 unmemoized caller cannot rebuild every observer in the thread on every render.
+ *                 alone. Held in a ref, not an effect dependency, so an unmemoized caller cannot
+ *                 rebuild every observer in the thread on every render.
  */
+const FENCE_HEAD_CHARS = 64;
+const JUST_STREAMED_MS = 2000;
+
+let lastStreamingFence: {
+  language: string | null;
+  head: string;
+  chars: number;
+  at: number;
+} | null = null;
+
+export const noteStreamingFence = (
+  language: string | null,
+  source: string,
+): void => {
+  lastStreamingFence = {
+    language,
+    head: source.slice(0, FENCE_HEAD_CHARS),
+    chars: trimmedLength(source),
+    at: performance.now(),
+  };
+};
+
+const justStreamed = (
+  language: string | null,
+  head: string,
+  chars: number,
+): boolean =>
+  lastStreamingFence !== null &&
+  lastStreamingFence.language === language &&
+  lastStreamingFence.head === head &&
+  chars >= lastStreamingFence.chars &&
+  chars - lastStreamingFence.chars < 512 &&
+  performance.now() - lastStreamingFence.at < JUST_STREAMED_MS;
+
 export function useFenceReached(
   host: RefObject<HTMLElement | null>,
   enabled: boolean,
   streaming: boolean,
   language: string | null,
   chars: number,
+  source: string,
   warm: (tokens: boolean) => void,
+  speculate: (settle: (seeded: boolean) => void) => (() => void) | null,
 ): boolean {
-  const [latched, setLatched] = useState(false);
+  const speculateRef = useRef(speculate);
+  useEffect(() => {
+    speculateRef.current = speculate;
+  }, [speculate]);
+  const [latched, setLatched] = useState(
+    () =>
+      streaming ||
+      justStreamed(language, source.slice(0, FENCE_HEAD_CHARS), chars),
+  );
   // Bumped when the resolved scrolling ancestor stops being one, which rebuilds the gates below
   // against the element that clips this fence now. Never read for anything else.
   const [generation, setGeneration] = useState(0);
@@ -575,16 +611,11 @@ export function useFenceReached(
   }, [warm]);
 
   /*
-   * A COMPLETING STREAM MUST NOT DOWNGRADE.
-   *
-   * `streaming` goes true -> FALSE when streamdown recognises the closing delimiter. Deriving
-   * `reached` from it alone therefore takes a fence that was highlighted all through its stream
-   * and hands it back the plain shell the moment it finishes: highlighted -> plain, on a block the
-   * reader is watching, which is precisely the reverse edge this design exists to remove. The
-   * fence was reached; that has to be recorded, not recomputed.
-   *
-   * In a layout effect so the downgrade is never painted even for one frame.
-   */
+     * A COMPLETING STREAM MUST NOT DOWNGRADE. `streaming` goes true -> FALSE when streamdown
+     * recognises the closing delimiter, so deriving `reached` from it alone hands a fence that was
+     * highlighted all through its stream back the plain shell the moment it finishes: the reverse
+     * edge this design exists to remove. In a layout effect so it is never painted.
+     */
   useLayoutEffect(() => {
     if (!enabled || latched || !streaming) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -592,28 +623,18 @@ export function useFenceReached(
   }, [enabled, latched, streaming]);
 
   /*
-   * THE FIRST FRAME, which the observer cannot cover.
-   *
-   * An IntersectionObserver delivers its first record asynchronously, one or more frames after
-   * `observe()`. For a fence that is ALREADY on screen when the thread mounts, those frames are
-   * plain code inside the viewport: measured at 2 to 3 frames, 30 to 190 ms. That is a visible
-   * difference, not an off-screen one, so it is closed here rather than argued about.
-   *
-   * `useLayoutEffect` runs after mutation and BEFORE paint, so a fence that is on screen latches
-   * and re-renders within the same frame and the plain shell is never painted. One
-   * `getBoundingClientRect` per unreached fence, all of them inside a single commit with no DOM
-   * mutation in between, so the layout is forced once for the whole thread rather than once per
-   * fence.
-   *
-   * RE-RUN ON A REBIND. `generation` is a dependency because the ResizeObserver below bumps it
-   * when the reasoning pane stops scrolling, and expanding that pane can bring a fence inside the
-   * outer viewport for the first time. Without it the rebind's own render leaves the plain shell
-   * in place, and the replacement observer is built in a passive effect and delivers
-   * asynchronously, so the shell is PAINTED. That is an on-screen difference, which is the one
-   * kind this change is not allowed to have.
-   *
-   * Still one-way: this can only ever latch true.
-   */
+     * THE FIRST FRAME, which the observer cannot cover.
+     * An IntersectionObserver delivers its first record asynchronously, one or more frames after
+     * `observe()`, so a fence ALREADY on screen at mount shows plain code inside the viewport for 2
+     * to 3 frames. `useLayoutEffect` runs after mutation and BEFORE paint, so it latches and
+     * re-renders within the same frame. One `getBoundingClientRect` per unreached fence, all inside a
+     * single commit with no DOM mutation between, so layout is forced once for the whole thread.
+     * RE-RUN ON A REBIND. `generation` is a dependency because the ResizeObserver below bumps it when
+     * the reasoning pane stops scrolling, and expanding that pane can bring a fence inside the outer
+     * viewport for the first time; without it the replacement observer is built in a passive effect
+     * and delivers asynchronously, so the shell is PAINTED.
+     * Still one-way: this can only ever latch true.
+     */
   useLayoutEffect(() => {
     if (reached) return;
     const node = host.current;
@@ -623,43 +644,31 @@ export function useFenceReached(
     const near = scrollerOf(node);
     const outer = outermostScrollerOf(node);
     if (inBand(node, near) && (near === outer || inBand(near as HTMLElement, outer))) {
-      // The cascading render this warns about is the POINT: it is what keeps the plain shell off
-      // the screen. It happens at most once per fence, only for the one or two fences that are
-      // already on screen at mount, and the alternative is the 2 to 3 painted frames of
-      // unhighlighted code this replaced.
+      // The cascading render this warns about is the POINT: it keeps the plain shell off the screen. It
+      // happens at most once per fence, only for the one or two already on screen at mount, and the
+      // alternative is 2 to 3 painted frames of unhighlighted code.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLatched(true);
     }
   }, [reached, host, generation]);
 
-  // The one-way edge. Once `reached` is true this effect re-runs, takes the
-  // early return, and never observes anything again, so a fence that has been
-  // read carries no residual per-scroll cost at all.
+  // The one-way edge. Once `reached` is true this effect re-runs, takes the early return, and never
+  // observes anything again, so a fence that has been read carries no residual per-scroll cost.
   useEffect(() => {
     if (reached) return;
     const node = host.current;
     if (!node) return;
-    // ROOTED AT THE THREAD'S SCROLLER, not at the document.
-    //
-    // The chat scrolls inside a nested overflow container. With `root` unset the root is the
-    // document viewport, and `rootMargin` expands THAT rectangle -- while the intersection is
-    // still clipped by the scroller's own edges, which no margin can widen. The lookahead would
-    // then be worth nothing: a fence would report intersecting only once it was already inside
-    // the visible band, and the reader would get the plain shell for the frames it takes the
-    // observer to deliver and the upgrade to render. Rooting at the scroller is what makes the
-    // margin mean one viewport of warning.
-    //
-    // See `outermostScrollerOf`: when a nested scroller is in the way, the outermost one is
+    // ROOTED AT THE THREAD'S SCROLLER, not at the document. The chat scrolls inside a nested overflow
+    // container; with `root` unset the root is the document viewport and `rootMargin` expands THAT
+    // rectangle, while the intersection is still clipped by the scroller's edges, which no margin can
+    // widen. See `outermostScrollerOf`: when a nested scroller is in the way, the outermost one is
     // observed as well and the latch needs both. One observer, not two, whenever they agree.
     const near = scrollerOf(node);
     const outer = outermostScrollerOf(node);
-    // WHAT EACH GATE WATCHES, which is not the same element.
-    //
-    // Observing the FENCE against the outer root clips it at the pane on the way, so the outer
-    // gate goes false exactly where the inner lookahead was supposed to be doing its work: 2 of 10
-    // against the inner root's 4, measured, with the pane fully in view. Observing the PANE
-    // against the outer root asks the question the outer gate is for -- is the pane anywhere the
-    // reader can see -- and the inner gate keeps its lookahead untouched at 4 of 10.
+    // WHAT EACH GATE WATCHES, which is not the same element. Observing the FENCE against the outer root
+    // clips it at the pane on the way, so the outer gate goes false exactly where the inner lookahead
+    // should be working (2 of 10 against 4). Observing the PANE against the outer root asks the
+    // question the outer gate is for, and the inner gate keeps its lookahead untouched.
     const gates: [Element, Element | null][] = near === outer
       ? [[node, near]]
       : [[node, near], [near as HTMLElement, outer]];
@@ -684,6 +693,7 @@ export function useFenceReached(
       language,
       chars,
       warm: (tokens) => warmRef.current(tokens),
+      speculate: (settle) => speculateRef.current(settle),
       latch: () => setLatched(true),
       // Reuses `generation`: this fence has just latched, so every effect keyed on it
       // early-returns and the bump costs one render. See `latchNow` for why React needs the work.
@@ -692,6 +702,7 @@ export function useFenceReached(
     unreached.add(registered);
     watchScrolling();
     scheduleGrammarWarm();
+    fenceSpeculator.add(registered);
 
     // `reasoning.tsx` drops `max-h-64` when a stream ends and keeps `overflow-y-auto`, so the pane
     // stops being a scroller and its box becomes the whole trace. Watch for that and rebuild.
@@ -706,6 +717,7 @@ export function useFenceReached(
     return () => {
       for (const observer of observers) observer.disconnect();
       resize?.disconnect();
+      fenceSpeculator.remove(registered);
       unreached.delete(registered);
       unwatchScrolling();
     };
@@ -715,3 +727,798 @@ export function useFenceReached(
 }
 
 export const DeferredFenceShell = memo(FenceShell);
+
+export const PlainFenceShell = memo(function PlainFenceShell({
+  language,
+  source,
+}: {
+  language: string | null;
+  source: string;
+}) {
+  return <FenceShell language={language} plain source={source} />;
+});
+
+/*
+ * The highlighted body, rendered here rather than by streamdown.
+ *
+ * Streamdown's `CodeBlockBody` maps the whole token array every render and memoizes on
+ * `prev.result === next.result`, reference equality, while `code-plugin.ts` returns a fresh object
+ * every call, so the memo never hits and every line and token rebuilds each frame. The spans are
+ * the cost, not the tokenizer: #10779 kept calling the highlighter, stopped rendering the tokens
+ * and still doubled the frame rate, and `scripts/coal-span-census.mjs` shows Shiki's tokens are
+ * already maximally coalesced, so merging cannot help.
+ *
+ * So: one memoized component per line (a committed line's identity is stable, so `memo` bails),
+ * plus a line window past `WINDOW_CAP_LINES` (see `code-fence-window.ts`).
+ *
+ * The DOM is streamdown's element for element and class for class, because
+ * `playwright_code_block_flicker.py` reads computed styles off this subtree and a perf change that
+ * also moved the rendering could not be attributed.
+ */
+
+export type FenceTokens = HighlightResult;
+type TokenLine = HighlightResult["tokens"][number];
+type FenceToken = TokenLine[number];
+
+/* Streamdown's own class lists, copied verbatim. The `bg-[var(--sdm-bg,inherit]` spellings are
+ * unbalanced in streamdown 2.5's build and therefore generate no rule at all; they are reproduced
+ * as they are because the goal is the same DOM, not a tidier one. */
+/*
+ * The one deliberate difference from streamdown's line class: it writes a raw pixel text utility,
+ * which `tests/studio/test_ui_font_scale_contract.py` forbids anywhere in frontend source, comments
+ * included, because a fixed size ignores the UI font preference. `text-ui-13` scales with it.
+ * Moot in the thread either way: `index.css` gives that pseudo-element `display: none`.
+ */
+const LINE_CLASS =
+  "block before:content-[counter(line)] before:inline-block before:[counter-increment:line] before:w-6 before:mr-4 before:text-ui-13 before:text-right before:text-muted-foreground/50 before:font-mono before:select-none";
+const CODE_CLASS = "[counter-increment:line_0] [counter-reset:line]";
+const PRE_CLASS =
+  "bg-[var(--sdm-bg,inherit] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit)]";
+const TOKEN_CLASS =
+  "text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,var(--sdm-c,inherit))]";
+const TOKEN_BG_CLASS =
+  "bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]";
+
+/*
+ * THE `language-x` CLASS, WHICH IS NOT DECORATION. `remark-rehype` puts `language-<info>` on the
+ * `<code>` of a fenced block, streamdown passes that `className` straight through to BOTH the body
+ * div and the `<pre>`, and dropping it was measured as the only DOM difference between this body
+ * and the one it replaces. Nothing in the tree selects on it today, which is exactly why it would
+ * have gone unnoticed: it is a published rendering contract, user stylesheets and future probes
+ * reach for it, and `math-block-marker.ts` already relies on the same `language-` convention one
+ * layer up. The token is the FIRST word of the info string, so ```python startLine=10 is
+ * `language-python`, which is what `languageToken` already holds.
+ */
+const joinClasses = (...parts: (string | null)[]): string =>
+  parts.filter((part): part is string => Boolean(part)).join(" ");
+
+/* `rootStyle` arrives as a CSS declaration string. Parsed the way streamdown parses it, splitting
+ * on the FIRST colon only, so a `url(data:...)` value survives. */
+const parseDeclarations = (text: string): Record<string, string> => {
+  const style: Record<string, string> = {};
+  for (const declaration of text.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    const property = declaration.slice(0, colon).trim();
+    const value = declaration.slice(colon + 1).trim();
+    if (property && value) style[property] = value;
+  }
+  return style;
+};
+
+const tokenStyle = (
+  token: FenceToken,
+): { style: Record<string, string>; hasBackground: boolean } => {
+  const style: Record<string, string> = {};
+  let hasBackground = Boolean(token.bgColor);
+  if (token.color) style["--sdm-c"] = token.color;
+  if (token.bgColor) style["--sdm-tbg"] = token.bgColor;
+  if (token.htmlStyle) {
+    for (const [property, value] of Object.entries(token.htmlStyle)) {
+      if (property === "color") style["--sdm-c"] = value;
+      else if (property === "background-color") {
+        style["--sdm-tbg"] = value;
+        hasBackground = true;
+      } else style[property] = value;
+    }
+  }
+  return { style, hasBackground };
+};
+
+/**
+ * One line of a fence.
+ *
+ * Memoized on the default shallow comparison, which is all it needs: `line` is the array
+ * `code-plugin.ts` committed and never touches again, and `windowed` only changes when the reader
+ * moves far enough for the window to move. A fence growing by a character re-renders its last line
+ * and nothing else.
+ */
+export const FenceLine = memo(function FenceLine({
+  line,
+  windowed,
+  inline = false,
+}: {
+  line: TokenLine;
+  windowed: boolean;
+  inline?: boolean;
+}) {
+  if (!inline && isBlankLine(line)) {
+    return <span className={LINE_CLASS}>{"\n"}</span>;
+  }
+  if (!windowed) {
+    // One text node for the whole line. Same characters, same block box, same height: the only
+    // thing this line has given up is its colour, and it is off screen.
+    return (
+      <span className={inline ? "inline" : LINE_CLASS}>
+        {plainLineText(line)}
+      </span>
+    );
+  }
+  return (
+    <span className={inline ? "inline" : LINE_CLASS}>
+      {line.map((token, index) => {
+        const { style, hasBackground } = tokenStyle(token);
+        return (
+          <span
+            className={
+              hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS
+            }
+            key={index}
+            style={style}
+            {...token.htmlAttrs}
+          >
+            {token.content}
+          </span>
+        );
+      })}
+    </span>
+  );
+});
+
+// One scroll listener and one frame for every windowed fence: each measurement reads layout, so a
+// listener per fence makes scrolling cost more than the rendering the window avoids. Same shape
+// `watchScrolling` uses for the reach latch, coalesced into a frame.
+const windowedFences = new Set<() => void>();
+let windowFrame = 0;
+let windowWatched = false;
+let findBarObserver: MutationObserver | null = null;
+let frameRects: Map<Element, DOMRect> | null = null;
+let frameFlying: Map<Element | null, boolean> | null = null;
+let frameSettle = false;
+let pointerHeld: Node | null = null;
+let heldLastFrame = false;
+let frameSelection: { read: boolean; value: Selection | null } | null = null;
+const scrollerMotion = new WeakMap<Element, { top: number; at: number }>();
+const windowMotion = { top: 0, at: 0 };
+const FLYING_VIEWPORTS_PER_SECOND = 10;
+
+const rectDuringFrame = (element: Element): DOMRect => {
+  if (frameRects === null) return element.getBoundingClientRect();
+  const known = frameRects.get(element);
+  if (known !== undefined) return known;
+  const rect = element.getBoundingClientRect();
+  frameRects.set(element, rect);
+  return rect;
+};
+
+const liveSelection = (): Selection | null => {
+  const selection = document.getSelection();
+  return selection !== null && selection.rangeCount > 0 && !selection.isCollapsed
+    ? selection
+    : null;
+};
+
+const selectionDuringFrame = (): Selection | null => {
+  if (frameSelection === null) return liveSelection();
+  if (!frameSelection.read) {
+    frameSelection.read = true;
+    frameSelection.value = liveSelection();
+  }
+  return frameSelection.value;
+};
+
+const draggingDuringFrame = (body: HTMLElement): boolean => {
+  const held = pointerHeld !== null && body.contains(pointerHeld);
+  if (held) heldLastFrame = true;
+  return held;
+};
+
+const selectionBoundaryLines = (codeNode: HTMLElement, body: HTMLElement): number[] => {
+  const selection = selectionDuringFrame();
+  const lines: number[] = [];
+  for (let index = 0; selection !== null && index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    for (const boundary of [range.startContainer, range.endContainer]) {
+      if (!body.contains(boundary)) continue;
+      let line: Node | null = boundary;
+      while (line !== null && line.parentNode !== codeNode) line = line.parentNode;
+      if (line === null) continue;
+      const at = Array.prototype.indexOf.call(codeNode.children, line);
+      if (at >= 0) lines.push(at);
+    }
+  }
+  if (lines.length > 0) heldLastFrame = true;
+  return lines;
+};
+
+const flyingDuringFrame = (
+  scroller: HTMLElement | null,
+  viewportHeight: number,
+): boolean => {
+  if (frameFlying === null) return false;
+  const known = frameFlying.get(scroller);
+  if (known !== undefined) return known;
+  const top = scroller === null ? window.scrollY : scroller.scrollTop;
+  const at = performance.now();
+  const before = scroller === null ? windowMotion : scrollerMotion.get(scroller);
+  const elapsed = before === undefined ? 0 : at - before.at;
+  const flying =
+    before !== undefined
+    && elapsed > 0
+    && viewportHeight > 0
+    && (Math.abs(top - before.top) / elapsed) * 1000
+      > viewportHeight * FLYING_VIEWPORTS_PER_SECOND;
+  if (scroller === null) {
+    windowMotion.top = top;
+    windowMotion.at = at;
+  } else {
+    scrollerMotion.set(scroller, { top, at });
+  }
+  frameFlying.set(scroller, flying);
+  if (flying) frameSettle = true;
+  return flying;
+};
+
+/*
+ * A print puts every line on the page.
+ * `upgradeEverythingForPrint` makes the same argument for a deferred fence.
+ *
+ * This one REVERTS where the latch does not: the tokens are already in `fence.lines`, so
+ * re-windowing costs element creation only, and not reverting would let one Ctrl+P un-window every
+ * huge fence for the life of the tab. Both doors, as above: `beforeprint` for Ctrl+P, the media
+ * query for `page.pdf()` and devtools emulation, which do not fire it.
+ */
+let printing = false;
+
+type PrintTokenizer = { chars: number; tokenizeNow: () => boolean };
+const awaitingWorker = new Set<PrintTokenizer>();
+const PRINT_TOKENIZE_CHARS = 10 * MAX_HIGHLIGHT_CHARS;
+
+export const awaitWorker = (
+  chars: number,
+  tokenizeNow: () => boolean,
+): (() => void) => {
+  const entry: PrintTokenizer = { chars, tokenizeNow };
+  awaitingWorker.add(entry);
+  return () => {
+    awaitingWorker.delete(entry);
+  };
+};
+
+const tokenizeForPrint = (): void => {
+  if (awaitingWorker.size === 0) return;
+  const pending = [...awaitingWorker];
+  const order = planPrintTokenization(
+    pending.map((entry) => entry.chars),
+    PRINT_TOKENIZE_CHARS,
+  );
+  flushSync(() => {
+    for (const index of order) pending[index].tokenizeNow();
+  });
+};
+
+const remeasureWindows = (): void => {
+  windowFrame = 0;
+  forgetScrollable();
+  frameRects = new Map();
+  frameFlying = new Map();
+  frameSelection = { read: false, value: null };
+  frameSettle = false;
+  heldLastFrame = false;
+  try {
+    for (const measure of windowedFences) measure();
+  } finally {
+    frameRects = null;
+    frameFlying = null;
+    frameSelection = null;
+  }
+  if (frameSettle && windowedFences.size > 0 && !printing) {
+    windowFrame = requestAnimationFrame(remeasureWindows);
+  }
+};
+
+export const fencePrinting = (): boolean => printing;
+
+const FIND_BAR_FLAG = "data-find-bar-open";
+
+const findBarOpen = (): boolean =>
+  typeof document !== "undefined"
+  && document.documentElement.hasAttribute(FIND_BAR_FLAG);
+
+/*
+ * Synchronous, and inside `flushSync`, for the same reason `latchNow` is: a normally scheduled
+ * update lands after the next paint, and there is no next paint before the print snapshot.
+ */
+const setPrinting = (value: boolean): void => {
+  // BEFORE the window check: a print that starts while a fence still shows its shell has no window
+  // to remeasure, but the state must still be recorded or the tokens arrive mid-preview and window
+  // it. Only the flush is skipped when there is nothing to remeasure.
+  if (printing === value) return;
+  printing = value;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+  if (value) tokenizeForPrint();
+  if (windowedFences.size === 0) return;
+  flushSync(remeasureWindows);
+};
+
+const scheduleRemeasure = (): void => {
+  if (windowFrame !== 0 || windowedFences.size === 0) return;
+  windowFrame = requestAnimationFrame(remeasureWindows);
+};
+
+const onPointerDown = (event: PointerEvent): void => {
+  if (event.pointerType === "touch" || event.button !== 0) return;
+  pointerHeld = event.target instanceof Node ? event.target : null;
+};
+
+const releasePointer = (): void => {
+  if (pointerHeld === null) return;
+  pointerHeld = null;
+  if (heldLastFrame) scheduleRemeasure();
+};
+
+const onPointerMove = (event: PointerEvent): void => {
+  if (pointerHeld !== null && event.buttons === 0) releasePointer();
+};
+
+const onSelectionChange = (): void => {
+  if (heldLastFrame) scheduleRemeasure();
+};
+
+const watchWindows = (): void => {
+  if (windowWatched || typeof document === "undefined") return;
+  windowWatched = true;
+  // Capturing, because scroll does not bubble but does capture, so this one listener sees the
+  // thread scroller AND the nested reasoning pane.
+  document.addEventListener("scroll", scheduleRemeasure, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("resize", scheduleRemeasure, { passive: true });
+  document.addEventListener("pointerdown", onPointerDown, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointerup", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointercancel", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("dragend", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("drop", releasePointer, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("pointermove", onPointerMove, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("blur", releasePointer);
+  document.addEventListener("selectionchange", onSelectionChange, {
+    passive: true,
+  });
+  findBarObserver = new MutationObserver(scheduleRemeasure);
+  findBarObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: [FIND_BAR_FLAG],
+  });
+};
+
+const unwatchWindows = (): void => {
+  if (!windowWatched || windowedFences.size > 0 || typeof document === "undefined") {
+    return;
+  }
+  windowWatched = false;
+  document.removeEventListener("scroll", scheduleRemeasure, { capture: true });
+  window.removeEventListener("resize", scheduleRemeasure);
+  document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+  window.removeEventListener("pointerup", releasePointer, { capture: true });
+  window.removeEventListener("pointercancel", releasePointer, { capture: true });
+  window.removeEventListener("dragend", releasePointer, { capture: true });
+  window.removeEventListener("drop", releasePointer, { capture: true });
+  window.removeEventListener("pointermove", onPointerMove, { capture: true });
+  window.removeEventListener("blur", releasePointer);
+  document.removeEventListener("selectionchange", onSelectionChange);
+  findBarObserver?.disconnect();
+  findBarObserver = null;
+  pointerHeld = null;
+  heldLastFrame = false;
+  if (windowFrame !== 0) {
+    cancelAnimationFrame(windowFrame);
+    windowFrame = 0;
+  }
+};
+
+/**
+ * Which lines of this fence carry token spans, or `null` for all of them.
+ *
+ * The geometry is read here and the decision is made in `code-fence-window.ts`, which is a
+ * JSX-free module so that a test can RUN the arithmetic rather than regex this file.
+ */
+type LineWindowState =
+  | { measured: false }
+  | { measured: true; window: LineWindow | null; pins: LinePins | null };
+
+const UNMEASURED: LineWindowState = { measured: false };
+
+type FenceMetrics = {
+  lineHeight: number;
+  contentInset: number;
+  insets: number;
+};
+
+type FenceGeometry = FenceMetrics & {
+  scroller: HTMLElement | null;
+};
+
+const linePitches = new Map<string, number>();
+const PITCH_PROBE_LINES = 64;
+let intrinsicScale = 0;
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => {
+    intrinsicScale = 0;
+  });
+}
+const intrinsicSizeSupported =
+  typeof CSS !== "undefined"
+  && typeof CSS.supports === "function"
+  && CSS.supports("contain-intrinsic-size", "0 1000px");
+
+const measureIntrinsicScale = (beside: HTMLElement): number => {
+  if (!intrinsicSizeSupported) return 1;
+  if (intrinsicScale > 0) return intrinsicScale;
+  const probe = document.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText =
+    "position:absolute;visibility:hidden;pointer-events:none;top:0;left:0;width:0;contain:size;contain-intrinsic-size:0 1000px";
+  beside.before(probe);
+  const height = probe.getBoundingClientRect().height;
+  probe.remove();
+  if (!(height > 0)) return 1;
+  intrinsicScale = Math.round(1000000 / height) / 1000;
+  return intrinsicScale;
+};
+
+const measureLinePitch = (beside: HTMLElement): number => {
+  const parent = beside.parentElement;
+  if (!parent) return 0;
+  const context = getComputedStyle(parent);
+  const key = [
+    context.fontSize,
+    context.lineHeight,
+    getComputedStyle(document.documentElement).getPropertyValue("--custom-code-font-size"),
+    window.devicePixelRatio,
+    measureIntrinsicScale(beside),
+  ].join("|");
+  const known = linePitches.get(key);
+  if (known !== undefined) return known;
+  const probe = document.createElement("pre");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;top:0;left:0";
+  const code = document.createElement("code");
+  const lines: HTMLElement[] = [];
+  for (let index = 0; index < PITCH_PROBE_LINES; index += 1) {
+    const line = document.createElement("span");
+    line.className = LINE_CLASS;
+    line.textContent = "x";
+    lines.push(line);
+  }
+  code.append(...lines);
+  probe.append(code);
+  beside.before(probe);
+  const pitch =
+    (lines[PITCH_PROBE_LINES - 1].getBoundingClientRect().top - lines[0].getBoundingClientRect().top)
+    / (PITCH_PROBE_LINES - 1);
+  probe.remove();
+  if (pitch > 0) linePitches.set(key, pitch);
+  return pitch;
+};
+
+const readFenceMetrics = (
+  node: HTMLElement,
+  surface: HTMLElement,
+  region: HTMLElement,
+  lineCount: number,
+  previous: FenceMetrics | null,
+): FenceMetrics => {
+  const style = getComputedStyle(surface);
+  const pitch = measureLinePitch(region);
+  const declared = Number.parseFloat(style.lineHeight);
+  const lineHeight =
+    pitch > 0
+      ? pitch
+      : declared > 0
+        ? style.lineHeight.endsWith("px")
+          ? declared
+          : declared * (Number.parseFloat(style.fontSize) || 0)
+        : previous?.lineHeight
+          ?? (lineCount > 0 ? node.getBoundingClientRect().height / lineCount : 0);
+  return {
+    lineHeight,
+    contentInset:
+      (Number.parseFloat(style.borderTopWidth) || 0)
+      + (Number.parseFloat(style.paddingTop) || 0),
+    insets: Math.max(0, surface.getBoundingClientRect().height - lineCount * lineHeight),
+  };
+};
+
+const readFenceGeometry = (
+  node: HTMLElement,
+  surface: HTMLElement,
+  region: HTMLElement,
+  outer: HTMLElement,
+  lineCount: number,
+): FenceGeometry => {
+  const scroller = scrollerOf(outer);
+  return { scroller, ...readFenceMetrics(node, surface, region, lineCount, null) };
+};
+
+const skippedByContainment = (element: HTMLElement): boolean =>
+  typeof element.checkVisibility === "function"
+  && !element.checkVisibility({ contentVisibilityAuto: true });
+
+const FAR_VIEWPORTS = OVERSCAN_VIEWPORTS + HYSTERESIS_VIEWPORTS + 1;
+const RESIZE_SETTLE_MS = 300;
+
+function useLineWindow(
+  code: RefObject<HTMLElement | null>,
+  surface: RefObject<HTMLElement | null>,
+  wrapper: RefObject<HTMLElement | null>,
+  frame: RefObject<HTMLElement | null>,
+  lineCount: number,
+  enabled: boolean,
+  deferShifts: boolean,
+): { window: LineWindow | null; pins: LinePins | null; measured: boolean } {
+  const [state, setState] = useState<LineWindowState>(UNMEASURED);
+  const viewportSize = useRef("");
+  const resizedAt = useRef(Number.NEGATIVE_INFINITY);
+  const current = useRef<LineWindow | null>(null);
+  const pinned = useRef<LinePins | null>(null);
+  const geometry = useRef<FenceGeometry | null>(null);
+  const metricsStale = useRef(false);
+  const lines = useRef(lineCount);
+  lines.current = lineCount;
+  const hasBody = lineCount > 0;
+  const overCap = lineCount > WINDOW_CAP_LINES;
+  const measure = useRef<() => void>(() => {});
+
+  measure.current = () => {
+    const node = code.current;
+    const outer = frame.current;
+    const body = surface.current;
+    const region = wrapper.current;
+    if (!node || !outer || !body || !region) return;
+    if (lines.current <= WINDOW_CAP_LINES && current.current === null) return;
+    if (printing || findBarOpen()) {
+      if (current.current === null && pinned.current === null) return;
+      current.current = null;
+      pinned.current = null;
+      setState({ measured: true, window: null, pins: null });
+      return;
+    }
+    let known = geometry.current;
+    if (
+      known === null
+      || (known.scroller !== null && !isScrollable(known.scroller))
+    ) {
+      if (skippedByContainment(body)) return;
+      known = readFenceGeometry(node, body, region, outer, lines.current);
+      metricsStale.current = false;
+    } else if (metricsStale.current && !skippedByContainment(body)) {
+      known = {
+        scroller: known.scroller,
+        ...readFenceMetrics(node, body, region, lines.current, known),
+      };
+      metricsStale.current = false;
+    }
+    geometry.current = known;
+    const height =
+      Math.round(
+        (lines.current * known.lineHeight + known.insets) * measureIntrinsicScale(region) * 1000,
+      ) / 1000;
+    const declared = `${height}px`;
+    if (region.style.getPropertyValue(FENCE_HEIGHT_PROPERTY) !== declared) {
+      region.style.setProperty(FENCE_HEIGHT_PROPERTY, declared);
+      forgetScrollable();
+    }
+    const bounds = known.scroller === null ? null : rectDuringFrame(known.scroller);
+    const viewportTop = bounds ? bounds.top : 0;
+    const viewportHeight = bounds ? bounds.height : window.innerHeight;
+    const size = `${bounds ? bounds.width : window.innerWidth}x${viewportHeight}`;
+    if (size !== viewportSize.current) resizedAt.current = performance.now();
+    viewportSize.current = size;
+    const resized = performance.now() - resizedAt.current < RESIZE_SETTLE_MS;
+    const box = rectDuringFrame(region);
+    const reach = viewportHeight * FAR_VIEWPORTS;
+    if (
+      current.current !== null
+      && (box.bottom < viewportTop - reach || box.top > viewportTop + viewportHeight + reach)
+    ) {
+      return;
+    }
+    if (current.current !== null && flyingDuringFrame(known.scroller, viewportHeight)) return;
+    if (current.current !== null && draggingDuringFrame(body)) return;
+    const next = selectLineWindow({
+      lineCount: lines.current,
+      lineHeight: known.lineHeight,
+      contentTop: box.top + known.contentInset,
+      viewportTop,
+      viewportHeight,
+      previous: current.current,
+    });
+    const pins = pinBoundaryLines(
+      selectionBoundaryLines(node, body),
+      current.current,
+      pinned.current,
+    );
+    if (next === current.current && samePins(pins, pinned.current)) return;
+    const shifting =
+      deferShifts && current.current !== null && frameRects !== null && !resized;
+    current.current = next;
+    pinned.current = pins;
+    const update = { measured: true, window: next, pins };
+    if (shifting) startTransition(() => setState(update));
+    else setState(update);
+  };
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      current.current = null;
+      geometry.current = null;
+      return;
+    }
+    const run = () => measure.current();
+    windowedFences.add(run);
+    watchWindows();
+    run();
+    let resize: ResizeObserver | undefined;
+    const box = frame.current;
+    if (box && typeof ResizeObserver !== "undefined") {
+      resize = new ResizeObserver(() => {
+        metricsStale.current = true;
+        scheduleRemeasure();
+      });
+      resize.observe(box);
+    }
+    return () => {
+      resize?.disconnect();
+      windowedFences.delete(run);
+      unwatchWindows();
+    };
+  }, [enabled, hasBody, code, surface, wrapper, frame]);
+
+  useLayoutEffect(() => {
+    if (!enabled || !overCap || state.measured) return;
+    measure.current();
+  }, [enabled, overCap, state.measured]);
+
+  if (!enabled) return NO_WINDOW;
+  if (state.measured) return state;
+  return overCap && !printing && !findBarOpen() ? EMPTY_WINDOW : NO_WINDOW;
+}
+
+const NO_WINDOW = { window: null, pins: null, measured: false } as const;
+const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
+
+/**
+ * A fence's body, highlighted, with the spans bounded to what is on screen.
+ *
+ * Falls back to the plain shell whenever there are no tokens to render, which is the window
+ * between a fence appearing and its grammar chunk arriving. That is the same markup the deferred
+ * shell uses and the same markup streamdown's own unhighlighted fallback uses, so the fence does
+ * not change shape when the colours land.
+ */
+export const FenceBody = memo(function FenceBody({
+  isIncomplete,
+  language,
+  result,
+  source,
+  windowing,
+}: {
+  /** Streamdown's unclosed-fence flag, reproduced as `data-incomplete` on the wrapper. */
+  isIncomplete: boolean | undefined;
+  language: string | null;
+  result: FenceTokens | null;
+  source: string;
+  /** False keeps every line highlighted however long the fence is, which is what main does. */
+  windowing: boolean;
+}) {
+  const code = useRef<HTMLElement | null>(null);
+  const surface = useRef<HTMLDivElement | null>(null);
+  const wrapper = useRef<HTMLDivElement | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
+  const tokens = result?.tokens ?? null;
+  const { window: lineWindow, pins, measured } = useLineWindow(
+    code,
+    surface,
+    wrapper,
+    frame,
+    tokens?.length ?? 0,
+    windowing,
+    !isIncomplete,
+  );
+  const languageClass = language === null ? null : `language-${language}`;
+
+  const rootStyle = useMemo(() => {
+    const style: Record<string, string> = {};
+    if (!result) return style;
+    if (result.bg) style["--sdm-bg"] = result.bg;
+    if (result.fg) style["--sdm-fg"] = result.fg;
+    if (result.rootStyle) Object.assign(style, parseDeclarations(result.rootStyle));
+    return style;
+  }, [result]);
+
+  // No tokens yet, or a result carrying no lines at all. Both fall back to the plain shell, which
+  // is one line tall for an empty body where a `<code>` with no children is nothing at all.
+  if (!tokens || tokens.length === 0) {
+    return <FenceShell language={language} source={source} />;
+  }
+
+  return (
+    <div
+      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      data-incomplete={isIncomplete || undefined}
+      data-language={language ?? undefined}
+      data-streamdown="code-block"
+      ref={frame}
+      // Streamdown declares both inline. `index.css` then forces `content-visibility: visible`
+      // back on for code blocks, because WebKit before Safari 26 cannot find-in-page skipped
+      // content, but the declaration is reproduced so the computed cascade is identical to the one
+      // `playwright_code_block_flicker.py` reads.
+      style={{ containIntrinsicSize: "auto 200px", contentVisibility: "auto" }}
+    >
+      <div
+        className="flex h-8 items-center text-muted-foreground text-xs"
+        data-language={language ?? undefined}
+        data-streamdown="code-block-header"
+      >
+        <span className="ml-1 font-mono lowercase">{language}</span>
+      </div>
+      <div
+        data-unsloth-fence-windowed={lineWindow === null || !measured ? undefined : "true"}
+        ref={wrapper}
+      >
+        <div
+          className={joinClasses(
+            languageClass,
+            "overflow-x-auto rounded-md border border-border bg-background p-4 text-sm",
+          )}
+          data-language={language ?? undefined}
+          data-streamdown="code-block-body"
+          ref={surface}
+        >
+          <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
+            <code className={CODE_CLASS} ref={code}>
+              {tokens.map((line, index) => (
+                <FenceLine
+                  key={index}
+                  line={line}
+                  windowed={lineRendered(lineWindow, pins, index)}
+                />
+              ))}
+            </code>
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+});

@@ -6,11 +6,12 @@
 // a build that fell back to 0 instead of null still passed every assertion.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-known.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
@@ -144,15 +145,15 @@ test("an uncounted chat reports no per-turn rows", () => {
   );
 });
 
-test("the header renders the bar on the window alone, with usage optional", () => {
-  const page = readFileSync(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
+test("the header renders the bar for single chats and active project threads", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.match(
+    page,
+    /\{showContextWindowUsage &&\s*\(view\.mode === "single" \|\|\s*\(view\.mode === "project" && activeThreadId != null\)\) &&\s*\(contextUsage \|\| contextWindowKnown\) \? \(/,
   );
   assert.match(
     page,
-    /view\.mode === "single" && \(contextUsage \|\| contextWindowKnown\)/,
+    /used=\{contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
   );
-  assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
 });
 

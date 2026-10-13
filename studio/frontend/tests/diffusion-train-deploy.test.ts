@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   resolveDiffusionDeployBase,
   resolveDiffusionTrainingBase,
 } from "../src/features/images/train/diffusion-train-deploy.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const klein = {
   name: "flux.2-klein",
@@ -99,10 +100,7 @@ test("a mirror-loaded checkpoint preselects the vendor base it copies", () => {
 test("the Train panel preselect actually consults the pairing", async () => {
   // The helper on its own changes nothing: the bug was in the preselect chain, which fell from an
   // exact base_repos match straight to base_repos[0]. Assert the pairing sits BETWEEN the two.
-  const source = await readFile(
-    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
   const paired = source.indexOf("pairedTrainingBase ??");
   const first = source.indexOf("family.base_repos[0]");
   assert.ok(paired > 0, "the preselect no longer falls back to the paired training base");

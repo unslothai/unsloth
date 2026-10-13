@@ -27,6 +27,7 @@ import type {
   LinkedFolderScope,
 } from "../types/rag";
 import {
+  jobChangedSources,
   linkedFolderSourcesChanged,
   retainActiveFolderJobs,
 } from "../types/rag";
@@ -80,11 +81,14 @@ export function useLinkedFolders(
     [projectWorkScopeId],
   );
 
+  // Only syncs started here toast on failure; periodic failures show on the folder row.
+  const userStartedJobs = useRef(new Set<string>());
+
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
       if (notifiedJobs.current.has(job.id)) return;
       notifiedJobs.current.add(job.id);
-      onSourcesChanged?.();
+      if (jobChangedSources(job)) onSourcesChanged?.();
     },
     [onSourcesChanged],
   );
@@ -123,7 +127,8 @@ export function useLinkedFolders(
         apply(job);
         releaseController();
         notifySourcesChanged(job);
-        if (job.status === "failed") {
+        const userStarted = userStartedJobs.current.delete(job.id);
+        if (job.status === "failed" && userStarted) {
           toast.error("Folder sync failed", {
             description: job.error ?? "The folder could not be indexed.",
           });
@@ -285,6 +290,7 @@ export function useLinkedFolders(
         ...current.filter((folder) => folder.id !== result.linkedFolder.id),
         result.linkedFolder,
       ]);
+      userStartedJobs.current.add(result.job.id);
       trackJob(result.job);
       onSourcesChanged?.();
     } catch (error) {
@@ -309,10 +315,9 @@ export function useLinkedFolders(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        // Inside the request's lease and before the scope guard: the job runs on
-        // the project it started for whatever this hook shows, and returning
-        // without a watcher drops that count to zero mid-sync. Deduped, so
-        // trackJob's own call is a no-op.
+        // Inside the request's lease and before the scope guard: the job runs on the project it
+        // started for whatever this hook shows, and returning without a watcher drops that count to
+        // zero mid-sync. Deduped, so trackJob's own call is a no-op.
         const { job } = await withProjectWork(async () => {
           const started =
             mode === "rebuild"
@@ -322,6 +327,7 @@ export function useLinkedFolders(
           return started;
         });
         if (currentScopeKey.current !== operationScopeKey) return;
+        userStartedJobs.current.add(job.id);
         trackJob(job);
         onSourcesChanged?.();
       } catch (error) {

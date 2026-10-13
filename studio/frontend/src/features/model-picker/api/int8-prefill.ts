@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { authFetch } from "@/features/auth";
+
+/** Whether a load of this MLX model could run int8 prefill. Any failure reads as unavailable, which
+ *  only hides the setting: a stored choice is kept, and the load-time check guards it. */
+export async function fetchInt8PrefillAvailable(
+  modelPath: string,
+  hfToken: string | null,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/int8-prefill-availability", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify({ model_path: modelPath, hf_token: hfToken }),
+  });
+  if (!response.ok) {
+    return false;
+  }
+  const body: unknown = await response.json().catch(() => null);
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { available?: unknown }).available === true
+  );
+}

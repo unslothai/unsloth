@@ -28,6 +28,7 @@ from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 
@@ -633,10 +634,11 @@ def test_an_alias_to_a_real_uv_is_followed_to_the_executable(tmp_path):
 
 
 def test_no_bare_winget_token_survives_at_a_call_site():
-    """winget installs both Python and uv, so an alias on it owns the same ground.
+    """winget installs uv, so an alias on it owns the same ground.
 
-    Detection used a bare Get-Command, and all five invocations were bare tokens, so the fix
-    applied to uv left the other half of the bootstrap exposed to the identical wrapper.
+    Detection used a bare Get-Command and every invocation was a bare token, so the fix applied
+    to uv left the winget half of the bootstrap exposed to the identical wrapper. (Python itself
+    no longer comes from winget: the Studio environment is always on a uv-managed Python.)
     """
     src = _install_ps1()
     assert (
@@ -645,7 +647,7 @@ def test_no_bare_winget_token_survives_at_a_call_site():
     for bare in ("\n                winget ", "\n                    winget ", "{ winget "):
         assert bare not in src, f"winget must be invoked through the resolved path, found {bare!r}"
     assert (
-        src.count("& $script:WingetExe ") >= 5
+        src.count("& $script:WingetExe ") >= 2
     ), "every winget invocation must route through the resolved path"
 
 
@@ -659,8 +661,14 @@ def test_module_autoloading_is_restored():
 
 
 @requires_pwsh
-def test_install_ps1_parses():
-    """A syntax error here is a total install failure, and the file is not imported by anything."""
+@pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_the_powershell_entrypoints_parse(script):
+    """A syntax error here is a total install failure, and neither file is imported by anything.
+
+    setup.ps1 is here for the same reason install.ps1 is, and because the tests that read it
+    extract single functions: an extraction still parses when the file around it does not, so
+    nothing else in the suite would notice a broken brace at file scope.
+    """
     # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting before it ever reached
     # the parser exits nonzero too.
     res = run_pwsh(
@@ -670,7 +678,7 @@ def test_install_ps1_parses():
             "-NonInteractive",
             "-Command",
             "$errs = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile("
-            f"{_ps_literal(INSTALL_PS1)}, [ref]$null, [ref]$errs); "
+            f"{_ps_literal(script)}, [ref]$null, [ref]$errs); "
             'if ($errs) { $errs | ForEach-Object { "ERR $($_.Extent.StartLineNumber): '
             '$($_.Message)" }; exit 1 }',
         ],

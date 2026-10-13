@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, resolveCptTargetModules } from "@/config/training";
+import {
+  CPT_LORA_HYPERPARAMS,
+  DEFAULT_HYPERPARAMS,
+  resolveCptTargetModules,
+} from "@/config/training";
 import type {
   AdvancedSettingsBaseline,
   TrainingConfigState,
@@ -11,7 +15,8 @@ import { isAdapterMethod } from "@/types/training";
 type AdvancedSettingsState = Pick<
   TrainingConfigState,
   "trainingMethod" | keyof AdvancedSettingsBaseline
->;
+> &
+  Partial<Pick<TrainingConfigState, "modelType">>;
 
 const SCALAR_DEFAULTS = {
   optimizerType: DEFAULT_HYPERPARAMS.optimizerType,
@@ -31,6 +36,20 @@ const SCALAR_DEFAULTS = {
   finetuneMLPModules: DEFAULT_HYPERPARAMS.finetuneMLPModules,
 } as const;
 
+const DECISION_IGNORED_SETTINGS: ReadonlySet<string> = new Set([
+  "optimizerType",
+  "saveSteps",
+  "packing",
+  "trainOnCompletions",
+  "visionImageSize",
+  "finetuneVisionLayers",
+  "finetuneLanguageLayers",
+  "finetuneAttentionModules",
+  "finetuneMLPModules",
+  "loraVariant",
+  "targetModules",
+]);
+
 function sameValues(
   left: readonly string[],
   right: readonly string[],
@@ -41,6 +60,10 @@ function sameValues(
   const sortedLeft = [...left].sort();
   const sortedRight = [...right].sort();
   return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function isIgnored(state: AdvancedSettingsState, key: string): boolean {
+  return state.modelType === "decision" && DECISION_IGNORED_SETTINGS.has(key);
 }
 
 function baselineValue<K extends keyof AdvancedSettingsBaseline>(
@@ -58,7 +81,13 @@ function countNonDefaultScalarSettings(
 ): number {
   return Object.entries(SCALAR_DEFAULTS).reduce((total, [rawKey, value]) => {
     const key = rawKey as keyof typeof SCALAR_DEFAULTS;
-    const expected = baselineValue(baseline, key, value);
+    if (isIgnored(state, key)) {
+      return total;
+    }
+    const expected =
+      key === "trainOnCompletions" && state.trainingMethod === "cpt"
+        ? false
+        : baselineValue(baseline, key, value);
     return state[key] === expected ? total : total + 1;
   }, 0);
 }
@@ -70,10 +99,10 @@ function countNonDefaultLoraSettings(
   const isCpt = state.trainingMethod === "cpt";
   const loraDefaults = {
     loraRank: isCpt
-      ? 128
+      ? CPT_LORA_HYPERPARAMS.loraRank
       : baselineValue(baseline, "loraRank", DEFAULT_HYPERPARAMS.loraRank),
     loraAlpha: isCpt
-      ? 32
+      ? CPT_LORA_HYPERPARAMS.loraAlpha
       : baselineValue(baseline, "loraAlpha", DEFAULT_HYPERPARAMS.loraAlpha),
     loraDropout: baselineValue(
       baseline,
@@ -81,14 +110,19 @@ function countNonDefaultLoraSettings(
       DEFAULT_HYPERPARAMS.loraDropout,
     ),
     loraVariant: isCpt
-      ? "rslora"
+      ? CPT_LORA_HYPERPARAMS.loraVariant
       : baselineValue(baseline, "loraVariant", DEFAULT_HYPERPARAMS.loraVariant),
   } as const;
   const count = Object.entries(loraDefaults).reduce(
     (total, [key, value]) =>
-      state[key as keyof typeof loraDefaults] === value ? total : total + 1,
+      isIgnored(state, key) || state[key as keyof typeof loraDefaults] === value
+        ? total
+        : total + 1,
     0,
   );
+  if (isIgnored(state, "targetModules")) {
+    return count;
+  }
   const defaultTargetModules = isCpt
     ? resolveCptTargetModules(
         baselineValue(

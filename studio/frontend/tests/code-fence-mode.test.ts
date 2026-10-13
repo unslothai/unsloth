@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   SHIP_DEFAULT,
   resolveFenceMode,
 } from "../src/components/assistant-ui/code-fence-mode.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 /**
  * The fence mode decision table, RUN rather than described.
@@ -20,8 +21,24 @@ import {
  */
 
 test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "defer", "the ship default is deferral");
-  assert.equal(resolveFenceMode(undefined, ""), "defer");
+  assert.equal(SHIP_DEFAULT, "window", "the ship default is the windowed deferral");
+  assert.equal(resolveFenceMode(undefined, ""), "window");
+});
+
+test("the plain deferral stays reachable as the ablation arm", () => {
+  assert.equal(resolveFenceMode(undefined, "defer"), "defer");
+  assert.equal(resolveFenceMode("defer", ""), "defer");
+  assert.equal(resolveFenceMode(true, ""), "defer");
+  assert.equal(resolveFenceMode(undefined, "window"), "window");
+  assert.equal(resolveFenceMode("window", ""), "window");
+});
+
+test("every answer fence takes its line window from the mode, streaming or not", () => {
+  assert.deepEqual(
+    readSrc("components/assistant-ui/markdown-text.tsx").match(/windowing=\{[^}]*\}/g),
+    ['windowing={fenceMode() === "window"}', 'windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
+    "a streaming fence that windowed whatever the mode kept \"off\" from restoring the old rendering",
+  );
 });
 
 test("the build flag overrides the default in both directions", () => {
@@ -106,13 +123,7 @@ test("a non-string non-boolean global is ignored rather than coerced", () => {
 
 /** JSX in the mode module makes this file unloadable and every assertion above a comment. */
 test("the mode module is plain TypeScript", () => {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/code-fence-mode.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/code-fence-mode.ts");
   assert.ok(
     !/<[A-Za-z]/.test(source.replace(/^\s*[/*].*$/gm, "")),
     "no JSX in the mode module",

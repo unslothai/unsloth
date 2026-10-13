@@ -12,7 +12,6 @@
 // another model is another job. The second test pins what the reset is worth.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -21,28 +20,21 @@ import {
   computeTransferStats,
 } from "../src/lib/transfer-stats.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const MB = 1e6;
 
-const voiceTabSource = readFileSync(
-  new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-  "utf8",
-);
+const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
 
 test("each download's samples belong to its own job, not to the tab", () => {
-  const pollLoopSource = readFileSync(
-    new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
-    "utf8",
-  );
+  const pollLoopSource = readSrc("features/hub/download-manager/poll-loop.ts");
   // Empty per job, so a second model cannot inherit the first one's samples.
   assert.ok(
     /speedSamples:\s*\[\]/.test(pollLoopSource),
     "each job runtime should start with its own empty sample buffer",
   );
   // And voice settings must not grow a second estimator back.
-  const voiceTabSource = readFileSync(
-    new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
   for (const gone of ["computeTransferStats", "appendSample", "downloadSamplesRef"]) {
     assert.ok(
       !voiceTabSource.includes(gone),

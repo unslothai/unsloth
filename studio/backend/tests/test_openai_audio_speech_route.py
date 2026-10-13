@@ -23,6 +23,16 @@ import routes.inference as routes_module
 from auth.authentication import get_current_subject
 from routes.inference import router
 from utils.api_errors import install_api_error_handlers
+from core.inference.external_provider import ExternalProviderClient
+from models.inference import AudioSpeechRequest
+import core.inference.audio_gallery as gallery
+import core.inference.external_provider as provider_module
+import threading
+
+
+async def _boom(text):
+    raise HTTPException(status_code = 400, detail = "No model loaded.")
+
 
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 
@@ -97,12 +107,25 @@ def test_voice_and_speed_accepted_and_ignored(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_non_wav_response_format_is_400(monkeypatch):
+def test_unknown_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
-    assert "mp3" in resp.json()["error"]["message"]
+    error = resp.json()["error"]
+    assert error["param"] == "response_format"
+    assert "'wma'" in error["message"] and "mp3" in error["message"]
     assert calls == []  # rejected before any generation
+
+
+def test_sse_stream_format_is_400(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "sse"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert calls == []
+    assert (
+        cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "audio"}).status_code
+        == 200
+    )
 
 
 def test_null_response_format_means_wav(monkeypatch):
@@ -261,8 +284,6 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "3")
     meta = {
@@ -284,8 +305,6 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
 def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path):
     """A count alone does not bound the disk: 2000 clips of maximum-length speech is tens
     of gigabytes, and stopping /v1/audio/speech filling the disk is what the cap is for."""
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1000")
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", str(4 * 1024))
@@ -307,8 +326,6 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
 def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(monkeypatch, tmp_path):
     """The newest clip is the one the caller just generated. Pruning it because it alone
     exceeds the quota would read as a silent failure."""
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
     meta = {
@@ -432,6 +449,23 @@ def test_external_rejects_non_wav_response_format(monkeypatch):
     assert speech_calls == []
 
 
+def test_external_rejects_sse_before_the_upstream_call(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+            "stream_format": "sse",
+        },
+    )
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert created == [] and speech_calls == []
+
+
 def test_external_missing_model_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     _install_external(monkeypatch)
@@ -514,10 +548,6 @@ def test_external_upstream_error_is_502(monkeypatch):
 
 
 def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
-    import asyncio
-
-    from models.inference import AudioSpeechRequest
-
     _install_external(monkeypatch)
     upstream_cancelled = asyncio.Event()
 
@@ -603,7 +633,6 @@ def test_external_rejects_a_legacy_key_snapshotted_for_another_base_url(monkeypa
 
 def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
     from core.inference import llama_keepwarm
-    from models.inference import AudioSpeechRequest
 
     monkeypatch.setattr(llama_keepwarm, "_inflight", 1)
     monkeypatch.setattr(llama_keepwarm, "_pending", 0)
@@ -634,8 +663,6 @@ def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
         }
     )
 
-    import asyncio
-
     asyncio.run(
         routes_module.openai_audio_speech(
             AudioSpeechRequest(
@@ -652,11 +679,6 @@ def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
 
 
 def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
-    import asyncio
-
-    from core.inference.external_provider import ExternalProviderClient
-    import core.inference.external_provider as provider_module
-
     sent = {}
 
     class _Response:
@@ -684,13 +706,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
 
 
 def test_provider_client_merges_concatenated_wav_segments(monkeypatch):
-    import asyncio
     import io
     import struct
     import wave
-
-    from core.inference.external_provider import ExternalProviderClient
-    import core.inference.external_provider as provider_module
 
     def _wav(frames, rate = 24_000):
         output = io.BytesIO()
@@ -755,12 +773,6 @@ def test_provider_client_merges_concatenated_wav_segments(monkeypatch):
 
 
 def test_provider_client_merges_wav_off_the_event_loop(monkeypatch):
-    import asyncio
-    import threading
-
-    from core.inference.external_provider import ExternalProviderClient
-    import core.inference.external_provider as provider_module
-
     merge_started = threading.Event()
     release_merge = threading.Event()
 
@@ -798,12 +810,6 @@ def test_provider_client_merges_wav_off_the_event_loop(monkeypatch):
 
 
 def test_cancelling_provider_speech_stops_the_wav_worker(monkeypatch):
-    import asyncio
-    import threading
-
-    from core.inference.external_provider import ExternalProviderClient
-    import core.inference.external_provider as provider_module
-
     merge_started = threading.Event()
     merge_cancel_seen = threading.Event()
     merge_stopped = threading.Event()
@@ -850,11 +856,6 @@ def test_cancelling_provider_speech_stops_the_wav_worker(monkeypatch):
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
-    import asyncio
-    import threading
-
-    from models.inference import AudioSpeechRequest
-
     _install_external(monkeypatch)
     original_get_provider = routes_module.providers_db.get_provider
     read_started = threading.Event()
@@ -904,10 +905,6 @@ def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
 
 
 def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(monkeypatch):
-    import asyncio
-
-    from models.inference import AudioSpeechRequest
-
     old_config = {
         "provider_type": "custom",
         "display_name": "Old TTS",
@@ -964,10 +961,23 @@ def test_speech_opens_a_monitor_row(monkeypatch):
     assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
 
 
-def test_tts_failure_records_an_error_row(monkeypatch):
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
+def test_v1_audio_generate_opens_a_monitor_row_and_the_chat_mount_does_not(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    cli.app.include_router(router, prefix = "/api/inference")
+    api_monitor.clear()
+    body = {"messages": [{"role": "user", "content": "read me"}]}
+    assert cli.post("/api/inference/audio/generate", json = body).status_code == 200
+    assert api_monitor.snapshot(include_details = False) == []
+    assert cli.post("/v1/audio/generate", json = body).status_code == 200
+    (row,) = api_monitor.snapshot(include_details = False)
+    assert (row["endpoint"], row["status"], row["model"]) == (
+        "/v1/audio/generate",
+        "completed",
+        "unsloth/orpheus-3b-0.1-ft",
+    )
 
+
+def test_tts_failure_records_an_error_row(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 400
@@ -981,7 +991,7 @@ def test_rejected_response_format_records_nothing(monkeypatch):
     # Refused before any work, so it is not traffic the monitor should show.
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
     assert api_monitor.snapshot(include_details = False) == []
 
@@ -1018,9 +1028,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
     overlay polls and serves. Windows and UNC forms are covered because redacting a host
     path is the whole point."""
 
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "model": requested})
@@ -1033,9 +1040,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
 
 def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
     # The redaction must not rewrite the ids clients actually send.
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     for requested in ("tts-1", "gpt-4o-mini-tts", "unsloth/orpheus-3b-0.1-ft"):
         api_monitor.clear()
@@ -1044,3 +1048,18 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
             == 400
         )
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
+
+
+def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
+    """Content is the whole spoken text, not a status label cut at 100 characters."""
+    cli, _calls, _saved = _make_client(monkeypatch)
+    text = (
+        "This sentence is deliberately longer than one hundred characters so that a "
+        "truncated label would show it. "
+    ) * 2
+    resp = cli.post(
+        "/v1/audio/generate",
+        json = {"model": "default", "messages": [{"role": "user", "content": text}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == text

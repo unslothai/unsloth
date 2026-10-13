@@ -13,6 +13,7 @@ from typing import List, Literal, Optional
 from urllib.parse import quote
 
 from hub.schemas.inventory import (
+    LocalArtifactKind,
     LocalModelCapabilities,
     LocalModelInfo,
     ModelFormat,
@@ -30,12 +31,13 @@ from utils.audio_tokens import detect_local_tts_audio_type
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
-LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
+LocalModelSource = Literal[
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+]
 
 
 def _safe_is_dir(path) -> bool:
-    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned
-    # system dirs, so treat un-stat-able paths as not-a-dir.
+    # Py >= 3.12 propagates PermissionError (EACCES) from is_dir(), and folder scans probe root-owned system dirs, so treat un-stat-able paths as not-a-dir.
     try:
         return Path(path).is_dir()
     except OSError:
@@ -102,7 +104,22 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
+def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArtifactKind]:
+    if path is None:
+        return None
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    index, modular = (
+        local_pipeline_components_are_complete(path, name)
+        for name in ("model_index.json", "modular_model_index.json")
+    )
+    if index:
+        return "diffusers_dual_pipeline" if modular else "diffusers_pipeline"
+    return "diffusers_modular_pipeline" if modular else None
+
+
 def _is_diffusers_pipeline_dir(path: Path) -> bool:
+    # An interrupted copy is still one pipeline; completeness gates only artifact_kind.
     try:
         return (path / "model_index.json").is_file() or (
             path / "modular_model_index.json"
@@ -249,8 +266,7 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
-        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type
-        # identifies them.
+        # Vision and audio backbones: their bare *Model names carry no task suffix, so only the model type identifies them.
         "beit",
         "convnext",
         "convnextv2",
@@ -283,33 +299,24 @@ _MAX_LOCAL_JSON_BYTES = 1 << 20
 
 
 def _read_local_json_object(path: Path) -> dict:
-    """Config metadata, or ``{}``. Never raises: one unreadable file must not
-    fail the whole scan."""
+    """Config metadata, or ``{}``. Never raises: one unreadable file must not fail the whole scan."""
     try:
         # is_file() also skips a FIFO, whose read would block the scan forever.
         if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
             return {}
         data = json.loads(path.read_text(encoding = "utf-8"))
         return data if isinstance(data, dict) else {}
-    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises
-    # RecursionError, which is neither.
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested JSON raises RecursionError, which is neither.
     except (ValueError, OSError, RecursionError):
         return {}
 
 
 def _local_transformers_can_chat(path: Path) -> Optional[bool]:
-    """False for a locally identifiable non-generative Transformers row.
-
-    ``None`` means inconclusive and the format capability stands, so a custom
-    architecture is never hidden. Without this, an embedding export is
-    chat-capable on file format alone, and those are small enough that chat
-    auto-load spends its whole attempt budget on them.
-    """
+    """False for a locally identifiable non-generative Transformers row. ``None`` means inconclusive and the format capability stands, so a custom architecture is never hidden. Without this, an embedding export is chat-capable on file format alone, and those are small enough that chat auto-load spends its whole attempt budget on them."""
     if not _safe_is_dir(path):
         return None
 
-    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec
-    # vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
+    # Before every architecture test below: a TTS model is an ordinary causal LM wearing a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True and auto-load picks it.
     if detect_local_tts_audio_type(path) is not None:
         return False
 
@@ -347,8 +354,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
-    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed
-    # explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
+    # AutoModel.save_pretrained on a chat family writes the backbone name, which has no LM head. Listed explicitly, not shape-matched, so an unfamiliar FooModel still fails open.
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
@@ -386,16 +392,13 @@ def _base_transformers_can_chat(
     except (OSError, RuntimeError, ValueError):
         return None
 
-    # The scan covers legacy and previously configured roots, so an adapter can be listed from an
-    # inactive root with its base cached beside it; the active root alone answered None, which is
-    # inconclusive and left encoder LoRAs in the chat picker.
+    # The scan covers legacy and previously configured roots, so an adapter can be listed from an inactive root with its base cached beside it; the active root alone answered None, which is inconclusive and left encoder LoRAs in the chat picker.
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
 
-    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots
-    # discarded the adapter's own root too and answered None.
+    # Each source collected independently: under one try, a failure enumerating the OPTIONAL extra roots discarded the adapter's own root too and answered None.
     roots: list[Path] = []
 
     def _add(root: Optional[Path]) -> None:
@@ -428,8 +431,7 @@ def _base_transformers_can_chat(
             )
         except Exception:
             continue
-        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base
-        # out of a different root.
+        # A non-str is _CACHED_NO_EXIST ("we know it is absent here") or None ("unknown"), and neither rules the base out of a different root.
         if isinstance(found, str):
             config_path = found
             break
@@ -452,6 +454,9 @@ def _local_path_can_chat(path: str | Path, base_model: Optional[str] = None) -> 
     return _base_transformers_can_chat(base, revision, model_path) if base else None
 
 
+LOCAL_DELETE_SOURCES = frozenset({"models_dir", "lmstudio", "custom", "ollama", "hermes", "omlx"})
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
@@ -468,7 +473,7 @@ def _capabilities_for_format(
     return LocalModelCapabilities(
         can_train = can_train,
         can_chat = can_chat and is_complete,
-        can_delete = source == "hf_cache",
+        can_delete = source == "hf_cache" or source in LOCAL_DELETE_SOURCES,
         can_download = False,
         requires_variant = requires_variant,
         supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,
@@ -544,8 +549,7 @@ def _apply_format_aware_partial(
         if not target:
             rewritten.append(row)
             continue
-        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on
-        # GgufVariantDetail.partial_transport.
+        # GGUF row-level transport is ambiguous, since variants may differ; per-variant detail lives on GgufVariantDetail.partial_transport.
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
@@ -741,10 +745,13 @@ def _sum_file_sizes(paths) -> int:
 
 
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
+    from core.inference.diffusion_lora import is_image_lora_file
     return [
         entry
         for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
-        if _is_main_gguf_filename(entry.name) and not is_appledouble_metadata(entry)
+        if _is_main_gguf_filename(entry.name)
+        and not is_appledouble_metadata(entry)
+        and not is_image_lora_file(entry)
     ]
 
 
@@ -810,6 +817,7 @@ def _local_model_info(
     load_path: Path,
     source: LocalModelSource,
     model_format: ModelFormat,
+    artifact_kind: Optional[LocalArtifactKind] = None,
     display_name: Optional[str] = None,
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
@@ -830,6 +838,10 @@ def _local_model_info(
         else str(load_path)
     )
     semantic_id = model_id or str(load_path)
+    if artifact_kind is None and model_format in {"safetensors", "checkpoint"}:
+        artifact_kind = "single_file_checkpoint" if scan_path.is_file() else "transformers_model"
+    elif artifact_kind is None:
+        artifact_kind = model_format if model_format in {"gguf", "adapter"} else "unknown"
     return LocalModelInfo(
         id = load_id,
         inventory_id = _local_inventory_id(
@@ -852,6 +864,7 @@ def _local_model_info(
         updated_at = updated_at,
         partial = partial,
         model_format = model_format,
+        artifact_kind = artifact_kind,
         runtime = _runtime_for_format(model_format),
         format_variant = format_variant,
         capabilities = _capabilities_for_format(
@@ -915,6 +928,13 @@ def _classify_local_path(
             )
         )
 
+    if source != "hf_cache":
+        from core.inference.diffusion_lora import is_image_lora_file
+
+        # An image LoRA beside a config is an Images-page add-on, not this folder's weights.
+        files = [
+            f for f in files if f.suffix.lower() != ".safetensors" or not is_image_lora_file(f)
+        ]
     has_config = (scan_path / "config.json").is_file() if scan_path.is_dir() else False
     has_adapter_config = (
         (scan_path / "adapter_config.json").is_file() if scan_path.is_dir() else False
@@ -993,6 +1013,9 @@ def _classify_local_path(
                 load_path = load_path,
                 source = source,
                 model_format = fallback_format,
+                artifact_kind = (
+                    _diffusers_pipeline_artifact_kind(scan_path) if scan_path.is_dir() else None
+                ),
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,

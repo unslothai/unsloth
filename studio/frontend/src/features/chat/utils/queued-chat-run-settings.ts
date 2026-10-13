@@ -17,15 +17,17 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",
@@ -34,13 +36,18 @@ const QUEUED_SETTING_KEYS = [
   "ragAutoInject",
   "ragAutoInjectMinScore",
   "loadedContextLength",
+  // Beside the window it describes: selecting an external model clears the live residency
+  // fields without unloading, and a queued local turn is still served by the model it was
+  // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
+  // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
+  "loadedIsGguf",
+  "loadedIsMlx",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -63,6 +70,7 @@ const pendingSettings: PendingSettings[] = [];
 
 export function snapshotQueuedChatRunSettings(
   state: ChatRuntimeState,
+  options?: { deferModelResolution?: boolean },
 ): QueuedChatRunSettings {
   const snapshot = {
     params: { ...state.params },
@@ -70,7 +78,25 @@ export function snapshotQueuedChatRunSettings(
   for (const key of QUEUED_SETTING_KEYS) {
     Object.assign(snapshot, { [key]: state[key] });
   }
+  if (options?.deferModelResolution) {
+    snapshot.params.checkpoint = "";
+    snapshot.activeGgufVariant = null;
+  }
   return snapshot;
+}
+
+export function resolveDeferredQueuedModelSettings(
+  settings: QueuedChatRunSettings,
+  resolved: Pick<ChatRuntimeState, "params" | "supportsTools">,
+): QueuedChatRunSettings {
+  return {
+    ...settings,
+    params: {
+      ...settings.params,
+      checkpoint: resolved.params.checkpoint,
+    },
+    supportsTools: resolved.supportsTools,
+  };
 }
 
 /** A queued send may only fill in the model of a row that was written without one. */

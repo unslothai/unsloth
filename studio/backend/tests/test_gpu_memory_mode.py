@@ -33,6 +33,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+# The launcher fixtures live beside this file, and the tensor-split cells at the bottom
+# drive the real load_model through them rather than re-deriving a command builder.
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
 # Same external-dep stubs as the other llama_cpp unit tests so importing
 # the backend doesn't drag in structlog / httpx / loggers.
 _loggers_stub = _types.ModuleType("loggers")
@@ -301,15 +307,15 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
-    translate = load_impl.index(
-        'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
-    )
+    translate = load_impl.index('_manual_updates["gpu_layers"] = _gpu_layers_override')
+    preserve_ts = load_impl.index("_tensor_split_override = parse_tensor_split_override")
+    translate_ts = load_impl.index('_manual_updates["tensor_split"] = _tensor_split_override')
     strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert preserve < translate < strip < normalize < dedupe
+    assert preserve < translate < preserve_ts < translate_ts < strip < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -622,15 +628,18 @@ def _target_state_gpu_ids(backend, gpu_ids):
     )
 
 
-def test_gpu_ids_reload_detection_is_order_insensitive():
+def test_gpu_ids_reload_detection_is_order_sensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
     # A real non-narrowed load records the raw request too; the non-diffusion
-    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
-    # (no narrowing) so this exercises the order-insensitive comparison.
+    # dedupe compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order comparison alone.
     backend._requested_gpu_ids = [0, 1]
-    # Same set, different order -> no reload.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # The picker's order IS the device order, so the same set dragged into a
+    # different order is a different placement and has to reload.
+    assert _target_state_gpu_ids(backend, [1, 0]) is False
+    # Same set, same order -> no reload.
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
@@ -647,7 +656,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     )
 
     # The original request still matches after the fitter narrows it.
-    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert _target_state_gpu_ids(backend, [0, 1]) is True
     assert backend.requested_gpu_ids == [0, 1]
     # The status response echoes the effective pin, which must also round-trip.
     # Treat the incoming subset as the latest intent so status and a future
@@ -941,9 +950,10 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    # Still the collapsed single-device pick, but taken from the request rather than the
-    # effective pin, which a forced-CPU launch on virtualised Metal clears.
-    assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
+    # Taken from the request rather than the effective pin, which a forced-CPU launch on
+    # virtualised Metal clears.
+    assert "_pinned = (fit_gpus or [sorted(gpu_ids)[0]]) if gpu_ids else None" in src
+    assert "self._gpu_ids = _pinned if not _pv_diffusion_cpu else None" in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -1259,6 +1269,275 @@ def test_diffusion_gpu_arg_honors_override_and_cpu_mask(monkeypatch):
     assert LlamaCppBackend._diffusion_gpu_arg(None, cpu_only = True) == ""
 
 
+# ── Diffusion layer split when one GPU cannot hold the GGUF (#6347) ──────────
+
+_GIB = 1024**3
+
+
+def _diffusion_fit_host(
+    monkeypatch,
+    gguf_gib,
+    gpus,
+    *,
+    vulkan = False,
+):
+    """``gpus``: (index, free MiB, total MiB) as the placement probe reports them."""
+    monkeypatch.delenv("DG_GPU", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/ls")
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b = None: vulkan))
+    monkeypatch.setattr(LlamaCppBackend, "_sysmem_fallback_risk", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda _b = None, **_k: list(gpus))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gguf_size_bytes", staticmethod(lambda _p: int(gguf_gib * _GIB))
+    )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(llama_cpp_module, "_visual_server_splits_gpus", lambda _bin: True)
+
+
+_TWO_3090 = [(0, 23_500, 24_576), (1, 23_500, 24_576)]
+
+
+@pytest.mark.parametrize(
+    ("gguf_gib", "gpu_ids", "gpu", "expected"),
+    [
+        (16.8, None, "0", None),  # Q4_K_M fits one 24 GB card: unchanged single device
+        (16.8, [0, 1], "0", None),  # explicit pair, still fits the lowest: unchanged
+        (26.9, None, "0", [0, 1]),  # Q8_0: auto spreads over the visible pair
+        (26.9, [0, 1], "0", [0, 1]),  # Q8_0: explicit pair is honoured
+        (26.9, [0], "0", None),  # a single explicit GPU is never widened
+        (50.5, None, "0", None),  # BF16 fits no subset: left to the GPU / CPU layer fit
+    ],
+)
+def test_diffusion_fit_gpus_splits_only_what_one_gpu_cannot_hold(
+    monkeypatch, gguf_gib, gpu_ids, gpu, expected
+):
+    _diffusion_fit_host(monkeypatch, gguf_gib, _TWO_3090)
+    assert (
+        LlamaCppBackend._diffusion_fit_gpus(int(gguf_gib * _GIB), gpu_ids, gpu, "/bin/vs")
+        == expected
+    )
+
+
+def test_diffusion_fit_gpus_keeps_explicit_pool_and_operator_overrides(monkeypatch):
+    _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090 + [(2, 23_500, 24_576)])
+    _size = int(26.9 * _GIB)
+    # The pick bounds the pool: GPU 2 is never added to a [1, 2] pick's split.
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, [1, 2], "1", "/bin/vs") == [1, 2]
+    # A device token that is not a physical index (UUID / MIG / CPU mask) is left alone.
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "GPU-abc", "/bin/vs") is None
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "", "/bin/vs") is None
+    monkeypatch.setenv("DG_GPU", "0")
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0", "/bin/vs") is None
+
+
+def test_diffusion_auto_fit_only_on_pci_ids_without_an_inherited_mask(monkeypatch):
+    # Under PCI_BUS_ID the child would re-read torch ordinals or masked ids as other cards.
+    _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090)
+    _size = int(26.9 * _GIB)
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0", "/bin/vs") == [0, 1]
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0", "/bin/vs") is None
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, None, "0", "/bin/vs") is None
+    # An explicit pick comes from the PCI-ordered picker and is pinned as before.
+    assert LlamaCppBackend._diffusion_fit_gpus(_size, [0, 1], "0", "/bin/vs") == [0, 1]
+
+
+def test_diffusion_moved_fit_keeps_the_pool_on_a_dedup_match():
+    # The fit moved a [0, 1] pick onto GPU 1 alone: re-sending [0, 1] must keep that pick
+    # recorded, or a later pick of GPU 0 matches and the runner stays on GPU 1.
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._is_diffusion = True
+    backend._last_load_intent = None
+    backend._gpu_ids, backend._requested_gpu_ids = [1], [0, 1]
+    assert backend.matches_gpu_ids([0, 1])
+    backend._record_matching_gpu_request([0, 1])
+    assert backend.requested_gpu_ids == [0, 1]
+    assert not backend.matches_gpu_ids([0])
+    # The usual single-device fit still collapses to its lowest GPU.
+    backend._gpu_ids, backend._requested_gpu_ids = [0], [0]
+    backend._record_matching_gpu_request([1, 0])
+    assert backend.requested_gpu_ids == [0]
+
+
+def test_diffusion_fit_gpus_agrees_with_the_layer_fit_on_one_card(monkeypatch):
+    # Both decide "does gpu 0 hold it" the same way, also in the runner-overhead margin, so
+    # a GGUF never gets CPU layers while a second card is free, nor a split it did not need.
+    _diffusion_fit_host(monkeypatch, 1, _TWO_3090)
+    _, free, total = _TWO_3090[0]
+    for tenth in range(180, 260):
+        size = int(tenth / 10 * _GIB)
+        too_big = llama_cpp_module._diffusion_auto_ngl(size, 30, 8, 4096, free, total) is not None
+        fit = LlamaCppBackend._diffusion_fit_gpus(size, [0, 1], "0", "/bin/vs")
+        assert fit == ([0, 1] if too_big else None), tenth / 10
+
+
+def test_diffusion_fit_gpus_moves_to_one_card_that_fits(monkeypatch):
+    # GPU 0 is busy, GPU 1 holds the whole model: one card beats a layer split.
+    _diffusion_fit_host(monkeypatch, 16.8, [(0, 4_000, 24_576), (1, 23_500, 24_576)])
+    assert LlamaCppBackend._diffusion_fit_gpus(int(16.8 * _GIB), [0, 1], "0", "/bin/vs") == [1]
+
+
+def test_diffusion_fit_gpus_needs_a_runner_that_can_split(monkeypatch):
+    # Older visual servers abort on the first request once split, so they keep one GPU.
+    _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090)
+    monkeypatch.setattr(llama_cpp_module, "_visual_server_splits_gpus", lambda _bin: False)
+    assert LlamaCppBackend._diffusion_fit_gpus(int(26.9 * _GIB), [0, 1], "0", "/bin/vs") is None
+
+
+def test_visual_server_split_marker_is_read_from_the_binary(tmp_path):
+    old, new = tmp_path / "old-vs", tmp_path / "new-vs"
+    old.write_bytes(b"\x7fELF usage: %s <model.gguf>")
+    new.write_bytes(b"\x7fELF --capabilities\x00multi_gpu_split\n\x00")
+    assert not llama_cpp_module._visual_server_splits_gpus(str(old))
+    assert llama_cpp_module._visual_server_splits_gpus(str(new))
+    assert not llama_cpp_module._visual_server_splits_gpus(str(tmp_path / "missing"))
+    assert not llama_cpp_module._visual_server_splits_gpus(None)
+
+
+def test_diffusion_fit_gpus_never_reads_vulkan_ordinals(monkeypatch):
+    _diffusion_fit_host(monkeypatch, 26.9, _TWO_3090, vulkan = True)
+    assert LlamaCppBackend._diffusion_fit_gpus(int(26.9 * _GIB), None, "0", "/bin/vs") is None
+
+
+class _StopAtHealth(Exception):
+    pass
+
+
+def _launch_diffusion(monkeypatch, tmp_path, *, gguf_gib, gpus, gpu_ids, **kwargs):
+    """Drive the real _start_diffusion_server to the health wait; return (argv, env, backend)."""
+    _diffusion_fit_host(monkeypatch, gguf_gib, gpus)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    backend = LlamaCppBackend()
+    seen = {}
+
+    class _FakePopen:
+        pid = 999_999_999
+        stdout = iter(())
+
+        def __init__(self, cmd, **kw):
+            seen["cmd"], seen["env"] = list(cmd), dict(kw["env"])
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        backend, "_find_diffusion_assets", lambda: (["python", "-m", "shim"], "/bin/vs", None)
+    )
+    monkeypatch.setattr(backend, "_kill_process", lambda: None)
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 18_123)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda *_a: len(gpus))
+    )
+    monkeypatch.setattr(llama_cpp_module, "_swa_cache_path", lambda: tmp_path / "swa.json")
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(
+        backend,
+        "_wait_for_health",
+        lambda **_kw: (_ for _ in ()).throw(_StopAtHealth()),
+    )
+    with pytest.raises(_StopAtHealth):
+        backend._start_diffusion_server(
+            model_path = "/m.gguf",
+            gguf_path = "/m.gguf",
+            hf_repo = None,
+            hf_variant = None,
+            model_identifier = "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+            n_ctx = 0,
+            extra_args = None,
+            gpu_ids = gpu_ids,
+            **kwargs,
+        )
+    return seen["cmd"], seen["env"], backend
+
+
+def _gpu_token(cmd):
+    return cmd[cmd.index("--gpu") + 1]
+
+
+def test_diffusion_launch_splits_a_gguf_one_gpu_cannot_hold(monkeypatch, tmp_path):
+    cmd, env, backend = _launch_diffusion(
+        monkeypatch, tmp_path, gguf_gib = 26.9, gpus = _TWO_3090, gpu_ids = [1, 0]
+    )
+    assert _gpu_token(cmd) == "0,1"
+    assert env["DG_GPU"] == "0,1"
+    assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert backend.gpu_ids == [0, 1]
+    assert backend.requested_gpu_ids == [0, 1]
+    backend._is_diffusion = True
+    assert backend.matches_gpu_ids([1, 0])
+    assert not backend.matches_gpu_ids([0])
+    backend._record_matching_gpu_request([1, 0])
+    assert backend.requested_gpu_ids == [0, 1]
+
+
+def test_diffusion_launch_auto_split_records_no_pin(monkeypatch, tmp_path):
+    cmd, env, backend = _launch_diffusion(
+        monkeypatch, tmp_path, gguf_gib = 26.9, gpus = _TWO_3090, gpu_ids = None
+    )
+    assert _gpu_token(cmd) == "0,1"
+    assert env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert backend.gpu_ids is None and backend.requested_gpu_ids is None
+
+
+@pytest.mark.parametrize("gpu_ids", [None, [0, 1]])
+def test_diffusion_launch_that_fits_one_gpu_is_unchanged(monkeypatch, tmp_path, gpu_ids):
+    cmd, env, backend = _launch_diffusion(
+        monkeypatch, tmp_path, gguf_gib = 16.8, gpus = _TWO_3090, gpu_ids = gpu_ids
+    )
+    assert _gpu_token(cmd) == "0"
+    assert ("CUDA_DEVICE_ORDER" in env) == bool(gpu_ids)
+    expected = [0] if gpu_ids else None
+    assert backend.gpu_ids == expected and backend.requested_gpu_ids == expected
+    backend._is_diffusion = True
+    assert backend.matches_gpu_ids(gpu_ids)
+    assert backend.matches_gpu_ids([0]) == bool(gpu_ids)
+
+
+def test_diffusion_launch_manual_split_never_spreads(monkeypatch, tmp_path):
+    monkeypatch.setattr(llama_cpp_module, "_shim_supports_ngl", lambda _cmd: True)
+    cmd, _env, backend = _launch_diffusion(
+        monkeypatch,
+        tmp_path,
+        gguf_gib = 26.9,
+        gpus = _TWO_3090,
+        gpu_ids = [0, 1],
+        gpu_memory_mode = "manual",
+        gpu_layers = 20,
+    )
+    assert _gpu_token(cmd) == "0"
+    assert cmd[cmd.index("--ngl") + 1] == "20"
+    assert backend.gpu_ids == [0]
+
+
+@pytest.mark.parametrize(
+    ("gguf_gib", "fit_ngl", "token", "ngl"),
+    [
+        (26.9, 18, "0,1", None),  # the pair holds Q8_0: split, no CPU layers
+        (50.5, 12, "0", "12"),  # BF16 fits no subset: one card plus CPU layers (#6456)
+    ],
+)
+def test_diffusion_launch_prefers_a_gpu_split_over_cpu_layers(
+    monkeypatch, tmp_path, gguf_gib, fit_ngl, token, ngl
+):
+    monkeypatch.setattr(llama_cpp_module, "_shim_supports_ngl", lambda _cmd: True)
+    monkeypatch.setattr(LlamaCppBackend, "_diffusion_fit_ngl", lambda self, *_a, **_k: fit_ngl)
+    cmd, _env, _backend = _launch_diffusion(
+        monkeypatch, tmp_path, gguf_gib = gguf_gib, gpus = _TWO_3090, gpu_ids = [0, 1]
+    )
+    assert _gpu_token(cmd) == token
+    assert (cmd[cmd.index("--ngl") + 1] if "--ngl" in cmd else None) == ngl
+    # Only a CPU split pins the context; an all-GPU split keeps the runner's auto-size.
+    assert cmd[cmd.index("--maxtok") + 1] == ("4096" if ngl else "0")
+
+
 # ── Deliberate zero-offload (manual gpu_layers=0): training-skip flag ─────────
 
 
@@ -1271,7 +1550,7 @@ def test_zero_offload_flag_false_without_companions():
 
 @pytest.mark.parametrize(
     "companion",
-    ["--mmproj", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
+    ["--mmproj", "-mm", "--model-draft", "-md", "--spec-draft-model", "-hfd"],
 )
 def test_zero_offload_flag_true_with_companion(companion):
     # mmproj / a drafter offload to GPU regardless of --gpu-layers, so the
@@ -1458,8 +1737,10 @@ def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
     acquire = load_impl.index("if chat_load_needs_gpu:", gate)
     # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed chat model, and releasing
     # earlier would let an image/video load allocate alongside the model not yet unloaded.
-    release = load_impl.index("await asyncio.to_thread(release, CHAT)", acquire)
-    assert load_impl.index("if not chat_load_needs_gpu:", acquire) < release
+    release = load_impl.index(
+        "await asyncio.to_thread(_release_chat_for_zero_vram_primary)", acquire
+    )
+    assert load_impl.index("if replacing and not chat_load_needs_gpu:", acquire) < release
     assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release
     assert "if chat_load_needs_gpu and current_owner() != CHAT:" in load_impl
     # The already-loaded fast path re-asserts ownership too; same exemption.
@@ -1492,3 +1773,75 @@ def test_zero_vram_chat_load_treats_an_absent_mode_as_auto(not_vulkan):
     assert zero("manual", 0, [], False, "   ") is False
     # Only the canonical spelling still exempts it.
     assert zero("manual", 0, [], False, "off") is True
+
+
+def test_manual_auto_layers_never_emits_two_tensor_splits(tmp_path):
+    """Manual + Auto layers is the one cell where the route holds the ratio twice: the
+    strip is False at ``gpu_layers < 0`` while the promotion still fires (#11330).
+    llama.cpp reads the LAST ``--tensor-split``, so a launch path that kept either copy
+    would place by the wrong one; both die here, and that is the launcher's doing rather
+    than the route's, which is why it is pinned.
+    """
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        # Exactly the state the /load promotion leaves behind: the field set AND the
+        # raw flag still in extras, because the strip did not fire at gpu_layers < 0.
+        tensor_split = [2.2, 1.0],
+        extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+    )["cmd"]
+    tokens = [tok for tok in cmd if tok in ("--tensor-split", "-ts")]
+    assert len(tokens) <= 1, f"the ratio reached argv twice: {cmd}"
+    # Today both copies are dropped, so /status must not claim a ratio llama-server
+    # never received.
+    assert tokens == []
+    assert backend.tensor_split is None
+
+
+def test_manual_explicit_layers_emits_the_promoted_ratio_once(tmp_path):
+    """The control for the cell above: with layers pinned the strip DOES fire, so the
+    promoted field is the only copy and it is the one that reaches argv (#11330)."""
+    from test_llama_cpp_placement import _backend, _launch
+
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 49,
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+        tensor_split = [2.2, 1.0],
+        # strip_shadowing_flags already removed the raw -ts at this point.
+        extra_args = ["-sm", "layer"],
+    )["cmd"]
+    assert cmd.count("--tensor-split") == 1
+    assert cmd[cmd.index("--tensor-split") + 1] == "2.2,1"
+    assert backend.tensor_split == [2.2, 1.0]
+
+
+def test_manual_auto_layers_does_not_judge_a_rewrite_that_never_happens():
+    """At Auto layers the launcher drops both copies of the ratio, so the route must not refuse
+    a value over the six-digit rendering it will never produce (the strip predicate and the
+    reserialized predicate are the same question)."""
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    for marker in (
+        "reserialized = _resolved_layers >= 0",
+        "reserialized = _validate_resolved_layers >= 0",
+    ):
+        assert marker in route_src, marker

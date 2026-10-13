@@ -13,17 +13,12 @@
 // studio/backend/tests/test_chat_message_identity.py, against the real studio_db.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const adapter = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
-const runtimeProvider = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const adapter = readSrc("features/chat/api/chat-adapter.ts");
+const runtimeProvider = readSrc("features/chat/runtime-provider.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);

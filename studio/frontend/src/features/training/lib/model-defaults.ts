@@ -38,10 +38,9 @@ function toStringArray(value: unknown): string[] | undefined {
   return result.length > 0 ? result : undefined;
 }
 
-// The spellings studio/backend/core/training/trainer.py accepts, so a file means
-// the same thing to the picker as it does to the trainer. A quoted "false" read
-// as "leave it at the default" is how a config asking for no checkpointing ended
-// up training with Unsloth GC.
+// The spellings studio/backend/core/training/trainer.py accepts, so a file means the same thing to
+// the picker as it does to the trainer. A quoted "false" read as "leave it at the default" is how a
+// config asking for no checkpointing ended up training with Unsloth GC.
 const GRADIENT_CHECKPOINTING_ALIASES = new Map<
   string,
   TrainingConfigState["gradientCheckpointing"]
@@ -130,11 +129,10 @@ export function mapBackendModelConfigToTrainingPatch(
   if (warmupSteps !== undefined) {
     patch.warmupSteps = warmupSteps;
   } else {
-    // Ten shipped model_defaults express warmup as a ratio and set no
-    // warmup_steps, default.yaml among them, so reading only warmup_steps left
-    // every one of them on the generic UI default. Materialize with ceil, the
-    // way TrainingArguments.get_warmup_steps does, so a small ratio such as an
-    // imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
+    // Ten shipped model_defaults express warmup as a ratio and set no warmup_steps, default.yaml
+    // among them, so reading only warmup_steps left every one of them on the generic UI default.
+    // Materialize with ceil, the way TrainingArguments.get_warmup_steps does, so a small ratio such
+    // as an imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
     const warmupRatio = toNumber(training?.warmup_ratio);
     if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
       patch.warmupSteps = Math.ceil(warmupRatio * maxSteps);
@@ -152,6 +150,31 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
+
+  if (training?.offload_layers === "auto") patch.offloadLayers = "auto";
+  else {
+    const offloadLayers = toNumber(training?.offload_layers);
+    if (offloadLayers !== undefined) patch.offloadLayers = offloadLayers;
+  }
+  if (Object.hasOwn(training ?? {}, "offload_vram_gb")) {
+    const budget = toNumber(training?.offload_vram_gb);
+    patch.offloadVramGb = budget !== undefined && budget > 0 ? budget : null;
+  }
+  if (Object.hasOwn(training ?? {}, "offload_vram_gb_per_device")) {
+    // Exported keyed by GPU index; the request's list form is indexed the same way.
+    const raw = training?.offload_vram_gb_per_device;
+    const perDevice: Record<string, number | null> = {};
+    for (const [index, value] of Object.entries(raw ?? {})) {
+      const gb = toNumber(value);
+      if (/^\d+$/.test(index) && gb !== undefined && gb > 0 && gb <= 4096) perDevice[index] = gb;
+    }
+    patch.offloadVramGbPerDevice = perDevice;
+  }
+  if (training?.prefetch_depth === "auto") patch.prefetchDepth = "auto";
+  else {
+    const depth = toNumber(training?.prefetch_depth);
+    if (depth !== undefined && depth >= 1) patch.prefetchDepth = Math.min(8, Math.floor(depth));
+  }
 
   // Only patch when the config carries the key; model-switch reset lives in setSelectedModel.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {

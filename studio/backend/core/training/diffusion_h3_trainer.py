@@ -3,40 +3,36 @@
 
 """Joint video + audio LoRA training for MiniMax-H3.
 
-MiniMax-H3 is rectified flow like every family in ``diffusion_dit_trainer``, but three things
-put it outside that trainer's ``_FamilySpec`` seams rather than inside them, so it gets its
-own loop here and shares ``diffusion_train_common`` (config, events, stop, trust gate,
-publishing, EMA, the 8-bit optimizer) with everything else:
+MiniMax-H3 is rectified flow like every family in ``diffusion_dit_trainer``, but three things put it
+outside that trainer's ``_FamilySpec`` seams, so it gets its own loop here and shares
+``diffusion_train_common`` (config, events, stop, trust gate, publishing, EMA, the 8-bit optimizer)
+with everything else:
+1. **One packed sequence, two modalities.** H3 runs a single block stack over one 1-D sequence
+holding ``[text | audio | video]`` rows with full self-attention. There is no cross-attention, no
+per-modality block weights and no ``isolate_modalities`` escape hatch, so a LoRA on the
+attention/MLP projections is applied to the audio rows as well as the video ones, and the audio rows
+are keys and values for every video row. Audio therefore cannot be excluded from the adapter, and
+the only honest objective is the model's own: regress BOTH velocities. That is why the dataset unit
+is a clip with sound (``diffusion_h3_clips``) and why there is no still-image milestone here.
 
-1. **One packed sequence, two modalities.** H3 runs a single block stack over one 1-D
-   sequence holding ``[text | audio | video]`` rows with full self-attention. There is no
-   cross-attention, no per-modality block weights and no ``isolate_modalities`` escape hatch
-   (LTX-2 has all three). So a LoRA on the attention/MLP projections is applied to the audio
-   rows as well as the video ones, and the audio rows are keys and values for every video
-   row. Audio therefore cannot be excluded from the adapter, and the only honest objective is
-   the model's own: regress BOTH velocities. That is why the dataset unit is a clip with
-   sound (``diffusion_h3_clips``) and why there is no still-image milestone here.
-
-2. **Two coupled schedules.** Video is noised through an exponential shift of 12.0 and audio
-   through 3.0. At inference both are indexed by the same step, so the pair
-   ``(sigma_video, sigma_audio)`` traverses one curve. Training draws ONE base ``u`` and
-   pushes it through both shifts, which reproduces that curve exactly; drawing the two
-   independently would train pairs the sampler never visits. ``MiniMaxH3Scheduler`` is also
-   not a ``FlowMatchEulerDiscreteScheduler`` (reversed velocity sign, ``t = 1 - sigma`` in
-   [0, 1], a different sigma grid), so the shared trainer's sigma table does not apply.
+2. **Two coupled schedules.** Video is noised through an exponential shift of 12.0 and audio through
+3.0. At inference both are indexed by the same step, so the pair ``(sigma_video, sigma_audio)``
+traverses one curve; training draws ONE base ``u`` and pushes it through both shifts, which
+reproduces that curve exactly, where drawing the two independently would train pairs the sampler
+never visits. ``MiniMaxH3Scheduler`` is also not a ``FlowMatchEulerDiscreteScheduler`` (reversed
+velocity sign, ``t = 1 - sigma`` in [0, 1], a different sigma grid), so the shared trainer's sigma
+table does not apply.
 
 3. **It is modular-only.** There is no ``MiniMaxH3Pipeline``; the integration is a
-   ``ModularPipeline`` plus blocks. The trainer never builds one: the two layout builders it
-   needs are ``@staticmethod``s, and the components load individually -- which is a better fit
-   for the phased load than the ``transformer = None`` trick, since ``load_components`` takes
-   the component names outright.
+``ModularPipeline`` plus blocks. The trainer never builds one: the two layout builders it needs are
+``@staticmethod``s, and the components load individually, which fits the phased load better than the
+``transformer = None`` trick.
 
 Velocity sign: H3 predicts a DATA-ward velocity (``x0 = x_t + sigma * v``), i.e. the target is
 ``latents - noise``, the negation of the convention in ``diffusion_dit_trainer``.
 
-Memory: the Qwen3-VL-32B conditioner is 63 GiB on disk, so captions are encoded once up front
-and it is freed before the VAEs encode and long before the 66 GB transformer loads -- the same
-phased load the DiT trainer uses, expressed through ``load_components``.
+Memory: the Qwen3-VL-32B conditioner is 63 GiB on disk, so captions are encoded once up front and it
+is freed before the VAEs encode and long before the 66 GB transformer loads.
 """
 
 from __future__ import annotations
@@ -85,8 +81,13 @@ from core.training.diffusion_train_common import (
     _latent_cache_forced,
     _latent_cache_over_budget,
     _restore_perf_flags,
+    enable_diffusion_gradient_checkpointing,
+    reset_training_peak_memory,
+    training_peak_memory_gb,
     h3_train_unsupported_reason,
-    native_bf16_supported,
+    flow_bf16_trainable,
+    native_bf16_supported_xpu,
+    resolve_train_device,
     resolve_train_steps,
     train_recipe_overrides,
 )
@@ -317,6 +318,7 @@ def _load_transformer(cfg, device, base_precision):
             cfg.base_model,
             subfolder = "transformer",
             quantization_config = quant,
+            device_map = {"": device},
             torch_dtype = torch.bfloat16,
             token = cfg.hf_token,
             cache_dir = cache_dir,
@@ -483,13 +485,18 @@ def run_h3_lora_training(
             save_on_stop = False
         return True
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda" and not native_bf16_supported():
+    device = resolve_train_device()
+    if device == "cuda" and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."
         )
-    weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    if device == "xpu" and not native_bf16_supported_xpu():
+        raise ValueError(
+            "This trainer requires a bfloat16-capable GPU; this XPU device does not "
+            "support bf16 natively."
+        )
+    weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
     # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local MiniMax-H3
     # pipeline carries modular_model_index.json and no model_index.json, so the conventional shape
@@ -527,7 +534,13 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    from core.training.diffusion_dit_trainer import _int8_quantize_base, _make_optimizer
+    from core.training.diffusion_dit_trainer import (
+        _compile_engagement_warning,
+        _dynamo_compile_counters,
+        _int8_quantize_base,
+        _make_optimizer,
+        _maybe_compile_transformer,
+    )
 
     out_dir = Path(cfg.output_dir).expanduser()
     clip_paths = [p for p, _ in pairs]
@@ -538,8 +551,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     to_encode = sorted(set(captions))
 
-    # Phase 1: the 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
-    # ── phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
     pipe = _load_conditioners(cfg, device)
     caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
     _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
@@ -549,10 +561,11 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
-    # One canvas for the run, from the FIRST clip's aspect ratio: every other clip is cover-cropped
-    # onto it, so a mixed-aspect dataset trains on one geometry.
-    # ── phase 2: the clip cache. One canvas for the run, taken from the FIRST clip's aspect
+    # Phase 2: the clip cache. One canvas for the run, from the FIRST clip's aspect ratio: every other clip is
+    # cover-cropped onto it, so a mixed-aspect dataset trains on one geometry.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     cache: list[tuple[Any, Any, Any]] = []
@@ -604,8 +617,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
-    # ── phase 3: the denoiser.
+    # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
     if base_precision in ("fp8", "mxfp8"):
         raise ValueError(
@@ -632,11 +647,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         )
     )
     if cfg.gradient_checkpointing:
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
@@ -652,6 +663,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         _int8_quantize_base(transformer, cfg.resolved_family)
 
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
+    # dynamic=True keeps one graph per block across caption lengths; int8 stays eager like the DiT families.
+    compiled = _maybe_compile_transformer(
+        transformer, cfg, base_precision == "nf4", device, on_event, base_precision
+    )
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
@@ -665,7 +680,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     _emit(
         on_event,
         "model_load_completed",
-        compiled = False,
+        compiled = compiled,
         base_precision = base_precision,
         sequence_length = h3_packed_sequence_length(
             max(e.shape[1] for e in caption_embeds.values()), num_frames, height, width
@@ -676,8 +691,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     patch = tuple(transformer.config.patch_size)
     index_sampler = PermutationBatchSampler(len(clip_paths), rng)
     autocast = (
-        torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
-        if device == "cuda"
+        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        if device in ("cuda", "xpu")
         else nullcontext()
     )
     stopped = False
@@ -686,6 +701,8 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_start = time.time()
     t_steady = None
     done = 0
+    reset_training_peak_memory(device)
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -763,9 +780,13 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         now = time.time()
         if done == 1:
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = training_peak_memory_gb(device)
             per_step = cfg.gradient_accumulation_steps
             if t_steady is not None and done > 1:
                 sps = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)

@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 // Skip the legacy import path: it would look for settings this test never wrote.
@@ -27,6 +27,9 @@ const { mergeBackendRecommendedInference } = await import(
 );
 const { DEFAULT_INFERENCE_PARAMS } = await import(
   "../src/features/chat/types/runtime.ts"
+);
+const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+  "../src/features/chat/lib/per-model-params.ts"
 );
 
 const QWEN = "unsloth/Qwen3.5-9B-GGUF";
@@ -563,13 +566,7 @@ test("an edit made before hydration is kept by the model's entry", async () => {
 // A safetensors reload at a smaller sequence length: the load sets the budget
 // to that context and the memory would replay a larger one over it.
 test("a remembered budget is capped by a non-GGUF load", () => {
-  const runtime = readFileSync(
-    new URL(
-      "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // One cap for both sites: the load response and the Qwen3 thinking defaults.
   // The reported window leads, and the request stands in only for a backend that
   // sizes nothing -- a self-sizing one is sent the auto-size sentinel. Through the
@@ -584,10 +581,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     "the thinking-defaults replay is capped too",
   );
 
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
     /maxTokensCap: replayMaxTokensCap\(\s*candidate\.kind === "gguf"\s*\? loadedContextFields\(loadResp\)\.loadedContextLength\s*: loadedWindow,\s*\),/,
@@ -595,22 +589,13 @@ test("a remembered budget is capped by a non-GGUF load", () => {
 
   // Compare loads the same way: a pane with no context pin sends the sentinel, and
   // capping its budget at 0 would leave the pane asking for no output at all.
-  const composer = readFileSync(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
     /maxTokensCap: replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
   );
 
-  const status = readFileSync(
-    new URL(
-      "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   // Reported for a safetensors load too, so the cap is not narrowed to GGUF, and
   // through the same floor the load paths use: hydration must not clamp Max Tokens
   // below its own slider either.
@@ -978,4 +963,235 @@ test("a resident GGUF context does not cap an external model", async () => {
   settingsHttp.settings = { inferenceParams: { maxTokens: 32768 } };
   await useChatRuntimeStore.getState().hydratePersistedSettings();
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+/** Loads `checkpoint` the way the load and status paths do: defaults, then the replay, capped. */
+function loadAt(checkpoint: string, context: number) {
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint, maxTokens: context },
+    { fromModelDefaults: true, maxTokensCap: context },
+  );
+}
+
+/** What the settings writer sent for one model, merged across PUTs. */
+function writtenFor(modelId: string): Record<string, unknown> {
+  const written: Record<string, unknown> = {};
+  for (const put of settingsHttp.puts) {
+    Object.assign(
+      written,
+      (put.inferenceParamsByModel as Record<string, Record<string, unknown>>)?.[
+        modelId
+      ] ?? {},
+    );
+  }
+  return written;
+}
+
+// #10671: "Max" was remembered as the window it was loaded with, so a reload at a
+// larger context replayed a cap one token short of nothing, admission charged it in
+// full, and every other chat queued behind it.
+test("Max Tokens left on Max stays Max at a larger context", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  await settled();
+  settingsHttp.puts.length = 0;
+  loadAt(QWEN, 30000);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  await settled();
+
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+  // And what survives a restart: the row the server keeps.
+  assert.equal(writtenFor(QWEN).maxTokens, REMEMBERED_MAX_TOKENS_MAX);
+
+  // An edit recorded while on Max says the same.
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, temperature: 0.33 });
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+  loadAt(QWEN, 8192);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+// Turning the memory on adopts what is on screen, which for a model on Max is its window.
+test("turning the memory on records Max as Max", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: false,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  loadAt(QWEN, 30000);
+  await settled();
+  settingsHttp.puts.length = 0;
+  useChatRuntimeStore.getState().setRememberParamsPerModel(true);
+  await settled();
+
+  assert.equal(writtenFor(QWEN).maxTokens, REMEMBERED_MAX_TOKENS_MAX);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+});
+
+test("a remembered Max is the window after a restart", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    loadedContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 30000 },
+    inferenceParamsByModel: {
+      [QWEN]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX },
+    },
+  };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  loadAt(QWEN, 35000);
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+
+  // With nothing loaded to size it, the marker never reaches a request.
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    loadedContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { maxTokens: 30000 },
+    inferenceParamsByModel: {
+      [LLAMA]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX },
+    },
+  };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+});
+
+test("a Max Tokens chosen below Max still replays as chosen", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  loadAt(QWEN, 30000);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 4096 });
+  useChatRuntimeStore.getState().clearCheckpoint();
+
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
+});
+
+// An external model's cap is the provider's output limit, not a window to follow.
+test("an external model's cap is remembered as a number", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: EXTERNAL },
+  });
+  loadAt(EXTERNAL, 8192);
+  useChatRuntimeStore.getState().clearCheckpoint();
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[EXTERNAL]?.maxTokens,
+    8192,
+  );
+});
+
+// A compare pane loads through setCheckpoint alone, so the window it reports has to
+// count there too, or leaving that model records its Max as the number.
+test("a compare load keeps Max as Max when the next pane loads", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  loadAt(LLAMA, 8192);
+  useChatRuntimeStore.setState({
+    paramsByModel: { [QWEN]: { maxTokens: REMEMBERED_MAX_TOKENS_MAX } },
+  });
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(QWEN, undefined, { maxTokensCap: 30000 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(LLAMA, null, { maxTokensCap: 8192 });
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+  loadAt(QWEN, 35000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+});
+
+// A cap the user chose is not Max just because a smaller load clamped it to the
+// window, or met it exactly: the next larger load gets the chosen cap back.
+test("a chosen cap clamped to a smaller window stays the chosen cap", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  loadAt(QWEN, 35000);
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 30000 });
+  assert.equal(useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens, 30000);
+
+  for (const smaller of [20000, 30000]) {
+    loadAt(QWEN, smaller);
+    useChatRuntimeStore.getState().clearCheckpoint();
+    assert.equal(
+      useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+      30000,
+    );
+    loadAt(QWEN, 50000);
+    assert.equal(useChatRuntimeStore.getState().params.maxTokens, 30000);
+  }
+
+  // Moving it to Max is the user saying Max.
+  const chosen = useChatRuntimeStore.getState();
+  chosen.setParams({ ...chosen.params, maxTokens: 50000 });
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[QWEN]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+  loadAt(QWEN, 60000);
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 60000);
+});
+
+// The compare pane reloads the model it already shows through setCheckpoint,
+// which replays nothing for an unchanged checkpoint.
+test("a compare reload of the same model keeps Max as Max", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  loadAt(QWEN, 30000);
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(QWEN, undefined, { maxTokensCap: 35000 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 35000);
+
+  // A chosen cap is left alone.
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, maxTokens: 4096 });
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(QWEN, undefined, { maxTokensCap: 40000 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
 });

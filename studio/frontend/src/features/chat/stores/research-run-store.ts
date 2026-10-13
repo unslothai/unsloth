@@ -958,6 +958,19 @@ export function beginExternalResearchFollow(
   };
 }
 
+/** Reopen a dismissed plan without changing an existing session or retrying its connection. */
+export function openResearchRun(run: ResearchRun): void {
+  if (!useResearchRunStore.getState().sessions[run.id]) {
+    ingestResearchUpdate(run);
+  }
+  const state = useResearchRunStore.getState();
+  if (state.sessions[run.id]?.run.status === "awaiting_approval") {
+    // The review state exists only after the plan arrives; otherwise this is a no-op.
+    state.setPlanReviewOpen(run.id, true);
+  }
+  state.openPanel(run.id);
+}
+
 /** Yield the run each time the store applies something to it, until it settles or *signal*
  *  aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
 export async function* watchResearchRun(

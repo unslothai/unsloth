@@ -2,15 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readText } from "./helpers/kit.ts";
 
 const RECTANGLE_RADIUS = /rounded-\[11px\]/;
 const PILL_RADIUS = /\brounded-(?:full|xl)\b/;
-
-function componentSource(path: string): Promise<string> {
-  return readFile(new URL(path, import.meta.url), "utf8");
-}
 
 function functionBody(source: string, name: string): string {
   const start = source.indexOf(`function ${name}(`);
@@ -21,11 +18,11 @@ function functionBody(source: string, name: string): string {
 
 test("context-menu item hover matches the standard dropdown rectangle", async () => {
   const contextItem = functionBody(
-    await componentSource("../src/components/ui/context-menu.tsx"),
+    await readText("../src/components/ui/context-menu.tsx"),
     "ContextMenuItem",
   );
   const dropdownItem = functionBody(
-    await componentSource("../src/components/ui/dropdown-menu.tsx"),
+    await readText("../src/components/ui/dropdown-menu.tsx"),
     "DropdownMenuItem",
   );
 

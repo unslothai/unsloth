@@ -22,13 +22,13 @@ Kill-switch: ``UNSLOTH_DIFFUSION_ARCH_PATCHES=0``. Implemented for all five fami
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import torch
 
+from .diffusion_autoopt.patches import body_has
 from .diffusion_patch_backend import apply_patch, revert_patch
 
 logger = logging.getLogger(__name__)
@@ -40,14 +40,9 @@ def _patches_enabled() -> bool:
     return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-def _body_has(fn: Callable, *needles: str) -> bool:
-    """True iff every ``needle`` is in ``fn``'s source -- a body-drift guard that self-disables the
-    patch if diffusers changed the rewritten lines."""
-    try:
-        src = inspect.getsource(fn)
-    except (OSError, TypeError):
-        return False
-    return all(n in src for n in needles)
+# The shared needle guard (diffusion_autoopt.patches); the module-level name is what the resolvers below call, so a
+# test can still monkeypatch it here.
+_body_has = body_has
 
 
 # qwen-image: QwenImageTransformerBlock._modulate (modulation addcmul, all 4 call sites)
@@ -179,7 +174,6 @@ def _spec_zimage_forward():
     return (cls, "forward", _zimage_forward)
 
 
-# flux.1: block modulation goes via AdaLayerNormZero
 # flux.1: FluxTransformerBlock / FluxSingleTransformerBlock. Block modulation goes via AdaLayerNormZero; here we fuse
 # the inline norm2 modulation and the gated residual adds.
 def _flux_double_forward(
@@ -307,7 +301,6 @@ def _spec_flux_single():
     return (cls, "forward", _flux_single_forward)
 
 
-# flux.2-klein: modulation is INLINE, and scale/shift/gate are [B,1,dim], so no [:, None]
 # flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock. Modulation is INLINE, so fuse both;
 # scale/shift/gate are [B,1,dim], so no [:, None].
 def _flux2_double_forward(
@@ -486,8 +479,7 @@ def _spec_krea2_forward():
     return (cls, "forward", _krea2_block_forward)
 
 
-# each entry is a zero-arg resolver returning (cls, attr, new_fn) or None; all COMPILE-SAFE
-# registry + lifecycle. Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
+# Registry + lifecycle. Each entry is a zero-arg resolver returning (cls, attr, new_fn) or None. All COMPILE-SAFE.
 _SPECS: tuple[Callable[[], Optional[tuple]], ...] = (
     _spec_qwen_modulate,
     _spec_zimage_forward,

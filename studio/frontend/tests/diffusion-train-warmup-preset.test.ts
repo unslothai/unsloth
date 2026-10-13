@@ -11,7 +11,6 @@
 // normalization lives in its own module and is exercised directly.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -19,10 +18,9 @@ import {
   lrSchedulePreset,
 } from "../src/features/images/train/diffusion-train-lr-schedule.ts";
 
-const source = await readFile(
-  new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
 
 test("a family that recommends a ramp carries both halves of it", () => {
   assert.deepEqual(

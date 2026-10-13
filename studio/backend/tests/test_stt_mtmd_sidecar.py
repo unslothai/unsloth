@@ -10,10 +10,26 @@ when the tests were written rather than what they cover. Same tests, one subject
 import subprocess
 import threading
 import time
+from pathlib import Path
 import pytest
 from core.inference import stt_mtmd_sidecar as mtmd_mod
 from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 from core.inference import stt_ggml_sidecar as ggml_mod
+
+
+def _shared_setup_1(monkeypatch, spawned):
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    return made, sidecar
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
+    )
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
 
 
 class _FakeProcess:
@@ -206,10 +222,7 @@ def _swallow(sidecar, model_id):
 
 def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch):
     """Releasing before the cache check cost a usable server on a 409."""
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     assert sidecar.loaded_model == "qwen3-asr-0.6b"
 
     def missing(self, model_id):
@@ -227,10 +240,7 @@ def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch)
 def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
     from utils import llama_cpp_path_settings
 
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     monkeypatch.setattr(
         llama_cpp_path_settings,
         "_path_revision",
@@ -246,10 +256,7 @@ def test_path_save_restarts_warm_mtmd_server(spawned, monkeypatch):
 
 
 def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch):
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     with sidecar._lock:
         sidecar._active_requests = 1  # mid _post_transcribe, outside the lock
 
@@ -265,10 +272,7 @@ def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch
 
 
 def test_a_dead_server_can_still_be_replaced_while_a_request_is_pending(spawned, monkeypatch):
-    made, _, _ = spawned
-    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
-    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    sidecar.load("qwen3-asr-0.6b")
+    made, sidecar = _shared_setup_1(monkeypatch, spawned)
     made[0]._returncode = 1  # crashed under the request
     with sidecar._lock:
         sidecar._active_requests = 1
@@ -464,10 +468,7 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     in between and the port read would be the other server's."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
 
     posted = []
     monkeypatch.setattr(
@@ -533,10 +534,7 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
     threw away a recording the preload had said was fine."""
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         MtmdSttSidecar,
         "_post_transcribe",
@@ -552,10 +550,7 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
 def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: None)
     monkeypatch.setattr(MtmdSttSidecar, "_ensure_model_downloaded", lambda *args: None)
-    monkeypatch.setattr(
-        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
-    )
-    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    _shared_setup_2(monkeypatch)
 
     class _AliveProcess:
         terminated = False
@@ -1211,3 +1206,85 @@ def test_catalogue_probes_stay_answerable(model_id):
     mtmd_mod._forget_downloaded_probe()
     assert isinstance(mtmd_mod.is_model_downloaded(model_id), bool)
     mtmd_mod._forget_downloaded_probe()
+
+
+def test_the_dictation_server_gets_a_per_launch_key_that_requests_send(
+    spawned, monkeypatch, tmp_path
+):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "auth_root", lambda: tmp_path)
+    monkeypatch.delenv("UNSLOTH_LLAMA_SERVER_API_KEY", raising = False)
+    commands, sent = [], []
+
+    def capture(cmd, **kwargs):
+        key_file = Path(cmd[cmd.index("--api-key-file") + 1])
+        commands.append((list(cmd), key_file.read_text()))
+        return _FakeProcess()
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"hi"}}]}'
+
+    class _Connection:
+        sock = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(
+            self,
+            method,
+            path,
+            body = None,
+            headers = None,
+        ):
+            sent.append(headers)
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod.http.client, "HTTPConnection", _Connection)
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+    ((cmd, key),) = commands
+    assert cmd[-1] != "--api-key-file" and len(key) > 20
+    # llama-server read it at startup; nothing is left on disk.
+    assert not list(tmp_path.glob("llama_api_key_*"))
+    sidecar._post_transcribe(65000, "qwen3-asr-0.6b", b"RIFFwav", api_key = sidecar._api_key)
+    assert sent[0]["Authorization"] == f"Bearer {key}"
+    sidecar.unload()
+    assert sidecar._api_key is None
+
+
+def test_a_build_without_api_key_file_still_starts_keyless(spawned, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    commands = []
+    monkeypatch.delenv("UNSLOTH_LLAMA_SERVER_API_KEY", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_api_key_file": False}),
+    )
+    monkeypatch.setattr(
+        mtmd_mod.subprocess, "Popen", lambda cmd, **k: commands.append(list(cmd)) or _FakeProcess()
+    )
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+    assert "--api-key-file" not in commands[0] and sidecar._api_key is None
+    sidecar.unload()

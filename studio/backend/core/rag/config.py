@@ -39,14 +39,60 @@ CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chr
 # still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
-UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Types parsers.parse handles; frontend and Rust parity tests read this literal.
+SUPPORTED_UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Source and config files, decoded like .txt; the chat's TEXT_ATTACHMENT_EXTENSIONS minus the above (parity test).
+SOURCE_TEXT_EXTS = frozenset(
+    """
+    .text .log .mdx .rst .adoc .asciidoc .org .textile .wiki .tex .latex .sty .cls .bib .rmd .qmd
+    .srt .vtt .sbv .ass .ssa .sub .lrc
+    .csv .tsv .psv .json .jsonl .ndjson .jsonc .json5 .geojson .kml .gpx .har .avsc .xml .yaml .yml .toml .ini
+    .cfg .conf .cnf .env .properties .plist .edn .ron .cue .lock .mod .sum .reg .desktop .service
+    .po .pot .strings .resx .xliff .xlf .ics .vcf .eml .mbox .m3u8 .pls
+    .css .scss .sass .less .styl .svg .vue .svelte .astro .pug .jade .haml .slim .ejs .erb .hbs
+    .handlebars .mustache .njk .jinja .jinja2 .j2 .twig .liquid .cshtml .razor .aspx .jsp .tpl .qml
+    .js .jsx .mjs .cjs .ts .tsx .mts .cts .py .pyi .pyx .pxd .ipynb
+    .java .kt .kts .scala .groovy .gradle .sbt .clj .cljs .cljc
+    .c .h .cc .cpp .hpp .cxx .hxx .hh .ipp .inl .cu .cuh .rs .go .zig .odin .nim .nims .nimble .cr .d
+    .v .sv .svh .vhd .vhdl .asm .s
+    .cs .vb .vbs .fs .fsi .fsx .csproj .vbproj .fsproj .sln .props .targets
+    .m .mm .swift .applescript .metal
+    .rb .rake .gemspec .podspec .php .pl .pm .r .jl .lua .tcl .dart .hx .hs .lhs .ml .mli .ex .exs
+    .erl .hrl .rkt .scm .ss .lisp .lsp .cl .el .pas .pp .ada .adb .ads .cob .cbl .f .for .f90 .f95
+    .f03 .sas .awk .sed .m4 .sol .move .cairo .mojo .gd .sqf
+    .sh .bash .zsh .fish .ksh .csh .tcsh .nu .ps1 .psm1 .psd1 .bat .cmd
+    .sql .psql .plsql .hql .cql .graphql .gql .proto .thrift .capnp .prisma
+    .tf .tfvars .tfstate .hcl .nix .dhall .bicep .dockerfile .containerfile .makefile .mk .mak .cmake
+    .ninja .bzl .bazel .star .starlark .gn .gni .pro .pri .cabal .opam
+    .glsl .frag .vert .geom .comp .hlsl .wgsl .shader
+    .mmd .mermaid .puml .plantuml .dot .gv .feature .robot .http .rest .diff .patch
+    """.split()
+)
+DOCUMENT_UPLOAD_EXTS = frozenset(
+    """
+    .doc .docm .dotx .dotm .xls .xlt .xlsx .xlsm .xltx .xltm .ppt .pps .pptx .pptm .potx .potm .ppsx .ppsm
+    .odt .ods .odp .ott .ots .otp .msg .eml .mht .mhtml .rtf .epub .xhtml .xht
+    """.split()
+)
+_PARSEABLE_EXTS = SUPPORTED_UPLOAD_EXTS | SOURCE_TEXT_EXTS | DOCUMENT_UPLOAD_EXTS
+# RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
+_requested_exts = {
+    "." + ext.strip().lstrip(".").lower()
+    for ext in os.environ.get("RAG_UPLOAD_EXTS", "").split(",")
+    if ext.strip().lstrip(".")
+}
+UPLOAD_EXTS = (_PARSEABLE_EXTS & _requested_exts) or set(_PARSEABLE_EXTS)
 # 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 # Caps prevent an accidentally broad linked folder from becoming an unbounded ingestion queue.
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
+# Linked-folder plain-text files above this are logs/data dumps, not documents; 0 disables.
+FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 * 1024 * 1024)))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
+# Linked-folder documents ingested concurrently, clamped to 1..4.
+FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
 
 # Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
@@ -66,7 +112,8 @@ FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
-# Needs a vision model, else the page stays empty; MIN_CHARS is the text length below which a page counts as scanned.
+# OCR uses the loaded vision model, falling back to local Tesseract language data.
+# MIN_CHARS is the text length below which a page is considered for transcription.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
@@ -97,16 +144,19 @@ def embedding_identity(
     model: str,
     *,
     gguf_repo: str | None = None,
+    pooling: str | None = None,
 ) -> str:
     """Tagged identity for ``documents.embedding_model``.
 
     The configured model comes first so a row written before identities carried a tag
     still compares equal on it. llama-server appends the GGUF repo it actually embeds
-    through, which is the part that can differ from the model's ST form."""
+    through, which is the part that can differ from the model's ST form, and any pooling
+    other than the CLS it once forced on every GGUF."""
     model = _escape_identity_segment(model)
     if gguf_repo is None:
         return f"{backend}:{model}"
-    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    identity = f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    return identity if pooling is None else f"{identity}:{pooling}"
 
 
 def embedding_identity_model(identity: str | None) -> str | None:
@@ -228,7 +278,7 @@ EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
-def embed_device_preference() -> str:
+def _env_embed_device() -> str:
     """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
 
     One reader for both backends, because they used to disagree about the same
@@ -244,6 +294,23 @@ def embed_device_preference() -> str:
     if value == "cpu":
         return "cpu"
     return "auto"
+
+
+def embed_device_locked() -> bool:
+    """Whether ``RAG_EMBED_DEVICE`` names a device, which Settings then cannot override."""
+    return _env_embed_device() != "auto"
+
+
+def embed_device_preference() -> str:
+    """``gpu``, ``cpu`` or ``auto``: ``RAG_EMBED_DEVICE`` when it names a device, else the Settings choice."""
+    env = _env_embed_device()
+    if env != "auto":
+        return env
+    try:
+        from utils.embedding_model_settings import get_stored_embedding_device
+        return get_stored_embedding_device()
+    except Exception:  # noqa: BLE001 - store unavailable: each backend's default
+        return "auto"
 
 
 def embed_device_requires_gpu() -> bool:

@@ -17,20 +17,28 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import secrets
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
-from contextlib import contextmanager
+import uuid
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
@@ -51,6 +59,7 @@ from core.inference.stt_sidecar import (
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
     _read_revision_record,
+    _remember_completed_download,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -94,10 +103,9 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
 # complies. Parakeet and Nemotron ASR are too: llama.cpp has the audio graphs but not the text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."
-# Speech runs about 3 tokens a second in English and more in scripts with no word boundaries Output cap per second of
-# audio. Speech runs about 3 tokens a second in English and more in scripts with no word boundaries, so this is
-# generous: generation stops at EOS long before it, and the cap only exists so a looping model cannot run to the request
-# timeout.
+# Output cap per second of audio. Speech runs about 3 tokens a second in English and more in scripts with no word
+# boundaries, so this is generous: generation stops at EOS long before it, and the cap only exists so a looping model
+# cannot run to the request timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
 # Well under any of these models' trained context, which also has to hold the audio. llama-server is left on its default
@@ -184,8 +192,18 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
     finally:
-        # the PID is dead, so drop it before it can be reused by something else that terminate_all would then signal
-        forget_pid(process.pid)
+        # Drop the pid once it is dead, before it can be reused by something else that
+        # terminate_all would then signal. Only once it is dead: if the terminate, the
+        # kill or either wait raised, the child is still alive, and after the shutdown
+        # sweep has passed this record is the last thing that could reap it.
+        if process.poll() is not None:
+            forget_pid(process.pid)
+        else:
+            logger.warning(
+                "llama-server (pid %s) survived the reap; leaving it adopted so a later "
+                "sweep can still find it",
+                process.pid,
+            )
 
 
 def _cached_file(
@@ -303,6 +321,8 @@ class _MtmdDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
@@ -317,9 +337,10 @@ class _MtmdDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": model_id if downloading else None,
+                "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.
@@ -337,10 +358,21 @@ class _MtmdDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
+    ) -> bool:
         """Stop an in-flight download. False when none was running."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -391,14 +423,14 @@ class _MtmdDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_mtmd_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -407,6 +439,7 @@ class _MtmdDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
@@ -421,6 +454,7 @@ class _MtmdDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -502,6 +536,12 @@ class _MtmdDownloadState:
                 ):
                     raise RuntimeError("downloaded mtmd files are missing from the captured cache")
                 _write_revision_record(spec.repo, revision)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:
@@ -510,12 +550,12 @@ class _MtmdDownloadState:
             detail = stderr.decode("utf-8", "replace").strip()
             logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
             with self._lock:
-                self._error = f"Download failed for '{model_id}'."
+                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
-                    self._error = f"Download failed for '{model_id}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
         finally:
             # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:
@@ -527,16 +567,20 @@ class _MtmdDownloadState:
 _download_state = _MtmdDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_mtmd_model_id(model), hf_token)
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> str:
+    return _download_state.start(resolve_mtmd_model_id(model), hf_token)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
+    try:
+        model_id = resolve_mtmd_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 class MtmdSttSidecar:
@@ -548,6 +592,7 @@ class MtmdSttSidecar:
         self._start_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        self._api_key: Optional[str] = None
         self._model_id: Optional[str] = None
         self._binary_path_revision: Optional[int] = None
         self._loading = False
@@ -624,6 +669,7 @@ class MtmdSttSidecar:
         finally:
             self._process = None
             self._port = None
+            self._api_key = None
             self._model_id = None
             self._binary_path_revision = None
 
@@ -786,10 +832,7 @@ class MtmdSttSidecar:
     def _ensure_model_downloaded(self, model_id: str) -> tuple[str, str]:
         paths = _cached_model_paths(model_id)
         if paths is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
         return paths
 
     def load(
@@ -920,6 +963,30 @@ class MtmdSttSidecar:
                 # chat backend's _cmd_has_gpu_companion() treats as a GPU companion whatever --gpu-layers says.
                 cmd.append("--no-mmproj-offload")
             sock.close()
+            # One flag at every spawn, as above: nothing in _graceful_shutdown stops
+            # this sidecar, so without it a quit during a load starts a server the
+            # step-7 sweep has already passed by.
+            if is_process_shutting_down():
+                raise SttLoadCancelledError(
+                    "Unsloth is shutting down; not starting the MTMD server."
+                )
+            from core.inference.llama_cpp import (
+                LlamaCppBackend,
+                _llama_server_api_key_enabled,
+                _llama_server_key_launch,
+            )
+
+            api_key = key_file = None
+            key_env: dict = {}
+            # A custom build without --api-key-file would exit on the flag; it runs keyless as before.
+            if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+                binary
+            ).get("supports_api_key_file", True):
+                # Per-launch key against permissive CORS; read once at startup, so deleted once ready.
+                api_key = secrets.token_urlsafe(32)
+                key_argv, key_env, key_file = _llama_server_key_launch(api_key)
+                # Right after the binary: --no-mmproj-offload has to stay last.
+                cmd[1:1] = key_argv
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -929,7 +996,7 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
-                env = _llama_server_child_env(binary),
+                env = {**_llama_server_child_env(binary), **key_env},
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
@@ -938,7 +1005,20 @@ class MtmdSttSidecar:
             with self._lock:
                 self._starting_process = process
             adopt_pid(process.pid)  # terminate_all backstop for graceful exits
-            if not self._wait_for_server(process, port, cancel_event):
+            # Recheck once the pid is recorded, for the window between the gate and the
+            # record. _reap kills and forgets, so nothing is left half-tracked.
+            if is_process_shutting_down():
+                _reap(process)
+                raise SttLoadCancelledError(
+                    "Unsloth is shutting down; not starting the MTMD server."
+                )
+            try:
+                ready = self._wait_for_server(process, port, cancel_event)
+            finally:
+                if key_file is not None:
+                    with suppress(OSError):
+                        key_file.unlink()
+            if not ready:
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.
                 _reap(process)
@@ -952,6 +1032,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._process = process
                 self._port = port
+                self._api_key = api_key
                 self._model_id = model_id
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
@@ -995,6 +1076,7 @@ class MtmdSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1018,6 +1100,7 @@ class MtmdSttSidecar:
         self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
+            api_key = self._api_key
             if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
             # Another client can switch models in the gap between that load returning and this lock, and the port read
@@ -1035,7 +1118,13 @@ class MtmdSttSidecar:
             # outside the lock: a held lock would block unload, including a training run's, for the whole request
             # timeout
             text = self._post_transcribe(
-                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+                port,
+                model_id,
+                wav_bytes,
+                audio_seconds,
+                cancel_event = cancel_event,
+                **({"api_key": api_key} if api_key else {}),
+                **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1067,6 +1156,8 @@ class MtmdSttSidecar:
         audio_seconds: Optional[float] = None,
         *,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
+        api_key: Optional[str] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1089,6 +1180,8 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        if on_progress is not None:
+            payload["stream"] = True
         connection = http.client.HTTPConnection(
             "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
@@ -1106,9 +1199,42 @@ class MtmdSttSidecar:
                 "POST",
                 "/v1/chat/completions",
                 body = json.dumps(payload).encode("utf-8"),
-                headers = {"Content-Type": "application/json"},
+                headers = {
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
             )
             with connection.getresponse() as response:
+                if on_progress is not None and 200 <= response.status < 300:
+                    text = ""
+                    finished = False
+                    for line in response:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise SttTranscriptionCancelledError("Transcription cancelled.")
+                        if not line.startswith(b"data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == b"[DONE]":
+                            finished = True
+                            break
+                        event = json.loads(data)
+                        if event.get("error"):
+                            raise RuntimeError(
+                                "The transcription server could not complete this recording."
+                            )
+                        choices = event.get("choices") or []
+                        if choices:
+                            finished = finished or choices[0].get("finish_reason") is not None
+                            text += choices[0].get("delta", {}).get("content") or ""
+                            if not spec.transcript_marker or spec.transcript_marker in text:
+                                on_progress(
+                                    {"text": _clean_transcript(text, spec.transcript_marker)}
+                                )
+                    if not finished:
+                        raise RuntimeError(
+                            "The transcription server disconnected before finishing."
+                        )
+                    return _clean_transcript(text, spec.transcript_marker)
                 response_body = response.read()
                 if not 200 <= response.status < 300:
                     raise RuntimeError(

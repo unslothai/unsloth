@@ -27,15 +27,34 @@ name: Mac Unsloth UI + API + Update + Inference CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # The two halves Playwright drives, the backend and the React bundle, plus the
+      # installer and CLI that put them on the box. Not studio/** and unsloth/**: the
+      # install is --no-torch, so unsloth/** cannot reach the venv under test, and
+      # studio/src-tauri is never built here, and this pool is capped at five jobs.
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The Playwright drivers and studio_api_smoke.py the phases run.
+      # The files under tests/studio the jobs execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). The lanes run
+      # tests/studio/playwright_*.py scripts as plain python, whose only local import is
+      # _playwright_robust.py, and the API step runs studio_api_smoke.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # setup.sh runs nvidia_probe.py on every install, macOS included.
+      - 'studio/nvidia_probe.py'
       - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -45,17 +64,14 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
-      # No new entries needed for the absorbed API phase: every path
-      # studio-mac-api-smoke.yml watched is already covered above, and
-      # tests/studio/** covers studio_api_smoke.py itself.
       # Executed directly by this workflow: the load assertion and every model
       # download.
       - '.github/scripts/assert-llama-loads.sh'
@@ -73,15 +89,29 @@ on:
     # this workflow tests has nothing here to back up.
     # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The files under tests/studio the jobs execute, not all of it (hundreds of guard
+      # tests and PowerShell units no step here runs). The lanes run
+      # tests/studio/playwright_*.py scripts as plain python, whose only local import is
+      # _playwright_robust.py, and the API step runs studio_api_smoke.py.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/studio_api_smoke.py'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # setup.sh runs nvidia_probe.py on every install, macOS included.
+      - 'studio/nvidia_probe.py'
       - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -91,17 +121,14 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
-      # The dist cache moved out of install-unsloth-local so the Windows jobs could
-      # share one definition of its key; a change to it still has to re-run the jobs
-      # that depend on it.
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
-      # No new entries needed for the absorbed API phase: every path
-      # studio-mac-api-smoke.yml watched is already covered above, and
-      # tests/studio/** covers studio_api_smoke.py itself.
       # Executed directly by this workflow: the load assertion and every model
       # download.
       - '.github/scripts/assert-llama-loads.sh'
@@ -118,7 +145,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -138,6 +165,8 @@ jobs:
       GGUF_VARIANT: UD-Q4_K_XL
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18896'
+      # Dump thread stacks on a backend stall (#9712).
+      UNSLOTH_STUDIO_STALL_WATCHDOG: '1'
       HF_HOME: ${{ github.workspace }}/hf-cache
       # GitHub's macOS runners expose a PARAVIRTUAL Metal device, and Unsloth refuses to
       # offload to it because paravirtual Apple GPUs return corrupt output. The absorbed
@@ -658,12 +687,7 @@ jobs:
         id: sdks-chat
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
-        # accepted arguments on messages.create(), so the probes below, which pin
-        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
-        # is extra_body; moving to it is a deliberate change to what the probes send,
-        # not something a CI install should decide by resolving a new major.
-        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-chat
@@ -1308,12 +1332,7 @@ jobs:
         id: sdks-vision
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
-        # accepted arguments on messages.create(), so the probes below, which pin
-        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
-        # is extra_body; moving to it is a deliberate change to what the probes send,
-        # not something a CI install should decide by resolving a new major.
-        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+        run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
         id: boot-vision
@@ -1581,8 +1600,8 @@ jobs:
               a_msg = anthropic.messages.create(
                   model       = "default",
                   max_tokens  = 80,
-                  temperature = TEMP,
-                  extra_body  = {"seed": SEED},
+                  # anthropic 1.x rejects a top-level temperature; extra_body sends the same JSON.
+                  extra_body  = {"temperature": TEMP, "seed": SEED},
                   messages    = [{
                       "role": "user",
                       "content": [

@@ -25,6 +25,16 @@ from core.inference.video import VideoBackend, _detect_load_family
 from core.inference.video_families import VIDEO_CANCELLED_MSG
 
 
+def _shared_setup_1(backend, device, h3_host, platform):
+    from core.inference import sd_cpp_backend
+
+    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
+
+    swapped = {"done": False}
+    real_probe = sd_cpp_backend._sd_cpp_probe_output
+    return host, real_probe, sd_cpp_backend, swapped
+
+
 H3_REPO = "leejet/MiniMax-H3-GGUF"
 H3_FILE = "minimax_h3_fl2va-Q4_K_M.gguf"
 
@@ -73,6 +83,7 @@ def h3_host(monkeypatch, tmp_path):
         help_text: str | None,
         managed: bool = False,
         lists_accelerator: bool = True,
+        paravirtual: bool = False,
     ):
         monkeypatch.setattr(
             sd_cpp_engine.sys, "platform", "linux" if platform == "wsl" else platform
@@ -82,6 +93,9 @@ def h3_host(monkeypatch, tmp_path):
             "resolve_diffusion_device_target",
             lambda: types.SimpleNamespace(backend = backend, device = device, dtype = None),
         )
+        from core.inference import sd_cpp_args
+
+        monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: paravirtual)
         monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
         monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: managed)
         monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
@@ -186,6 +200,22 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
     assert backend_obj._state.device == device
 
 
+def test_h3_on_a_paravirtual_mac_commits_cpu_and_drops_the_video_claim(h3_host, monkeypatch):
+    # sd.cpp runs a paravirtual Metal GPU on the CPU backend, so the load must not keep the VIDEO claim.
+    from core.inference import gpu_arbiter
+
+    released = []
+    monkeypatch.setattr(
+        gpu_arbiter, "release_if", lambda owner, pred: released.append(owner) or pred()
+    )
+    host = h3_host(
+        platform = "darwin", backend = "mps", device = "mps", help_text = _H3_HELP, paravirtual = True
+    )
+    backend_obj = host.run()
+    assert backend_obj._state is not None and backend_obj._state.device == "cpu"
+    assert released == [gpu_arbiter.VIDEO]
+
+
 @pytest.mark.parametrize("platform", PLATFORMS)
 @pytest.mark.parametrize(
     "hw_label,backend,device", [h for h in HARDWARE if h[1] in ("cuda", "rocm")]
@@ -282,12 +312,7 @@ def test_h3_revet_checks_identity_not_just_the_h3_marker(
     --ref-video is a plain option name that unrelated reference-video tools expose too, so a swap
     to one of those would clear a marker-only re-check and then be recorded by _sd_cli_identity as
     the vetted build every later generation compares against."""
-    from core.inference import sd_cpp_backend
-
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
-
-    swapped = {"done": False}
-    real_probe = sd_cpp_backend._sd_cpp_probe_output
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _probe(binary, *args):
         # Not sd.cpp, but it does carry the H3 marker -- capability alone would wave it through.
@@ -322,12 +347,7 @@ def test_h3_revet_catches_a_user_binary_whose_accelerator_changed(
     runtime, so the reading has to still hold at commit time -- for a user's own build too, not
     only a managed one. A GPU device committed around a CPU binary means offload policy and an
     arbiter claim written against hardware nothing is running on."""
-    from core.inference import sd_cpp_backend
-
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
-
-    swapped = {"done": False}
-    real_probe = sd_cpp_backend._sd_cpp_probe_output
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _probe(binary, *args):
         # Still an H3-capable sd.cpp, so identity and capability both pass; only the device list
@@ -361,12 +381,7 @@ def test_h3_revet_tolerates_an_unreadable_accelerator_reprobe(
     """ "Could not tell" is not "it changed". sd_cpp_lists_accelerator_device folds an unreadable
     probe into True, so comparing THAT against a recorded False would refuse the CPU fallback that
     recorded it -- the load must proceed on the reading it already has."""
-    from core.inference import sd_cpp_backend
-
-    host = h3_host(platform = platform, backend = backend, device = device, help_text = _H3_HELP)
-
-    swapped = {"done": False}
-    real_probe = sd_cpp_backend._sd_cpp_probe_output
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
 
     def _probe(binary, *args):
         if args == ("--list-devices",) and swapped["done"]:
@@ -430,3 +445,55 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
         sd_cpp_backend.ensure_h3_sd_cpp_binary = original
     assert ensures == []
     assert host.downloads == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """A ROCm build installed over the tree mid-download answers the boolean re-vet exactly as the Vulkan rung did."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    def _accelerator_of(binary):
+        return "rocm" if swapped["done"] else "vulkan"
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", _accelerator_of)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+        host.run()
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """None is "cannot tell", not "it changed"; refusing on it would refuse every SD_CLI_PATH build."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_installed_accelerator_of",
+        lambda binary: None if swapped["done"] else "vulkan",
+    )
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    host.run()

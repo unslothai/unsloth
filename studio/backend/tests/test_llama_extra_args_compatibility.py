@@ -20,6 +20,12 @@ from pathlib import Path
 
 import pytest
 
+
+class _Config:
+    is_gguf = True
+    gguf_variant = ""
+
+
 _BACKEND = Path(__file__).resolve().parent.parent
 _LSA_PATH = _BACKEND / "core" / "inference" / "llama_server_args.py"
 _spec = importlib.util.spec_from_file_location("_lsa_compat_test", _LSA_PATH)
@@ -149,10 +155,6 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
         # reaches the drop and the test proves nothing.
         extra_args_source = ("local/x", "")
 
-    class _Config:
-        is_gguf = True
-        gguf_variant = ""
-
     class _Request:
         llama_extra_args = None
         gguf_variant = ""
@@ -174,10 +176,6 @@ def _inherit_with_ctx_flag(monkeypatch, stored, fields_set, max_seq_length):
     class _Backend:
         extra_args = list(stored)
         extra_args_source = ("local/x", "")
-
-    class _Config:
-        is_gguf = True
-        gguf_variant = ""
 
     class _Request:
         llama_extra_args = None
@@ -326,9 +324,9 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
     # --ctx-size in the extras changes that estimate. The resolver hands back its
     # fourth argument unchanged for an explicit list, so passing None there meant the
     # preflight approved a different command from the one that runs.
-    import inspect
-
     import routes.inference as inference_route
+
+    import inspect
 
     source = inspect.getsource(inference_route)
     assert (
@@ -342,10 +340,6 @@ def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
 
     class _Request:
         llama_extra_args = ["--ctx-size", "8192"]
-
-    class _Config:
-        is_gguf = True
-        gguf_variant = ""
 
     # The helper's own contract: an explicit list is returned as given.
     assert inference_route._resolve_inherited_extra_args(

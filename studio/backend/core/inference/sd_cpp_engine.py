@@ -24,10 +24,16 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from core.inference.sd_cpp_args import (
@@ -39,9 +45,44 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
     native_speed_flags,
+    sd_cli_output_paths,
 )
 
 logger = logging.getLogger(__name__)
+
+# Lines worth keeping from a failed native process's output whatever their position.
+_DIAGNOSTIC_MARKERS = (
+    "error",
+    "abort",
+    "assert",
+    "unsupported",
+    "not implemented",
+    "out of memory",
+    "failed",
+    "exception",
+)
+
+
+def _diagnostic_tail(
+    lines,
+    *,
+    keep: int = 20,
+    limit: int = 1500,
+) -> str:
+    """The most useful part of the captured output, not merely its last lines.
+
+    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
+    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
+    addresses and no cause. Marked lines come first (in order), then the last few lines for
+    context, deduplicated."""
+    captured = list(lines)
+    marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
+    chosen: list[str] = []
+    for line in marked[-keep:] + captured[-max(keep // 2, 4) :]:
+        if line not in chosen:
+            chosen.append(line)
+    return "\n".join(chosen)[:limit]
+
 
 # sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
@@ -56,11 +97,10 @@ _SERVER_STEM = "sd-server"
 # before they delete a tree
 OWNER_MARKER = ".unsloth-studio-owned"
 
-# the native engine exists FOR slow CPU hosts
-# Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K
-# generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still progressing. It
-# matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding the lock forever;
-# cancel_event is the user-facing abort.
+# Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step
+# Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still
+# progressing. It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding
+# the lock forever; cancel_event is the user-facing abort.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
 
 _PRIVATE_TEXT_OPTIONS = frozenset({"--prompt", "--negative-prompt", "-p", "-n"})
@@ -150,7 +190,6 @@ def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") ->
 # <speed>\033[K", with a trailing newline only on the final step of a phase. So the carriage return LEADS the record and
 # the erase-to-end-of-line CLOSES it.
 _ANSI_ERASE = "\x1b[K"
-# stripped before a record reaches on_log / the error tail: an escape mid-line corrupts both
 # Any CSI escape (the erase above, plus colour runs some builds emit), stripped before a record reaches on_log / the
 # error tail: an escape in the middle of a line corrupts both.
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -283,9 +322,74 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
+    dirs = [bindir]
+    if _needs_host_cuda_runtime(bindir):
+        dirs.extend(d for d in host_cuda_runtime_dirs() if d not in dirs)
     existing = env.get(var, "")
-    env[var] = bindir + (os.pathsep + existing if existing else "")
+    env[var] = os.pathsep.join(dirs) + (os.pathsep + existing if existing else "")
     return env
+
+
+def _needs_host_cuda_runtime(bindir: str) -> bool:
+    try:
+        names = [n.lower() for n in os.listdir(bindir)]
+    except OSError:
+        return False
+    cuda = any(n == "ggml-cuda.dll" or n.startswith("libggml-cuda.so") for n in names)
+    runtime = any(n.startswith(("cudart64_", "libcudart.so")) for n in names)
+    return cuda and not runtime
+
+
+def _llama_server_binary() -> Optional[str]:
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._find_llama_server_binary()
+    except Exception:  # noqa: BLE001 -- no llama.cpp install: nothing to share
+        return None
+
+
+def host_cuda_runtime_dirs() -> list[str]:
+    """llama-server's CUDA runtime dirs. Its build dir is dropped off Windows: its libggml*.so share
+    sonames with the bundle's (Windows searches the executable's dir first)."""
+    binary = _llama_server_binary()
+    if not binary:
+        return []
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
+
+        var = _lib_path_var()
+        inherited = {d for d in os.environ.get(var, "").split(os.pathsep) if d}
+        llama_dir = os.path.normcase(str(_llama_lib_dir(binary)))
+        out: list[str] = []
+        for d in (
+            LlamaCppBackend._llama_server_env_for_binary(binary).get(var, "").split(os.pathsep)
+        ):
+            if not d or d in inherited or d in out:
+                continue
+            if sys.platform != "win32" and os.path.normcase(d) == llama_dir:
+                continue
+            out.append(d)
+        return out
+    except Exception as exc:  # noqa: BLE001 -- a launch must not fail on a path lookup
+        logger.debug("sd.cpp: CUDA runtime dirs from llama.cpp unavailable: %s", exc)
+        return []
+
+
+def host_cuda_runtime_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, else torch's."""
+    binary = _llama_server_binary()
+    if binary:
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+
+            line = (read_install_marker(binary) or {}).get("runtime_line")
+            match = re.fullmatch(r"cuda(\d+)", line if isinstance(line, str) else "")
+            if match:
+                return match.group(1)
+        except Exception:  # noqa: BLE001
+            pass
+    version = getattr(getattr(sys.modules.get("torch"), "version", None), "cuda", None)
+    return version.split(".")[0] if isinstance(version, str) and version else None
 
 
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
@@ -319,21 +423,19 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-# keyed by the file itself rather than the path alone
-# Identity verdicts, keyed by the file itself rather than by the path alone, so replacing a binary in place re-probes it
-# while a rebuild elsewhere on PATH is unaffected. Bounded: an Unsloth session sees a handful of candidates, and a
-# runaway key set would only ever come from a path being rewritten under us, which is exactly the case that must not be
+# Identity verdicts, keyed by the file itself rather than by the path alone, so replacing a binary in place re-probes
+# it while a rebuild elsewhere on PATH is unaffected. Bounded: an Unsloth session sees a handful of candidates, and a
+# runaway key set would only come from a path being rewritten under us, which is exactly the case that must not be
 # served from here.
 _IDENTITY_MEMO: dict[tuple[str, int, int, int], tuple[bool, float]] = {}
 _IDENTITY_MEMO_LOCK = threading.Lock()
 _IDENTITY_MEMO_MAX = 32
-# no stat tuple is a content hash: on Windows `st_ctime` is the CREATION time
 # How long a verdict may answer for. The key catches the replacements it can SEE, but no stat tuple is a content hash:
 # on Windows ``st_ctime`` is the CREATION time, which an in-place overwrite preserves, so a same-sized write that also
-# restores mtime is invisible to it. Hashing the file on every lookup would trade the exec this memo exists to avoid for
-# a read of the whole binary, on a path walked for every load. A short life is the cheaper guarantee and it is not
-# platform-specific: whatever the key misses, and whatever nobody has thought of, expires within a minute. Long enough
-# for its actual job, which is the several resolutions inside one load sequence.
+# restores mtime is invisible to it. Hashing the file on every lookup would trade the exec this memo exists to avoid
+# for a read of the whole binary, on a path walked for every load. A short life is the cheaper guarantee and it is not
+# platform-specific: whatever the key misses expires within a minute, which is long enough for the several resolutions
+# inside one load sequence.
 _IDENTITY_MEMO_TTL_S = 60.0
 
 
@@ -376,21 +478,16 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
     """``help_text_identifies_sd_cpp`` against a live ``binary``.
 
     Fails CLOSED: every caller is deciding whether to trust an ambiguously named executable, and a
-    probe that cannot be read is no evidence that it is the one we want. Memoized per file
-    revision -- discovery runs on every load and ``ensure_sd_cpp_binary`` alone resolves twice, so
-    without this a candidate that hangs costs its full timeout again on each one.
+    probe that cannot be read is no evidence that it is the one we want. Memoized per file revision,
+    since discovery runs on every load and ``ensure_sd_cpp_binary`` alone resolves twice.
 
-    Only a DECISIVE verdict is memoized, because the key cannot see the difference. A timeout, a
+    Only a DECISIVE verdict is memoized, because the key cannot see the difference: a timeout, a
     failed spawn, or a non-zero exit with nothing identifying in the output are all "could not
-    tell", and none of them touches the file, so its key is unchanged -- caching that "no" would
-    blacklist a genuine build for the life of the process over one slow ``--help`` under memory
-    pressure, or over a missing shared library the user then installs. Same rule as
-    ``utils.node_runtime``, which memoizes only an adequate result so a runtime installed after the
-    first probe is still picked up.
-
-    A clean exit that simply is not stable-diffusion.cpp IS decisive, which is the case that
-    matters: Debian/Ubuntu's ``sd`` answers ``--help`` with rc 0, so the candidate this exists to
-    stop re-executing is still probed exactly once.
+    tell", and none of them touches the file, so caching that "no" would blacklist a genuine build
+    for the life of the process over one slow ``--help`` or a missing shared library the user then
+    installs. Same rule as ``utils.node_runtime``. A clean exit that simply is not
+    stable-diffusion.cpp IS decisive, which is the case that matters: Debian/Ubuntu's ``sd`` answers
+    ``--help`` with rc 0.
     """
     key = _identity_key(binary)
     if key is not None:
@@ -487,22 +584,19 @@ def _studio_component_root(name: str) -> Path:
 def legacy_sibling_install_root() -> Optional[Path]:
     """The pre-fix managed root, ``<studio home>/../stable-diffusion.cpp``, or None.
 
-    Older builds derived the sd.cpp root from the *parent* of the Unsloth home, which put the tree
+    Older builds derived the sd.cpp root from the PARENT of the Unsloth home, which put the tree
     outside the Unsloth home entirely. Two problems: a relative ``UNSLOTH_STUDIO_HOME`` collapsed
     that parent to the working directory, so an unrelated ``stable-diffusion.cpp`` checkout sitting
-    there became "the managed install" and the installer refused to run; and it disagreed with
-    every other component, which install under the home.
+    there became "the managed install" and the installer refused to run; and it disagreed with every
+    other component, which install under the home.
 
-    Kept only so a tree an older build really did install still resolves. Returned solely when it
-    carries the ownership marker, so a checkout that merely happens to sit next to the Unsloth home
-    is never adopted.
-
-    The LEXICAL parent first, because that is the one the old code took: ``Path(home).parent`` does
-    not resolve symlinks, so for a home under a symlinked directory the tree an older build really
-    created sits next to the link, not next to its target. Resolving first looked in the wrong
-    place, re-downloaded the bundle and left the old install orphaned from uninstall as well. The
-    resolved parent is still tried after it, for a home reached through a link the other way
-    around."""
+    Kept only so a tree an older build really did install still resolves, and returned solely when
+    it carries the ownership marker. The LEXICAL parent first, because that is the one the old code
+    took: ``Path(home).parent`` does not resolve symlinks, so for a home under a symlinked directory
+    the tree an older build created sits next to the link, not next to its target, and resolving
+    first looked in the wrong place and re-downloaded the bundle. The resolved parent is still tried
+    after it.
+    """
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     if not home:
         return None
@@ -602,7 +696,6 @@ def _find_binary(
         if hit:
             return hit
 
-    # default install root honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer
     # 3. Default install root: <studio home>/stable-diffusion.cpp (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the
     # installer so side-by-side Unsloth instances stay isolated), else ~/.unsloth/....
     default_root = managed_install_root()
@@ -610,7 +703,6 @@ def _find_binary(
     if hit:
         return hit
 
-    # a tree an older build installed beside the Unsloth home
     # 3b. A tree an older build installed beside the Unsloth home. Marker-gated (see legacy_sibling_install_root), so
     # only a real previous install is picked up here.
     legacy_root = legacy_sibling_install_root()
@@ -716,7 +808,11 @@ class SdCppEngine:
         process tree and raises ``SdCppCancelled``.
         """
         offload = list(offload or [])
-        speed = [f for f in native_speed_flags(native_speed) if f not in offload]
+        speed = [
+            f
+            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            if f not in offload
+        ]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             self._require_binary(),
@@ -728,9 +824,13 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = merged_extra,
         )
+        # A layered run writes numbered files, never output_path itself.
+        expected = output_path
+        if params.qwen_image_layers is not None:
+            expected = sd_cli_output_paths(str(output_path), int(params.qwen_image_layers) + 1)[0]
         return self._run(
             cmd,
-            output_path,
+            expected,
             timeout = timeout,
             env = env,
             on_log = on_log,
@@ -799,8 +899,6 @@ class SdCppEngine:
             cancel_event = cancel_event,
         )
 
-    # ── internals ─────────────────────────────────────────────────────────────
-
     def _require_binary(self) -> str:
         if not self.is_available():
             raise RuntimeError(
@@ -843,6 +941,11 @@ class SdCppEngine:
             logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
+        # A generation admitted before the quit can still reach this Popen after the
+        # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
+        # nothing left to reap it, holding VRAM past the app.
+        if is_process_shutting_down():
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -860,11 +963,18 @@ class SdCppEngine:
         # the kwargs above are empty on macOS, so record it too, else a crash mid-generation leaves sd-cli holding VRAM
         # with nothing able to find it
         adopt_pid(proc.pid)
+        # Recheck once the pid is recorded, for the window between the gate above and this
+        # record. Adoption ran first, so the child killed here was in the sweep record for
+        # as long as it existed.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; killing the new sd-cli")
+            _terminate(proc)
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for
         # line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against
         # a wall-clock deadline. iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no
         # newline of their own, so sampling progress reaches on_log while sampling is still running.
-        tail: list[str] = []
+        tail: deque[str] = deque(maxlen = 200)
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
         def _drain() -> None:
@@ -901,8 +1011,6 @@ class SdCppEngine:
                         break
                     continue
                 tail.append(line)
-                if len(tail) > 40:
-                    tail.pop(0)
                 if on_log is not None:
                     on_log(line)
             ret = proc.wait(timeout = 5.0)
@@ -913,11 +1021,11 @@ class SdCppEngine:
                 forget_pid(proc.pid)
 
         if ret != 0:
-            raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))
+            raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + _diagnostic_tail(tail))
         if not out.is_file():
             raise RuntimeError(
                 f"sd-cli reported success but no image at {out}. Last output:\n"
-                + "\n".join(tail[-12:])
+                + _diagnostic_tail(tail)
             )
         elapsed = time.time() - t0
         if verbose_logs:
@@ -927,10 +1035,10 @@ class SdCppEngine:
         return out
 
 
-# ── engine routing ──────────────────────────────────────────────────────────
-
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
+# Opt-in Apple Silicon MLX engine (core.inference.mlx_diffusion_backend), chosen only by the router, never here.
+ENGINE_MLX = "mlx"
 
 # Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})

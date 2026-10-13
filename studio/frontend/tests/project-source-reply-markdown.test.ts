@@ -7,9 +7,10 @@
 // is only a tool call has no text part at all, so it saved nothing.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 // The module under test imports a sibling without its extension, the way vite
 // resolves it.
@@ -87,10 +88,7 @@ test("a tool result is normalised the way the whole-chat save normalises it", ()
 test("the reply action saves through this conversion", async () => {
   // thread.tsx is 6k lines of TSX that node cannot load, so this reads the
   // source, the way project-source-reply-destination.test.ts does.
-  const src = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("components/assistant-ui/thread.tsx");
   const marker = src.indexOf("Save to project sources");
   assert.ok(marker > 0, "the reply action is gone or was renamed");
   const handler = src.slice(

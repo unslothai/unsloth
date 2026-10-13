@@ -3,6 +3,8 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import {
@@ -150,6 +152,21 @@ export async function startTraining(
   payload: TrainingStartRequest,
   startRequestId: string,
 ): Promise<TrainingStartResponse> {
+  // A third way bytes reach the cache, and the largest of them. The worker this
+  // starts downloads the base model itself through FastLanguageModel.from_pretrained
+  // (core/training/trainer.py) and pulls remote datasets, none of which passes
+  // requestStart or loadModel, so a run begun with room and no warning is exactly
+  // the case this notice exists for.
+  //
+  // Only the PRE reading belongs here. The download happens asynchronously in the
+  // worker, long after this request returns, so a forced reading in a finally would
+  // report the disk as it was BEFORE the bytes landed and read as reassurance. The
+  // post-download side is in useTrainingCompletionWatch, which sees the run leave
+  // the active state whether it finished or failed.
+  //
+  // void and throttled, like every other caller: a disk reading must never gate or
+  // delay the start of a run.
+  void checkDiskSpace();
   let result: TrainingStartResponse;
   try {
     result = await runRequestWithTimeout(

@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 use crate::native_path_policy::{
-    is_audio_only_3gp, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
-    is_binary_office_template, is_compiled_fortran_mod,
+    has_transport_stream_extension, is_audio_only_3gp, is_binary_office_template,
+    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_compiled_fortran_mod,
+    is_mpeg_transport_stream, office_template_mime_type,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -88,6 +89,11 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "png" => "image/png",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
         "mp4" => "video/mp4",
         "m4v" => "video/x-m4v",
         "mov" => "video/quicktime",
@@ -98,10 +104,15 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "wmv" => "video/x-ms-wmv",
         "flv" => "video/x-flv",
         "ogv" => "video/ogg",
+        "m2ts" => "video/mp2t",
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "rtf" => "application/rtf",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
@@ -113,8 +124,12 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => "audio/x-caf",
         "wma" => "audio/x-ms-wma",
         "amr" => "audio/amr",
+        "m4b" => "audio/mp4",
+        "weba" => "audio/webm",
+        "mka" => "audio/x-matroska",
         // Provisional until the BMFF handlers can be inspected after reading.
         "3gp" => "video/3gpp",
+        "3g2" => "video/3gpp2",
         "vtt" => "text/vtt",
         "srt" => "application/x-subrip",
         // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
@@ -122,6 +137,12 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         // list the composer and the drop path already share.
         "txt" => "text/plain",
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
+        other if crate::native_path_policy::SERVER_DOCUMENT_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
+        other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
+            "application/octet-stream"
+        }
         _ => return None,
     };
     Some(mime_type)
@@ -187,8 +208,9 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         // A 3GP recording cannot use its final size limit until its BMFF
         // handlers have been read and classified as audio-only or video. Read it
         // under the larger of the two, as the drop path does; the audio cap is
-        // reapplied below once the track handlers say it is audio-only.
-        let provisional_limit = if is_3gp {
+        // reapplied below once the track handlers say it is audio-only. A .ts or
+        // .mts path is likewise video or TypeScript only once its packets are read.
+        let provisional_limit = if is_3gp || has_transport_stream_extension(&path) {
             MAX_CLIPBOARD_VIDEO_BYTES
         } else {
             clipboard_file_max_bytes(mime_type)
@@ -208,12 +230,15 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || is_binary_vobsub(&path, &bytes)
             || is_binary_tracker_mod(&path, &bytes)
             || is_compiled_fortran_mod(&path, &bytes)
-            || is_binary_office_template(&path, &bytes)
         {
             continue;
         }
-        let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
+        let mime_type = if is_binary_office_template(&path, &bytes) {
+            office_template_mime_type(&path)
+        } else if is_3gp && is_audio_only_3gp(&bytes) {
             "audio/3gpp"
+        } else if is_mpeg_transport_stream(&path, &bytes) {
+            "video/mp2t"
         } else {
             mime_type
         };
@@ -329,9 +354,9 @@ async fn native_clipboard_paths() -> Result<Vec<PathBuf>, String> {
 
 #[tauri::command]
 pub async fn read_native_clipboard_files(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<Vec<NativeClipboardFile>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let paths = native_clipboard_paths().await?;
     tokio::task::spawn_blocking(move || read_clipboard_files(paths))
         .await
@@ -393,9 +418,9 @@ fn read_gtk_clipboard_png() -> Result<Vec<u8>, String> {
 #[cfg(target_os = "linux")]
 #[tauri::command]
 pub async fn read_native_clipboard_png(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<tauri::ipc::Response, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     glib::MainContext::default().invoke(move || {
         let _ = tx.send(read_gtk_clipboard_png());
@@ -409,9 +434,9 @@ pub async fn read_native_clipboard_png(
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub async fn read_native_clipboard_png(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<tauri::ipc::Response, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     Err("Native PNG clipboard fallback is only available on Linux.".to_string())
 }
 
@@ -464,6 +489,51 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_file_mime_types_cover_composer_documents() {
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("notes.rtf")),
+            Some("application/rtf")
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("archive.tar.gz")),
+            Some("application/octet-stream")
+        );
+        for name in [
+            "show.PPS",
+            "budget.xlt",
+            "letter.doc",
+            "mail.msg",
+            "page.mht",
+        ] {
+            assert_eq!(
+                clipboard_file_mime_type(Path::new(name)),
+                Some("application/octet-stream"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("deck.pptx")),
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        );
+    }
+
+    #[test]
+    fn office_templates_take_an_office_mime_and_text_dot_files_stay_text() {
+        assert_eq!(
+            office_template_mime_type(Path::new("letter.dot")),
+            "application/msword"
+        );
+        assert_eq!(
+            office_template_mime_type(Path::new("deck.POT")),
+            "application/vnd.ms-powerpoint"
+        );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("graph.dot")),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
     fn clipboard_file_mime_types_cover_chat_video_attachments() {
         for (name, mime_type) in [
             ("clip.mp4", "video/mp4"),
@@ -477,6 +547,7 @@ mod tests {
             ("clip.wmv", "video/x-ms-wmv"),
             ("clip.flv", "video/x-flv"),
             ("clip.ogv", "video/ogg"),
+            ("clip.m2ts", "video/mp2t"),
             ("clip.3gp", "video/3gpp"),
         ] {
             assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));
@@ -589,6 +660,26 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].mime_type, "audio/3gpp");
         assert_eq!(files[1].mime_type, "video/3gpp");
+    }
+
+    #[test]
+    fn clipboard_transport_stream_is_video_and_typescript_is_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let stream = directory.path().join("broadcast.ts");
+        let mut raw = vec![0; 188 * 4];
+        for offset in (0..raw.len()).step_by(188) {
+            raw[offset] = 0x47;
+        }
+        std::fs::write(&stream, raw).unwrap();
+        let typescript = directory.path().join("index.ts");
+        // Opens with the sync byte's "G", so one matching packet start is not enough.
+        let source = format!("GENERATED\n{}", "export const value = 1;\n".repeat(40));
+        std::fs::write(&typescript, source).unwrap();
+
+        let files = read_clipboard_files(vec![stream, typescript]).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].mime_type, "video/mp2t");
+        assert_eq!(files[1].mime_type, "text/plain");
     }
 
     #[test]

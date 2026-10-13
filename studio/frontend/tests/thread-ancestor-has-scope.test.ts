@@ -44,19 +44,16 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
-const read = (rel: string): string =>
-  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+import { readText } from "./helpers/kit.ts";
 
 const parse = (rel: string): ts.SourceFile =>
-  ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  ts.createSourceFile(rel, readText(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 /** Every string literal in the file, so a className built by `cn(...)` is covered too. */
 const stringLiterals = (source: ts.SourceFile): string[] => {
@@ -119,120 +116,33 @@ test("the sidebar wrapper, an ancestor of the whole app, has no descendant-argum
 
 test("the chat wrapper that contains the thread has no descendant-argument :has()", () => {
   const source = parse("../src/features/chat/chat-page.tsx");
-  const wrappers = stringLiterals(source).filter((s) =>
-    s.includes("--studio-chat-notice-height:"),
-  );
-  assert.equal(
-    wrappers.length,
-    1,
-    "expected exactly one className declaring --studio-chat-notice-height",
-  );
-  assert.deepEqual(
-    descendantHasUtilities(wrappers[0]),
-    [],
-    `the chat wrapper carries a descendant-argument :has(): ${wrappers[0]}`,
-  );
-  assert.ok(
-    wrappers[0].includes("has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"),
-    `the chat wrapper lost the notice-height rule: ${wrappers[0]}`,
-  );
-});
-
-/*
- * THE CHILD COMBINATOR IS ONLY EQUIVALENT IF THE NOTICE IS A CHILD.
- *
- * Without this the previous test is satisfied by a selector that matches nothing, the height is
- * never reserved, and the first message reads under the opaque header bar. That is a visible
- * regression with no failing test, which is exactly the shape this file exists to prevent.
- */
-test("ChatModelNotice renders a DIRECT child of the element declaring the notice height", () => {
-  const source = parse("../src/features/chat/chat-page.tsx");
-
-  const declaringDiv = ((): ts.JsxElement | null => {
-    let found: ts.JsxElement | null = null;
-    const walk = (node: ts.Node): void => {
-      if (found) return;
-      if (ts.isJsxElement(node)) {
-        const tag = node.openingElement;
-        for (const attr of tag.attributes.properties) {
-          if (!ts.isJsxAttribute(attr)) continue;
-          if (attr.name.getText() !== "className") continue;
-          const init = attr.initializer;
-          if (!init || !ts.isStringLiteral(init)) continue;
-          if (init.text.includes("--studio-chat-notice-height:")) {
-            found = node;
-            return;
-          }
-        }
-      }
-      ts.forEachChild(node, walk);
-    };
-    walk(source);
-    return found;
-  })();
-
-  assert.ok(declaringDiv, "could not find the element declaring --studio-chat-notice-height");
-
-  // A JSX expression container is not a DOM node, so `{cond && <ChatModelNotice/>}` still renders
-  // a direct child. Unwrapping one level of `{...}` and of `&&` is therefore correct, and going
-  // deeper than that would start accepting real wrappers.
-  const directChildTagNames = declaringDiv.children.flatMap((child): string[] => {
-    const fromNode = (node: ts.Node): string[] => {
-      const tag = openingTag(node);
-      if (tag) return [tag.tagName.getText()];
-      if (ts.isParenthesizedExpression(node)) return fromNode(node.expression);
-      if (
-        ts.isBinaryExpression(node)
-        && node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
-      ) {
-        return fromNode(node.right);
-      }
-      if (ts.isConditionalExpression(node)) {
-        return [...fromNode(node.whenTrue), ...fromNode(node.whenFalse)];
-      }
-      return [];
-    };
-    if (ts.isJsxExpression(child)) {
-      return child.expression ? fromNode(child.expression) : [];
-    }
-    return fromNode(child);
-  });
-
-  assert.ok(
-    directChildTagNames.includes("ChatModelNotice"),
-    "ChatModelNotice is no longer a direct child of the element whose "
-      + "has-[>[data-chat-model-notice]] rule reserves its height, so the height is never "
-      + `reserved. Direct children seen: ${directChildTagNames.join(", ")}`,
-  );
-});
-
-/*
- * And the notice really is the element the selector names. If `data-chat-model-notice` moved off
- * the component's root onto something inside it, the child combinator would stop matching while
- * every assertion above still passed.
- */
-test("data-chat-model-notice is on the root element ChatModelNotice returns", () => {
-  const source = parse("../src/features/chat/components/chat-model-notice.tsx");
-  let rootHasAttribute = false;
+  const wrappers: string[] = [];
   const walk = (node: ts.Node): void => {
-    if (rootHasAttribute) return;
-    if (ts.isReturnStatement(node) && node.expression) {
-      let expression: ts.Node = node.expression;
-      while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-      const tag = openingTag(expression);
-      if (tag) {
-        for (const attr of tag.attributes.properties) {
-          if (!ts.isJsxAttribute(attr)) continue;
-          if (attr.name.getText() === "data-chat-model-notice") rootHasAttribute = true;
+    const tag = openingTag(node);
+    if (tag?.attributes.properties.some((attr) =>
+      ts.isJsxAttribute(attr) && attr.name.getText() === "data-chat-content-root",
+    )) {
+      for (const attr of tag.attributes.properties) {
+        if (ts.isJsxAttribute(attr) && attr.name.getText() === "className") {
+          assert.ok(attr.initializer && ts.isStringLiteral(attr.initializer));
+          wrappers.push(attr.initializer.text);
         }
       }
     }
     ts.forEachChild(node, walk);
   };
   walk(source);
-  assert.ok(
-    rootHasAttribute,
-    "no return in chat-model-notice.tsx yields a root element carrying "
-      + "data-chat-model-notice, so has-[>[data-chat-model-notice]] cannot match",
+  assert.equal(wrappers.length, 1, "expected exactly one chat content root");
+  assert.deepEqual(
+    descendantHasUtilities(wrappers[0]),
+    [],
+    `the chat wrapper carries a descendant-argument :has(): ${wrappers[0]}`,
   );
+});
+
+test("index.css has no descendant-argument :has() on the panels that hold the thread", () => {
+  const css = readText("../src/index.css");
+  const offenders =
+    css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
+  assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
 });

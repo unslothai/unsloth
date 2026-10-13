@@ -1060,6 +1060,23 @@ def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
     diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
 
 
+TE_REPO = "ponpoke/flux2-klein-9b-uncensored-text-encoder"
+TE_FILE = "flux2-klein-9b-uncensored-q4_k_m.gguf"
+
+
+def test_an_undownloaded_text_encoder_pick_is_refused_before_any_download(monkeypatch):
+    """#9875: the repo name matches flux.2-klein, so without this the Qwen3 encoder loads as the denoiser and dies
+    with "Cannot copy out of meta tensor" after the download and the teardown."""
+    requests = _stub_range_reads(monkeypatch, {TE_FILE: _arch_header("qwen3")})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_pick_is_not_speech(TE_REPO, TE_FILE)
+
+    detail = str(excinfo.value)
+    assert TE_FILE in detail and "text encoder (qwen3 GGUF)" in detail
+    assert len(requests) == 1
+
+
 def test_an_unreadable_speech_header_fails_open(monkeypatch):
     """Fail-open throughout: refusing a pick that works is worse than the download this saves."""
     _stub_range_reads(monkeypatch, {}, status = 200)
@@ -1411,10 +1428,14 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
 
     # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
     for source, acquire, label in (
-        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(video_route.load_video_model_gated),
+            "acquire_for_request(VIDEO",
+            "video",
+        ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for(DIFFUSION",
+            "acquire_for_request(DIFFUSION",
             "images",
         ),
     ):
@@ -1704,3 +1725,22 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
         assert not hasattr(
             gguf_metadata, name
         ), f"{name} must be imported from utils.gguf_archs, not through utils.models"
+
+
+def test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder():
+    """The no-GPU route's encoder is pinned by FILENAME, and a name that is not in the repo is
+    not an error anyone sees at config time: the fetch 404s mid-load, after the denoiser has
+    already been staged. Pin the Dynamic 2.0 rung by exact name so a rename or a drop to the
+    uniform quant has to break this rather than a user's load."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam.sd_cpp_text_encoders == (
+        (
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+            "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
+            "llm",
+        ),
+        # The vision projector native editing needs, pinned by name for the same reason.
+        ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
+    )

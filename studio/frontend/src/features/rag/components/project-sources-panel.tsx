@@ -4,24 +4,38 @@
 import { Button } from "@/components/ui/button";
 import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
+import { isTauri } from "@/lib/api-base";
+import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   announceProjectSourcesUpdated,
   invalidateProjectSources,
   listProjectDocuments,
   subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
+import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import {
+  groupByLinkedFolder,
+  useLinkedFolderNames,
+} from "./linked-folder-groups";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { ProjectSourceChip } from "./project-source-chip";
+import {
+  RAG_SOURCE_UPLOAD_ACCEPT,
+  SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
+} from "./source-drop-policy";
 import {
   type RagUploadItem,
   fileItems,
   useRagDocuments,
 } from "./use-rag-documents";
+import { useUploadQueue } from "./use-upload-queue";
 
 /** Project "Sources" tab: documents indexed for retrieval in every chat that
  * belongs to the project. */
@@ -31,21 +45,69 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     () => listProjectDocuments(projectId),
     [projectId],
   );
-  const { documents, loading, uploading, refresh, upload, remove } =
-    useRagDocuments({ type: "project", projectId }, lister);
+  const {
+    documents,
+    loading,
+    uploading,
+    refresh,
+    upload,
+    remove,
+    retry,
+    canRetry,
+  } = useRagDocuments({ type: "project", projectId }, lister);
 
   // Invalidate the sources probe before each mutation so a chat sent mid-upload
   // cannot cache "no sources" for the probe's TTL, and announce after it, which
   // is the half other instances and other tabs listen for. Announcing before
   // would refetch and resurrect the row this panel has already dropped.
-  const handleItems = useCallback(
-    async (items: RagUploadItem[]) => {
+  const uploadNow = useCallback(
+    (items: RagUploadItem[]) => {
       if (items.length === 0) return;
       invalidateProjectSources(projectId);
-      await upload(items);
-      announceProjectSourcesUpdated(projectId);
+      void upload(items).finally(() =>
+        announceProjectSourcesUpdated(projectId),
+      );
     },
     [projectId, upload],
+  );
+  const { enqueue: handleItems } = useUploadQueue(
+    uploadNow,
+    uploading,
+    projectId,
+  );
+
+  const handleRetry = useCallback(
+    (documentId: string) => {
+      invalidateProjectSources(projectId);
+      void retry(documentId).finally(() =>
+        announceProjectSourcesUpdated(projectId),
+      );
+    },
+    [projectId, retry],
+  );
+
+  const pickFolder = useCallback(() => {
+    openFolderPicker(({ files: supported, truncated }) => {
+      if (supported.length === 0) {
+        toast.info("No supported files in that folder", {
+          description: SUPPORTED_SOURCES_HINT,
+        });
+        return;
+      }
+      if (truncated > 0) {
+        toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+          description:
+            "The rest were left out. Pick a smaller folder for them.",
+        });
+      }
+      handleItems(fileItems(supported));
+    }, isSupportedSourceName);
+  }, [handleItems]);
+
+  const groups = useMemo(() => groupByLinkedFolder(documents), [documents]);
+  const folderNames = useLinkedFolderNames(
+    projectId,
+    groups.folders.map(([id]) => id).join(","),
   );
 
   const handleFiles = useCallback(
@@ -82,10 +144,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
-  // they are done; refresh the mounted list so a source saved from a chat shows
-  // up here without a remount. The list only polls while a row it already knows
-  // is indexing, so nothing else would ever fetch it.
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
+  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
+  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {
@@ -105,10 +166,23 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   } = useNativeFileDrop({
     onFiles: handleFiles,
     onNativeIntents: handleNativeIntents,
-    accept: RAG_UPLOAD_ACCEPT,
-    disabled: uploading,
-    disabledReason: "Wait for the current upload to finish, then drop again.",
+    accept: RAG_SOURCE_UPLOAD_ACCEPT,
+    folders: true,
   });
+
+  const addFolderButton = isTauri ? null : (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className="text-muted-foreground"
+      disabled={loading}
+      onClick={pickFolder}
+      title="Upload every supported file in a folder. Linking a folder that stays in sync needs the desktop app."
+    >
+      Add folder
+    </Button>
+  );
 
   return (
     <div className="mt-8" ref={dropRef} {...dragHandlers}>
@@ -116,7 +190,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         ref={fileInputRef}
         type="file"
         multiple={true}
-        accept={RAG_UPLOAD_ACCEPT}
+        accept={RAG_SOURCE_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
@@ -140,7 +214,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6"
             />
@@ -150,20 +224,25 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Upload PDFs, docs, or text. Every chat in this project can use
-              them.
+              Add documents, spreadsheets, slides, e-books, email, text or code.
+              Every chat in this project can use them.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-1 border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
-            disabled={uploading || loading}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Add sources
-          </Button>
-          <p className="text-ui-11 text-muted-foreground">Or drop files here</p>
+          <div className="mt-1 flex items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
+              disabled={loading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Add sources
+            </Button>
+            {addFolderButton}
+          </div>
+          <p className="text-ui-11 text-muted-foreground">
+            {isTauri ? "Or drop files here" : "Or drop files or a folder here"}
+          </p>
         </div>
       ) : (
         <div
@@ -178,30 +257,50 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 ? "1 source"
                 : `${documents.length} sources`}
             </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
-              disabled={uploading}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Add sources
-            </Button>
+            <div className="flex items-center gap-1">
+              {addFolderButton}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                Add sources
+              </Button>
+            </div>
           </div>
           <div className="flex flex-row flex-wrap items-center gap-1.5">
-            {documents.map((doc) => (
-              <DocumentStatusChip
+            {/* A linked folder is one chip: it can hold thousands of files. */}
+            {groups.folders.map(([folderId, docs]) => {
+              const indexing = docs.filter(
+                (doc) => doc.status === "pending" || doc.status === "running",
+              ).length;
+              const name = folderNames.get(folderId) ?? "Linked folder";
+              return (
+                <DocumentStatusChip
+                  key={`folder:${folderId}`}
+                  filename={`${name} · ${docs.length} file${docs.length === 1 ? "" : "s"}`}
+                  status={indexing > 0 ? "running" : "completed"}
+                  progress={
+                    indexing > 0 ? (docs.length - indexing) / docs.length : null
+                  }
+                  shared={true}
+                />
+              );
+            })}
+            {groups.loose.map((doc) => (
+              <ProjectSourceChip
                 key={doc.id}
-                filename={doc.filename}
-                status={doc.status}
-                progress={doc.progress}
-                stage={doc.stage}
-                error={doc.error}
+                doc={doc}
                 onRemove={
-                  doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                  isLinkedFolderManaged(doc) ||
+                  (doc.id.startsWith("pending_") && doc.status !== "failed")
                     ? undefined
                     : () => void handleRemove(doc.id)
+                }
+                onRetry={
+                  canRetry(doc.id) ? () => handleRetry(doc.id) : undefined
                 }
               />
             ))}

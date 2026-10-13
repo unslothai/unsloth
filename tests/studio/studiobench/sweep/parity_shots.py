@@ -44,12 +44,18 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    WINDOWED,
+    compare_all_with,
     confine_to_runner,
     corroborated,
+    decide_modes,
     in_arm_repeatability,
     is_unstable,
+    rung_of_cell,
     shards_of,
+    swapped_between_arms,
     unstable_set,
+    visible_unstable_set,
 )
 
 BANNER = 46  # px of label strip above each half
@@ -143,10 +149,13 @@ def differing_actions(
     out = []
     # `compare_all` returns (results, capture tally); only the results are wanted here.
     results, _tally = compare_all(result_paths)
+    # Less the pairs whose repetitions swapped two renderings between the arms, which `report`
+    # prints as uncorroborated and does not count.
+    swapped = swapped_between_arms(results, min_reps)
     stable = [
         (action, shard, cell, r.get("moved", []))
-        for action, shard, cell, r in results
-        if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
+        for i, (action, shard, cell, r) in enumerate(results)
+        if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell) and i not in swapped
     ]
     # Carrying the DIRECTION as the fifth element, exactly as `report` does, so the artifact
     # illustrates the same set the verdict counted. Without it a direction-reversing pair would be
@@ -171,6 +180,20 @@ def differing_actions(
     firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
     for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
+    # The verdict's own visible-mode pairs and floor, so a declared change found only there gets a picture.
+    windowed = {key for key, (mode, _why) in decide_modes(result_paths).items() if mode == WINDOWED}
+    if windowed:
+        floor = visible_unstable_set(null_paths or None)
+        visible, _tally = compare_all_with(result_paths, P.compare_visible, "visible", windowed)
+        for action, shard, cell, r in visible:
+            if (
+                r.get("_ran")
+                and r["verdict"] == P.DIFFER
+                and (r.get("severe") or (rung_of_cell(cell), action) not in floor)
+            ):
+                out.append(
+                    {"action": action, "shard": shard, "cell": cell, "moved": r.get("moved", [])}
+                )
     return out
 
 

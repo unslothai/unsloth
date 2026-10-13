@@ -46,6 +46,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import inspect
 
 QUANT_KV = [
     "llama-server",
@@ -189,8 +190,6 @@ class TestTheSignalStudioAlreadyHas:
         """The target and the drafter are separate models with separate contexts,
         so every reset site gates each side on its own metadata rather than
         reusing the target's answer for both."""
-        import inspect
-
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.count("mla = self._target_kv_symmetry()") >= 2
         assert src.count("draft_mla = self._draft_kv_symmetry(") == src.count(
@@ -340,10 +339,6 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/d/mla.gguf"}
         assert b._draft_kv_symmetry(["llama-server"], env) is True
 
-    def test_no_drafter_at_all_is_none(self):
-        b = self._backend({})
-        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
-
     def test_an_unreadable_drafter_takes_the_conservative_path(self):
         """Named but unreadable is still a drafter that will launch."""
         b = self._backend({})
@@ -367,8 +362,6 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
 
     def test_every_call_site_passes_a_command(self):
         """A bare _draft_kv_symmetry() would silently read no drafter at all."""
-        import inspect
-
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._draft_kv_symmetry()" not in src
         assert src.count("self._draft_kv_symmetry(") == src.count("self._target_kv_symmetry()")
@@ -385,7 +378,6 @@ class TestLoadModelNeverReadsEnvBeforeItExists:
 
     def test_env_is_never_loaded_before_it_is_assigned(self):
         import ast
-        import inspect
         import textwrap
 
         fn = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))

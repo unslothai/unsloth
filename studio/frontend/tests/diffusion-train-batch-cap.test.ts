@@ -9,13 +9,11 @@
 // labeling-grid gate is in dataset-file-selection.test.ts.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(
-  new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
 
 test("the batch cap comes from the family the backend reported", () => {
   assert.match(source, /max_train_batch_size/);

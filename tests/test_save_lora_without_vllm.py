@@ -29,6 +29,9 @@ import ast
 import pathlib
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
@@ -209,7 +212,13 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     base = transformers.AutoModelForCausalLM.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
     )
-    reloaded = peft.PeftModel.from_pretrained(base, str(directory))
+    # Say the device: peft.utils.other.infer_device() answers "cuda" off
+    # torch.cuda.is_available(), which tests/_zoo_aggressive_cuda_spoof.py spoofs True.
+    reloaded = peft.PeftModel.from_pretrained(
+        base,
+        str(directory),
+        torch_device = "cuda" if has_real_accelerator() and torch.cuda.is_available() else "cpu",
+    )
     assert reloaded is not None
 
 

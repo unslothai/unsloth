@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 // The More flyout ends with a rule and the Customize sidebar row. The rule's
 // vertical margin has to equal the menu's own padding, or the gap above that
@@ -17,18 +18,33 @@ function spacing(classes: string, prefix: string): number {
 }
 
 test("the More flyout's rule sits as far from its rows as the menu's own edge", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
 
-  const menu =
-    /<DropdownMenuContent\s+side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(
-      source,
-    );
+  // Found by its placement props in any order: #12339 put `ref={moreContentRef}` first
+  // and a regex pinned to `<DropdownMenuContent side="right"` stopped matching.
+  let menu: { className: string; end: number } | null = null;
+  for (const open of source.matchAll(/<DropdownMenuContent\b/g)) {
+    // The opening tag closes on its own line (`>` after the props); arrow functions inside it
+    // carry `=>`, so a bare `>` search would stop inside a handler.
+    const close = /\n\s*>\n/.exec(source.slice(open.index));
+    if (!close) continue;
+    const tag = source.slice(open.index, open.index + close.index + close[0].length);
+    const className = /\sclassName="([^"]*)"/.exec(tag);
+    if (
+      className &&
+      /\sside="right"/.test(tag) &&
+      /\salign="start"/.test(tag) &&
+      /\ssideOffset=\{6\}/.test(tag)
+    ) {
+      menu = { className: className[1], end: open.index + tag.length };
+      break;
+    }
+  }
   assert.ok(menu, "could not find the More flyout's DropdownMenuContent");
-  const rule = /<DropdownMenuSeparator className="(mx-1![^"]*)"/.exec(source);
+  // The rule inside that flyout, not the first styled separator anywhere in the file.
+  const flyout = source.slice(menu.end, source.indexOf("</DropdownMenuContent>", menu.end));
+  const rule = /<DropdownMenuSeparator className="(mx-1![^"]*)"/.exec(flyout);
   assert.ok(rule, "could not find the More flyout's separator");
 
-  assert.equal(spacing(rule[1], "my"), spacing(menu[1], "p"));
+  assert.equal(spacing(rule[1], "my"), spacing(menu.className, "p"));
 });
