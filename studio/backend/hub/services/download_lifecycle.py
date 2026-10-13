@@ -600,6 +600,14 @@ def finalize_worker_exit(
         if repo_id and repo_type:
             account_access.record_model_grant(repo_id, repo_type)
         hf_cache_scan.invalidate_hf_cache_scans()
+        if repo_type == "model":
+            # audio.cpp remembers a cache miss (the timing aligner) for 20 s; the UI re-reads it on complete.
+            try:
+                from core.inference.audio_cpp_models import forget
+
+                forget()
+            except Exception:
+                logger.debug("audio.cpp resolve cache was not cleared", exc_info = True)
         registry.set_job(key, "complete")
         # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher, so it would report the model absent and serve whatever is resident. Models only, since noting a dataset id as a local model would refuse a bare request naming it instead of letting a foreign id fall through.
         if repo_type == "model":

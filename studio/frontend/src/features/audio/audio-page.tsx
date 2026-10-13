@@ -1302,7 +1302,9 @@ export function AudioPage({
     transcribeCaps.caps,
     transcribeCaps.refresh,
   );
-  const transcribeBlocker: GenerateBlocker | null = alignerDownload.staging
+  const alignerBlocks =
+    alignerDownload.staging && transcribeOptions.request.timestamps;
+  const transcribeBlocker: GenerateBlocker | null = alignerBlocks
     ? { reason: "Downloading the timing aligner…" }
     : busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }

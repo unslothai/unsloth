@@ -2191,6 +2191,48 @@ def test_a_folder_of_an_unknown_family_still_records_its_row(hub, monkeypatch):
     assert acm._job_rows == {(AUDIO_CPP_REPO.lower(), "mystery-gguf/mystery-q8_0"): (row, "Q8_0")}
 
 
+def test_a_finished_download_clears_a_remembered_cache_miss(hub, monkeypatch):
+    import logging
+
+    from hub.services import download_lifecycle
+
+    # The aligner's capabilities read is cache-only and remembers a miss; its download ends in between.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    row = f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF"
+    acm.forget()
+    assert acm.resolve(row, "Q8_0", network = False) is None
+    _put(
+        _snapshot(hub),
+        "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forcedaligner-0.6b-q8_0.gguf",
+        _gguf_bytes(family = "qwen3_asr"),
+    )
+    assert acm.resolve(row, "Q8_0", network = False) is None
+    monkeypatch.setattr(download_lifecycle.account_access, "record_model_grant", lambda *a: None)
+    monkeypatch.setattr(
+        download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
+    )
+    registry = SimpleNamespace(
+        cancel_requested = lambda key: False,
+        drop_process = lambda *a: True,
+        get_job_metadata = lambda key: None,
+        set_job = lambda *a: None,
+        update_job_transport = lambda *a: None,
+    )
+    state = download_lifecycle.finalize_worker_exit(
+        registry,
+        f"{AUDIO_CPP_REPO}::",
+        SimpleNamespace(stderr = io.BytesIO(), wait = lambda: 0),
+        hf_token = None,
+        label = AUDIO_CPP_REPO,
+        log_prefix = "Download",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+    )
+    assert state == "complete"
+    assert acm.resolve(row, "Q8_0", network = False) is not None
+
+
 def test_active_downloads_name_umbrella_jobs_by_row(hub, monkeypatch):
     import asyncio
 
