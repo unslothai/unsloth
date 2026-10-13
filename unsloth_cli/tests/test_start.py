@@ -1996,7 +1996,6 @@ def test_opencode_auto_route_blocks_read_and_bash_with_a_session_plugin(monkeypa
     assert 'const LOCAL = new Set(["unsloth", "unsloth-plan"]);' in script
     assert '"tool.execute.before"' in script and '"chat.params"' in script
     assert "Hand the complete task to the @" in script
-    # A persisted session dir drops the plugin once --auto-route is gone.
     assert "plugin" not in start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
     assert not plugin.exists()
 
@@ -2011,7 +2010,6 @@ def test_opencode_auto_route_recipe_loads_the_route_plugin(fake_studio, monkeypa
     assert inline["plugin"] == [str(plugin)]
     assert plugin.read_text() == start._OPENCODE_ROUTE_PLUGIN_SCRIPT
     assert "read" not in inline["agent"]["build"]["permission"]
-    # The persisted recipe dir is reused, so plain --as-subagent must drop the plugin again.
     result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent", "--no-launch"])
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
@@ -2040,7 +2038,6 @@ def test_opencode_auto_route_keeps_an_inherited_agent_config(monkeypatch, tmp_pa
     build = inline["agent"]["build"]
     assert build["steps"] == 5
     assert build["permission"]["webfetch"] == "ask"
-    # The V2 CLI has no tool hooks, so read and bash stay denied there.
     assert build["permission"]["read"] == build["permission"]["bash"] == "deny"
     assert inline["agent"]["plan"]["permission"]["read"] == "deny"
     assert "plugin" not in inline

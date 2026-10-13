@@ -3710,7 +3710,7 @@ def _opencode_subagent_inline_config(
             **dict.fromkeys(denied, "deny"),
             "task": {"*": "deny", _OPENCODE_PLAN_SUBAGENT_NAME: "allow"},
         }
-        # An agent's own permission outranks the global one, so restrict each by name: the built-in primaries, @general and @explore (a user @mention skips the task rule), and every configured agent.
+        # An agent's own permission outranks the global one, so restrict by name every agent a user can be in (an @mention skips the task rule).
         agents = _subdict(inline, "agent")
         configured = effective.get("agent")
         names = {
