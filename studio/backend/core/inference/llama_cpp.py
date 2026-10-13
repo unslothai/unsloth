@@ -495,6 +495,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -9074,6 +9075,94 @@ class LlamaCppBackend:
                 {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
+
+    def _replay_preserve_thinking(
+        self,
+        preserve_thinking: Optional[bool],
+        messages,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Optional[bool]:
+        """True for a thinking-off follow-up with no reasoning in its history, where the template proves
+        that only preserve_thinking replays each answer's empty think block as generated."""
+        if preserve_thinking is not False or not getattr(
+            self, "_supports_preserve_thinking", False
+        ):
+            return preserve_thinking
+        mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
+        if mode.get("enable_thinking") is not False:
+            return preserve_thinking
+        answered = False
+        for message in messages or ():
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            answered = True
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return preserve_thinking
+            # Inline reasoning counts too.
+            content = message.get("content")
+            parts = content if isinstance(content, list) else [content]
+            if any(
+                "</think>" in (part.get("text") if isinstance(part, dict) else part)
+                for part in parts
+                if isinstance(part, str)
+                or (isinstance(part, dict) and isinstance(part.get("text"), str))
+            ):
+                return preserve_thinking
+        if not answered:
+            return preserve_thinking
+        return True if self._empty_think_replays_with_preserve() else preserve_thinking
+
+    def _empty_think_replays_with_preserve(self) -> bool:
+        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
+        key = (
+            getattr(self, "base_url", None),
+            id(getattr(self, "_chat_template", None)),
+            id(getattr(self, "_chat_template_override", None)),
+        )
+        cached = getattr(self, "_empty_think_preserve_probe", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = False
+        try:
+            off = dict(self._request_reasoning_kwargs(False, None, None) or {})
+            answer = "Studio replay probe answer."
+            first = [{"role": "user", "content": "Studio replay probe question."}]
+            history = first + [
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Studio replay probe follow-up."},
+            ]
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+
+                def _render(msgs, preserve):
+                    r = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = {
+                            "messages": msgs,
+                            "chat_template_kwargs": {**off, "preserve_thinking": preserve},
+                        },
+                    )
+                    prompt = r.json().get("prompt") if r.status_code == 200 else None
+                    return prompt if isinstance(prompt, str) else None
+
+                generated = _render(first, False)
+                kept = _render(history, True)
+                dropped = _render(history, False)
+            if generated is None or kept is None or dropped is None:
+                return False  # Unanswered: not cached, so the next request asks again.
+            result = kept.startswith(generated + answer) and not dropped.startswith(
+                generated + answer
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the caller's setting
+            return False
+        self._empty_think_preserve_probe = (key, result)
+        return result
 
     def _request_reasoning_kwargs(
         self,
@@ -37597,6 +37686,9 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -38065,6 +38157,9 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -38110,7 +38205,7 @@ class LlamaCppBackend:
             messages = note_attached_image(
                 messages, mcp_image_targets(_gguf_active_tool_names(tools))
             )
-        conversation = list(messages)
+        conversation = restore_replayed_tool_results(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # The loop refits on every iteration; recall must fire once per request, or each
@@ -38131,14 +38226,15 @@ class LlamaCppBackend:
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
         # has to be told which branch is live, and the client's messages are the answer.
-        _request_branch: list[dict] = list(messages)
+        # Restored dicts are new; both branch lists match by identity.
+        _request_branch: list[dict] = list(conversation)
         # ...and everything this request adds to it. A long agent run can evict its own
         # earlier tool exchange, which is archived; filtered against the messages the
         # client sent, that document looks like an abandoned branch and is refused, so the
         # model cannot get back a tool result it still needs to answer. Accumulated rather
         # than read off `conversation`, which has already lost what earlier fits evicted.
-        _live_branch: list[dict] = list(messages)
-        _live_branch_ids: set[int] = {id(message) for message in messages}
+        _live_branch: list[dict] = list(conversation)
+        _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
             for message in current:
@@ -38152,6 +38248,10 @@ class LlamaCppBackend:
                 _rolling_anchor_ids.add(id(message))
                 break
 
+        _tool_card_by_message: dict[int, str] = {}
+        # Feedback folded in after tool_end, reported so the client replays it.
+        _model_note_events: list[dict] = []
+
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
             if not conversation or conversation[-1].get("role") != "tool":
@@ -38162,7 +38262,18 @@ class LlamaCppBackend:
             # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
             # /v1/messages passes a caller's own history through, which may end on a tool
             # result. An in-place edit would leave the nudge there and re-send it next turn.
-            conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
+            previous = conversation[-1]
+            conversation[-1] = {**previous, "content": f"{content}\n\n{feedback}"}
+            card_id = _tool_card_by_message.pop(id(previous), None)
+            if card_id:
+                _tool_card_by_message[id(conversation[-1])] = card_id
+                _model_note_events.append(
+                    {
+                        "type": "tool_model_note",
+                        "tool_call_id": card_id,
+                        "suffix": f"\n\n{feedback}",
+                    }
+                )
             return True
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
@@ -38585,6 +38696,8 @@ class LlamaCppBackend:
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
         _prompt_sent = False
+        # Resent on the final pass with tool_choice "none": tools head the system prompt.
+        _last_sent_tools = None
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38595,6 +38708,8 @@ class LlamaCppBackend:
         loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
             # Here rather than at each append: six sites grow the conversation and all of
             # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
@@ -38832,6 +38947,7 @@ class LlamaCppBackend:
             if safe_tools:
                 payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
+                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             if thinking_budget_tokens is not None:
@@ -40347,6 +40463,8 @@ class LlamaCppBackend:
                                 provisional = provisional_match,
                                 allowed_tool_names = {forced_name} if forced_name else None,
                             )
+                    # The frontend groups a parallel batch into one assistant message by this.
+                    decision.provenance["round_id"] = iteration
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -41208,8 +41326,11 @@ class LlamaCppBackend:
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     _forced_choice_resolved = True
-                    yield completion.tool_end_event()
+                    _tool_end = completion.tool_end_event()
+                    yield _tool_end
                     conversation.append(completion.tool_message())
+                    if _tool_end.get("tool_call_id"):
+                        _tool_card_by_message[id(conversation[-1])] = _tool_end["tool_call_id"]
                     # Parsed only for a result that carries them and a model that will
                     # be shown them; the marker test first, so a text result never asks.
                     _completion_images = (
@@ -41469,10 +41590,13 @@ class LlamaCppBackend:
                 else:
                     conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
+        while _model_note_events:
+            yield _model_note_events.pop(0)
         # Clear status.
         yield {"type": "status", "text": ""}
 
         # Final streaming pass with the full conversation context.
+        _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
         _reasoning_kw = self._request_reasoning_kwargs(
@@ -41490,7 +41614,7 @@ class LlamaCppBackend:
             try:
                 _before_final_fit = conversation
                 # Withheld, not `tools`: this is the synthesised final answer and
-                # `stream_payload` below sends no tools array at all, so the request's
+                # `stream_payload` below sends tool_choice "none", so the request's
                 # catalogue answers a question it does not pose and would let a NEW epoch
                 # start on the one pass that can never call `search_conversation`.
                 # Replaying an epoch already in force is unaffected.
@@ -41517,7 +41641,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41538,9 +41662,7 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline, not tool: this final-answer request is counted and sent
-                        # with no tools array, so a forged tool role has no catalogue to
-                        # match and breaks strict templates.
+                        # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
@@ -41560,7 +41682,7 @@ class LlamaCppBackend:
                                 self.markup_profile,
                             ),
                             None,
-                            None,
+                            _final_tools,
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
@@ -41617,6 +41739,9 @@ class LlamaCppBackend:
         }
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
+        if _final_tools:
+            stream_payload["tools"] = llama_grammar_tools(_final_tools)
+            stream_payload["tool_choice"] = "none"
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:
@@ -41679,7 +41804,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41690,7 +41815,7 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # The final pass again, so again no tools array is sent.
+                        # The final pass again, so again tool_choice is "none".
                         tools_withheld = True,
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
@@ -41739,7 +41864,7 @@ class LlamaCppBackend:
                                 break
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
-                            None,
+                            _final_tools,
                             stream_payload.get("chat_template_kwargs"),
                             _refit_continue,
                             _refit_protect,
@@ -41832,7 +41957,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     messages_without_unpriced_media(candidate_messages),
                     None,
-                    None,
+                    _final_tools,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -42063,7 +42188,7 @@ class LlamaCppBackend:
                             # gets that eviction rather than being abandoned.
                             _evicted_f = _evict_until_it_fits(
                                 _candidate_messages,
-                                None,
+                                _final_tools,
                                 stream_payload.get("chat_template_kwargs"),
                                 True,
                             )
@@ -42187,7 +42312,7 @@ class LlamaCppBackend:
                             )
                             if _next_cap_r != 0 and not _served_r:
                                 _evicted_r = _evict_until_it_fits(
-                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                    _candidate_r, _final_tools, _off_kw, False, _recovery_protect
                                 )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw
