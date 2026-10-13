@@ -557,7 +557,6 @@ def _music(client, **body):
 
 
 def test_music_wait_scales_with_the_runtime_backend(stub):
-    # #13510: Metal ran MiniMax Music 3 far slower than the CUDA-timed rtf allowed.
     from core.inference.audio_cpp_music import timeout_seconds
 
     waits = {}

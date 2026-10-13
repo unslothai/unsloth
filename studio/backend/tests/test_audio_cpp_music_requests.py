@@ -508,7 +508,6 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
 
 
 def test_metal_and_vulkan_waits_cover_minimax_on_apple_silicon():
-    # #13510: a 30 s MiniMax Music 3 song took over 424 s on an M3 Max (Metal), RTF up to 24.
     t = lambda backend: cm.timeout_seconds("minimax_music3", 31, 1, backend)
     assert t("cuda") == t("hip") == t(None) == 300.0 + 4.0 * 31
     assert t("metal") == t("vulkan") == t("cpu") == 300.0 + 40.0 * 31

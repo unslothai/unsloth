@@ -26,8 +26,7 @@ logger = get_logger(__name__)
 
 _TIMEOUT_FLOOR = 300.0
 _TIMEOUT_CEILING = 4 * 3600.0
-# Spec rtf values are CUDA timings. MiniMax Music 3 Q8 runs at RTF 0.83 on an RTX 5090 but 14 to
-# 24 on an M3 Max over Metal (#13510), so Metal and Vulkan get CPU's headroom.
+# Spec rtf values are CUDA timings; Metal and Vulkan run far slower (#13510).
 _BACKEND_FACTOR = {"cpu": 10.0, "metal": 10.0, "vulkan": 10.0}
 # MiDashengLM's spec caps seeds at 2**31 - 1.
 _SEED_LIMIT = 2**31 - 1
