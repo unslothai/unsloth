@@ -371,8 +371,10 @@ def test_an_unrelated_local_listener_does_not_block_a_split(cluster, monkeypatch
     monkeypatch.setattr(
         cluster, "compare_llama_bundles", lambda a, b: {"ok": True, "problems": [], "notes": []}
     )
-    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda: {"present": True})
-    monkeypatch.setattr(cluster, "peer_llama_bundle_identity", lambda ip: {"present": True})
+    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda *a, **k: {"present": True})
+    monkeypatch.setattr(
+        cluster, "peer_llama_bundle_identity", lambda ip, *a, **k: {"present": True}
+    )
 
     def probe(
         host,
@@ -394,8 +396,10 @@ def test_a_bad_peer_listener_still_blocks(cluster, monkeypatch) -> None:
     monkeypatch.setattr(
         cluster, "compare_llama_bundles", lambda a, b: {"ok": True, "problems": [], "notes": []}
     )
-    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda: {"present": True})
-    monkeypatch.setattr(cluster, "peer_llama_bundle_identity", lambda ip: {"present": True})
+    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda *a, **k: {"present": True})
+    monkeypatch.setattr(
+        cluster, "peer_llama_bundle_identity", lambda ip, *a, **k: {"present": True}
+    )
     monkeypatch.setattr(
         cluster,
         "rpc_hello_probe_detail",

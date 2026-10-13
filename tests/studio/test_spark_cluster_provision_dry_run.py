@@ -231,10 +231,18 @@ def test_the_stop_uses_the_recorded_pid_not_a_name_match(monkeypatch) -> None:
     assert "pkill" not in joined and "killall" not in joined, joined
 
 
-def test_the_launch_records_a_pid_to_stop() -> None:
-    """Without it there is nothing to kill and the cleanup is decorative."""
-    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
-    assert "echo $! > " in source and "spark_nccl_probe.pid" in source
+def test_the_launch_records_a_pid_to_stop(monkeypatch, tmp_path) -> None:
+    """Without it there is nothing to kill and the cleanup is decorative. The file is keyed per
+    run, so an overlapping probe cannot stop this one's rank."""
+    import re
+
+    cluster = _cluster()
+    probe = _Probe()
+    _measure(cluster, monkeypatch, tmp_path, probe)
+    texts = [c if isinstance(c, str) else " ".join(map(str, c)) for c in probe.calls]
+    launched = [m for t in texts for m in re.findall(r"echo \$! > (\S+)", t)]
+    assert len(launched) == 1 and "spark_nccl_probe.pid." in launched[0], launched
+    assert any(f"cat {launched[0]}" in t and "kill" in t for t in texts)
 
 
 # ── which host is the peer ────────────────────────────────────────────────────── Setup assigns

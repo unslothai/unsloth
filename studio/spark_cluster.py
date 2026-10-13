@@ -777,14 +777,22 @@ def _find_in_bundle(
     return None
 
 
-def rpc_server_binary() -> Optional[str]:
-    """Path to ggml-rpc-server, or None."""
-    roots = [llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"]
-    for root in roots:
+def _rpc_server_location() -> Tuple[Optional[str], Path]:
+    """(ggml-rpc-server, the bundle root it came from); the root falls back to the managed one."""
+    for root in (llama_bundle_dir(), Path.home() / "src" / "llamacpp-rpc"):
         found = _find_in_bundle(root, rpc_server_names(), executable = True)
         if found is not None:
-            return str(found)
-    return shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
+            return str(found), root
+    found = shutil.which("ggml-rpc-server") or shutil.which("rpc-server")
+    if found is None:
+        return None, llama_bundle_dir()
+    parent = Path(found).parent
+    return found, parent.parent if parent.name == "bin" else parent
+
+
+def rpc_server_binary() -> Optional[str]:
+    """Path to ggml-rpc-server, or None."""
+    return _rpc_server_location()[0]
 
 
 _LLAMA_SERVER_NAMES = ("llama-server", "llama-server.exe")
@@ -938,14 +946,18 @@ print("UNSLOTH_BUNDLE " + json.dumps(out))
 """
 
 
-def peer_llama_bundle_identity(peer_ip: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
-    """``llama_bundle_identity()`` as evaluated ON THE PEER."""
+def peer_llama_bundle_identity(
+    peer_ip: str,
+    timeout: int = 30,
+    root: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """``llama_bundle_identity(root)`` as evaluated ON THE PEER."""
     if not peer_ip or not shutil.which("ssh"):
         return None
     import base64
 
     source = _BUNDLE_PROBE.format(
-        root = _peer_relative_path(llama_bundle_dir()),
+        root = _peer_relative_path(Path(root) if root is not None else llama_bundle_dir()),
         libs = _RPC_LIB_NAMES,
         servers = _RPC_SERVER_NAMES,
     )
@@ -1113,7 +1125,12 @@ def rpc_hello_probe(
 def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
     """Bundle identity (works before anything runs) plus a live HELLO against whatever already listens
     (catches a stale server from an older bundle)."""
-    result = compare_llama_bundles(llama_bundle_identity(), peer_llama_bundle_identity(peer_ip))
+    # Where the binary actually resolved, so a ~/src or PATH build is not refused for lacking the
+    # managed bundle.
+    root = _rpc_server_location()[1]
+    result = compare_llama_bundles(
+        llama_bundle_identity(root), peer_llama_bundle_identity(peer_ip, root = root)
+    )
     result["peer_rpc"] = peer_live = rpc_hello_probe_detail(peer_ip, port)
     result["local_rpc"] = local_live = rpc_hello_probe_detail("127.0.0.1", port)
     seen: Dict[str, Tuple[int, int, int]] = {}
@@ -1417,8 +1434,8 @@ def nccl_bandwidth(
     peer_cmd = (
         f"setsid nohup bash -c '[ -f {activate} ] && . {activate}; "
         f"exec env {common} --node_rank=1 {remote_probe}' "
-        f"> {_NCCL_PROBE_LOG} 2>&1 < /dev/null & "
-        f"echo $! > {_NCCL_PROBE_PID}"
+        f"> {_nccl_probe_file('log', port)} 2>&1 < /dev/null & "
+        f"echo $! > {_nccl_probe_file('pid', port)}"
     )
     try:
         started = subprocess.run(
@@ -1428,12 +1445,12 @@ def nccl_bandwidth(
             timeout = 30,
         )
     except Exception:
-        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
     # The result was discarded, and there is no `check = True`, so ssh 255 (auth or routing) looked
     # like a launch.
     if started.returncode != 0:
-        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
         return None
     import time
 
@@ -1458,11 +1475,12 @@ def nccl_bandwidth(
                     return None
         return None
     finally:
-        stop_peer_nccl_probe(peer_ip, user, ssh_opts)
+        stop_peer_nccl_probe(peer_ip, user, ssh_opts, port)
 
 
-_NCCL_PROBE_LOG = "/tmp/spark_nccl_probe.log"
-_NCCL_PROBE_PID = "/tmp/spark_nccl_probe.pid"
+def _nccl_probe_file(kind: str, port: Optional[int]) -> str:
+    """Keyed by the probe's port: a shared pid file let one overlapping run kill the other's rank."""
+    return f"/tmp/spark_nccl_probe.{kind}" + (f".{port}" if port else "")
 
 
 def stop_peer_by_pidfile(peer_ip: str, user: str, ssh_opts, pid_file: str) -> bool:
@@ -1484,8 +1502,13 @@ def stop_peer_by_pidfile(peer_ip: str, user: str, ssh_opts, pid_file: str) -> bo
         return False
 
 
-def stop_peer_nccl_probe(peer_ip: str, user: str, ssh_opts) -> bool:
-    return stop_peer_by_pidfile(peer_ip, user, ssh_opts, _NCCL_PROBE_PID)
+def stop_peer_nccl_probe(
+    peer_ip: str,
+    user: str,
+    ssh_opts,
+    port: Optional[int] = None,
+) -> bool:
+    return stop_peer_by_pidfile(peer_ip, user, ssh_opts, _nccl_probe_file("pid", port))
 
 
 def diagnose_link(busbw: Optional[float]) -> Dict[str, Any]:
@@ -4503,8 +4526,9 @@ def _cmd_setup(
 
     saved = save_config(
         {
-            # Not enabled while the peer lacks the environment, or cluster_state() says configured.
-            "enabled": not provision_failures,
+            # Not enabled until a reachable peer was provisioned, or cluster_state() says configured;
+            # `unsloth spark provision` enables it once it is.
+            "enabled": bool(peer_now) and not provision_failures,
             "planned": True,
             "n_nodes": n_nodes,
             "switched": switched,

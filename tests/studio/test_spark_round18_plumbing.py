@@ -121,8 +121,8 @@ def test_a_silent_listener_is_not_the_same_as_an_absent_one(cluster, monkeypatch
         return {"host": host, "port": port, "state": "silent", "version": None}
 
     monkeypatch.setattr(cluster, "rpc_hello_probe_detail", _probe)
-    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda: {})
-    monkeypatch.setattr(cluster, "peer_llama_bundle_identity", lambda ip: {})
+    monkeypatch.setattr(cluster, "llama_bundle_identity", lambda *a, **k: {})
+    monkeypatch.setattr(cluster, "peer_llama_bundle_identity", lambda ip, *a, **k: {})
     monkeypatch.setattr(
         cluster,
         "compare_llama_bundles",
