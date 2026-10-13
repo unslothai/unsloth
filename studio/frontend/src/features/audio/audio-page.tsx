@@ -1301,6 +1301,7 @@ export function AudioPage({
   const alignerDownload = useAlignerDownload(
     transcribeCaps.caps,
     transcribeCaps.refresh,
+    transcribeOptions.request.timestamps,
   );
   const alignerBlocks =
     alignerDownload.staging && transcribeOptions.request.timestamps;

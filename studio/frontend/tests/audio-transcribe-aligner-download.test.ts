@@ -55,12 +55,16 @@ test("nothing is staged when the run can start now", () => {
   );
 });
 
-test("the aligner download runs through the shared manager; cancel or an untimestamped run drops the pending run", () => {
+test("the aligner download runs through the shared manager; cancel, Timestamps off or an untimestamped run drops the pending run", () => {
   const hook = readSrc("features/audio/hooks/use-aligner-download.ts");
   assert.match(hook, /useStagedDownload\(\{\s*scopeId: "audio-aligner"/);
   assert.match(
     hook,
     /onReady: \(\) => \{[\s\S]*pendingRun\.current = null;[\s\S]*refreshCaps\(\);[\s\S]*run\?\.\(\);/,
+  );
+  assert.match(
+    hook,
+    /useEffect\(\(\) => \{[^}]*if \(!timestamps\) pendingRun\.current = null;\s*\}, \[timestamps\]\);/,
   );
   // Only a dropped run explains itself; a plan with nothing waiting stays quiet.
   assert.match(
@@ -75,6 +79,10 @@ test("the aligner download runs through the shared manager; cancel or an untimes
 
 test("only a timestamped Transcribe waits for the aligner download", () => {
   const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /useAlignerDownload\(\s*transcribeCaps\.caps,\s*transcribeCaps\.refresh,\s*transcribeOptions\.request\.timestamps,\s*\)/,
+  );
   assert.match(
     page,
     /const alignerBlocks =\s*alignerDownload\.staging && transcribeOptions\.request\.timestamps;\s*const transcribeBlocker: GenerateBlocker \| null = alignerBlocks\s*\?\s*\{ reason: "Downloading the timing aligner…" \}/,

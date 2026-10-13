@@ -50,6 +50,7 @@ from core.inference.audio_cpp_server import (
     AudioCppServer,
     AudioCppStartCancelledError,
     AudioCppUnavailableError,
+    runtime_runs_on_cpu,
 )
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
@@ -557,6 +558,18 @@ def _launches_on_cpu(entry: AudioCppModel, force_cpu: bool) -> bool:
     return force_cpu or _training_active() or entry.family in CPU_ONLY_FAMILIES
 
 
+def _same_placement(on_cpu: bool, entry: AudioCppModel, force_cpu: bool) -> bool:
+    """Whether a server on the CPU (or not) is where a launch now would put ``entry``."""
+    wants_cpu = _launches_on_cpu(entry, force_cpu)
+    if on_cpu == wants_cpu:
+        return True
+    # A GPU build with no visible GPU runs on the CPU either way, so training starting or ending moves nothing.
+    try:
+        return on_cpu and runtime_runs_on_cpu()
+    except Exception:  # noqa: BLE001 - an unreadable runtime keeps the old reload
+        return False
+
+
 class AudioCppSttSidecar:
     """Owns one audiocpp_server serving an ASR model and proxies dictation to it."""
 
@@ -849,7 +862,7 @@ class AudioCppSttSidecar:
                 and self._model == entry
                 and self._forced_cpu == force_cpu
                 # A server training moved to the CPU goes back to the GPU once training ends.
-                and self._launched_cpu == _launches_on_cpu(entry, force_cpu)
+                and _same_placement(self._launched_cpu, entry, force_cpu)
                 and (self._aligned or not aligned)
             ):
                 self._loaded_as = _reported_name(model, entry)
@@ -898,7 +911,7 @@ class AudioCppSttSidecar:
                 self._model = entry
                 self._loaded_as = _reported_name(model, entry)
                 self._forced_cpu = force_cpu
-                self._launched_cpu = run_on_cpu
+                self._launched_cpu = server.backend == "cpu"
                 self._aligned = aligned
                 self._schedule_idle_unload_locked()
             finally:

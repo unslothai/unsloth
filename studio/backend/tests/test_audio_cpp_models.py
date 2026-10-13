@@ -2207,6 +2207,11 @@ def test_a_finished_download_clears_a_remembered_cache_miss(hub, monkeypatch):
         _gguf_bytes(family = "qwen3_asr"),
     )
     assert acm.resolve(row, "Q8_0", network = False) is None
+    from core.inference import local_model_resolver
+
+    monkeypatch.setattr(local_model_resolver, "note_downloaded", lambda *a: None)
+    monkeypatch.setattr(local_model_resolver, "invalidate_index", lambda **k: None)
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
     monkeypatch.setattr(download_lifecycle.account_access, "record_model_grant", lambda *a: None)
     monkeypatch.setattr(
         download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
@@ -2514,8 +2519,8 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
     started = []
 
     class _Server:
-        def __init__(self, model):
-            self.model, self.backend = model, "cpu"
+        def __init__(self, model, backend):
+            self.model, self.backend = model, backend
 
         def alive(self):
             return True
@@ -2525,7 +2530,7 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
 
     def start(model, path, **kwargs):
         started.append(model.variant.key)
-        return _Server(model)
+        return _Server(model, "cpu" if kwargs.get("force_cpu") else "cuda")
 
     monkeypatch.setattr(s, "ensure_engine_available", lambda: "audiocpp_server")
     monkeypatch.setattr(s.AudioCppServer, "start", start)
