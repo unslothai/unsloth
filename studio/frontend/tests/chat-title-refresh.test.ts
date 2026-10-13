@@ -130,6 +130,13 @@ test("a refresh follows the connection that answered, and asks a local model onl
   // bounded: a stalled status check must still reach the heuristic fallback.
   assert.match(serving, /const status = await getInferenceStatus\(AbortSignal\.timeout\(TITLE_STATUS_WAIT_MS\), checkpoint\);/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
+  // The model's wait covers building the request (a stored key is encrypted through the backend) as well as the stream.
+  const fromModel = source.slice(
+    source.indexOf("async function titleFromModel"),
+    source.indexOf("async function titleModelServing"),
+  );
+  assert.match(fromModel, /await Promise\.race\(\[buildTitleRefreshRequest\(checkpoint, excerpt\), timedOut\]\)/);
+  assert.match(fromModel, /await Promise\.race\(\[titleFromStream\(streamChatCompletions\(request, controller\.signal\)\), timedOut\]\)/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
     source.indexOf("/** The sandbox"),

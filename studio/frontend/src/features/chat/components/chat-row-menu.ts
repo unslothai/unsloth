@@ -150,10 +150,15 @@ const TITLE_STATUS_WAIT_MS = 5_000;
 async function titleFromModel(checkpoint: string, excerpt: string): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TITLE_MODEL_WAIT_MS);
+  // The wait covers building the request too: a stored provider key is encrypted through the backend first.
+  const timedOut = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener("abort", () => reject(new Error("title request timed out")), { once: true });
+  });
+  timedOut.catch(() => undefined);
   try {
-    const request = await buildTitleRefreshRequest(checkpoint, excerpt);
+    const request = await Promise.race([buildTitleRefreshRequest(checkpoint, excerpt), timedOut]);
     if (!request) return null;
-    return await titleFromStream(streamChatCompletions(request, controller.signal));
+    return await Promise.race([titleFromStream(streamChatCompletions(request, controller.signal)), timedOut]);
   } catch {
     return null;
   } finally {
