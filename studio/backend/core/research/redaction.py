@@ -188,7 +188,11 @@ def _authorization_values(match: re.Match) -> list[str]:
     pairs = [(name, re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))) for name, value in pairs]
     values = [value for _, value in pairs]
     if match["scheme"].lower() in _REGISTERED_AUTH_SCHEMES or any(
-        name.endswith(_AUTH_SECRET_PARAM_SUFFIXES) or _CREDENTIAL_SHAPE.match(value)
+        (
+            name.endswith(_AUTH_SECRET_PARAM_SUFFIXES)
+            and not re.sub(r"[^a-z0-9]", "", name).endswith(_QUERY_PUBLIC_ASSIGNMENT_SUFFIXES)
+        )
+        or _CREDENTIAL_SHAPE.match(value)
         for name, value in pairs
     ):
         return values
