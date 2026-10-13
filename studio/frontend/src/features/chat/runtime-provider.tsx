@@ -56,7 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -183,7 +183,11 @@ import {
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
-import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  mergeContextTruncation,
+} from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
   extractDeltaText,
@@ -1755,11 +1759,25 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                const lastToolCall = [...carried]
+                  .reverse()
+                  .find(
+                    (entry) =>
+                      (entry.part as { type?: unknown } | null)?.type ===
+                      "tool-call",
+                  )?.part as { toolCallId?: unknown } | undefined;
                 currentMetadata = {
                   ...currentMetadata,
                   contextTruncation: mergeContextTruncation(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
+                  ),
+                  compactionMarkers: appendCompactionMarker(
+                    currentMetadata.compactionMarkers as CompactionMarker[] | undefined,
+                    chunk.context_truncated,
+                    typeof lastToolCall?.toolCallId === "string"
+                      ? lastToolCall.toolCallId
+                      : null,
                   ),
                 };
               }
@@ -3811,7 +3829,7 @@ function CompactionCountRegistrar({
 }): ReactElement | null {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const count = useAuiState(
-    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+    ({ thread }) => compactionDividerCount(thread.messages),
   );
 
   useEffect(() => {

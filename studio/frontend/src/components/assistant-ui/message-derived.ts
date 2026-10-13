@@ -7,6 +7,7 @@
 import { isRenderableRenderHtmlToolPart } from "../../features/chat/artifacts/html-fences.ts";
 import { searchImagesSignature } from "../../features/chat/search-images/search-images.ts";
 import {
+  type CompactionMarker,
   type ContextTruncation,
   compactionBoundary,
   shouldShowCompactionNotice,
@@ -128,33 +129,109 @@ export const compactionNoticeMessageIds = memoOnArray(
   },
 );
 
-const NO_COMPACTION_DIVIDERS: ReadonlyMap<string, ContextTruncation> =
-  new Map();
+type CompactionDividers = {
+  /** Row id -> the compaction drawn above that row: the prompt whose request compacted, or the reply. */
+  rows: ReadonlyMap<string, ContextTruncation>;
+  /** Tool call id -> the compaction a tool loop ran right after that call returned. */
+  afterToolCalls: ReadonlyMap<string, ContextTruncation>;
+};
 
-/** maps each compaction to its triggering prompt row or, if absent, its reply row at the kept-context boundary so visible dividers match the context meter. */
-export const compactionDividerRows = memoOnArray(
-  (
-    messages: readonly MessageLike[],
-  ): ReadonlyMap<string, ContextTruncation> => {
+const NO_COMPACTION_DIVIDERS: CompactionDividers = {
+  rows: new Map(),
+  afterToolCalls: new Map(),
+};
+
+function compactionMarkersOf(
+  message: MessageLike,
+): readonly CompactionMarker[] | null {
+  const markers = (
+    message.metadata as { custom?: { compactionMarkers?: unknown } } | undefined
+  )?.custom?.compactionMarkers;
+  return Array.isArray(markers) && markers.length > 0
+    ? (markers as CompactionMarker[])
+    : null;
+}
+
+function hasToolCall(message: MessageLike, toolCallId: string): boolean {
+  const { parts, content } = message as { parts?: unknown; content?: unknown };
+  const list = Array.isArray(parts) ? parts : content;
+  return (
+    Array.isArray(list) &&
+    list.some(
+      (part) =>
+        (part as { type?: string }).type === "tool-call" &&
+        (part as { toolCallId?: string }).toolCallId === toolCallId,
+    )
+  );
+}
+
+/** Places each compaction where it cut: above the prompt whose request compacted (or the reply when no
+ *  prompt precedes it), or, for one a tool loop ran mid-reply, right after the tool call it followed.
+ *  Replies saved before markers existed keep one divider above the prompt. */
+const compactionDividers = memoOnArray(
+  (messages: readonly MessageLike[]): CompactionDividers => {
     const notices = compactionNoticeMessageIds(messages);
-    // streamed tokens create new arrays, so reuse this map until a thread compacts.
+    // streamed tokens create new arrays, so reuse this result until a thread compacts.
     if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
     const rows = new Map<string, ContextTruncation>();
+    const afterToolCalls = new Map<string, ContextTruncation>();
     let previous: MessageLike | undefined;
+    let previousBoundary = 0;
     for (const message of messages) {
-      if (notices.has(message.id)) {
-        const row = previous?.role === "user" ? previous.id : message.id;
-        rows.set(
-          row,
-          (
-            message.metadata as {
-              custom: { contextTruncation: ContextTruncation };
-            }
-          ).custom.contextTruncation,
+      const row = previous?.role === "user" ? previous.id : message.id;
+      const markers =
+        message.role === "assistant" ? compactionMarkersOf(message) : null;
+      if (markers) {
+        for (const marker of markers) {
+          if (!shouldShowCompactionNotice(marker.truncation, previousBoundary)) {
+            continue;
+          }
+          previousBoundary = Math.max(
+            previousBoundary,
+            compactionBoundary(marker.truncation),
+          );
+          if (
+            marker.afterToolCallId !== null &&
+            hasToolCall(message, marker.afterToolCallId)
+          ) {
+            afterToolCalls.set(marker.afterToolCallId, marker.truncation);
+          } else if (!rows.has(row)) {
+            rows.set(row, marker.truncation);
+          }
+        }
+      } else if (notices.has(message.id)) {
+        const truncation = (
+          message.metadata as {
+            custom: { contextTruncation: ContextTruncation };
+          }
+        ).custom.contextTruncation;
+        rows.set(row, truncation);
+        previousBoundary = Math.max(
+          previousBoundary,
+          compactionBoundary(truncation),
         );
       }
       previous = message;
     }
-    return rows;
+    return rows.size === 0 && afterToolCalls.size === 0
+      ? NO_COMPACTION_DIVIDERS
+      : { rows, afterToolCalls };
   },
 );
+
+export const compactionDividerRows = (
+  messages: readonly MessageLike[],
+): ReadonlyMap<string, ContextTruncation> => compactionDividers(messages).rows;
+
+export const compactionToolCallDividers = (
+  messages: readonly MessageLike[],
+): ReadonlyMap<string, ContextTruncation> =>
+  compactionDividers(messages).afterToolCalls;
+
+/** What the context meter counts: one per divider on screen. */
+export const compactionDividerCount = (
+  messages: readonly MessageLike[],
+): number => {
+  const dividers = compactionDividers(messages);
+  return dividers.rows.size + dividers.afterToolCalls.size;
+};

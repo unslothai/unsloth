@@ -52,6 +52,30 @@ export function shouldShowCompactionNotice(
   );
 }
 
+/** One compaction during a reply: the tool call it followed (null: before the reply began) and that fit's own record. */
+export interface CompactionMarker {
+  afterToolCallId: string | null;
+  truncation: ContextTruncation;
+}
+
+/** Adds a fit that cut something new. A tool loop refits every round and replays the same cut. */
+export function appendCompactionMarker(
+  markers: CompactionMarker[] | undefined,
+  truncation: ContextTruncation,
+  afterToolCallId: string | null,
+): CompactionMarker[] | undefined {
+  if (!promptWasShortened(truncation)) return markers;
+  const last = markers?.[markers.length - 1];
+  if (
+    last &&
+    truncation.checkpoint_started !== true &&
+    compactionBoundary(truncation) <= compactionBoundary(last.truncation)
+  ) {
+    return markers;
+  }
+  return [...(markers ?? []), { afterToolCallId, truncation }];
+}
+
 function nonNegativeInt(value: number | undefined): number {
   // A propagated NaN would print "NaN tokens on its own" at the user.
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;

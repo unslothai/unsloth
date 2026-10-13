@@ -491,6 +491,10 @@ def fit_checkpoint_context(
     # Signature compatibility with `fit_rolling_context`. A checkpoint reset already drops to the latest turn plus X; an
     # extra bite of the window would only shrink the standing-instruction block, which is the half worth keeping.
     headroom_ratio: Optional[float] = None,
+    # The user asked for a compaction (/compact): start a new epoch even though the prompt fits.
+    force_reset: bool = False,
+    # The epoch in force was started that way, so it replays even while the prompt fits.
+    sticky_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -512,7 +516,7 @@ def fit_checkpoint_context(
 
     prompt_target = prompt_budget(context_length, max_tokens)
     initial_tokens = count_tokens(list(messages))
-    if initial_tokens <= prompt_target and sticky_dropped <= 0:
+    if initial_tokens <= prompt_target and sticky_dropped <= 0 and not force_reset:
         return messages, None
 
     budget = min(MAX_TOKENS, max(0, int(prompt_target * MAX_FRACTION)))
@@ -563,7 +567,7 @@ def fit_checkpoint_context(
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
-    if sticky_dropped > 0 and initial_tokens > prompt_target:
+    if sticky_dropped > 0 and (initial_tokens > prompt_target or sticky_manual) and not force_reset:
         candidate, replayed = truncate_oldest_messages(
             fitted,
             1.0,
@@ -583,7 +587,7 @@ def fit_checkpoint_context(
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
     # primitive itself protects system, developer, final and newest user groups.
-    if current_tokens > prompt_target and _resolved(can_reset):
+    if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
         candidate, reset_dropped = truncate_oldest_messages(
             messages,
             0.0,
@@ -640,4 +644,5 @@ def fit_checkpoint_context(
         "checkpoint": True,
         "checkpoint_started": is_new_epoch,
         "carried_forward_chars": len(block),
+        **({"manual": True} if (force_reset if is_new_epoch else sticky_manual) else {}),
     }

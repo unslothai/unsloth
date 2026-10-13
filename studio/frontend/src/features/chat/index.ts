@@ -142,6 +142,11 @@ export {
   type ForkBoundaryState,
 } from "./stores/fork-boundary-store";
 export {
+  isCompactCommand,
+  requestThreadCompaction,
+  useCompactRequestStore,
+} from "./stores/compact-request-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,
