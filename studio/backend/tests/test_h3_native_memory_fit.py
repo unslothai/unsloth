@@ -188,7 +188,9 @@ def test_gtt_used_on_another_amd_card_shrinks_the_selected_cards_pool(tmp_path):
     _card(tmp_path, "card1", "0000:c5:00.0", total = 24 * GIB, used = 12 * GIB)
     assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 10 * GIB
     # Only the selected card at work: the per-device bound still applies.
-    (tmp_path / "class" / "drm" / "card1" / "device" / "mem_info_gtt_used").write_text("0\n", encoding = "utf-8")
+    (tmp_path / "class" / "drm" / "card1" / "device" / "mem_info_gtt_used").write_text(
+        "0\n", encoding = "utf-8"
+    )
     assert amdgpu_gtt_free_bytes("0000:03:00", sysfs_root = str(tmp_path)) == 22 * GIB
 
 

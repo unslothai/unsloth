@@ -513,6 +513,9 @@ def test_fixture_covers_every_registered_family(captured):
 
 
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
+    # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
+    # self-disable, so every case differs. Backend CI has no diffusers.
+    pytest.importorskip("diffusers")
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
@@ -522,6 +525,7 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
 
 def test_legacy_sequence_still_matches_fixture(captured):
     """The fixture is not stale: the old sequence over today's primitives still produces it."""
+    pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
     diffs = [case for case in want if got.get(case) != want[case]]
