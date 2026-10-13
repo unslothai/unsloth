@@ -2268,6 +2268,7 @@ def resolve(
     )
     with _resolve_lock:
         hit = _resolve_cache.get(key)
+        generation = _forget_generation
     if hit is not None and time.monotonic() - hit[0] < (_RESOLVE_TTL_SECONDS if network else 20.0):
         return hit[1]
     if gguf_hint and ref.repo_id and not is_umbrella_id(ref.id):
@@ -2280,7 +2281,8 @@ def resolve(
     with _resolve_lock:
         if len(_resolve_cache) > 256:
             _resolve_cache.clear()
-        _resolve_cache[key] = (time.monotonic(), model)
+        if generation == _forget_generation:
+            _resolve_cache[key] = (time.monotonic(), model)
         if model is not None:
             _known_audio_cpp_ids.add(model.id.lower())
     return model
@@ -2288,7 +2290,10 @@ def resolve(
 
 def forget(identifier: Optional[str] = None) -> None:
     """Drop memoized resolutions (after a download or delete changed the cache)."""
+    global _forget_generation
     with _resolve_lock:
+        # A lookup already reading the old cache must not store its answer after this.
+        _forget_generation += 1
         # What is downloaded changed too, so the next status poll must not reuse the old listing.
         _downloaded_cache.clear()
         if identifier is None:
@@ -2695,6 +2700,7 @@ RECOMMENDED_STT_MODELS: tuple[str, ...] = tuple(
 
 
 _downloaded_cache: dict[Optional[str], tuple[float, list[AudioCppModel]]] = {}
+_forget_generation = 0
 _DOWNLOADED_TTL_SECONDS = 10.0
 
 
@@ -2706,11 +2712,13 @@ def downloaded_models(task: Optional[str] = None) -> list[AudioCppModel]:
     """
     with _resolve_lock:
         hit = _downloaded_cache.get(task)
+        generation = _forget_generation
     if hit is not None and time.monotonic() - hit[0] < _DOWNLOADED_TTL_SECONDS:
         return list(hit[1])
     out = _scan_downloaded(task)
     with _resolve_lock:
-        _downloaded_cache[task] = (time.monotonic(), out)
+        if generation == _forget_generation:
+            _downloaded_cache[task] = (time.monotonic(), out)
     return list(out)
 
 

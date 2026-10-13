@@ -655,3 +655,24 @@ def test_a_folder_delete_preview_keeps_only_the_busy_directory_s_extras(hub, mon
     assert impact["reclaimed_bytes"] == ggufs + 900
     asyncio.run(deletion.delete_cached_model_response(pocket, None))
     assert voices["english"].exists() and not voices["french"].exists()
+
+
+def test_a_listing_read_before_a_download_finished_is_not_memoized(hub, monkeypatch):
+    real = acm._scan_downloaded
+    calls = []
+
+    def scan(task):
+        found = real(task)
+        calls.append(task)
+        if len(calls) == 1:
+            # A download completes while this scan is still reading the old cache.
+            acm.forget()
+        return found
+
+    monkeypatch.setattr(acm, "_scan_downloaded", scan)
+    acm.forget()
+    acm.downloaded_models()
+    acm.downloaded_models()
+    assert len(calls) == 2
+    acm.downloaded_models()
+    assert len(calls) == 2
