@@ -16,6 +16,7 @@ import {
   YAxis,
 } from "recharts";
 import type { ProfileStatsDay } from "../../api/profile-stats";
+import { useActivityChartStore } from "../../stores/activity-chart-store";
 import {
   type ActivityMode,
   type WeekChartPoint,
@@ -28,7 +29,6 @@ import {
   weekChartPoints,
   windowBaseline,
 } from "../../utils/stats-format";
-import { useActivityChartStore } from "../../stores/activity-chart-store";
 import { StatsCard } from "./stat-primitives";
 
 const DAYS_PER_WEEK = 7;
