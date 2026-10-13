@@ -4953,6 +4953,83 @@ def test_a_cpu_pinned_drafter_is_priced_off_the_card(tmp_path, _moe_cache_host, 
     assert on_gpu[-1] - on_cpu[-1] >= 0.5 * _GIB
 
 
+def _drafter_with_blocks(monkeypatch, n_layers = 4):
+    """Give the fake drafter a readable block count, so -ngld above it means "whole"."""
+    real = LlamaCppBackend._draft_backend_for
+
+    def _with_blocks(self, path):
+        db = real(self, path)
+        if db is None:
+            db = LlamaCppBackend.__new__(LlamaCppBackend)
+        db._n_layers = n_layers
+        return db
+
+    monkeypatch.setattr(LlamaCppBackend, "_draft_backend_for", _with_blocks)
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-ngl", "2"], {}),
+        (["-ngld=1"], {}),
+        (["-ngld", "99", "--gpu-layers-draft", "4"], {}),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "3"}),
+    ],
+    ids = ["argv", "short_equals", "last_wins_at_block_count", "env"],
+)
+def test_a_drafter_split_across_host_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A fixed positive -ngld up to the drafter's block count leaves its tail layers (and
+    their KV) in host RAM while _mtp_bytes charges the drafter whole to the card, so the
+    share is unknown, as in the fit's _draft_split_across_host."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    cmd, seen = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    assert "--model-draft" in cmd and seen and seen[-1] is not None, cmd
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "split", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-ngl", "-1"], {}),
+        (["-ngld", "5"], {}),
+        (["-ngld=999"], {}),
+        ([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"}),
+    ],
+    ids = ["minus_one", "above_blocks", "huge", "env_minus_one"],
+)
+def test_a_whole_gpu_drafter_count_keeps_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """-ngld -1 or a count above the block count places the drafter whole on the card,
+    exactly what _mtp_bytes prices, so the share matches the unset default."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "whole", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(base[-1])
+
+
+def test_a_zero_draft_ngl_is_priced_off_the_card(tmp_path, _moe_cache_host, monkeypatch):
+    """-ngld 0 keeps the drafter on the host (_cpu_draft_path), already off the budget."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, on_gpu = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    cmd, on_cpu = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    assert on_cpu and on_cpu[-1] is not None, cmd
+    assert on_gpu[-1] - on_cpu[-1] >= 0.5 * _GIB
+
+
 @pytest.mark.parametrize(
     "switch, free_mib, cached",
     [
