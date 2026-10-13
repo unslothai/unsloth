@@ -29,11 +29,22 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
+# Rich-text pastes carry no-break and thin spaces where a header has plain ones.
+_HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)""".replace(
+    r"[ \t]", _HSPACE
+)
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*[:=,]|\]?[ \t]*[:=])(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)"""
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)""".replace(
+        r"[ \t]", _HSPACE
+    )
 )
+# Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
+_QUERY_AUTHORIZATION_ARRAY = re.compile(
+    r"""(?i)(?<![A-Za-z0-9])authorization\\?["'”’]\s*[:=]\s*\[(?P<members>[^\[\]]*)\]"""
+)
+_ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”""")
 _AUTH_PARAM_PAIR = re.compile(
     r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
 )
@@ -208,6 +219,15 @@ def _authorization_values(match: re.Match) -> list[str]:
     return []
 
 
+def _array_values(match: re.Match) -> list[str]:
+    values = []
+    for groups in _ARRAY_MEMBER.findall(match["members"]):
+        member = _QUERY_AUTHORIZATION.match("Authorization: " + "".join(groups))
+        if member:
+            values += _authorization_values(member)
+    return values
+
+
 def _sanitize_public_query(query: str) -> str:
     # The Authorization pass may eat a label a later pass needs, so keep only tokens that also
     # survive without it: it can remove more than the plain passes, never less.
@@ -215,13 +235,20 @@ def _sanitize_public_query(query: str) -> str:
     with_authorization = _redact_public_query(query, authorization = True)
     # An echoed copy of an identified credential (an error repeating it) goes too.
     credentials, exact = set(), set()
-    for match in _QUERY_AUTHORIZATION.finditer(query):
-        for value in _authorization_values(match):
-            for variant in {value, value.rstrip(".!?")}:
-                exact.add(variant)
-                credentials.update(
-                    piece for piece in [variant, *variant.split()] if len(piece) >= 8
-                )
+    found = [
+        value
+        for match in _QUERY_AUTHORIZATION.finditer(query)
+        for value in _authorization_values(match)
+    ]
+    found += [
+        value
+        for match in _QUERY_AUTHORIZATION_ARRAY.finditer(query)
+        for value in _array_values(match)
+    ]
+    for value in found:
+        for variant in {value, value.rstrip(".!?")}:
+            exact.add(variant)
+            credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
     exact.discard("")
     plain = [token for token in plain if not any(piece in token for piece in credentials)]
     tokens = plain
@@ -254,6 +281,9 @@ def _redact_public_query(query: str, *, authorization: bool) -> list[str]:
         return match.group(0)
 
     if authorization:
+        query = _QUERY_AUTHORIZATION_ARRAY.sub(
+            lambda match: " " if _array_values(match) else match[0], query
+        )
         query = _QUERY_AUTHORIZATION.sub(
             lambda match: " " if _authorization_values(match) else match[0], query
         )
