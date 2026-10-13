@@ -1930,6 +1930,8 @@ export const ja = {
         },
         cellTooltip: "{date} · {tokens}、{messages}",
         weekTooltip: "{date} の週 · {tokens}",
+        chartToggle: "グラフ",
+        chartToggleHint: "週次と累計を軸ラベル付きのグラフで表示",
         less: "少ない",
         more: "多い",
         insightsTitle: "アクティビティの分析",

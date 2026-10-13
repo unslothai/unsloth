@@ -1949,6 +1949,8 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
+        chartToggle: "مخطط",
+        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",

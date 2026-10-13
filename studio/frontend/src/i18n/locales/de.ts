@@ -1975,6 +1975,8 @@ export const de = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Woche vom {date} · {tokens}",
+        chartToggle: "Diagramm",
+        chartToggleHint: "Wöchentlich und Kumuliert als Diagramm mit beschrifteten Achsen anzeigen",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",

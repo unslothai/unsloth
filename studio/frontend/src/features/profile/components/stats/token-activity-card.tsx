@@ -28,6 +28,7 @@ import {
   weekChartPoints,
   windowBaseline,
 } from "../../utils/stats-format";
+import { useActivityChartStore } from "../../stores/activity-chart-store";
 import { StatsCard } from "./stat-primitives";
 
 const DAYS_PER_WEEK = 7;
@@ -36,6 +37,8 @@ const CELL_GAP = 3;
 const COLUMN_WIDTH = CELL_SIZE + CELL_GAP;
 const MIN_COLUMNS = 8;
 const HEAT_OPACITY = [0, 0.4, 0.62, 0.8, 1] as const;
+// Weekly and cumulative are on/off, so they use one flat shade.
+const SOLID_LEVEL = 4;
 const MODES: ActivityMode[] = ["daily", "weekly", "cumulative"];
 
 type Cell = {
@@ -115,6 +118,29 @@ function buildMonthLabels(grid: Cell[][], locale: string) {
     });
   }
   return labels;
+}
+
+/**
+ * Per-column totals for the bar modes. Shading every day of an active week
+ * instead would fill the grid solid and hide the shape.
+ */
+function columnSummary(column: Cell[]) {
+  let value = 0;
+  let tokens = 0;
+  let firstDay: string | null = null;
+  for (const cell of column) {
+    if (!cell.day) continue;
+    value = Math.max(value, cell.value);
+    tokens += cell.day.tokens;
+    firstDay ??= cell.day.date;
+  }
+  return { value, tokens, firstDay };
+}
+
+/** Bar height in cells, at least one for any activity. */
+function barHeight(value: number, peakValue: number): number {
+  if (value <= 0 || peakValue <= 0) return 0;
+  return Math.max(1, Math.round((value / peakValue) * DAYS_PER_WEEK));
 }
 
 /** How many week columns fit the card's current width. */
@@ -204,11 +230,47 @@ function DayColumn({
   );
 }
 
+/** Weekly and cumulative: one flat bar per column, anchored to the bottom. */
+function BarColumn({
+  column,
+  peak,
+  dateFormatter,
+}: {
+  column: Cell[];
+  peak: number;
+  dateFormatter: Intl.DateTimeFormat;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const summary = columnSummary(column);
+  const height = barHeight(summary.value, peak);
+  // The bar is scaled by summary.value, which in cumulative mode is the
+  // running total. The tooltip says "week of", so it reports that week.
+  const title = summary.firstDay
+    ? t("settings.profile.stats.weekTooltip", {
+        date: dateFormatter.format(parseDayKey(summary.firstDay)),
+        tokens: formatProfileCount(summary.tokens, "token", locale),
+      })
+    : "";
+
+  return (
+    <div className="flex flex-col gap-[3px]">
+      {Array.from({ length: DAYS_PER_WEEK }, (_, row) => (
+        <Block
+          key={column[row]?.key ?? `slot-${row}`}
+          title={title}
+          tone={row >= DAYS_PER_WEEK - height ? SOLID_LEVEL : 0}
+        />
+      ))}
+    </div>
+  );
+}
+
 const WEEK_CHART_CONFIG = {
   tokens: { color: "var(--primary)" },
 } satisfies ChartConfig;
 
-/** Weekly as bars, cumulative as a line, both on labelled token and date axes. */
+/** Opt-in view: Weekly as bars, Cumulative as a line, on labelled token and date axes. */
 function WeekChart({
   grid,
   mode,
@@ -318,6 +380,9 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   const { ref, columns } = useVisibleColumns(maxColumns);
 
   const shaded = mode === "daily";
+  const showChart = useActivityChartStore((state) => state.showChart);
+  const setShowChart = useActivityChartStore((state) => state.setShowChart);
+  const charted = !shaded && showChart;
   const values = useMemo(() => seriesForMode(daily, mode), [daily, mode]);
   const grid = useMemo(
     () => buildColumns(daily, values, columns, mode),
@@ -331,18 +396,24 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
     () => buildMonthLabels(grid, locale),
     [grid, locale],
   );
-  // Daily shades each day against the busiest one.
+  // Daily scales against the busiest day, the bar modes against the busiest
+  // column, so a full-height bar always means the peak week.
   const peak = useMemo(
     () =>
-      grid.reduce(
-        (max, column) =>
-          column.reduce(
-            (best, cell) => Math.max(best, cell.day?.tokens ?? 0),
-            max,
+      shaded
+        ? grid.reduce(
+            (max, column) =>
+              column.reduce(
+                (best, cell) => Math.max(best, cell.day?.tokens ?? 0),
+                max,
+              ),
+            0,
+          )
+        : grid.reduce(
+            (max, column) => Math.max(max, columnSummary(column).value),
+            0,
           ),
-        0,
-      ),
-    [grid],
+    [grid, shaded],
   );
   const summaryTotal = useMemo(
     () => activitySummaryForMode(grid, mode),
@@ -372,40 +443,70 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
         weeks: formatProfileCount(grid.length, "week", locale),
       })}
       action={
-        <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
-          {MODES.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => setMode(option)}
-              aria-pressed={mode === option}
-              className={cn(
-                "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
-                mode === option
-                  ? "hub-tab-toggle-pill text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {t(`settings.profile.stats.mode.${option}`)}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          {shaded ? null : (
+            <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
+              <button
+                type="button"
+                onClick={() => setShowChart(!showChart)}
+                aria-pressed={showChart}
+                title={t("settings.profile.stats.chartToggleHint")}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                  showChart
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t("settings.profile.stats.chartToggle")}
+              </button>
+            </div>
+          )}
+          <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
+            {MODES.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setMode(option)}
+                aria-pressed={mode === option}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-full px-3 text-ui-13 font-medium transition-colors",
+                  mode === option
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(`settings.profile.stats.mode.${option}`)}
+              </button>
+            ))}
+          </div>
         </div>
       }
     >
-      {/* Measured, never scrolled: the grid is trimmed to fit instead. The
-          charts reuse the same weeks so switching modes keeps the window. */}
+      {/* Measured, never scrolled: the grid is trimmed to fit instead. */}
       <div ref={ref} className="w-full overflow-hidden">
-        {shaded ? (
+        {charted ? (
+          <WeekChart grid={grid} mode={mode} dateFormatter={dateFormatter} />
+        ) : (
           <>
             <div className="flex gap-[3px]">
-              {grid.map((column) => (
-                <DayColumn
-                  key={column[0]?.key ?? "column"}
-                  column={column}
-                  peak={peak}
-                  dateFormatter={dateFormatter}
-                />
-              ))}
+              {grid.map((column) =>
+                shaded ? (
+                  <DayColumn
+                    key={column[0]?.key ?? "column"}
+                    column={column}
+                    peak={peak}
+                    dateFormatter={dateFormatter}
+                  />
+                ) : (
+                  <BarColumn
+                    key={column[0]?.key ?? "column"}
+                    column={column}
+                    peak={peak}
+                    dateFormatter={dateFormatter}
+                  />
+                ),
+              )}
             </div>
 
             <div className="relative mt-2 h-4">
@@ -420,8 +521,6 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
               ))}
             </div>
           </>
-        ) : (
-          <WeekChart grid={grid} mode={mode} dateFormatter={dateFormatter} />
         )}
       </div>
     </StatsCard>

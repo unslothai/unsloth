@@ -1974,6 +1974,8 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
+        chartToggle: "Graphique",
+        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",

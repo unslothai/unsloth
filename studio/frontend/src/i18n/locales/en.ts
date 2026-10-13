@@ -1989,6 +1989,8 @@ export const en = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Week of {date} · {tokens}",
+        chartToggle: "Chart",
+        chartToggleHint: "Show Weekly and Cumulative as a chart with labelled axes",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
