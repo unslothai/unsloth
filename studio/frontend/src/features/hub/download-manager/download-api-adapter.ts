@@ -115,7 +115,7 @@ export function apiStart(
         hf_token: hfToken,
         use_xet: useXet,
         transport_mode,
-        download_dir: downloadDirForRequest(),
+        download_dir: downloadDirForRequest(req.downloadDir),
       });
 }
 

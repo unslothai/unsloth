@@ -60,3 +60,12 @@ test("datasets never carry the folder", async () => {
   await apiStart({ ...model, kind: "dataset" as const, variant: null }, false, null);
   assert.equal("download_dir" in bodies[0], false);
 });
+
+test("a folder pinned on the request wins over a later choice", async () => {
+  storage.setItem(DOWNLOAD_DIR_STORAGE_KEY, "/mnt/b/Models");
+  bodies.length = 0;
+  await apiStart({ ...model, downloadDir: "/mnt/a/Models" }, false, null);
+  await apiStart({ ...model, downloadDir: null }, false, null);
+  assert.equal(bodies[0].download_dir, "/mnt/a/Models");
+  assert.equal("download_dir" in bodies[1], false);
+});

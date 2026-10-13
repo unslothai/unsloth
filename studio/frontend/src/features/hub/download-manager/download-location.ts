@@ -20,10 +20,16 @@ export function getDownloadDir(): string | null {
   }
 }
 
-/** What a model download sends: only the owner may pick a folder, and this browser may hold
- * an owner's choice while another account is signed in. */
-export function downloadDirForRequest(): string | undefined {
-  return isAccountOwner() ? (getDownloadDir() ?? undefined) : undefined;
+/** What a model download sends: the folder pinned on the request, else the current choice. Only
+ * the owner may pick a folder, and this browser may hold an owner's choice while another account
+ * is signed in. */
+export function downloadDirForRequest(
+  pinned?: string | null,
+): string | undefined {
+  if (!isAccountOwner()) {
+    return undefined;
+  }
+  return (pinned === undefined ? getDownloadDir() : pinned) ?? undefined;
 }
 
 export function setDownloadDir(path: string | null): void {

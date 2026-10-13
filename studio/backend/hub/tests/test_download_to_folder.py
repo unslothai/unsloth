@@ -78,17 +78,20 @@ def test_remember_cache_home_is_idempotent_and_scanned(settings_store, tmp_path)
     hf_cache_settings.remember_cache_home(target)
     hf_cache_settings.remember_cache_home(target)
 
-    assert settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] == [str(target.resolve())]
+    assert settings_store[hf_cache_settings.DOWNLOAD_HOMES_SETTING_KEY] == [str(target.resolve())]
     assert target.resolve() / "hub" in hf_cache_settings.known_hf_hub_caches()
 
 
-def test_remember_cache_home_never_evicts_a_previous_models_folder(settings_store, tmp_path):
+def test_download_folder_is_known_even_with_a_full_models_folder_history(settings_store, tmp_path):
     full = [str(tmp_path / f"old-{i}") for i in range(hf_cache_settings.MAX_CACHE_HISTORY)]
     settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] = list(full)
+    target = tmp_path / "new"
+    target.mkdir()
 
-    hf_cache_settings.remember_cache_home(tmp_path / "new")
+    hf_cache_settings.remember_cache_home(target)
 
     assert settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] == full
+    assert target.resolve() / "hub" in hf_cache_settings.known_hf_hub_caches()
 
 
 def _start(monkeypatch, body):
@@ -163,7 +166,7 @@ def test_download_without_download_dir_keeps_the_models_folder(settings_store, m
     assert calls["claim"][0]["hub_cache"] == str(active.hub_cache)
     assert calls["spawn"][0]["HF_HUB_CACHE"] == str(active.hub_cache)
     assert calls["scan_folders"] == []
-    assert hf_cache_settings.CACHE_HISTORY_SETTING_KEY not in settings_store
+    assert hf_cache_settings.DOWNLOAD_HOMES_SETTING_KEY not in settings_store
 
 
 def test_download_to_folder_routes_worker_and_registers_folder(
@@ -182,7 +185,7 @@ def test_download_to_folder_routes_worker_and_registers_folder(
         assert calls["scan_folders"] == [str(target.resolve())]
 
     # Registered once, so progress, delete and the cached checks see the folder.
-    assert settings_store[hf_cache_settings.CACHE_HISTORY_SETTING_KEY] == [str(target.resolve())]
+    assert settings_store[hf_cache_settings.DOWNLOAD_HOMES_SETTING_KEY] == [str(target.resolve())]
     assert hub in hf_cache_settings.known_hf_hub_caches()
     assert hf_cache_settings.get_hf_cache_paths().source == "default"
 

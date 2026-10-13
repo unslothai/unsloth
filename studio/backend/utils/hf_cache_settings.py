@@ -25,6 +25,9 @@ from typing import Iterator, Literal, Mapping, Optional
 CACHE_HOME_SETTING_KEY = "hugging_face_cache_home"
 CACHE_HISTORY_SETTING_KEY = "hugging_face_cache_history"
 MAX_CACHE_HISTORY = 16
+# Download to folders, kept apart from the Models folder history so neither list evicts the other.
+DOWNLOAD_HOMES_SETTING_KEY = "hugging_face_download_homes"
+MAX_DOWNLOAD_HOMES = 64
 
 CacheSource = Literal["default", "studio", "environment"]
 
@@ -354,10 +357,18 @@ def _validate_cache_home(raw_path: str) -> Path:
 
 
 def _stored_history() -> list[Path]:
+    return _stored_paths(CACHE_HISTORY_SETTING_KEY, MAX_CACHE_HISTORY)
+
+
+def _stored_download_homes() -> list[Path]:
+    return _stored_paths(DOWNLOAD_HOMES_SETTING_KEY, MAX_DOWNLOAD_HOMES)
+
+
+def _stored_paths(setting_key: str, limit: int) -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
-        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
+        raw = run_as(OWNER, get_app_setting, setting_key, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):
@@ -376,7 +387,7 @@ def _stored_history() -> list[Path]:
             continue
         seen.add(key)
         out.append(path)
-    return out[:MAX_CACHE_HISTORY]
+    return out[:limit]
 
 
 def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
@@ -433,15 +444,14 @@ def download_cache_paths(download_dir: Optional[str]) -> HuggingFaceCachePaths:
 def remember_cache_home(cache_home: Path) -> None:
     """Keep a download folder among the known caches, like a previous Models folder.
 
-    Progress, resume, delete and the cached-model checks read only known caches. Idempotent; a
-    full history is left alone so no earlier Models folder is pushed out.
+    Progress, resume, delete and the cached-model checks read only known caches. Idempotent.
     """
     home = _canonical(cache_home)
     key = os.path.normcase(str(home))
     with _settings_lock:
-        history = _stored_history()
-        if len(history) >= MAX_CACHE_HISTORY or any(
-            os.path.normcase(str(path)) == key for path in history
+        homes = _stored_download_homes()
+        if len(homes) >= MAX_DOWNLOAD_HOMES or any(
+            os.path.normcase(str(path)) == key for path in homes
         ):
             return
         from storage.studio_db import upsert_app_settings
@@ -450,7 +460,7 @@ def remember_cache_home(cache_home: Path) -> None:
         run_as(
             OWNER,
             upsert_app_settings,
-            {CACHE_HISTORY_SETTING_KEY: [*(str(path) for path in history), str(home)]},
+            {DOWNLOAD_HOMES_SETTING_KEY: [*(str(path) for path in homes), str(home)]},
         )
     _invalidate_cache_views()
 
@@ -497,7 +507,7 @@ def known_hf_cache_homes() -> list[Path]:
         candidates.append(_canonical(explicit_home))
     if stored is not None:
         candidates.append(stored)
-    candidates.extend([*_stored_history(), _default_cache_home()])
+    candidates.extend([*_stored_history(), *_stored_download_homes(), _default_cache_home()])
     out: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:
