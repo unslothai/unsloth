@@ -55,7 +55,7 @@ export function useStagedDownload({
   onReady: () => void;
   /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
   onCancelled?: () => void;
-  /** A session change dropped the plan's jobs. Not ``onCancelled``: a consumer that starts its next plan there would carry the old session's queue into the new one. */
+  /** A session change in another tab dropped the plan's jobs: passing this drops the plan too. Not ``onCancelled``: a consumer that starts its next plan there would carry the old session's queue into the new one. */
   onReset?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
@@ -134,7 +134,12 @@ export function useStagedDownload({
   useEffect(
     () =>
       useStagedDownloadQueues.subscribe((state, previous) => {
-        if (state.resets === previous.resets || queueRef.current === null) {
+        // Only a consumer that handles the reset opts in; the rest keep their plan as before.
+        if (
+          state.resets === previous.resets ||
+          queueRef.current === null ||
+          !onResetRef.current
+        ) {
           return;
         }
         queueRef.current = null;
