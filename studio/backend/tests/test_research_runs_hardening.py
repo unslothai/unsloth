@@ -237,6 +237,7 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"password: basic\ntoken: {secret}\nwhy",
         f"password: basic token: {secret} why",
         f"password: basic api key: {secret} why",
+        f"password: basic oauth.token: {secret} why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text

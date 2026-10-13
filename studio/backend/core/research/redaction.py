@@ -35,7 +35,7 @@ _AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
 _AUTH_PARAM = rf"""{_AUTH_TOKEN}[ \t]*=[ \t]*(?:"(?:[^"\\]|\\.)*"|[^\s,"]+)"""
 _AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
 # Never step over a following label: it may carry its own credential.
-_NOT_A_LABEL = rf"(?!(?:{_CREDENTIAL_LABEL})[ \t]*[:=]|[\w-]+[ \t]*:)"
+_NOT_A_LABEL = rf"(?!(?:{_CREDENTIAL_LABEL})[ \t]*[:=]|[^\s:,;]+[ \t]*:)"
 _QUERY_CREDENTIAL = re.compile(
     rf"""(?ix)(?<![A-Za-z0-9])(?:{_CREDENTIAL_LABEL})\s*[:=]\s*
     (?:(?:aws4-hmac-sha256|bearer|basic|digest|dpop|negotiate|ntlm|token)[ \t]+{_NOT_A_LABEL}
