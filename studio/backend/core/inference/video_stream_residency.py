@@ -148,7 +148,6 @@ def calibration_key(
     device: Any = None,
     **extra: Any,
 ) -> tuple:
-    """What a measured peak is valid for: the model, its placement and the device kind."""
     return (
         str(family or ""),
         str(repo or ""),
@@ -166,7 +165,6 @@ def _covering(peaks: dict, work: int) -> Optional[int]:
 
 
 def measured_extra_mib(key: Any, work: int) -> Optional[int]:
-    """The largest peak recorded under ``key`` by a completed request at least as large as ``work``, or None."""
     if key is None or not measured_enabled():
         return None
     return _covering(_PEAKS.get(key) or {}, int(work))
@@ -193,7 +191,7 @@ def arm_request(
     rearm: bool = True,
 ) -> bool:
     """Tag the denoiser with ``key`` and arm the peak measurement ``record_request_peak`` closes. ``rearm=False``
-    after ``fit_for_request`` (which armed this request itself) only tags. CUDA only; never raises."""
+    after ``fit_for_request`` only tags. CUDA only; never raises."""
     module = getattr(pipe, "transformer", None)
     if module is None:
         return False

@@ -2005,7 +2005,6 @@ def _video_seed_stays_resident(
     ``_auto_keeps_resident_bf16``)."""
     from .diffusion_component_sizes import video_components_gb
 
-    # pre-download: headers of the repo about to load (ranged Hub reads only where the table does not describe it)
     components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token)
     if not components:
         return scheme is not None
@@ -6327,11 +6326,9 @@ class VideoBackend:
         device_memory = settled_snapshot_device_memory(target)
         from .diffusion_component_sizes import video_components_gb
 
-        # Safetensors headers of the pipeline repo, reconciled with the family table (the offline fallback).
         components = video_components_gb(
             fam,
             repo_id if kind == "pipeline" else None,
-            # a local-only load never probes the Hub (hub_disabled also reads the scoped flag)
             allow_hub = not local_files_only,
             token = hf_token,
         )
@@ -9879,14 +9876,12 @@ class VideoBackend:
                         offload_policy = state.offload_policy,
                         device = state.device,
                     )
-                    # Runtime calibration for every family: this request's peak is recorded after export and sizes
-                    # the next request of its size (the refusal below, and the Wan residency fit).
+                    # This request's peak sizes the next request of its size (refusal below, Wan residency fit).
                     calibration = video_stream_residency.calibration_key(
                         fam.name,
                         getattr(state, "repo_id", None),
                         state.offload_policy,
                         device_obj,
-                        # everything about the load that moves its activation peak, the concrete artifact included
                         kind = getattr(state, "kind", None),
                         gguf_filename = getattr(state, "gguf_filename", None),
                         variant_id = getattr(state, "variant_id", None),
@@ -9900,8 +9895,7 @@ class VideoBackend:
                         memory_mode = getattr(state, "memory_mode", None),
                         transformer_quant = getattr(state, "transformer_quant", None),
                         text_encoder_quant = getattr(state, "text_encoder_quant", None),
-                        # and the request mode: the audio length follows the frame rate, a keyframe / reference request
-                        # encodes and conditions on extra latents, and CFG doubles the denoiser batch
+                        # fps (audio length), keyframes / references (extra latents) and CFG all move the peak
                         fps = out_fps if getattr(fam, "has_audio", False) else None,
                         conditioning = conditioning,
                         first_frame = first_pil is not None,
@@ -9909,8 +9903,7 @@ class VideoBackend:
                         references = len(references or ()),
                         cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                     )
-                    # Tag the denoiser BEFORE the residency fit: on the first request after a reload the fit reads the
-                    # process-wide peaks through this key.
+                    # Tag BEFORE the residency fit: after a reload the fit reads process-wide peaks through this key.
                     video_stream_residency.arm_request(
                         state.pipe,
                         key = calibration,

@@ -62,7 +62,6 @@ def _component(
     )
 
 
-# ---- parser ----
 
 
 def test_parser_rejects_implausible_and_non_object_headers(tmp_path):
@@ -101,7 +100,6 @@ def test_merged_callers_read_through_the_shared_parser(tmp_path):
     assert DiffusionBackend._safetensors_cast_bytes(bad, 2) is None
 
 
-# ---- file selection ----
 
 
 def test_local_sizes_pick_default_variant_and_complete_index(tmp_path):
@@ -163,7 +161,6 @@ def test_resident_cast_keeps_non_float_tensors(tmp_path):
     assert dict(size.bytes_by_dtype) == {"F32": 400}
 
 
-# ---- roles and reconciliation ----
 
 
 def _fam(name):
@@ -326,14 +323,10 @@ def test_ltx25_latent_upsampler_from_header(monkeypatch, tmp_path):
     assert ltx25_latent_upsampler_gb(str(tmp_path)) == LTX25_LATENT_UPSAMPLER_GB
 
 
-# ---- the real local HF cache: headers vs tables ----
 
-# Disagreements beyond rounding, measured from the Hub headers (2026-10-13). The table keeps answering for the base repo;
-# each needs a human decision before a table changes.
+# Header-vs-table disagreements (Hub, 2026-10-13); each needs a human decision before a table changes.
 KNOWN_TABLE_DELTAS = {
-    # The 42.0 is the single-file DiT (diffusion_models/ltx-2.5-22b-*-transformer-bf16.safetensors, 42,018,190,584
-    # bytes), which carries ~4.04 GB of connector weights. The Diffusers pack's transformer/ is 37.98 GB and its
-    # connectors/ (6.34) are already in the companion term, so the table over-states the pack by ~4.0 GB.
+    # 42.0 is the single-file DiT incl. ~4 GB connectors, already in the companion term: over-states the pack.
     ("ltx-2.5", 0): 4.03,
     # Qwen2.5-VL 7B (14.14) + ByT5 (0.44 at bf16) = 14.58, table 14.8; VAE 2.52 at bf16 (5.04 stored fp32), table 2.4.
     ("hunyuanvideo-1.5", 1): -0.22,
@@ -408,7 +401,6 @@ def test_hub_headers_match_tables(fam):
     assert not _check_against_table(fam.name, header, fam.bf16_components_gb)
 
 
-# ---- runtime activation calibration, any family ----
 
 
 class _Module:
@@ -478,7 +470,6 @@ def test_shortfall_uses_a_measured_peak_only_when_smaller():
     )
 
 
-# ---- review follow-ups ----
 
 
 def test_float8_tensors_are_floating_parameters(tmp_path):
@@ -654,7 +645,6 @@ def test_generate_keys_calibration_on_the_load_configuration():
         assert f'"{field}"' in call, field
 
 
-# ---- review round 2 ----
 
 
 def _index(path: Path, shards: list) -> None:
@@ -806,7 +796,6 @@ def test_generate_tags_before_the_fit_and_keys_the_request_mode():
         assert f"{field} = " in call, field
 
 
-# ---- review round 3 ----
 
 
 def test_local_files_only_scope_disables_hub_reads(monkeypatch):

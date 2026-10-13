@@ -477,8 +477,7 @@ def is_ltx25_single_file_listing(names: Any) -> bool:
 
 
 def ltx25_latent_upsampler_gb(repo: Optional[str] = None) -> float:
-    """The latent upsampler's resident GB: its safetensors header when ``repo`` (default the Diffusers pack) is cached,
-    reconciled with ``LTX25_LATENT_UPSAMPLER_GB`` (the offline fallback, kept where the two agree within rounding)."""
+    """Latent upsampler GB from its cached header, reconciled with ``LTX25_LATENT_UPSAMPLER_GB``."""
     from .diffusion_component_sizes import component_gb, reconcile_scalar
 
     header = component_gb(repo or "Lightricks/LTX-2.5-Diffusers", LATENT_UPSAMPLER_SUBFOLDER)
