@@ -5,15 +5,20 @@
  *  Shipped to the page as source (`pageAgentSource`), so `installPageAgent` must stay
  *  self-contained: no imports and nothing from outside its own body. */
 
+/** `x` and `y` are CSS pixels of the visible page, as a pointer event's clientX and clientY. */
 export type AgentCommand =
   | { op: "snapshot"; fullPage?: boolean; ref?: string }
   | { op: "find"; query: string }
-  | { op: "describe"; ref: string }
-  | { op: "click"; ref: string; directLinks: boolean }
+  | { op: "describe"; ref: string; x?: number; y?: number }
+  | { op: "click"; ref: string; directLinks: boolean; x?: number; y?: number; expect?: string }
+  | { op: "locate"; ref: string; scroll: boolean }
+  | { op: "pointer"; phase: "down" | "move" | "up" | "cancel"; x: number; y: number; expect?: string }
   | { op: "type"; ref: string; text: string; submit: boolean }
   | { op: "select"; ref: string; value: string }
   | { op: "scroll"; direction: "up" | "down"; ref?: string }
   | { op: "press"; key: string }
+  | { op: "evaluate"; id: string; doc: string; script: string }
+  | { op: "evaluated"; id: string }
   | { op: "status" };
 
 /** What a ref is, so the panel can decide whether acting on it needs the user's OK. */
@@ -27,6 +32,8 @@ export type ElementInfo = {
   formMethod: string;
   formAction: string;
   formHasPassword: boolean;
+  /** Whether one of those password fields holds a value (the user's to type); never the value. */
+  formPasswordFilled?: boolean;
   /** For a dropdown described with a value: the label of the option that value selects. */
   option?: string;
   /** For Enter in a field: the label of the button that will submit its form. */
@@ -43,10 +50,28 @@ export type AgentAnswer = {
   navigate?: string;
   info?: ElementInfo;
   quietMs?: number;
+  /** Requests the page started recently and is still waiting on. */
+  requests?: number;
   title?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  scrollX?: number;
+  scrollY?: number;
+  scrolls?: number;
+  pending?: boolean;
+  hit?: string;
+  sig?: string;
+  doc?: string;
 };
 
-export type PageAgent = { run: (command: Record<string, unknown>) => Record<string, unknown> };
+/** `evaluate`: native views splice the script in past the CSP as `run`; the proxied frame compiles it. */
+export type PageAgent = {
+  run: (command: Record<string, unknown>) => Record<string, unknown>;
+  evaluate: (id: string, doc: unknown, run: () => unknown) => Record<string, unknown>;
+  owns: (doc: unknown) => boolean;
+};
 
 /** Returns the agent it built, so the proxied frame keeps its own reference rather than trusting
  *  KEY, which a page script can define before the agent arrives. */
@@ -97,6 +122,8 @@ export function installPageAgent(): PageAgent {
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
   let lastMutation = performance.now();
+  let scrolls = 0;
+  addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
     new MutationObserver(() => {
       lastMutation = performance.now();
@@ -277,7 +304,7 @@ export function installPageAgent(): PageAgent {
       el.style.setProperty("-webkit-text-fill-color", "transparent", "important");
       el.style.setProperty("text-shadow", "none", "important");
     }
-    return { ok: true };
+    return { ok: true, ...view() };
   };
 
   const stateOf = (el: Element, role: string): string[] => {
@@ -499,16 +526,40 @@ export function installPageAgent(): PageAgent {
         ) as HTMLButtonElement | HTMLInputElement | undefined)
       : undefined;
 
-  /** No ref: the focused element, which a key press would act on. */
-  const describe = (ref: string, value?: unknown): Record<string, unknown> => {
-    const found = ref ? lookup(ref) : (document.activeElement ?? document.body);
+  type Point = { x: number; y: number };
+  const pointIn = (command: Record<string, unknown>): Point | null =>
+    typeof command.x === "number" && typeof command.y === "number" && Number.isFinite(command.x) && Number.isFinite(command.y)
+      ? { x: command.x, y: command.y }
+      : null;
+
+  const elementAt = ({ x, y }: Point): Element => {
+    const outside = "that point is outside the visible page; take a screenshot to see what is there.";
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) throw new AgentError(outside);
+    let el = document.elementFromPoint(x, y);
+    while (el?.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    if (!el) throw new AgentError(outside);
+    if (el instanceof HTMLIFrameElement || el.tagName.toLowerCase() === "frame") {
+      throw new AgentError("that point is inside an embedded frame, which the browser tools can't reach.");
+    }
+    return el;
+  };
+
+  const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
+    const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
     // A click on text inside a button or label reaches that control (a label's being its field or
     // button), which may submit.
-    const holder = found.closest("button, label") ?? found;
+    // A point lands on whatever is drawn, often an icon inside a control: gate the control.
+    const control = point ? (lineage(found).find((node) => roleOf(node) !== null) ?? found) : found;
+    const holder = control.closest("button, label") ?? control;
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;
     const form = (field.form ?? el.closest("form")) as HTMLFormElement | null;
-    const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
+    // Through shadow roots, as linkOut finds it, so the link is gated before a native click follows it.
+    const anchor = lineage(el).find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && node.hasAttribute("href")) ?? null;
     const tag = el.tagName.toLowerCase();
     const type = (field.type || "").toLowerCase();
     const submits = Boolean(form) && isSubmitter(el);
@@ -519,6 +570,10 @@ export function installPageAgent(): PageAgent {
     const action = submitter?.hasAttribute("formaction")
       ? new URL(submitter.getAttribute("formaction") ?? "", document.baseURI).href
       : form?.action || pageUrl().href;
+    // form.elements, not descendants: a field joins a form from anywhere with form="id".
+    const passwords = Array.from(form?.elements ?? []).filter(
+      (node): node is HTMLInputElement => (node as HTMLInputElement).type === "password",
+    );
     const info = {
       role: roleOf(el) ?? (anchor ? "link" : "element"),
       name: nameOf(el) || nameOf(anchor ?? el),
@@ -528,8 +583,8 @@ export function installPageAgent(): PageAgent {
       autocomplete: (el.getAttribute("autocomplete") ?? "").toLowerCase(),
       formMethod: form ? method.toLowerCase() : "get",
       formAction: form ? action : "",
-      // form.elements, not descendants: a field joins a form from anywhere with form="id".
-      formHasPassword: Array.from(form?.elements ?? []).some((node) => (node as HTMLInputElement).type === "password"),
+      formHasPassword: passwords.length > 0,
+      formPasswordFilled: passwords.some((field) => field.value !== ""),
       submits,
       // What choose() will pick, so the panel gates that option's label, not the model's words.
       ...(el instanceof HTMLSelectElement && typeof value === "string"
@@ -537,7 +592,19 @@ export function installPageAgent(): PageAgent {
         : {}),
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
-    return { ok: true, info };
+    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info) } : { ok: true, info };
+  };
+
+  const stillAt = (at: Point, expect: unknown, sig?: unknown): Element => {
+    const el = elementAt(at);
+    if (typeof expect === "string" && expect && refOf(el) !== expect) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    // And what it is: an href or form can change on the same node between the check and the act.
+    if (typeof sig === "string" && sig && describe("", undefined, at).sig !== sig) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    return el;
   };
 
   const covering = (el: Element): Element | null => {
@@ -554,21 +621,247 @@ export function installPageAgent(): PageAgent {
     return null;
   };
 
-  const mouse = (el: Element, type: string) => {
+  const mouse = (el: Element, type: string, at?: Point, buttons = 0, relatedTarget: Element | null = null): boolean => {
     const rect = el.getBoundingClientRect();
     const init = {
-      bubbles: true,
+      bubbles: !/(enter|leave)$/.test(type),
       cancelable: true,
       composed: true,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2,
+      clientX: at ? at.x : rect.left + rect.width / 2,
+      clientY: at ? at.y : rect.top + rect.height / 2,
       button: 0,
+      buttons,
+      relatedTarget,
       view: window,
     };
     const event = type.startsWith("pointer")
       ? new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true })
       : new MouseEvent(type, init);
-    el.dispatchEvent(event);
+    return el.dispatchEvent(event);
+  };
+
+  const linkOut = (el: Element, directLinks: boolean): string | null => {
+    const anchor = lineage(el).find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && node.hasAttribute("href"));
+    const href = anchor?.href ?? "";
+    if (!anchor || !/^https?:/i.test(href)) return null;
+    const target = new URL(href);
+    const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
+    return !hashOnly && (directLinks || anchor.target === "_blank") ? href : null;
+  };
+
+  const parentOf = (node: Element): Element | null => {
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode();
+    return root instanceof ShadowRoot ? root.host : null;
+  };
+  const lineage = (el: Element | null): Element[] => {
+    const chain: Element[] = [];
+    for (let node = el; node; node = parentOf(node)) chain.push(node);
+    return chain;
+  };
+
+  let hovered: Element | null = null;
+  const hoverTo = (el: Element, at: Point, buttons = 0) => {
+    if (hovered !== el) {
+      const old = hovered?.isConnected ? hovered : null;
+      const before = lineage(old);
+      const after = lineage(el);
+      if (old) {
+        mouse(old, "pointerout", at, buttons, el);
+        mouse(old, "mouseout", at, buttons, el);
+        for (const node of before.filter((node) => !after.includes(node))) {
+          mouse(node, "pointerleave", at, buttons, el);
+          mouse(node, "mouseleave", at, buttons, el);
+        }
+      }
+      mouse(el, "pointerover", at, buttons, old);
+      mouse(el, "mouseover", at, buttons, old);
+      for (const node of after.filter((node) => !before.includes(node)).reverse()) {
+        mouse(node, "pointerenter", at, buttons, old);
+        mouse(node, "mouseenter", at, buttons, old);
+      }
+      hovered = el;
+    }
+    mouse(el, "pointermove", at, buttons);
+    mouse(el, "mousemove", at, buttons);
+  };
+
+  const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
+  const pressAt = (el: Element, at: Point, expect?: unknown, sig?: unknown) => {
+    hoverTo(el, at);
+    // A hover handler can open an overlay or rewire the target: the press waits for a fresh check.
+    if (expect && stillAt(at, expect, sig) !== el) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    mouse(el, "pointerdown", at, 1);
+    if (mouse(el, "mousedown", at, 1)) (el.closest(FOCUSABLE) as HTMLElement | null)?.focus?.({ preventScroll: true });
+  };
+
+  const clickAt = (at: Point, directLinks: boolean, expect: unknown, sig: unknown): Record<string, unknown> => {
+    const el = stillAt(at, expect, sig);
+    // As a real click: a disabled control takes none, and a dispatched one would still reach its listeners.
+    if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
+    const navigate = linkOut(el, directLinks);
+    if (navigate) return { ok: true, navigate };
+    pressAt(el, at, expect, sig);
+    mouse(el, "pointerup", at);
+    mouse(el, "mouseup", at);
+    mouse(el, "click", at);
+    return { ok: true };
+  };
+
+  const locate = (ref: string, scroll: boolean): Record<string, unknown> => {
+    const el = lookup(ref);
+    const centre = () => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    };
+    const inView = ({ x, y }: Point) => x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+    if (scroll && !inView(centre())) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const at = centre();
+    if (!inView(at)) return { ok: true };
+    if (!lineage(elementAt(at)).includes(el)) {
+      return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
+    }
+    return { ok: true, ...at };
+  };
+
+  // `html`: the source is draggable, so a browser would send drag events, not mouse moves.
+  let drag: { html: { source: Element; data: DataTransfer; over: Element | null; accepted: boolean } | null } | null = null;
+  const dragEvent = (el: Element, type: string, at: Point, data: DataTransfer): boolean =>
+    el.dispatchEvent(
+      new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: at.x, clientY: at.y, dataTransfer: data, view: window }),
+    );
+
+  const pointer = (phase: unknown, at: Point, expect: unknown, sig: unknown): Record<string, unknown> => {
+    // The press and the release are held to the elements the user was asked about; moves are not.
+    const el = phase === "down" || phase === "up" ? stillAt(at, expect, sig) : elementAt(at);
+    if (phase === "down") {
+      if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
+      pressAt(el, at, expect, sig);
+      drag = { html: null };
+      const source = lineage(el).find((node) => node.getAttribute("draggable") === "true");
+      if (source && typeof DataTransfer === "function" && typeof DragEvent === "function") {
+        const data = new DataTransfer();
+        if (dragEvent(source, "dragstart", at, data)) drag.html = { source, data, over: null, accepted: false };
+      }
+      return { ok: true };
+    }
+    if (phase === "move") {
+      const html = drag?.html;
+      if (!html) {
+        hoverTo(el, at, drag ? 1 : 0);
+        return { ok: true };
+      }
+      dragEvent(html.source, "drag", at, html.data);
+      if (html.over !== el) {
+        if (html.over) dragEvent(html.over, "dragleave", at, html.data);
+        dragEvent(el, "dragenter", at, html.data);
+        html.over = el;
+      }
+      html.accepted = !dragEvent(el, "dragover", at, html.data);
+      return { ok: true };
+    }
+    const html = drag?.html;
+    drag = null;
+    if (phase === "cancel") {
+      key(document.activeElement ?? document.body, "Escape");
+      if (html) dragEvent(html.source, "dragend", at, html.data);
+      else {
+        hoverTo(el, at, 1);
+        mouse(el, "pointerup", at);
+        mouse(el, "mouseup", at);
+      }
+      return { ok: true };
+    }
+    if (html) {
+      if (html.over !== el) {
+        if (html.over) dragEvent(html.over, "dragleave", at, html.data);
+        dragEvent(el, "dragenter", at, html.data);
+        html.over = el;
+      }
+      html.accepted = !dragEvent(el, "dragover", at, html.data);
+      // Drop zone handlers can rewire the target: the drop waits for a fresh check, as the press does.
+      if (expect && stillAt(at, expect, sig) !== el) {
+        dragEvent(html.source, "dragend", at, html.data);
+        throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+      }
+      if (html.accepted) dragEvent(el, "drop", at, html.data);
+      dragEvent(html.source, "dragend", at, html.data);
+      return html.accepted ? { ok: true } : { ok: true, note: "Nothing at the end point took the drop." };
+    }
+    hoverTo(el, at, 1);
+    if (expect && stillAt(at, expect, sig) !== el) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    mouse(el, "pointerup", at);
+    mouse(el, "mouseup", at);
+    return { ok: true };
+  };
+
+  const SCRIPT_CHARS = 20000;
+  const scripts = new Map<string, { done: boolean; text: string }>();
+  const thrown = (error: unknown): string => {
+    try {
+      return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    } catch {
+      return "an error";
+    }
+  };
+  const shown = (value: unknown): string => {
+    if (value === undefined) return "undefined (use return to give back a value)";
+    try {
+      const json = JSON.stringify(value, (_key, item) =>
+        item instanceof Element ? `<${item.tagName.toLowerCase()}>` : typeof item === "bigint" ? String(item) : item,
+      );
+      if (json !== undefined) return json;
+    } catch {
+    }
+    try {
+      return String(value);
+    } catch {
+      return "a value that can't be shown";
+    }
+  };
+  /** `doc`: the document the user approved the script on (`status` gives it); any other refuses. */
+  const evaluate = (id: string, doc: unknown, start: () => unknown): Record<string, unknown> => {
+    if (typeof doc !== "string" || refOf(document.documentElement) !== doc) {
+      return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
+    }
+    const oldest = scripts.keys().next().value;
+    if (scripts.size >= 20 && oldest !== undefined) scripts.delete(oldest);
+    const entry = { done: false, text: "" };
+    scripts.set(String(id), entry);
+    const finish = (text: string) => {
+      entry.done = true;
+      entry.text = text.length > SCRIPT_CHARS ? `${text.slice(0, SCRIPT_CHARS)}… (cut)` : text;
+    };
+    try {
+      Promise.resolve(start()).then(
+        (value) => finish(`Returned: ${shown(value)}`),
+        (error) => finish(`Threw ${thrown(error)}`),
+      );
+    } catch (error) {
+      finish(`Threw ${thrown(error)}`);
+    }
+    return { ok: true, pending: true };
+  };
+  const compileAndEvaluate = (id: string, doc: unknown, script: string): Record<string, unknown> => {
+    let start: () => unknown;
+    try {
+      const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (body: string) => () => unknown;
+      start = new AsyncFunction(script);
+    } catch (error) {
+      start = () => Promise.reject(error);
+    }
+    return evaluate(id, doc, start);
+  };
+  const evaluated = (id: string): Record<string, unknown> => {
+    const entry = scripts.get(id);
+    if (!entry) return { ok: false, error: "the script's page went away before it finished; take a snapshot." };
+    if (!entry.done) return { ok: true, pending: true };
+    scripts.delete(id);
+    return { ok: true, text: entry.text };
   };
 
   const click = (ref: string, directLinks: boolean): Record<string, unknown> => {
@@ -579,13 +872,8 @@ export function installPageAgent(): PageAgent {
       // No page words here: errors reach the model outside the untrusted-content fence.
       return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
     }
-    const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
-    const href = anchor?.href ?? "";
-    if (anchor && /^https?:/i.test(href)) {
-      const target = new URL(href);
-      const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
-      if (!hashOnly && (directLinks || anchor.target === "_blank")) return { ok: true, navigate: href };
-    }
+    const navigate = linkOut(el, directLinks);
+    if (navigate) return { ok: true, navigate };
     mouse(el, "pointerover");
     mouse(el, "pointerdown");
     mouse(el, "mousedown");
@@ -825,16 +1113,40 @@ export function installPageAgent(): PageAgent {
     try {
       const ref = typeof command.ref === "string" ? command.ref : "";
       switch (command.op) {
-        case "status":
-          return { ok: true, quietMs: Math.round(performance.now() - lastMutation), title: document.title };
+        case "status": {
+          // Fetch/XHR the proxied shell counts as open since `since` (routes/browser_network.py).
+          const pending = host[Symbol.for("unsloth.browser.pending")];
+          const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
+          return {
+            ok: true,
+            quietMs: Math.round(performance.now() - lastMutation),
+            requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
+            title: document.title,
+            ...view(),
+          };
+        }
         case "snapshot":
           return snapshot(command.fullPage === true, ref || undefined);
         case "find":
           return find(String(command.query ?? ""));
         case "describe":
-          return describe(ref, command.value);
-        case "click":
-          return inOwnTab(() => click(ref, command.directLinks === true));
+          return describe(ref, command.value, pointIn(command));
+        case "click": {
+          const at = pointIn(command);
+          return inOwnTab(() =>
+            at ? clickAt(at, command.directLinks === true, command.expect, command.sig) : click(ref, command.directLinks === true),
+          );
+        }
+        case "locate":
+          return locate(ref, command.scroll === true);
+        case "pointer": {
+          const at = pointIn(command);
+          return at ? inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)) : { ok: false, error: "unknown command" };
+        }
+        case "evaluate":
+          return compileAndEvaluate(String(command.id ?? ""), command.doc, String(command.script ?? ""));
+        case "evaluated":
+          return evaluated(String(command.id ?? ""));
         case "type":
           return inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true));
         case "select":
@@ -857,7 +1169,18 @@ export function installPageAgent(): PageAgent {
 
   // For native views, which look it up on every call. A page that defines KEY first still wins
   // there: the agent shares the page's world, so its answers are untrusted.
-  const agent: PageAgent = { run };
+  function view() {
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      scrolls,
+      doc: refOf(document.documentElement),
+    };
+  }
+  const owns = (doc: unknown): boolean => typeof doc === "string" && refOf(document.documentElement) === doc;
+  const agent: PageAgent = { run, evaluate, owns };
   if (!Object.prototype.hasOwnProperty.call(host, KEY)) Object.defineProperty(host, KEY, { value: agent, enumerable: false });
   return agent;
 }

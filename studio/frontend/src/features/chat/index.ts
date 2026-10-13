@@ -63,12 +63,14 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
 } from "./sync-model-disclaimer-preference";
 export {
+  ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
   useInComparePane,
@@ -143,6 +145,23 @@ export {
   useForkBoundaryStore,
   type ForkBoundaryState,
 } from "./stores/fork-boundary-store";
+export { rewindChatThread } from "./api/rewind-api";
+export {
+  type RewindDialogRequest,
+  useRewindDialogStore,
+} from "./stores/rewind-dialog-store";
+export {
+  collectRewindTurnIds,
+  defaultRewindMode,
+  isRewindCommand,
+  type RewindMode,
+  type RewindResult,
+  rewindChangedCount,
+  rewindPickerEntries,
+  rewindSkippedCount,
+  rewindTouchesConversation,
+  rewindTouchesFiles,
+} from "./utils/rewind";
 export {
   folderRingKey,
   planKey,
@@ -363,6 +382,7 @@ export {
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   regenerateChatTitle,
+  regenerateChatTitleWithToast,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";

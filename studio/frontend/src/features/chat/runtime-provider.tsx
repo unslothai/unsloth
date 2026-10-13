@@ -186,6 +186,10 @@ import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
+import {
   extractDeltaText,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
@@ -963,7 +967,7 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     }
     // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
     if (text === null && !pythonToolOpensAttachments()) {
-      const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
+      const error = `${attachment.name} has no text to read. Turn on Tools so the python tool can open it.`;
       toast.error(error);
       throw new Error(error);
     }
@@ -1213,7 +1217,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
     const refusal = !pythonToolRunsInStudio()
-      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      ? `Turn on Tools with a model that runs the python tool to attach ${file.name}.`
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
@@ -2375,6 +2379,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );
@@ -2436,9 +2441,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }
@@ -4180,6 +4188,10 @@ function ThreadBackendAutosave({
 // True when the chat tab is visible. While false, ChatPage stays mounted (runtime and autosave
 // alive, so the stream survives) but its views unmount, so no portaled surface bleeds through.
 export const ChatActiveContext = createContext(true);
+
+// False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
+// cannot take focus from it.
+export const ChatComposerFocusableContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);
