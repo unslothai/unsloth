@@ -54,7 +54,7 @@ export const he = {
     agentSettings: {
       title: "שימוש בדפדפן",
       enable: "לאפשר למודלים להשתמש בדפדפן",
-      enableDescription: "המודלים פותחים דפים בכרטיסייה משלהם בחלונית הדפדפן, קוראים אותם ולוחצים ומקלידים בשבילך. זמין גם בתפריט + של תיבת הכתיבה.",
+      enableDescription: "המודלים פותחים דפים בכרטיסיית דפדפן משלהם, קוראים אותם ולוחצים ומקלידים בשבילך. זמין גם בתפריט + של תיבת הכתיבה.",
       history: "היסטוריית גלישה",
       historyDescription: "בחירה אם מודלים יכולים לקרוא את היסטוריית הדפדפן",
       alwaysAsk: "לשאול תמיד",
@@ -4202,6 +4202,7 @@ export const he = {
       chatAboutThis: "שוחח על זה",
       chatWithModel: "שוחח עם מודל זה",
       addToFavorites: "הוסף למועדפים",
+      regenerateTitle: "יצירת כותרת מחדש",
       removeFromFavorites: "הסר מהמועדפים",
       download: "הורדה",
       addToFolder: "הוסף לתיקייה",

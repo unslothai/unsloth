@@ -1797,7 +1797,7 @@ def test_enable_padding_free_metadata():
 
 # has_real_accelerator: the body falls back to xpu, so this covers XPU too.
 @pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
-def test_packing_sdpa(tmp_path):
+def test_packing_sdpa(tmp_path, monkeypatch):
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.xpu.is_available():
@@ -1837,9 +1837,12 @@ def test_packing_sdpa(tmp_path):
         segment_calls.append(lengths)
         return lengths
 
-    def _capture_loss(*, logits, labels, **loss_kwargs):
+    def _capture_loss(*, hidden_states, labels, **loss_kwargs):
         captured_loss_labels["labels"] = labels.detach().to("cpu")
-        return torch.zeros((), device = logits.device, dtype = logits.dtype)
+        return torch.zeros((), device = hidden_states.device, dtype = hidden_states.dtype)
+
+    # Unmasked labels, so only the model's own boundary guard can mask the document starts.
+    inputs["labels"] = inputs["input_ids"].clone()
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
@@ -1854,10 +1857,12 @@ def test_packing_sdpa(tmp_path):
         stack.enter_context(
             patch.object(
                 llama_mod,
-                "fast_cross_entropy_loss",
+                "unsloth_fused_ce_loss",
                 side_effect = _capture_loss,
             )
         )
+        # Packed training's loss path: the fused CE on raw labels (UNSLOTH_RETURN_LOGITS=1 blocks packing).
+        monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "0")
         with torch.no_grad():
             outputs = model(**inputs)
 
@@ -1867,10 +1872,12 @@ def test_packing_sdpa(tmp_path):
     assert outputs.loss is not None
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
-    boundaries = (
-        torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0) - 1
-    )
-    for idx in boundaries.tolist():
+    # Raw labels (the kernel shifts): each later document's first token must not be a target.
+    starts = torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0)[
+        :-1
+    ]
+    assert starts.numel() > 0
+    for idx in starts.tolist():
         assert flat_loss_labels[idx].item() == -100
     assert torch.any(flat_loss_labels != -100)
 

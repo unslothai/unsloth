@@ -18,7 +18,27 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
-# pytest only puts a test file's own dir on sys.path, so add tests/_shared here.
+# --- one CPU share per xdist worker -----------------------------------------------
+# Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
+# as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
+# and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
+# training took >330 s there against ~50 s alone. An explicit thread setting is kept.
+# Loaded by path: tests/_shared is put on sys.path only below.
+import os as _os  # noqa: E402
+
+_share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
+if _share_path.is_file():
+    _spec = _ilu.spec_from_file_location("xdist_cpu_share", _share_path)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _mod.apply(_os.environ)
+
+# --- shared test helpers on sys.path -----------------------------------------------
+# tests/_shared holds no package marker and pytest only puts a *test file's* own
+# directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
+# cannot reach it by import. Adding it here (this conftest is collected for anything
+# under tests/) is what lets all four levels share one module rather than each growing
+# a private copy -- see tests/_shared/unsloth_pwsh_runner.py for the case that forced it.
 import sys as _sys  # noqa: E402
 
 _shared_dir = _iso.parent / "_shared"

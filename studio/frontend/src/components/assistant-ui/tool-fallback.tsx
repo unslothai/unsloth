@@ -24,7 +24,13 @@ import {
   type McpUiToolResult,
   isMcpUiToolResult,
 } from "@/features/chat/mcp-apps/mcp-ui";
-import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import {
+  SANDBOX_FILE_TOOLS,
+  type SandboxFile,
+  isSandboxToolResult,
+  sandboxSessionIdFor,
+} from "@/components/assistant-ui/sandbox-files";
+import { SandboxFiles } from "@/components/assistant-ui/sandbox-files-view";
 import { useChatProjectScope } from "@/features/chat/chat-project-scope";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
@@ -484,9 +490,16 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const isCancelled = isToolCallCancelled(status);
   // A widget result's pane shows the text (and images) the model saw, never its UI seed.
   const widget = isMcpUiToolResult(result, toolName) ? result : null;
-  const shown = widget?.images?.length
-    ? { text: widget.text, images: widget.images }
-    : (widget?.text ?? result);
+  // edit_file comes wrapped when it created a file: the pane shows its text, the file row sits below.
+  const created =
+    SANDBOX_FILE_TOOLS.has(toolName) && isSandboxToolResult(result)
+      ? (result as { text: string; sessionId: string; files?: SandboxFile[] })
+      : null;
+  const shown = created
+    ? created.text
+    : widget?.images?.length
+      ? { text: widget.text, images: widget.images }
+      : (widget?.text ?? result);
 
   return (
     <ToolFallbackRoot
@@ -514,6 +527,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         />
         {!isCancelled && <ToolFallbackResult result={shown} />}
       </ToolFallbackContent>
+      {/* Files stay outside even when the card is collapsed (#10425) */}
+      {created && (
+        <SandboxFiles
+          className="ml-5"
+          sessionId={created.sessionId}
+          files={created.files ?? []}
+        />
+      )}
     </ToolFallbackRoot>
   );
 };

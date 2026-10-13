@@ -1644,6 +1644,7 @@ def _offline_quantize_to_fp8(
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1655,7 +1656,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1707,9 +1708,14 @@ def _offline_quantize_to_fp8(
                 model_name,
                 config = config,
                 revision = revision,
+                token = token,
                 **load_kwargs,
             )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
+        tokenizer = auto_processor.from_pretrained(
+            model_name,
+            revision = revision,
+            token = token,
+        )
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):

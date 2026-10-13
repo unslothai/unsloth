@@ -74,6 +74,8 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
+    # The catalog id a load by path should keep advertising (Open WebUI /models/load).
+    _advertised_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -5114,6 +5116,12 @@ class DiffusionResolvedControl(BaseModel):
         None,
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
         "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
+    )
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = "speed_mode only: the auto-optimizer's per-step audit for this load, in order, each "
+        '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
+        "error it failed with). Null on every other control.",
     )
 
 
