@@ -805,6 +805,22 @@ def test_opencode_command_detects_v2_installed_as_opencode(monkeypatch, version_
     assert start._opencode_command() == ("opencode", v2)
 
 
+def test_opencode_command_probes_real_v2_binary_named_opencode(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        (bin_dir / "opencode.cmd").write_text("@echo opencode v2.0.27\r\n")
+    else:
+        script = bin_dir / "opencode"
+        script.write_text("#!/bin/sh\necho opencode v2.0.27\n")
+        script.chmod(0o755)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert start._opencode_command() == ("opencode", True)
+
+
 def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
     install_dir = tmp_path / ".opencode" / "bin"
     install_dir.mkdir(parents = True)
