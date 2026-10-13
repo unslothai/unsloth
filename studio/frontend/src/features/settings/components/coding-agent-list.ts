@@ -36,7 +36,7 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     name: "VS Code",
     docsUrl:
       "https://code.visualstudio.com/docs/copilot/customization/language-models",
-    // vscode.svg is the stable icon from code.visualstudio.com/brand.
+    // vscode.svg is the stable icon from code.visualstudio.com/brand, inset to sit with the other marks.
     icon: "vscode.svg",
   },
   {
@@ -69,8 +69,9 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     id: "pi",
     name: "Pi",
     docsUrl: "https://pi.dev",
-    // pi.svg is https://pi.dev/logo-auto.svg, the logo the earendil-works/pi README uses.
-    icon: "pi.svg",
+    // The monochrome mark from https://pi.dev/favicon.svg, in its light and dark fills.
+    icon: "pi-light.svg",
+    darkIcon: "pi-dark.svg",
   },
   {
     id: "vibe",
