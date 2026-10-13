@@ -25843,7 +25843,6 @@ class LlamaCppBackend:
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
                 _mtp_slots_asked: Optional[int] = None
-                # Target-only context at that count, what a drafterless retry relaunches at.
                 _mtp_slots_target_ctx: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
@@ -28765,8 +28764,7 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
-                    # Nor are the slots Auto cut for a drafter this plan no longer proves:
-                    # back to the requested count without the drafter, as before the cut.
+                    # Nor is a slot cut for the drafter: requested count, no drafter, as before.
                     if _mtp_slots_asked is not None:
                         n_parallel = _mtp_slots_asked
                         _mtp_slots_asked = _mtp_slots_target_ctx = None
@@ -33044,7 +33042,7 @@ class LlamaCppBackend:
                             n_batch = n_batch,
                             supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
                         )
-                        # The cut may have bought context too; the restored count was priced at this.
+                        # The cut may have bought context; the restored count was priced at this.
                         if _mtp_slots_target_ctx and "-c" in fallback_cmd:
                             effective_ctx = _mtp_slots_target_ctx
                             fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
