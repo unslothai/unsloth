@@ -29,13 +29,14 @@ const defaultsFor = (() => {
   ]
     .join("\n")
     .replace(/: Array<\{[^}]*\}>/, "")
-    .replace(/\(repoId: string\): \{[^}]*\}/, "(repoId)")
+    .replace(/\(repoId: string, family\?: string\): \{[^}]*\}/, "(repoId, family)")
     .replace(/\((\w+): string\)/g, "($1)");
   const pick = new Function(`${source}\nreturn defaultsFor;`)() as (
     repoId: string,
+    family?: string,
   ) => { steps: number; guidance: number };
-  return (repoId: string) => {
-    const { steps, guidance } = pick(repoId);
+  return (repoId: string, family?: string) => {
+    const { steps, guidance } = pick(repoId, family);
     return { steps, guidance };
   };
 })();
@@ -83,6 +84,12 @@ test("the other families keep their recipes", () => {
     ["someone/LTX-2.5-sft/diffusion_models/model.safetensors", 30, 3],
     ["/models/LTX-2.5-sft/diffusion_models/model.safetensors", 8, 1],
     ["/home/dev/models/LTX-2.5/model.safetensors", 8, 1],
+    // Any non-alphanumeric boundary, as the backend's token regex.
+    ["/models/LTX-2.5/ltx-2.5-(dev).safetensors", 30, 3],
+    ["/models/LTX-2.5/ltx-2.5+sft.safetensors", 30, 3],
+    // Only the file and its repo count: an older LTX folder further up does not.
+    ["/models/LTX-2.3-archive/LTX-2.5-dev/model.safetensors", 30, 3],
+    ["/models/LTX-2.5-archive/LTX-2.3/model.safetensors", 40, 4],
     ["/models/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
     // The file decides over the repo, and "distilled" wins inside one name.
     ["someone/LTX-2.5-dev/ltx-2.5-distilled.safetensors", 8, 1],
@@ -112,4 +119,11 @@ test("the other families keep their recipes", () => {
   for (const [id, steps, guidance] of cases) {
     assert.deepEqual(defaultsFor(id), { steps, guidance }, id);
   }
+});
+
+test("an explicit LTX-2.5 family still reads the variant from the file and repo names", () => {
+  assert.deepEqual(defaultsFor("/models/opaque/transformer_full.safetensors", "ltx-2.5"), { steps: 30, guidance: 3 });
+  assert.deepEqual(defaultsFor("/models/LTX-dev-run/model.safetensors", "ltx-2.5"), { steps: 30, guidance: 3 });
+  assert.deepEqual(defaultsFor("/models/opaque/model.safetensors", "ltx-2.5"), { steps: 8, guidance: 1 });
+  assert.deepEqual(defaultsFor("/models/opaque/model.safetensors"), { steps: 8, guidance: 1 });
 });

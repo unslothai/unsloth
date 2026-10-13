@@ -481,11 +481,12 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 // LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames. Host RAM is the server's peak
 // RSS plus the Gemma 4 encoder worker's.
-// Diffusers pack (int8 DiT), encoder on the CPU in both tiers. 24 GiB: DiT streamed by group offload, 21.0 GB card
-// peak, 47.7 + 25.3 GiB host. 48 GiB: DiT resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+// Diffusers pack: the plan quantises the DiT to int8, so both tiers need a host that runs a dense quant. Encoder on
+// the CPU in both. 24 GiB: DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host. 48 GiB: DiT
+// resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
 const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
-  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true },
-  { gpuGb: 48, systemRamGb: 48 },
+  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true, requiresDenseQuant: true },
+  { gpuGb: 48, systemRamGb: 48, requiresDenseQuant: true },
 ];
 
 // The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
@@ -1206,10 +1207,13 @@ export interface OffloadFitTier {
   systemRamGb: number;
   /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
   requiresQuantisedStreaming?: boolean;
+  /** Measured with a runtime dense quant (int8 / fp8) DiT: only offered where the host runs one. */
+  requiresDenseQuant?: boolean;
 }
 
 function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
   if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  if (tier.requiresDenseQuant && !budget.denseQuantSchemes?.length) return false;
   return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
 }
 
