@@ -968,8 +968,12 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
+            # A LoRA loads its base model; the adapter's own safetensors say nothing about fit.
             offload_kwargs = _offload_kwargs_for_fit(
-                load_path, device_map, load_in_4bit, _hf_token_for_loader(hf_token)
+                config.base_model if config.is_lora and config.base_model else load_path,
+                device_map,
+                load_in_4bit,
+                _hf_token_for_loader(hf_token),
             )
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
