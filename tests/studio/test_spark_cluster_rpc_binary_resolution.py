@@ -10,7 +10,13 @@ import os
 import stat
 from pathlib import Path
 
+import sys
+
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -76,6 +82,7 @@ def test_posix_still_resolves_the_extensionless_binary(monkeypatch, tmp_path) ->
     assert cluster.rpc_server_binary() == str(real)
 
 
+@_POSIX_ONLY
 def test_posix_still_rejects_a_file_without_the_exec_bit(monkeypatch, tmp_path) -> None:
     cluster = _cluster()
     root = _bundle(cluster, monkeypatch, tmp_path)

@@ -588,7 +588,13 @@ def up(
     elif venv is True:
         _field("peer env", "Unsloth venv present")
     else:
-        _field("peer env", "could not check (no ssh on this machine)")
+        # Provisioning, doctor and every remote launch need working ssh, so unverified is not ready.
+        _field("peer env", "could not check: ssh to the peer failed or is not installed")
+        _say("")
+        _say(
+            f"NEXT: make `ssh {peer or '<peer>'}` work without a password, then re-run: unsloth spark up"
+        )
+        raise typer.Exit(1)
 
     _heading("Ready")
     _say(f"  {sit['nodes']} Sparks, paired, peer reachable.")

@@ -107,3 +107,30 @@ def test_pipeline_gradients_match_a_plain_backward_of_the_same_loss() -> None:
         assert checked, "no gradients were compared, so this proved nothing"
     finally:
         dist.destroy_process_group()
+
+
+def test_microbatches_of_different_lengths_give_the_full_batch_token_mean() -> None:
+    """Padding leaves microbatches with different token counts; averaging their per-microbatch
+    means weighs a short row like a long one and moves with --microbatches."""
+    torch = pytest.importorskip("torch")
+    import torch.nn.functional as F
+
+    pipeline = _pipeline_module()
+    torch.manual_seed(0)
+    logits = torch.randn(4, 6, 11)
+    labels = torch.randint(0, 11, (4, 6))
+    labels[0, 2:] = -100  # a short row
+    labels[3, 4:] = -100
+    want = F.cross_entropy(
+        logits[:, :-1].reshape(-1, 11), labels[:, 1:].reshape(-1), ignore_index = -100
+    )
+    for m in (1, 2, 4):
+        pipeline.set_pp_batch_tokens(labels, m)
+        rows = 4 // m
+        parts = [
+            pipeline.pp_loss_fn(logits[i : i + rows], labels[i : i + rows])
+            for i in range(0, 4, rows)
+        ]
+        # The schedule backpropagates each part and grads are divided by M.
+        assert torch.allclose(sum(parts) / m, want, atol = 1e-6), m
+    pipeline._PP_TOKENS_PER_MICROBATCH[0] = None

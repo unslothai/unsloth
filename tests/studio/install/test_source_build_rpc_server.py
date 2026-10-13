@@ -12,6 +12,10 @@ import textwrap
 from pathlib import Path
 
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
 from unsloth_pwsh_runner import run_pwsh
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -219,6 +223,7 @@ def _build_script(
     """
 
 
+@_POSIX_ONLY
 class TestSetupShHelpersRun:
     @pytest.mark.parametrize(
         ("layout", "expected"),
@@ -541,6 +546,7 @@ def _old_install(
     return tree
 
 
+@_POSIX_ONLY
 def test_reusing_an_existing_install_backfills_the_rpc_server(tmp_path) -> None:
     """The upgrade case, which a fresh-install test cannot reach."""
     tree = _old_install(tmp_path)
@@ -551,6 +557,7 @@ def test_reusing_an_existing_install_backfills_the_rpc_server(tmp_path) -> None:
     assert "STEP rpc-server built (ggml-rpc-server)" in out, out
 
 
+@_POSIX_ONLY
 def test_an_install_that_already_has_it_is_left_alone(tmp_path) -> None:
     """No rebuild, no output: reuse must stay reuse when there is nothing to add."""
     tree = _old_install(tmp_path)
@@ -563,6 +570,7 @@ def test_an_install_that_already_has_it_is_left_alone(tmp_path) -> None:
     assert "SUBSTEP" not in out, out
 
 
+@_POSIX_ONLY
 def test_a_failed_backfill_says_so_and_keeps_the_reused_build(tmp_path) -> None:
     tree = _old_install(tmp_path)
     out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = None)
@@ -571,12 +579,14 @@ def test_a_failed_backfill_says_so_and_keeps_the_reused_build(tmp_path) -> None:
     assert (tree / "build" / "bin" / "llama-server").exists(), "the reused build was damaged"
 
 
+@_POSIX_ONLY
 def test_an_unconfigured_tree_points_at_the_way_out(tmp_path) -> None:
     tree = _old_install(tmp_path, configured = False)
     out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
     assert "UNSLOTH_LLAMA_FORCE_COMPILE=1" in out, out
 
 
+@_POSIX_ONLY
 def test_a_tree_with_no_rpc_target_is_not_an_error(tmp_path) -> None:
     """Older llama.cpp has no RPC tool at all; that is a skip, not a warning."""
     tree = _old_install(tmp_path, rpc_target = False)

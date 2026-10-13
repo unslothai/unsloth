@@ -2665,6 +2665,9 @@ def _cmd_provision(
         config = load_config()
         if config.get("planned") and not config.get("enabled"):
             save_config({**config, "enabled": True})
+    if dry_run:
+        print("\n  Dry run: nothing was copied. Run without --dry-run to make the peer match.")
+        return 0
     print("\n  Peer now matches this node. Verify with: unsloth doctor")
     return 0
 

@@ -9,7 +9,13 @@ import importlib.util
 import struct
 from pathlib import Path
 
+import sys
+
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -60,6 +66,7 @@ def test_the_legacy_bin_beside_safetensors_is_not_counted_twice(cluster, tmp_pat
     assert cluster.model_size_report(str(tmp_path))["gib"] == pytest.approx(4096 / GIB)
 
 
+@_POSIX_ONLY
 def test_only_the_current_hf_snapshot_is_sized(cluster, tmp_path, monkeypatch) -> None:
     """An updated repo keeps its superseded blobs; summing the tree counted them as weights."""
     monkeypatch.setenv("HOME", str(tmp_path))

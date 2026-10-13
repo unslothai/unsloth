@@ -15,6 +15,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
 from unsloth_pwsh_runner import run_pwsh
 
 
@@ -6390,6 +6394,7 @@ def test_every_reuse_path_consults_the_bundle_backfill():
     assert "rpc_server_backfill_needed(" in body
 
 
+@_POSIX_ONLY
 def test_installer_places_rpc_server_where_spark_cluster_looks(tmp_path, monkeypatch):
     """Layout agreement pinned on both ends: the names and directories the installer writes are the
     ones spark_cluster searches, and a tarball whose exec bit was lost in extraction still ends up

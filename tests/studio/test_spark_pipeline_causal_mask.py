@@ -279,3 +279,27 @@ def test_gemma_embeddings_are_scaled_when_the_embedding_does_not_scale_itself() 
     assert pipeline._embed_scale(Cfg, plain) is None
     Cfg.model_type = "llama"
     assert pipeline._embed_scale(Cfg, torch.nn.Embedding(4, 16)) is None
+
+
+def test_a_gpt_neox_first_stage_keeps_its_embedding_dropout() -> None:
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    model = transformers.GPTNeoXForCausalLM(
+        transformers.GPTNeoXConfig(
+            vocab_size = 64,
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            max_position_embeddings = 32,
+            hidden_dropout = 0.5,
+        )
+    )
+    stage = _build_stage(_pipeline_module(), model)
+    assert isinstance(stage.embed_dropout, torch.nn.Dropout) and stage.embed_dropout.p == 0.5
+    stage.train()
+    ids = torch.randint(0, 64, (1, 6))
+    torch.manual_seed(0)
+    a = stage(ids)
+    torch.manual_seed(1)
+    assert not torch.equal(a, stage(ids))
