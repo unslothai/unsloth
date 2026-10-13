@@ -140,6 +140,7 @@ def _offload_kwargs_for_fit(
     device_map,
     load_in_4bit: bool,
     hf_token = None,
+    mapped: bool = True,
 ) -> dict:
     """offload_layers = "auto" for a single-GPU load whose checkpoint nearly fills free VRAM (#13388): Gemma 4 E2B in 4-bit is 8.1 GB, 4.4 GB of it one bf16 token table, so an 8 GB card cannot hold it. The planner then keeps large tables (and decoder layers if needed) in host RAM, and loads everything onto the GPU when it fits after all. Multi-GPU maps go through Unsloth's balanced planner instead, which cannot load into host RAM."""
     if device_map != "sequential" or not torch.cuda.is_available():
@@ -148,7 +149,8 @@ def _offload_kwargs_for_fit(
         free = sum(torch.cuda.mem_get_info(i)[0] for i in range(torch.cuda.device_count()))
     except Exception:
         return {}
-    size = _checkpoint_bytes(_loader_repo(name, load_in_4bit), hf_token)
+    # `mapped` = False: the loader reads `name` verbatim (use_exact_model_name).
+    size = _checkpoint_bytes(_loader_repo(name, load_in_4bit) if mapped else name, hf_token)
     if not size or size < _OFFLOAD_FIT_FRACTION * free:
         return {}
     logger.info(
@@ -974,6 +976,7 @@ class InferenceBackend:
                 device_map,
                 load_in_4bit,
                 _hf_token_for_loader(hf_token),
+                mapped = not use_exact_model_name,
             )
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(

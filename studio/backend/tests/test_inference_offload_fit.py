@@ -55,6 +55,15 @@ def test_checkpoint_that_fills_the_card_loads_with_auto_offload():
     assert asked == ["unsloth/gemma-4-E2B-it-bnb-4bit"]
 
 
+def test_exact_load_sizes_the_repo_it_reads():
+    # use_exact_model_name: a cached 16-bit snapshot is read as-is, so the 4-bit twin says nothing.
+    fit, asked = _fit(free = int(7.3 * _GiB), size = 10 * _GiB)
+    assert fit("unsloth/gemma-4-E2B-it", "sequential", True, mapped = False) == {
+        "offload_layers": "auto"
+    }
+    assert asked == ["unsloth/gemma-4-E2B-it"]
+
+
 def test_checkpoint_with_room_loads_as_before():
     fit, _ = _fit(free = 7 * _GiB, size = 6 * _GiB)
     assert fit("m", "sequential", True) == {}
