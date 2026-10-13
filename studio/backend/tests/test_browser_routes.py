@@ -106,6 +106,17 @@ def test_the_shell_relays_the_pages_own_reads_and_maps_srcdoc_paths():
         assert guard in shell, guard
 
 
+def test_the_shells_base_follows_the_router_only_without_a_page_base():
+    # A real browser resolves against the document URL when the page has no <base>; checked in
+    # Chromium, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    assert "base: data.base || null" in shell
+    assert 'cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null' in shell
+    assert shell.index("pageUrl = next;") < shell.index(
+        'routedBase?.setAttribute("href", pageUrl);'
+    )
+
+
 def _resource(page_url, url):
     return browser_mod.BrowserResourceRequest(page_url = page_url, url = url)
 

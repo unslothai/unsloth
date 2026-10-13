@@ -175,6 +175,9 @@ _FRAME_HTML = r"""<!doctype html>
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
         const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
+        // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
+        // relative links and requests after a pushState resolve as in a browser.
+        const routedBase = cfg.url && cfg.base === cfg.url ? document.querySelector("base") : null;
         const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
@@ -276,6 +279,7 @@ _FRAME_HTML = r"""<!doctype html>
             catch { original.call(this, state, title); }
             if (next) {
               pageUrl = next;
+              routedBase?.setAttribute("href", pageUrl);
               reportUrl();
             }
           };
@@ -713,7 +717,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, base: data.base || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
