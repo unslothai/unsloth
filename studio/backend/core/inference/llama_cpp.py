@@ -118,6 +118,7 @@ from core.inference.llama_server_args import (
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     fit_target_margin_in,
+    fit_target_is_per_device,
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
     resolve_launch_load_mode,
@@ -28454,7 +28455,39 @@ class LlamaCppBackend:
                         _mmproj_dev_gpu = bool(
                             _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
                         )
-                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
+                        # --mmproj-device none keeps the projector in host RAM (common/arg.cpp
+                        # sets mmproj_use_gpu = false), so model_size_fit's projector bytes
+                        # and their soft overhead are not on the card.
+                        _mmproj_dev_none = bool(
+                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() == "none"
+                        )
+                        _mmproj_host_bytes = 0
+                        _mmproj_offload = _resolved_mmproj_offload(_child_extras, _child_env)
+                        if _mmproj_dev_none and effective_is_vision and mmproj_size > 0:
+                            # An explicit --mmproj-offload also sets mmproj_use_gpu; which one
+                            # wins depends on parse order, so the placement is unknown.
+                            if _mmproj_offload is True:
+                                return None
+                            _mmproj_host_bytes = mmproj_size + int(
+                                mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                            )
+                        # A drafter model pinned by --spec-draft-device to a device this
+                        # estimate cannot map to the card (common_base_params_to_speculative,
+                        # common/speculative.cpp); a CPU / none pin is already priced off
+                        # the GPU by _mtp_bytes. An embedded MTP head follows the target.
+                        if _mtp_will_engage and (
+                            _separate_draft_launches or not self._nextn_predict_layers
+                        ):
+                            _draft_dev = _extra_args_draft_device(_child_extras)
+                            if _draft_dev is not None:
+                                _draft_devs = [
+                                    d.strip().lower() for d in _draft_dev.split(",") if d.strip()
+                                ]
+                                if not (
+                                    _draft_devs and all(d in ("cpu", "none") for d in _draft_devs)
+                                ):
+                                    return None
+                        if _mmproj_offload is False:
                             if _mmproj_dev_gpu:
                                 return None
                         elif disable_vision:
@@ -28477,12 +28510,17 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             supports_fit_target = _supports_fit_target,
                         )
-                        # A per-device list reads as its largest entry (the larger shortfall).
+                        # A per-device list is applied positionally (fit_params_target[i],
+                        # common/arg.cpp); which entry this card gets is unknown here.
+                        if fit_target_is_per_device(_child_extras or (), None):
+                            return None
                         _margin_mib = fit_target_margin_in(_child_extras or (), None)
                         if _margin_mib is None:
                             _emits = _supports_fit_target and (
                                 _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
                             )
+                            if not _emits and fit_target_is_per_device((), _child_env):
+                                return None
                             _env_mib = None if _emits else fit_target_margin_in((), _child_env)
                             # An inherited 0 is a valid margin, not "unset".
                             _margin_mib = _managed_mib if _env_mib is None else _env_mib
@@ -28502,6 +28540,7 @@ class LlamaCppBackend:
                         _need = (
                             model_size_fit
                             - _lazy_host
+                            - _mmproj_host_bytes
                             - _model_size_fit_cb
                             + _compute_buffer_pipeline
                             + (
