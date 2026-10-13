@@ -594,8 +594,8 @@ function ReasoningTail({
           // An action, not more trace: the muted ink sits a step above the trace text it follows.
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <ExpandToggleIcon expanded={expanded} className="size-3.5 shrink-0" />
           {expanded ? "Collapse thinking" : "Expand thinking"}
+          <ExpandToggleIcon expanded={expanded} className="size-3.5 shrink-0" />
         </button>
       )}
     </>
