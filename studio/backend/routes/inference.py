@@ -6070,13 +6070,13 @@ def _skill_tool_tip(
     create_tip = (
         " To create a skill, read skill-creator and then call create_skill." if can_create else ""
     )
-    # code-off mentions and hosted Code can read skills but cannot run bundled local scripts
+    # tools-off mentions and hosted Tools can read skills but cannot run bundled local scripts
     scripts_tip = (
         ""
         if can_run_scripts
         else " No local python or terminal tool is available, so a skill's bundled scripts cannot "
         "run: follow its written instructions, never claim to have run a script, and when a step "
-        "needs one, tell the user it needs Unsloth Studio's local Code tool."
+        "needs one, tell the user it needs Unsloth Studio's local Tools."
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
@@ -13252,6 +13252,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _dflash_drafter_breaks_on_images,
             _extra_args_device,
             _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
@@ -13346,6 +13347,17 @@ def _estimate_gguf_required_gb(
                         _auto_dflash = False
                 except Exception:
                     pass
+        # Mirrors load_model's #13511 rule: Auto skips a NeoX DFlash drafter on an M-RoPE vision load.
+        if _auto_dflash and not disable_vision and not extra_args_disable_mmproj(llama_extra_args):
+            _vd_mmproj = _extra_args_device(llama_extra_args, {"--mmproj", "-mm"}) or getattr(
+                config, "gguf_mmproj_file", None
+            )
+            if _vd_mmproj and Path(_vd_mmproj).is_file():
+                _auto_dflash = not _dflash_drafter_breaks_on_images(
+                    getattr(config, "gguf_file", None),
+                    getattr(config, "gguf_dflash_file", None),
+                    str(_vd_mmproj),
+                )
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
@@ -16914,8 +16926,11 @@ _MANAGED_ENGINE_QUANTIZATIONS = {
     "compressed-tensors": (),
     "awq": ("gptqmodel", "awq"),
     "gptq": ("gptqmodel", "auto_gptq"),
+    "auto-round": ("auto_round",),
 }
 _OFFERED_ENGINES = ("vllm", "sglang")
+# SGLang registers auto-round too, but only vLLM has been run on it (#7997).
+_OFFERED_ENGINES_FOR = {"auto-round": ("vllm",)}
 
 
 def _managed_engine_offer(
@@ -16951,7 +16966,11 @@ def _managed_engine_offer(
                 return None
         except (ImportError, ValueError):
             pass
-    engines = [name for name in _OFFERED_ENGINES if supported(name, method)]
+    engines = [
+        name
+        for name in _OFFERED_ENGINES_FOR.get(method, _OFFERED_ENGINES)
+        if supported(name, method)
+    ]
     return {"quantization": method, "engines": engines} if engines else None
 
 
@@ -16982,6 +17001,9 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
             if support_reason(name) is not None:
                 return False
             if gpu_platform() == "rocm":
+                if method == "auto-round":
+                    # Unmeasured on ROCm vLLM; an explicit vLLM load still gets to try (#7997).
+                    return False
                 text_config = metadata.get("text_config")
                 return rocm_loads_quantization(
                     metadata.get("quantization_config")
@@ -23548,7 +23570,6 @@ async def _run_music_workflow(
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
-        cpu = model_info.get("audio_cpp_backend") == "cpu"
         music = {
             "mode": body.mode,
             "text": body.text,
@@ -23557,7 +23578,9 @@ async def _run_music_workflow(
             "duration_s": seconds,
             "variations": variations,
             "edit": body.edit.model_dump() if body.edit is not None else None,
-            "timeout_s": timeout_seconds(family, work_s, variations, cpu),
+            "timeout_s": timeout_seconds(
+                family, work_s, variations, model_info.get("audio_cpp_backend")
+            ),
         }
         run_dir.mkdir(parents = True, exist_ok = True)
         payload = ChatCompletionRequest(
@@ -30386,6 +30409,9 @@ async def produce_openai_chat_completions(
     # still reachable. Otherwise it is dropped in silence and the answer looks legitimate.
     _reject_unsupported_content_parts(payload)
     await _materialize_sandbox_attachments(payload)
+    from core.inference import file_history
+
+    file_history.set_turn(payload.thread_id, payload.user_message_id)
 
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.

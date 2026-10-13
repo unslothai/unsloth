@@ -2947,6 +2947,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
+    user_message_id: Optional[str] = Field(
+        None,
+        max_length = 256,
+        description = (
+            "[x-unsloth] The user message this turn answers. With thread_id it keys the chat's file "
+            "history, so /rewind can put back what this turn's tool calls changed."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = (
@@ -5116,6 +5124,12 @@ class DiffusionResolvedControl(BaseModel):
         None,
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
         "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
+    )
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = "speed_mode only: the auto-optimizer's per-step audit for this load, in order, each "
+        '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
+        "error it failed with). Null on every other control.",
     )
 
 

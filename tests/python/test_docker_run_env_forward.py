@@ -86,3 +86,7 @@ def test_every_documented_variable_reaches_the_container(tmp_path, name):
 @pytest.mark.parametrize("name", DOCUMENTED)
 def test_an_unset_variable_is_not_forwarded(tmp_path, name):
     assert name not in _forwarded(tmp_path)
+
+
+def test_keep_legacy_reaches_the_container(tmp_path):
+    assert "UNSLOTH_STUDIO_KEEP_LEGACY" in _forwarded(tmp_path, UNSLOTH_STUDIO_KEEP_LEGACY = "0")

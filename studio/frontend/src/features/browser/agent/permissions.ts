@@ -8,11 +8,15 @@ export type BrowsingRule = "allow" | "ask" | "block";
 /** Sign-ins, form posts and buttons that buy, send or delete. Password and payment fields stay off-limits either way. */
 export type ActionsRule = "ask" | "allow";
 export type DownloadsRule = "ask" | "allow" | "block";
-export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule };
+/** Clicks and drags on a target with no role, name or link (a canvas), asked once per site per chat. */
+export type UnlabelledRule = "ask" | "allow";
+export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule; unlabelled: UnlabelledRule };
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
+/** No "allow": approving each script is the only check a script passes. */
+export type ScriptAccess = "ask" | "never";
 
-export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask" };
+export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask" };
 export const DEFAULT_PERMISSIONS: AgentPermissions = { defaults: DEFAULT_RULE, sites: {} };
 export const MAX_SITE_RULES = 200;
 
@@ -66,6 +70,7 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
 const BROWSING = new Set(["allow", "ask", "block"]);
 const ACTIONS = new Set(["ask", "allow"]);
 const DOWNLOADS = new Set(["ask", "allow", "block"]);
+const UNLABELLED = new Set(["ask", "allow"]);
 
 /** Persisted values, checked: an unknown value falls back to the default rather than to allow. */
 export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): SiteRule {
@@ -74,6 +79,7 @@ export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): 
     browsing: BROWSING.has(raw.browsing as string) ? (raw.browsing as BrowsingRule) : fallback.browsing,
     actions: ACTIONS.has(raw.actions as string) ? (raw.actions as ActionsRule) : fallback.actions,
     downloads: DOWNLOADS.has(raw.downloads as string) ? (raw.downloads as DownloadsRule) : fallback.downloads,
+    unlabelled: UNLABELLED.has(raw.unlabelled as string) ? (raw.unlabelled as UnlabelledRule) : fallback.unlabelled,
   };
 }
 

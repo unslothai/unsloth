@@ -868,6 +868,12 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.
@@ -2290,12 +2296,27 @@ async def desktop_shutdown_server(request: Request):
     return _schedule_shutdown(request)
 
 
+_shutdown_thread_lock = threading.Lock()
+
+
 def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            trigger()
+            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
+            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
+            # uvicorn from closing the port until all of it was done. The main thread still waits
+            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
+            # the trigger, since an embedded host's next run_server() installs a new one.
+            with _shutdown_thread_lock:
+                state = request.app.state
+                if getattr(state, "_shutdown_trigger", None) is not trigger:
+                    state._shutdown_trigger = trigger
+                    state._shutdown_thread = threading.Thread(
+                        target = trigger, name = "studio-shutdown"
+                    )
+                    state._shutdown_thread.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
