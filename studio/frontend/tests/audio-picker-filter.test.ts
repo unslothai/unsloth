@@ -351,3 +351,24 @@ test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
   assert.deepEqual(listed("HeartMuLa-GGUF"), ["music"]);
   assert.deepEqual(listed("Niagara-ASR-GGUF"), ["transcribe"]);
 });
+
+test("the image edit-keyword hiding stays off audio pickers", () => {
+  const pickers = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(
+    pickers,
+    /!\(!taskFilterHasAudio\(filter\) && isImageEditModel\(repoId\)\)/,
+  );
+  assert.match(
+    pickers,
+    /taskMatchesFilter\(r\.pipelineTag, task\) &&\s*!\(!audioTaskPicker && isImageEditModel\(r\.id\)\)/,
+  );
+  assert.match(
+    pickers,
+    /\.filter\(\(id\) => audioTaskPicker \|\| !isImageEditModel\(id\)\)/,
+  );
+  // Every other call keeps its gate; none is left unconditional.
+  const calls = pickers.match(/isImageEditModel\([^)]*\)/g) ?? [];
+  assert.equal(calls.length, 4);
+});

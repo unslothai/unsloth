@@ -95,6 +95,8 @@ interface ModelSelectorProps {
   additionalOnDeviceModels?: ModelOption[];
   /** Task-owned runtime residency when it is separate from Chat's main slot. */
   loadedModelIdOverride?: string;
+  /** Task-owned loaded quant, paired with `loadedModelIdOverride`; null means none. */
+  loadedGgufVariantOverride?: string | null;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
   /** Carries each connection's cached catalogue, which tells a user-unticked model from a withdrawn one. */
@@ -104,6 +106,7 @@ interface ModelSelectorProps {
   /** Whether the selection is actually resident. Omitted means a selection is a load. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
+  activeVariantIsMlx?: boolean;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
@@ -140,7 +143,10 @@ interface ModelSelectorProps {
   rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;
-  /** Trigger text when nothing is loaded. Defaults to "Select model". */
+  /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
+  hubTask?: HfTaskFilter;
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
+   *  pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
 
@@ -267,7 +273,8 @@ function ModelSelectorTrigger({
                 !subtitle && !showCloudIndicator && GAP_BEFORE,
               )}
             >
-              {subtitle ? " - " : ""}
+              {/* Its own span: a flex item drops the leading space of its text. */}
+              {subtitle ? <span className="whitespace-pre"> - </span> : null}
               {currentModel.descriptionSuffix}
             </span>
           )}
@@ -332,6 +339,7 @@ function ModelSelectorContent({
   models,
   additionalOnDeviceModels,
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels,
   externalModels,
   value,
@@ -364,6 +372,7 @@ function ModelSelectorContent({
   models: ModelOption[];
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
+  loadedGgufVariantOverride?: string | null;
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
@@ -638,9 +647,11 @@ function ModelSelectorContent({
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
               loadedModelIdOverride={loadedModelIdOverride}
+              loadedGgufVariantOverride={loadedGgufVariantOverride}
               loraModels={fineTunedModels}
               externalModels={externalModels}
               value={value}
+              valueLoaded={loaded}
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
@@ -685,12 +696,14 @@ export function ModelSelector({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
+  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   externalConnections = [],
   value,
   defaultValue,
   activeGgufVariant,
+  activeVariantIsMlx = false,
   activeModelConfig,
   activeLoadedContextLength,
   selectedConfig,
@@ -720,6 +733,7 @@ export function ModelSelector({
   opaqueKind,
   rowFilter,
   hubCapability,
+  hubTask,
   placeholder,
   loaded,
   loadedCount,
@@ -780,6 +794,15 @@ export function ModelSelector({
     return all;
   }, [externalModels, loraModels, models]);
 
+  // A task-owned quant names the trigger only while the trigger shows that loaded model.
+  const triggerGgufVariant =
+    loadedGgufVariantOverride !== undefined
+      ? selected &&
+        loadedModelIdOverride &&
+        selected.toLowerCase() === loadedModelIdOverride.toLowerCase()
+        ? loadedGgufVariantOverride
+        : null
+      : activeGgufVariant;
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
@@ -795,8 +818,11 @@ export function ModelSelector({
       : missingExternalModel(selected, externalModels, externalConnections);
     // A cached GGUF's checkpoint is a snapshot path; the leaf matches the later catalog row.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
-    if (activeGgufVariant) {
-      const desc = `GGUF · ${activeGgufVariant}`;
+    if (triggerGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
+      const isMlx =
+        activeVariantIsMlx && loadedGgufVariantOverride === undefined;
+      const desc = `${isMlx ? "MLX" : "GGUF"} · ${triggerGgufVariant}`;
       return found
         ? { ...found, description: undefined, descriptionSuffix: desc }
         : { id: selected, name: fallbackName, descriptionSuffix: desc };
@@ -821,7 +847,9 @@ export function ModelSelector({
     selected,
     optionById,
     catalog,
-    activeGgufVariant,
+    triggerGgufVariant,
+    activeVariantIsMlx,
+    loadedGgufVariantOverride,
     externalModels,
     externalConnections,
     t,
@@ -848,9 +876,15 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
+    const linkedTask = hubTask ?? task;
     void navigate({
       to: "/hub",
-      search: { tab: "discover", capability: hubCapability },
+      search: {
+        tab: "discover",
+        capability: hubCapability,
+        audioTask:
+          hubCapability === "audio" && linkedTask ? [linkedTask].flat() : undefined,
+      },
     });
   }
 
@@ -880,6 +914,7 @@ export function ModelSelector({
         models={models}
         additionalOnDeviceModels={additionalOnDeviceModels}
         loadedModelIdOverride={loadedModelIdOverride}
+        loadedGgufVariantOverride={loadedGgufVariantOverride}
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}

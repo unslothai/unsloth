@@ -3004,8 +3004,15 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    const candidate = build(null);
-    return isSkipped(candidate) ? null : candidate;
+    const variants =
+      source.kind === "model" && rememberedVariant
+        ? [rememberedVariant, null]
+        : [null];
+    for (const variant of variants) {
+      const candidate = build(variant);
+      if (!isSkipped(candidate)) return candidate;
+    }
+    return null;
   }
   const downloaded = (await source.listVariants())
     .filter(
@@ -5500,6 +5507,8 @@ export function createOpenAIStreamAdapter(
       // Use the backend's report: an external id leaves it describing the resident local model.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      const isManagedEngineForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
         takeThreadCompactionRequest(resolvedThreadId) &&
@@ -6785,6 +6794,7 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
+              isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               compactNow,
             }),

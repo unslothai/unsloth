@@ -12,7 +12,10 @@ import {
   scopedDownloadInventoryKind,
   scopedVariant,
 } from "./download-manager-types";
-import { publishStagedQueue } from "./staged-download-queue";
+import {
+  publishStagedQueue,
+  useStagedDownloadQueues,
+} from "./staged-download-queue";
 import { useRepoDownload } from "./use-repo-download";
 
 export interface StagedDownloadProgress {
@@ -45,6 +48,7 @@ export function useStagedDownload({
   scopeId,
   onReady,
   onCancelled,
+  onReset,
   publishQueue = true,
 }: {
   scopeId: string;
@@ -53,6 +57,8 @@ export function useStagedDownload({
   onReady: () => void;
   /** Clears a pending auto-load when the plan ends incomplete, so a later completion cannot load it. */
   onCancelled?: () => void;
+  /** A cross-tab session change dropped the plan's jobs. Not `onCancelled`: a consumer starting its next plan there would carry the old session's queue over. */
+  onReset?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
@@ -116,6 +122,33 @@ export function useStagedDownload({
 
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
+  const onResetRef = useRef(onReset);
+  useEffect(() => {
+    onResetRef.current = onReset;
+  });
+  const queueRef = useRef(queue);
+  useEffect(() => {
+    queueRef.current = queue;
+  });
+  useEffect(
+    () =>
+      useStagedDownloadQueues.subscribe((state, previous) => {
+        // Opt-in: consumers without onReset keep their plan.
+        if (
+          state.resets === previous.resets ||
+          queueRef.current === null ||
+          !onResetRef.current
+        ) {
+          return;
+        }
+        queueRef.current = null;
+        generation.current += 1;
+        inFlight.current = null;
+        setQueue(null);
+        onResetRef.current?.();
+      }),
+    [],
+  );
   useEffect(() => {
     if (!current) return;
     let active = true;

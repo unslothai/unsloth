@@ -39,6 +39,7 @@ const QUEUED_SETTING_KEYS = [
   // A queued local turn is served by the model it was queued against; keeps GGUF compaction policy.
   "loadedIsGguf",
   "loadedIsMlx",
+  "loadedEngine",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "deduplicateToolCalls",

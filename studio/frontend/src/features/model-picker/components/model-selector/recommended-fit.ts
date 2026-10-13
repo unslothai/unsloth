@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
 import {
   classifyMediaGgufFit,
@@ -80,7 +84,50 @@ export function matchesFormatFilter(
   }
 }
 
-// Separator-bounded so "16" is never read from "bf16".
+/** The format filters a picker offers, in menu order. MLX only where it can run, NPU only with a
+ *  catalog to show. */
+export function formatFilterValues(opts: { npu: boolean; mlx: boolean }): FormatFilter[] {
+  return (["all", "gguf", "mlx", "safetensors", "npu"] as const).filter(
+    (value) => (value !== "mlx" || opts.mlx) && (value !== "npu" || opts.npu),
+  );
+}
+
+/** A remembered filter the picker no longer offers falls back to "all". */
+export function coerceFormatFilter(
+  chosen: FormatFilter,
+  offered: readonly FormatFilter[],
+): FormatFilter {
+  return offered.includes(chosen) ? chosen : "all";
+}
+
+const normalizeSearchText = (s: string): string =>
+  s.toLowerCase().replace(/[\s_.-]/g, "");
+
+/** Whether a picker search matches a row on what the row shows. A bundled folder shows only its
+ *  folder name, so its package repo id matches nothing, and neither does a query that is just
+ *  part of the -GGUF every folder name ends in. */
+export function pickerSearchMatches(
+  id: string,
+  aliases: readonly string[],
+  label: string | null | undefined,
+  query: string,
+): boolean {
+  const q = normalizeSearchText(query);
+  if (!q) return true;
+  if (isAudioCppFolderId(id)) {
+    const name = audioCppDisplayName(id);
+    return (
+      normalizeSearchText(name.replace(/-gguf$/i, "")).includes(q) ||
+      (!"gguf".includes(q) && normalizeSearchText(name).includes(q))
+    );
+  }
+  return (label ? [...aliases, label] : aliases).some((term) =>
+    normalizeSearchText(term).includes(q),
+  );
+}
+
+// First "<n>B" token in a repo id, e.g. "Qwen3-30B-A3B" -> 30. Digits must be
+// separator-bounded so "16" is never read from "bf16".
 const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 
 export function paramsFromId(id: string): number | undefined {

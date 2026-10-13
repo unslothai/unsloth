@@ -553,7 +553,6 @@ export const hi = {
     queueingHintShared: "कतार बनी रहती है।",
   },
   rewind: {
-    menuItem: "रिवाइंड करें…",
     title: "रिवाइंड करें",
     pickDescription: "वह संदेश चुनें जिस पर वापस जाना है।",
     pickEmpty: "अभी वापस जाने के लिए कोई संदेश नहीं है।",
@@ -1998,6 +1997,8 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
+        chartToggle: "चार्ट",
+        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",

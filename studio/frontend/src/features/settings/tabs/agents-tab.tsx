@@ -732,7 +732,9 @@ export function AgentsTab() {
         }
         const localEntries = localGgufEntries(local?.models ?? []);
         const discovered = discoverGgufModels(info?.models ?? [], [
-          ...cachedGgufs.map((cached) => cached.repo_id),
+          ...cachedGgufs
+            .filter((cached) => !cached.umbrella_folder)
+            .map((cached) => cached.repo_id),
           ...localEntries.map((entry) => entry.id),
         ]);
         const loadIds: Record<string, string> = {};

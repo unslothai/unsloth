@@ -532,9 +532,10 @@ test("hosted Code is only claimed where the backend registry hosts code_executio
 });
 
 
-test("preserve thinking is available only for explicit llama.cpp connections", () => {
+test("preserve thinking is available only for explicit llama.cpp and vLLM connections", () => {
   assert.equal(providerSupportsPreserveThinking("llama_cpp"), true);
-  for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
+  assert.equal(providerSupportsPreserveThinking("vllm"), true);
+  for (const provider of [undefined, null, "custom", "ollama", "openai", "anthropic", "openrouter"]) {
     assert.equal(providerSupportsPreserveThinking(provider), false);
   }
 });

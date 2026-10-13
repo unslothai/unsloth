@@ -33,6 +33,15 @@ export function loadedAt(times: ModelLoadTimes, id: string): number {
   return times[id.toLowerCase()] ?? -1;
 }
 
+/** The id to stamp for a selection: none unless it is actually loaded. */
+export function loadStampId(
+  value: string | null | undefined,
+  loaded?: boolean,
+): string | undefined {
+  return loaded === false || !value ? undefined : value;
+}
+
+/** Load times, restamping whenever the active model changes. */
 export function useModelLoadTimes(currentValue?: string): ModelLoadTimes {
   const [times, setTimes] = useState<ModelLoadTimes>(() => readLoadTimes());
   useEffect(() => {

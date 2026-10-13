@@ -52,9 +52,20 @@ function h3Presentation(
   return h3PresentationFor(variant.filename);
 }
 
-/** Quant alone: the chip column is capped at 7.2em and a full H3 stem would clip. */
+const QUANT_TOKEN_RE = /^(?:ud-)?(?:bf16|f16|f32|q\d\w*|iq\d\w*|tq\d\w*)$/i;
+
+/** A raw quant key ("bf16", "sub/q8_0") as shown: the quant token uppercased. Keys stay raw. */
+export function quantDisplayCase(q: string): string {
+  const cut = q.lastIndexOf("/") + 1;
+  const leaf = q.slice(cut);
+  return QUANT_TOKEN_RE.test(leaf) ? q.slice(0, cut) + leaf.toUpperCase() : q;
+}
+
+/** A GGUF quant KEY as the row's mono chip: the quant alone, since that column is capped at 7.2em
+ *  and an H3 key is a whole file stem that clips to nonsense. The workflow and build go to
+ *  `ggufQuantDetailLabel`. Other quants pass through. */
 export function ggufQuantChipLabel(quant: string): string {
-  return h3PresentationFor(quant)?.quantLabel ?? quant;
+  return h3PresentationFor(quant)?.quantLabel ?? quantDisplayCase(quant);
 }
 
 export function ggufQuantDetailLabel(quant: string): string {
@@ -75,7 +86,7 @@ export function ggufVariantPickerLabel(
       ? h3.quantLabel
       : `${h3.quantLabel} · ${h3.build}`;
   }
-  return variant.display_label?.trim() || variant.quant;
+  return variant.display_label?.trim() || quantDisplayCase(variant.quant);
 }
 
 export function h3PickerHasOnlyPrunedBuilds(

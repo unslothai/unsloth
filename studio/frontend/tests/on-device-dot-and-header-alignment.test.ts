@@ -68,7 +68,7 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
   );
   assert.match(
     PICKERS,
-    /\{showVision && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
+    /\{visionShown && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
   );
   assert.match(
     PICKERS,

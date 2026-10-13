@@ -33,6 +33,31 @@ test("external models never opt into GGUF compaction", () => {
   );
 });
 
+test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: true,
+    }),
+    { context_overflow: "truncate_oldest" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: false,
+    }),
+    { context_overflow: "error" },
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  // SGLang has no exact count to fit against, so only the vLLM engine asks.
+  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
+  assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
+  assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
+});
+
 test("nothing still offers the removed compaction style", () => {
   for (const file of [
     "features/settings/tabs/chat-tab.tsx",

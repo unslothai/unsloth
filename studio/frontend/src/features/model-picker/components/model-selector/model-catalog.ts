@@ -9,6 +9,7 @@ import {
   type AudioCppModel,
   type AudioCppTask,
   audioCppDisplayName,
+  isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import {
   type GgufFitClass,
@@ -534,6 +535,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         75,
         { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
       ),
+      // 21.0B is every tensor of the single-file DiT the quants are cut from.
+      gguf("unsloth/LTX-2.5-GGUF", { totalParams: 21_004_025_600 }),
     ],
   },
   {
@@ -1027,7 +1030,21 @@ export function curatedRowLabelFor(
   // The repo name already ends in -GGUF, so no chip.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
+    // A hub repo named like a bundled folder ("Qwen3-ASR-0.6B-GGUF") would read as its twin.
+    const twin =
+      !isAudioCppFolderId(hit.artifact.repoId) &&
+      catalog.some((group) =>
+        group.artifacts.some(
+          (artifact) =>
+            artifact.format === "gguf" &&
+            artifact.repoId.toLowerCase() !== hit.artifact.repoId.toLowerCase() &&
+            artifact.repoId.split("/").pop()?.toLowerCase() === leaf.toLowerCase(),
+        ),
+      );
+    return {
+      name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`),
+      tags: twin ? ["llama.cpp"] : [],
+    };
   }
   if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
@@ -1056,13 +1073,16 @@ export function catalogToModelOptions(
     for (const artifact of group.artifacts) {
       // The `models` prop is built only here, so this covers trigger name and seed ids.
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      const name =
+        curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
+        group.displayName;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
-          group.displayName,
+        name,
         description: group.description,
-        descriptionSuffix: artifact.label,
+        // "Kokoro-82M-GGUF - GGUF" would only repeat the name.
+        descriptionSuffix:
+          artifact.format === "gguf" && GGUF_SUFFIX_RE.test(name) ? undefined : artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });

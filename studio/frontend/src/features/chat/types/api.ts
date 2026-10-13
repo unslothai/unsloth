@@ -156,6 +156,8 @@ export interface GgufVariantsResponse {
   default_variant: string | null;
   dependencies_resolved?: boolean;
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(

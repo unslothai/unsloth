@@ -19,14 +19,50 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
   paramsFromId,
+  pickerSearchMatches,
   searchRowFitsDevice,
   searchableRecommendedIds,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
+import {
+  AUDIO_CPP_MODELS,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../src/features/audio/audio-cpp-catalog.ts";
 
 const H3_GGUF = "unsloth/MiniMax-H3-GGUF";
 const H3_BF16 = "MiniMaxAI/MiniMax-H3";
 const LTX_GGUF = "unsloth/LTX-2.3-GGUF";
 const WAN_BF16 = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
+
+// ── search: a downloaded curated row stays findable ───────────────────────────
+
+test("a bundled folder is searched on the folder name its row shows", () => {
+  const folders = AUDIO_CPP_MODELS.filter((model) => isAudioCppFolderId(model.id));
+  const hits = (query: string) =>
+    folders.filter((model) => pickerSearchMatches(model.id, [model.id], null, query));
+  const audioNamed = folders.filter((model) =>
+    audioCppDisplayName(model.id).toLowerCase().includes("audio"),
+  );
+  assert.ok(audioNamed.length > 0 && audioNamed.length < folders.length);
+  assert.deepEqual(hits("audio"), audioNamed);
+  assert.deepEqual(hits("cpp"), []);
+  assert.deepEqual(hits("gguf"), []);
+  assert.deepEqual(hits("GGUF"), []);
+  assert.equal(hits("kokoro").length, 1);
+  // The full name the row shows, and its tail, still find it.
+  assert.equal(hits("Kokoro-82M-GGUF").length, 1);
+  assert.equal(hits("82M-GGUF").length, 1);
+  assert.equal(hits("kokoro 82m gguf").length, 1);
+});
+
+test("any other row is searched on its aliases and label", () => {
+  const id = "unsloth/Qwen3-8B-GGUF";
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "unsloth/qwen3"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "qwen3 8b"), true);
+  assert.equal(pickerSearchMatches(id, [id], null, "gguf"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "llama"), false);
+  assert.equal(pickerSearchMatches("a/b", ["a/b"], "", ""), true);
+});
 
 test("a seed the listing pool dropped is still searchable", () => {
   // recommendedIds drops downloaded models, but Recommended still paints them from seeds.

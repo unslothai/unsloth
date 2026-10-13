@@ -606,6 +606,8 @@ export interface CachedGgufRepo {
   task?: string | null;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
+  /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
   /** Whether that partial can be continued byte for byte. False on a GGUF repo row by design:

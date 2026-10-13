@@ -53,7 +53,9 @@ export interface CachedInventoryRow {
   pipelineTag?: string | null;
   task?: string | null;
   audioType?: string | null;
-  // Loadable only via from_single_file, so pickers must not offer it as a pipeline load.
+  audioWorkflows?: string[] | null;
+  umbrellaFolder?: boolean;
+  // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
   // VAE / text encoders without a denoiser: listed so they can be deleted, never picked.
   companion?: boolean;

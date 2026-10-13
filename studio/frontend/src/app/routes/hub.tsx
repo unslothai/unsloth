@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { CapabilityKey } from "@/features/hub";
+import { hubAudioTaskSearch } from "@/lib/hub-audio-task";
+import type { PipelineType } from "@huggingface/hub";
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
@@ -28,6 +30,7 @@ export interface ModelsSearch {
   section?: "trending" | "latest" | "finetune";
   kind?: "models" | "datasets";
   capability?: CapabilityKey;
+  audioTask?: PipelineType[];
 }
 
 export const Route = createRoute({
@@ -69,6 +72,8 @@ export const Route = createRoute({
     if (HUB_CAPABILITIES.includes(capability as CapabilityKey)) {
       next.capability = capability as CapabilityKey;
     }
+    const audioTask = hubAudioTaskSearch(search.audioTask, next.capability);
+    if (audioTask) next.audioTask = audioTask;
     return next;
   },
 });

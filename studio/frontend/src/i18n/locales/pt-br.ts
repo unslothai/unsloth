@@ -553,7 +553,6 @@ export const ptBR = {
     queueingHintShared: "A fila é mantida.",
   },
   rewind: {
-    menuItem: "Voltar no tempo…",
     title: "Voltar no tempo",
     pickDescription: "Escolha uma mensagem para a qual voltar.",
     pickEmpty: "Ainda não há mensagens para as quais voltar.",
@@ -2008,6 +2007,8 @@ export const ptBR = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana de {date} · {tokens}",
+        chartToggle: "Gráfico",
+        chartToggleHint: "Mostrar Semanal e Acumulada como gráfico com eixos rotulados",
         less: "Menos",
         more: "Mais",
         insightsTitle: "Análise de atividade",

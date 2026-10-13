@@ -553,7 +553,6 @@ export const ar = {
     queueingHintShared: "يبقى الطابور كما هو.",
   },
   rewind: {
-    menuItem: "إرجاع…",
     title: "إرجاع",
     pickDescription: "اختر رسالة للرجوع إليها.",
     pickEmpty: "لا توجد رسائل للرجوع إليها بعد.",
@@ -1994,6 +1993,8 @@ export const ar = {
         },
         cellTooltip: "{date} · {tokens}، {messages}",
         weekTooltip: "أسبوع {date} · {tokens}",
+        chartToggle: "مخطط",
+        chartToggleHint: "عرض الأسبوعي والتراكمي كمخطط بمحاور معنونة",
         less: "أقل",
         more: "أكثر",
         insightsTitle: "تحليل النشاط",

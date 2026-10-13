@@ -54,8 +54,13 @@ export const BUDGET = {
   // /compact and the in-loop compaction divider add 3.6 KB raw / 1.4 KB transfer to the eager startup
   // JS (6,563.4 -> 6,567.0 KB raw, 1,973.0 -> 1,974.4 KB transfer against 280c45695, one machine
   // and build), raised by that.
-  transferBytes: 2_022_600,
-  rawBytes: 6_731_800,
+  // Five merges since then add 2.1 KB raw / 0.8 KB transfer (6,567.3 -> 6,569.4 KB raw, 1,974.5 ->
+  // 1,975.3 KB transfer from a062c04d51 to c35052e42f, one machine and build). The step that crossed
+  // is the token activity Chart view (#13558, +0.7 KB raw / +0.3 KB transfer): its persisted store
+  // pulls zustand/middleware into the startup set as a 99th chunk. Raised by that growth so main's
+  // margin stays where it was.
+  transferBytes: 2_023_500,
+  rawBytes: 6_734_000,
 };
 
 // Chunk count is not budgeted: splitting a page out raises it while lowering bytes.

@@ -20,6 +20,7 @@ interface AudioWorkspaceState {
   clearRequestedWorkflow: () => void;
   setNavExpanded: (expanded: boolean) => void;
   rememberModel: (workflow: AudioWorkflowId, id: string) => void;
+  forgetModel: (id: string) => void;
 }
 
 export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
@@ -49,6 +50,19 @@ export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
                 },
               },
         ),
+      forgetModel: (id) =>
+        set((state) => {
+          const key = id.toLowerCase();
+          const kept = Object.fromEntries(
+            Object.entries(state.lastModelByWorkflow).filter(
+              ([, model]) => model?.toLowerCase() !== key,
+            ),
+          );
+          return Object.keys(kept).length ===
+            Object.keys(state.lastModelByWorkflow).length
+            ? state
+            : { lastModelByWorkflow: kept };
+        }),
     }),
     {
       name: AUDIO_WORKSPACE_STORAGE_KEY,

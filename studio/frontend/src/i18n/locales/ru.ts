@@ -553,7 +553,6 @@ export const ru = {
     queueingHintShared: "Очередь сохраняется.",
   },
   rewind: {
-    menuItem: "Откатить…",
     title: "Откатить",
     pickDescription: "Выберите сообщение, к которому нужно вернуться.",
     pickEmpty: "Пока нет сообщений, к которым можно вернуться.",
@@ -2000,6 +1999,8 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
+        chartToggle: "График",
+        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",
