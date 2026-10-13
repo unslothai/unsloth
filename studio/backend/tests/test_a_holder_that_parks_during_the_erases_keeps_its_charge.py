@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A reclaim releases the holders its OWN reading saw parked, and nobody else.
-
-`/slots` is scraped, the idle slots are erased over blocking HTTP that can take seconds, and
-only then are the parked holders told their cells are gone. A chat that stops on a tool
-inside that window has an idle slot the erase list never contained: its cells are still
-resident, so handing its admission commitment back admits a waiter into KV that is occupied,
-which is the shared-cache overflow this whole path exists to prevent.
-"""
+"""A reclaim releases the holders its OWN reading saw parked, and nobody else."""
 
 from __future__ import annotations
 
@@ -65,11 +58,9 @@ class TestTheLedger:
         c.register("late", lease = late_lease, tokens = 2000)
         c.note_state("early", ParticipantState.PARKED_ON_TOOL)
 
-        # What the sweep reads before it scrapes `/slots`.
         seen = c.parked_holders()
         assert seen == {"early": c.participant("early").park_seq}
 
-        # And now, while the erases are in flight, the other chat stops on a tool.
         c.note_state("late", ParticipantState.TOOLS_RUNNING)
 
         assert c.note_cells_reclaimed(seen) == 1
@@ -82,9 +73,8 @@ class TestTheLedger:
         assert c.participant("late").holds_kv is True
 
     def test_a_round_recosted_during_the_erases_names_the_commitment_that_parked(self):
-        # The tool came back and the next round re-costed while the erases were in flight,
-        # the participant still TOOLS_RUNNING. The release must name the commitment that was
-        # parked, which the lease then refuses as superseded, not the one filling now.
+        # The tool came back and the next round re-costed while the erases were in flight, the
+        # participant still TOOLS_RUNNING.
         c = _controller()
         lease = _SeqLease()
         c.register("chat", lease = lease, tokens = 2000)
@@ -101,8 +91,6 @@ class TestTheLedger:
         c.register("chat", lease = lease, tokens = 2000)
         c.note_state("chat", ParticipantState.PARKED_ON_TOOL)
         seen = c.parked_holders()
-        # Its tool returned, it decoded (llama-server prefilled the prompt back in), and it
-        # stopped on the next tool, all inside the erase window.
         c.note_state("chat", ParticipantState.DECODING)
         c.note_state("chat", ParticipantState.PARKED_ON_TOOL)
 
@@ -156,7 +144,6 @@ class TestTheDisarmPath:
             needed = 0,
             **_kwargs,
         ):
-            # The window: this is the blocking HTTP the comment describes.
             controller.note_state("late", ParticipantState.PARKED_ON_TOOL)
             return 2000
 
@@ -204,8 +191,7 @@ class _ChargingLease:
 
 
 class TestAHolderWhoseToolCameBackDuringTheErases:
-    """The yields run after erases that take seconds. A holder that restated its prompt in
-    between is prefilling those cells again, and its new charge is not for the erased ones."""
+    """The yields run after erases that take seconds."""
 
     def test_the_yield_carries_the_charge_it_was_decided_on(self):
         c = _controller()
@@ -216,8 +202,6 @@ class TestAHolderWhoseToolCameBackDuringTheErases:
         assert lease.asked_at == [0]
 
     def test_a_holder_restated_before_its_yield_is_skipped(self):
-        # Two holders: the first's yield is where the interleaving lands, and it plays the
-        # second's tool coming back (recost, then the round boundary) before its own yield runs.
         c = _controller()
         first, second = _ChargingLease(), _ChargingLease()
         c.register("first", lease = first, tokens = 2000)

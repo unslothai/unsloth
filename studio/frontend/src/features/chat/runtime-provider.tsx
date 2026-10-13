@@ -1599,7 +1599,6 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
-      // The live adapter's rule: a give-up is `paused` unless the run finished after it.
       const preemptGaveUp =
         isPreemptGaveUp(
           currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
@@ -1751,8 +1750,6 @@ function scheduleGenerationRecovery(
                 quote_cut?: boolean;
               };
               if (chunk._admissionStatus !== undefined) {
-                // Queued or paused: the line the live adapter shows, so a follower does
-                // not read the pause as a wedged backend. Cleared with the run below.
                 useChatRuntimeStore
                   .getState()
                   .setToolStatus(

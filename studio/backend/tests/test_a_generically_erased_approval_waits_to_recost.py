@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A round recosting after the generic idle-slot reclaim erased its parked cells may wait.
-
-The route's own approval erase sets a flag that lets the next round yield and wait for room.
-The generic reclaim tells only the ledger, so where proactive idle clearing is off (Windows full
-GPU offload) the grown round was refused at once, and a tool that had already run never had its
-result sent back to the model.
-"""
+"""A round recosting after the generic idle-slot reclaim erased its parked cells may wait."""
 
 from __future__ import annotations
 
@@ -52,9 +46,7 @@ def _parked(controller) -> None:
 def test_a_generic_reclaim_lets_the_next_round_wait(controller):
     _parked(controller)
     assert inference._openai_llama_self_erased(_Backend(), "chat") is False
-    # The token path's idle reclaim takes every idle slot, this parked chat's included.
     assert controller.note_cells_reclaimed(controller.parked_holders()) == 1
-    # Answered: the tool runs, and the next round recosts before it decodes.
     controller.note_state("chat", ParticipantState.TOOLS_RUNNING)
     assert inference._openai_llama_self_erased(_Backend(), "chat") is True
     controller.note_state("chat", ParticipantState.DECODING)
@@ -67,7 +59,6 @@ def test_a_reclaim_that_found_the_lease_recharged_still_counts(controller):
     seen = controller.parked_holders()
     lease.charge_seq += 1
     assert controller.note_cells_reclaimed(seen) == 1
-    # Restored to count again, but its cells were erased all the same.
     assert inference._openai_llama_self_erased(_Backend(), "chat") is True
 
 

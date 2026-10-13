@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unpausable request is not sent into cells its victims still hold.
-
-The first wait is short, since a pause lands within a token or two of the signal. When it ran
-out the request went upstream anyway, into the cells the plan had counted as freed, and its
-prefill could overflow the shared cache for every chat in it. It now waits on while there is no
-room, and a victim wedged past the hard bound refuses the request as an admission timeout.
-"""
+"""An unpausable request is not sent into cells its victims still hold."""
 
 import asyncio
 import threading
@@ -93,7 +87,6 @@ def test_a_victim_that_never_lets_go_refuses_the_request(backend):
 
 
 def test_room_freed_another_way_lets_it_go(backend):
-    # The victim finished instead of pausing: its cells left with it.
     fake, controller = backend
     waited, refused = _route(
         fake, controller, then = lambda: _later(0.4, lambda: controller.unregister("chat"))

@@ -87,8 +87,6 @@ class TestTheGateIsTheEnforcementItself:
             self._kv_cache_unified = unified
 
     def test_no_kv_unified_means_no_optimism(self):
-        # Without one shared pool a paused slot's cells cannot be purged for anyone else;
-        # try_clear_idle_slots is gated on exactly this.
         assert _openai_llama_preemption_will_apply(self._Backend(False), BUDGET) is False
 
     def test_no_budget_means_no_optimism(self):

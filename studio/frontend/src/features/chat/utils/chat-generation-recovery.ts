@@ -65,7 +65,6 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   ) {
     return false;
   }
-  // A pause or resume notice relayed by the durable run: a status line, not output.
   if ("_admissionStatus" in chunk) return false;
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }

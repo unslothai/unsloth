@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A round decides whether it may overlap on the arguments `prepare_call` classifies.
-
-The preflight read the raw dict, while `prepare_call` heals it first: a web_search `href` heals
-to a `url`, a page fetch that asks under "auto", so the raw search let a sibling start before
-the approval was put in front of the user.
-"""
+"""A round decides whether it may overlap on the arguments `prepare_call` classifies."""
 
 import inspect
 import json

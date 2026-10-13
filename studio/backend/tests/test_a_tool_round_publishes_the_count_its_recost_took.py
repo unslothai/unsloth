@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A GGUF tool round hands the preemptor the tokenizer count its recost just took.
-
-The recost counts the prepared prompt exactly, and the publication then priced it again with the
-character estimate. Dense numeric or code text tokenizes far above that, so the round's resident
-figure fell short by the gap and overwrote the count arming had used.
-"""
+"""A GGUF tool round hands the preemptor the tokenizer count its recost just took."""
 
 from __future__ import annotations
 
@@ -78,7 +73,6 @@ def test_another_catalogue_is_counted_on_its_own(monkeypatch):
         llama_backend = _backend(),
         payload = SimpleNamespace(),
         injected_tools = [{"type": "function", "function": {"name": "a"}}],
-        # The final pass renders no catalogue, so the count of the charged one does not stand.
         wire_tools = None,
         count_prepared_prompt = True,
         counted_out = counted,

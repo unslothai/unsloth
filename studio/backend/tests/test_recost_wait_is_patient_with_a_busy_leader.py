@@ -41,14 +41,12 @@ async def test_a_moving_progress_signature_keeps_the_wait_alive():
     ticks = {"n": 0}
 
     def progress():
-        # Somebody is decoding: a new value every read.
         ticks["n"] += 1
         return ticks["n"]
 
     outcome = {}
 
     def wait():
-        # Wants more than fits beside the leader; the leader lets go after a while.
         outcome["granted"] = waiter.recost_waiting(
             4000, timeout_s = 0.3, poll_s = 0.02, progress = progress, gen_id = "waiter"
         )
@@ -75,7 +73,6 @@ async def test_a_frozen_pool_still_gives_up_on_schedule():
     elapsed = time.monotonic() - started
     assert granted is False
     assert 0.25 <= elapsed < 2.0, elapsed
-    # Back at the old figure, as before.
     assert queue.committed_now() == 6000 + 1000
     leader.release()
     waiter.release()
@@ -91,7 +88,6 @@ async def test_the_hard_deadline_bounds_a_pool_that_moves_forever():
         ticks["n"] += 1
         return ticks["n"]
 
-    # Sized off the multiple, so the bound is about one second whatever it is set to.
     timeout_s = 1.0 / llama_admission._MAX_REPARK_WAIT_MULTIPLE
     started = time.monotonic()
     granted = waiter.recost_waiting(
@@ -99,7 +95,6 @@ async def test_the_hard_deadline_bounds_a_pool_that_moves_forever():
     )
     elapsed = time.monotonic() - started
     assert granted is False
-    # timeout_s * the repark multiple = 1 s, give or take a poll.
     assert 0.9 <= elapsed < 3.0, elapsed
     leader.release()
     waiter.release()

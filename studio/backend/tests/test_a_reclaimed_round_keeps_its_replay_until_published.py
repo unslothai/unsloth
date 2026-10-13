@@ -34,7 +34,6 @@ def _parked_then_recharged():
     controller.note_tokens("chat", 6000, 6000)
     controller.note_state("chat", ParticipantState.TOOLS_RUNNING)
     seen = controller.parked_holders()
-    # The tool came back and `recost_waiting` re-charged, but the round has not published.
     lease.charge_seq += 1
     assert controller.note_cells_reclaimed(seen) == 1
     return controller
@@ -54,9 +53,7 @@ def test_the_marker_is_spent_by_that_round():
     controller.note_tokens("chat", 6400, 6400)
     controller.observe("chat", 10)
     controller.note_tokens("chat", 6500, 6500)
-    # The next round is growth again: the prompt plus the 10 tokens written are resident.
     assert controller.snapshot().prefilling == 6500 - 6410
-    # In once a reading taken after its first token lands.
     controller.note_resident(6500, started_at_seq = controller.residency_epoch())
     assert controller.participant("chat").measured is True
 
@@ -69,8 +66,6 @@ def test_a_token_first_spends_it_too():
 
 
 def test_the_sweep_after_the_round_keeps_it_unmeasured():
-    # `_openai_llama_publish_round_charge` reports zero right after `note_tokens`: no token was
-    # decoded, so the replayed prompt is still going in and its announcement stands.
     controller = _parked_then_recharged()
     controller.note_tokens("chat", 6400, 6400)
     controller.observe("chat", 0)

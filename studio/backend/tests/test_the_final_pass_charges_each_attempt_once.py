@@ -26,8 +26,6 @@ _TOOL = {
     },
 }
 
-# Enough chunks that the batched reporter fires at least once per attempt, and enough
-# beyond it that a carried-over counter reports a different number from a reset one.
 _CHUNKS_PER_ATTEMPT = _TOKEN_REPORT_EVERY + 8
 
 
@@ -153,7 +151,6 @@ class _Recorder:
                     continue
                 seen += 1
                 if attempt in recorder.pause_attempts and seen >= recorder.pause_after:
-                    # Pressure noticed mid-stream, which is when it really is.
                     recorder.signal.request("kv_pressure")
                     raise preemption.LlamaStreamPreempted
 
@@ -225,9 +222,6 @@ class TestThePauseChargeIsTheObservedCount:
         _recorder, policy, _reports, _events = _paused_final_run(monkeypatch)
         checkpoint = policy.checkpoints[0]
         assert checkpoint.visible_text == "a" * _CHUNKS_PER_ATTEMPT
-        # One character per chunk, so the four-characters-per-token estimate is a quarter
-        # of the truth. That is the shape of the undercharge on token-dense text, where a
-        # token really is about one character.
         estimate = len(checkpoint.visible_text) // 4
         assert checkpoint.charged_tokens == _CHUNKS_PER_ATTEMPT, (
             "the pause was charged the character estimate while the attempt's own chunk "

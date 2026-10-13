@@ -127,7 +127,6 @@ class TestTheFinalPassIsClampedToWhatWasAdmitted:
 
         _run(backend, max_tokens = 3000, admission_output_allowance = 512)
 
-        # The last request is the final pass; the ones before it are the rounds.
         assert payloads[-1]["max_tokens"] == 512, (
             "the pass that produces the answer sent an output cap larger than the room "
             f"admission reserved for it: {payloads[-1]['max_tokens']}"
@@ -151,7 +150,6 @@ class TestTheFinalPassReportsItsGrowth:
         from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
 
         payloads: list[dict] = []
-        # Enough content chunks for two reports on the final pass alone.
         streams = [_tool_round(), _final_answer(_TOKEN_REPORT_EVERY * 2 + 1)]
         backend = _backend(monkeypatch, streams, payloads)
         monkeypatch.setattr("core.inference.tools.execute_tool", lambda *a, **k: "RESULT")

@@ -78,7 +78,6 @@ class TestWhichExceptionComesOut:
         pause = preemption.PreemptSignal()
         pause.request()
         response = _FakeResponse(["data: a\n"])
-        # No exception: the cancel path wins and returns.
         assert _drain(response, cancel_event = cancel, preempt_event = pause) == []
         assert response.closed
 
@@ -165,7 +164,6 @@ class TestTheSignaturesStayBackwardsCompatible:
         if not text:
             import core.inference.llama_cpp as module
             text = pathlib.Path(module.__file__).read_text()
-        # Every forward of the argument is conditional on it existing.
         unconditional = re.findall(r"^\s*preempt_event = preempt_event,\s*$", text, re.M)
         assert (
             not unconditional

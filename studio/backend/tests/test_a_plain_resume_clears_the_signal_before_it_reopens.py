@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A plain chat clears its pause signal before it reopens the stream, as the tool paths do.
-
-The policy protocol does not promise a clear, so a policy that grants the resume without one
-left the signal set, and the resumed attempt was aborted on its first read, again and again.
-"""
+"""A plain chat clears its pause signal before it reopens the stream, as the tool paths do."""
 
 from __future__ import annotations
 
@@ -82,7 +78,6 @@ def test_the_resumed_attempt_opens_with_the_signal_clear(monkeypatch):
             messages = [{"role": "user", "content": "write me a poem"}],
             cancel_event = threading.Event(),
             preempt_event = signal,
-            # Grants the resume and leaves the signal alone, as the protocol allows.
             preempt_policy = preemption.NullPreemptionPolicy(),
         )
     )

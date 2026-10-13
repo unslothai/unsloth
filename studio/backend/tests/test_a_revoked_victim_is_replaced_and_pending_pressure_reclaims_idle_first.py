@@ -41,7 +41,6 @@ class TestARevokedVictimIsReplaced:
         chosen = [p.gen_id for p in controller.plan_preemptions(needed = 0)]
         assert len(chosen) == 1, chosen
         victim = chosen[0]
-        # Its stream had already emitted a tool call; the loop starts the tool.
         assert controller.note_state(victim, ParticipantState.TOOLS_RUNNING) is True
         assert controller.participant(victim).state == ParticipantState.TOOLS_RUNNING
         replaced = [
@@ -56,7 +55,6 @@ class TestARevokedVictimIsReplaced:
     def test_nobody_is_chosen_once_the_room_is_not_owed(self):
         controller = _three_decoders()
         victim = controller.plan_preemptions(needed = 0)[0].gen_id
-        # A third chat finished meanwhile: the room the plan wanted is there now.
         survivor = next(g for g in ("a", "b", "c") if g != victim)
         controller.unregister(survivor)
         assert controller.note_state(victim, ParticipantState.TOOLS_RUNNING) is True
@@ -91,7 +89,6 @@ def test_a_pending_prompt_reclaims_idle_residue_before_the_plan(monkeypatch):
     controller.configure(budget = 16384, kv_unified = True, slots = 4)
     controller.register("live", lease = _Lease(), tokens = 2500)
     controller.note_measured("live")
-    # Registered and announced, not yet in the cache: no reading can see it.
     controller.register("fresh", lease = _Lease(), tokens = 8000, prompt_tokens = 8000)
     occupancy = {"idle": [(3, 6000)], "resident": 8500, "idle_tokens": 6000}
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: controller)
@@ -115,7 +112,6 @@ def test_a_pending_prompt_reclaims_idle_residue_before_the_plan(monkeypatch):
     )
     snapshot = controller.snapshot()
     ceiling = snapshot.budget - snapshot.buffer
-    # The reading alone is under the ceiling; with the pending prompt on top it is over.
     assert occupancy["resident"] < ceiling < occupancy["resident"] + 8000
     refresh(controller, force = True)
     assert erased and erased[0] > 0, (

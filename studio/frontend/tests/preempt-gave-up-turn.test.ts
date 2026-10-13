@@ -29,9 +29,6 @@ test("the give-up signal is read off the truncation event", () => {
 });
 
 test("an ordinary fit is not a give-up", () => {
-  // The same event carries real fits, several per turn on a compacting thread, and reading
-  // one as a give-up would relabel a healthy turn as paused. Typed as the event the backend
-  // really sends rather than a two-field stand-in.
   const fit: ContextTruncation = { fits: false, dropped_messages: 4 };
   assert.equal(isPreemptGaveUp(fit), false);
   assert.equal(isPreemptGaveUp({}), false);
@@ -41,7 +38,6 @@ test("an ordinary fit is not a give-up", () => {
 
 test("only a paused turn may be continued with no text", () => {
   assert.equal(resumesWithoutText("paused"), true);
-  // Every other reason has text by construction.
   assert.equal(resumesWithoutText("length"), false);
   assert.equal(resumesWithoutText("cancelled"), false);
   assert.equal(resumesWithoutText("interrupted"), false);
@@ -60,8 +56,6 @@ test("an empty assistant turn is continuable only when it is allowed to be", () 
 });
 
 test("allowEmpty does not reopen the tool-call rule", () => {
-  // A continuation runs as a sibling, so the call and its result are missing from the
-  // outbound history whatever stopped the turn.
   const calledATool = [
     { type: "text", text: "" },
     { type: "tool-call", toolName: "web_search" },

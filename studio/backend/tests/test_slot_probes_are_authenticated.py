@@ -33,8 +33,8 @@ def _capture(monkeypatch, body: bytes):
     seen: list[urllib.request.Request] = []
 
     def _urlopen(request, timeout = None):
-        # Both helpers must send a Request, not a bare URL, or there is nowhere to put
-        # the header at all.
+        # Both helpers must send a Request, not a bare URL, or there is nowhere to put the header
+        # at all.
         assert isinstance(request, urllib.request.Request), request
         seen.append(request)
         return _Response(body)
@@ -114,9 +114,6 @@ class TestTheRouteHandsThemTheBackendsKey:
 
         source = Path(inference.__file__).read_text(encoding = "utf-8")
         assert "def _llama_slot_headers(" in source
-        # Every call site, not most of them: one unauthenticated read is enough to make
-        # the residency figure None and disable the probe for everybody.
-        # Whitespace-blind: a formatter may wrap a call across lines.
         flat = re.sub(r"\s+", " ", source)
         assert flat.count("fetch_llama_slots(") == flat.count(
             "fetch_llama_slots( base, headers = _llama_slot_headers(llama_backend) )"

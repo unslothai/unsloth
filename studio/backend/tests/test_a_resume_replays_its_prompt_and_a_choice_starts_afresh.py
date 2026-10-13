@@ -19,7 +19,6 @@ pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
 def _controller(key: str) -> preemption.PreemptionController:
     controller = preemption.PreemptionController(key)
-    # An 8192-cell cache with a 2048-token batch: the solo ceiling is 8125.
     controller.configure(budget = 8192, kv_unified = True, slots = 4, draft_tokens = 2, batch_tokens = 2048)
     return controller
 
@@ -29,7 +28,6 @@ class TestAResumeIsSizedByWhatItReplays:
         controller = _controller("http://replay-first")
         participant = controller.register("chat", tokens = 7000 + 2048, prompt_tokens = 7000)
         assert participant.replay_tokens() == 7000
-        # The charge does not fit alone, the prompt does.
         assert controller.cannot_ever_fit(participant.tokens) is True
         assert controller.cannot_ever_fit(participant.replay_tokens()) is False
 
@@ -82,8 +80,6 @@ class TestTheNextChoiceStartsAfresh:
     def test_every_choice_after_the_first_restarts_before_it_generates(self):
         source = " ".join(inspect.getsource(inference).split())
         site = source.index("for _idx in range(_n):")
-        # To the loop's first generate rather than a fixed width: a guard added ahead of
-        # the restart pushed `gguf_generate(_idx)` out of an 900-character window.
         window = source[site : source.index("gguf_generate(_idx)", site) + 40]
         assert "if _idx: " in window
         assert window.index("_plain_preempt_policy.restart()") < window.index("gguf_generate(_idx)")

@@ -50,16 +50,13 @@ def test_the_in_loop_decline_tells_the_client_the_retry_would_not_fit(monkeypatc
 
     assert len(payloads) == 1, "the continuation was sent after all"
     refusals = _refusals(events)
-    # Once. `mergeContextTruncation` on the client SUMS the counters across a turn, so a
-    # second copy of the same refusal is not a no-op.
     assert len(refusals) == 1, refusals
     refusal = refusals[0]
     assert refusal["fits"] is False
-    # Nothing was evicted, and a non-zero count here raises "This conversation was
-    # compacted" for a compaction that never happened.
+    # Nothing was evicted, and a non-zero count here raises "This conversation was compacted" for
+    # a compaction that never happened.
     assert refusal["dropped_messages"] == 0
     assert refusal["context_length"] == 4096
-    # What the client compares its own estimate of the partial against.
     assert refusal["prompt_target"] > 0
     assert refusal["prompt_target"] < refusal["context_length"]
 
@@ -99,7 +96,6 @@ def test_a_spent_output_cap_is_not_reported_as_a_context_refusal(monkeypatch):
         _cut_off_then([_sse({"content": " never sent"}), _done()]),
         payloads,
     )
-    # Room to spare in the window; it is the caller's cap that is gone.
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 100)
 
     events = _run(backend, max_tokens = 64)

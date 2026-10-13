@@ -54,7 +54,6 @@ test("the recovered pause does not auto-continue", () => {
 });
 
 test("the recovery publish derives the give-up the way the live adapter does", () => {
-  // The rule lives in one closure, so the wiring is pinned rather than trusted.
   const source = readFileSync(
     fileURLToPath(new URL("../src/features/chat/runtime-provider.tsx", import.meta.url)),
     "utf8",

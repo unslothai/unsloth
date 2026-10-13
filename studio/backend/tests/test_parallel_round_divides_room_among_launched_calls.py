@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An overlapped round divides its result room among the calls that actually launch.
-
-`prepare_call` turns a repeat of an earlier successful call into a no-op that stores no
-result, but the round is decided from the raw call list, so a round of three whose first
-entry repeats round one still ran overlapped -- and each of the two real calls was handed a
-THIRD of the room instead of a half. Below `_MIN_USEFUL_RESULT_TOKENS` the result is
-replaced by the notice that says it was cut, which the model reads as a failure and retries.
-"""
+"""An overlapped round divides its result room among the calls that actually launch."""
 
 from __future__ import annotations
 

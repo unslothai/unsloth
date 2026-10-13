@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unpausable request waits for the chats its plan paused before it goes upstream.
-
-Planning only marks the victims PREEMPTING and sets their signals; they keep decoding into their
-cells until their streams see it and close upstream. A direct prompt sent at once could outrun
-llama-server's KV-full retries, which halve the batch within one decode and then end every slot.
-"""
+"""An unpausable request waits for the chats its plan paused before it goes upstream."""
 
 import asyncio
 import inspect
@@ -83,7 +78,6 @@ def test_a_stuck_victim_is_waited_on_only_so_long(backend, monkeypatch):
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_WAIT_S", 0.2)
     monkeypatch.setattr(inference, "_UNPAUSABLE_VICTIM_HARD_WAIT_S", 0.5, raising = False)
     started = time.monotonic()
-    # Refused at the bound rather than sent into the cells the victim still holds.
     with pytest.raises(LlamaAdmissionTimeout):
         inference._openai_llama_count_direct_holder(fake, 9000, "direct-holder")
     assert 0.15 <= time.monotonic() - started < 2.0

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A direct holder waits on whoever replaced a victim whose choice was revoked.
-
-A chat chosen as its stream finished a tool call has the choice undone, and the re-plan picks
-another chat in its place. The holder only knew the first: it stopped waiting the moment that
-one left PREEMPTING and went upstream while the replacement still decoded into its cells.
-"""
+"""A direct holder waits on whoever replaced a victim whose choice was revoked."""
 
 import threading
 import time
@@ -59,8 +54,6 @@ def test_it_ends_once_the_replacement_lets_go():
 
 
 def test_a_victim_chosen_again_after_it_was_replaced_is_waited_on_again():
-    # The first choice leaves its tool and decodes, then its replacement enters one and the
-    # re-plan picks the first again: the wait has to see that choice too.
     controller, revoked, replacement = _revoked_into_a_tool()
     chosen_again = threading.Event()
 
@@ -94,8 +87,8 @@ def _chosen_once():
 
 
 def test_a_declined_pause_is_replaced_for_the_waiter():
-    # Stalled on resumes, the chosen chat finishes its turn instead: its cells never leave, so
-    # the holder has to wait on whoever stops in its place.
+    # Stalled on resumes, the chosen chat finishes its turn instead: its cells never leave, so the
+    # holder has to wait on whoever stops in its place.
     controller, chosen = _chosen_once()
     controller.note_declined(chosen)
     replacement = next(
@@ -112,7 +105,6 @@ def test_a_declined_pause_is_replaced_for_the_waiter():
 
 
 def test_the_replacement_is_not_the_chat_that_just_declined():
-    # Chosen again at once, it would decline again at its next read, round and round.
     controller, chosen = _chosen_once()
     controller.note_declined(chosen)
     assert controller.participant(chosen).state == ParticipantState.DECODING

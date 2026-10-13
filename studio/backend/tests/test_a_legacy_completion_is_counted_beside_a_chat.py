@@ -49,7 +49,6 @@ def test_nothing_is_counted_with_preemption_off(backend, monkeypatch):
 
 
 def test_both_completions_branches_count_and_release():
-    # Joined on whitespace, so a formatter wrapping the call does not move the pin.
     source = "".join(inspect.getsource(inference.openai_completions).split())
     count = '_openai_llama_count_completions_holder(llama_backend,body.get("prompt",""))'
     assert source.count(count) == 2
@@ -57,8 +56,6 @@ def test_both_completions_branches_count_and_release():
 
 
 def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeypatch):
-    # The chat has outgrown its lease: the cache already holds near all of it. Registering the
-    # completion has to pick the chat at once, not at the chat's next token report.
     fake, controller = backend
     monkeypatch.setattr(
         inference, "_refresh_residency_before_planning", lambda c: c.note_resident(16000)
@@ -66,7 +63,6 @@ def test_an_unpausable_holder_plans_before_its_request_goes_out(backend, monkeyp
     controller.register("chat", tokens = 4000)
 
     async def route():
-        # On the loop, as the route registers it: the wait for the victim is the route's own.
         return inference._openai_llama_count_completions_holder(fake, "x" * 16000)
 
     holder = asyncio.run(route())

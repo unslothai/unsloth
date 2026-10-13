@@ -86,8 +86,6 @@ class TestABudgetIsSpentByLaunchesOnly:
             return parsed["query"]
 
         queries = [_query(call["arguments"]) for call in executed]
-        # A set: an overlapped round's tools start together, so which of the two new
-        # searches reaches `execute_tool` first is not a property this owns.
         assert sorted(queries) == ["alpha", "beta", "gamma"], (
             "the repeat is a no-op and spends nothing, so both new searches fit the "
             f"remaining budget of two; got {queries}"

@@ -53,7 +53,6 @@ class _Upstream:
     def __init__(self, monkeypatch, streams, *, signal, pause_after):
         self.payloads: list[dict] = []
         self.signal = signal
-        # attempt index -> how many data chunks it serves before the pause.
         self.pause_after = dict(pause_after)
         self._streams = [list(stream) for stream in streams]
         self.backend = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -179,8 +178,6 @@ class TestOnePause:
             pause_after = {0: 2},
         )
         usage = _reported_usage(upstream.backend, signal = signal)
-        # The resumed prompt carries the partial, so the first attempt's prompt is a prefix
-        # of it; summing prompts would report the same conversation twice.
         assert usage["prompt_tokens"] == 40
         assert usage["total_tokens"] == 40 + 19
 

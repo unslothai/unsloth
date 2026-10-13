@@ -255,7 +255,6 @@ class TestOldCallers:
             "admission_output_allowance",
             "on_prompt_fitted",
         ], f"a parameter was inserted rather than appended; around it: {plain[at - 2 : at + 3]}"
-        # The preemption hooks come after, appended with defaults.
         for later in plain[at + 2 :]:
             assert plain_signature.parameters[later].default is not inspect.Parameter.empty, later
 
@@ -268,7 +267,6 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
-        # Only optional hooks follow it: the wire-cap allowance and the preemption observer.
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
         for later in names[names.index("sandbox_level") + 1 :]:
             assert signature.parameters[later].default is None, f"{later} was not appended"

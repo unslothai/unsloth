@@ -27,19 +27,7 @@ def fetch_llama_slots(
     timeout_s = 3.0,
     headers = None,
 ):
-    """One ``GET /slots`` read as a list, or None if it could not be read.
-
-    ``headers`` carries the backend's ``Authorization``, since llama.cpp exempts only
-    ``/health`` from ``--api-key`` and an unauthenticated read answers 401, which reads
-    back as "cannot tell" and switches the residency probe off in a supported mode.
-
-    A slots poller rather than the /metrics scraper the original design called for:
-    /metrics says nothing about cells still held by IDLE slots, and llama.cpp keeps a
-    slot's prompt cache after its request finishes. This is the only endpoint that can say.
-
-    None means "cannot tell" -- endpoint disabled, older build, socket error -- and must
-    never be read as "the cache is empty".
-    """
+    """One ``GET /slots`` read as a list, or None if it could not be read."""
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
         with _loopback_opener().open(
@@ -59,15 +47,11 @@ def erase_llama_slot(
     timeout_s = 3.0,
     headers = None,
 ) -> int:
-    """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
-
-    Cheaper than preempting: the cache belongs to a finished request, so this costs a
-    future prefix-cache hit rather than a running conversation's progress.
-    """
+    """Drop one idle slot's cached prompt."""
     url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
     try:
-        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased,
-        # so a paused slot's cells are never released.
+        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased, so a
+        # paused slot's cells are never released.
         request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
         with _loopback_opener().open(request, timeout = timeout_s) as r:
             if r.status != 200:
@@ -82,8 +66,7 @@ def erase_llama_slot(
 
 
 def _loopback_opener():
-    """No proxy, so the bearer only ever goes to the loopback server. No HTTPSHandler: it
-    builds an SSL context this scrape never needs."""
+    """No proxy, so the bearer only ever goes to the loopback server."""
     opener = urllib.request.OpenerDirector()
     for handler in (
         urllib.request.ProxyHandler({}),
@@ -102,12 +85,7 @@ def scrape_llama_metrics(
     headers = None,
     opener = None,
 ):
-    """One /metrics read as a {name: float} dict, or None if it could not be read.
-
-    Split out of the daemon's own scrape so a caller needing a single sample reuses this
-    parser rather than adding a second one. None covers every reason the read did not
-    happen and must be read as "cannot tell", never as "nothing is running".
-    """
+    """One /metrics read as a {name: float} dict, or None if it could not be read."""
     url = f"{str(base_url).rstrip('/')}/metrics"
     if opener is None:
         opener = _loopback_opener()
@@ -126,8 +104,6 @@ def scrape_llama_metrics(
             value = float(v)
         except ValueError:
             continue
-        # float() overflows a long digit string to inf without raising; _env_float
-        # refuses the same text. No printed double reaches 1.8e308, so nothing is lost.
         if math.isfinite(value):
             out[k] = value
     return out

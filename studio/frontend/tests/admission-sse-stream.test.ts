@@ -67,7 +67,6 @@ function harness(slices: string[]) {
         publishChatHistoryRevision: () => {},
         CHAT_HISTORY_REVISION_KEY: "unsloth_chat_history_revision",
       },
-      // Pure and import-free, so the real module rather than a stub that drifts from it.
       "./generation-length.ts": generationLength,
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
@@ -82,7 +81,6 @@ function harness(slices: string[]) {
         consumeNativePathToken: () => undefined,
       },
       "@/lib/model-lifecycle-events": {},
-      // Imported by chat-api on main; stubbed here so the merge with main loads.
       "@/features/igpu-carveout": {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},
@@ -121,7 +119,6 @@ test("a queued run reports waiting, then admitted, then streams", async () => {
 });
 
 test("an admission block is not swallowed by the empty-block fast path", async () => {
-  // The reader skips blocks with no `data:` line, and an admission block is exactly that.
   const chunks = await collect([": admission-wait\n\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,
@@ -140,7 +137,6 @@ test("the content still arrives alongside the signals", async () => {
 });
 
 test("a comment split across reads is still recognised", async () => {
-  // SSE is a byte stream; nothing promises a comment lands whole in one read.
   const chunks = await collect([": admiss", "ion-wait\n", "\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,
@@ -172,8 +168,6 @@ test("a paused run reports paused and then resumed", async () => {
 });
 
 test("repeated waits while queued are each reported", async () => {
-  // The backend re-emits the wait comment as its own keep-alive, so a reader that reported
-  // only the first would let the indicator go stale.
   const chunks = await collect([
     ": admission-wait\n\n",
     ": admission-wait\n\n",
@@ -188,7 +182,6 @@ test("repeated waits while queued are each reported", async () => {
 });
 
 test("CRLF framing is handled like LF", async () => {
-  // Some proxies rewrite line endings on the way through.
   const chunks = await collect([": admission-wait\r\n\r\n", CONTENT, DONE]);
   assert.equal(
     chunks.filter((c) => c._admissionStatus === "waiting").length,

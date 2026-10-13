@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Generated tokens are written INTO the reservation, not on top of it.
-
-Counting the charge and the output again made four chats holding 3472 cells read as 7568
-against a 7424 ceiling, and the newest was preempted for room nobody needed.
-"""
+"""Generated tokens are written INTO the reservation, not on top of it."""
 
 from __future__ import annotations
 
@@ -84,12 +80,10 @@ class TestARoundBoundaryRestatesTheConversation:
         controller.observe("loop", _GENERATED)
         assert controller.committed_tokens() == _PROMPT + _GENERATED
 
-        # The round appends the answer and a tool result, and re-costs on the total.
         grown_prompt = _PROMPT + _GENERATED + 400
         controller.note_tokens("loop", grown_prompt + _ALLOWANCE, grown_prompt)
         assert controller.committed_tokens() == grown_prompt
 
-        # And the next attempt's own count is added to THAT, not to the charge.
         controller.observe("loop", 50)
         assert controller.committed_tokens() == grown_prompt + 50
 

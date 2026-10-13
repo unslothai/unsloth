@@ -56,7 +56,6 @@ from routes.inference import (
 )
 
 _CTX = 4096
-# Four slots on one unified cache, so a share is a quarter of the window.
 _SHARE = _CTX // 4
 
 
@@ -372,7 +371,6 @@ class TestTheGeneratorsSendIt:
             return True
 
         monkeypatch.setattr(backend, "_respawn_if_dead", _respawn_bigger)
-        # The window is what this test is about, not the fit's token count.
         monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 10)
         _run_tool_loop(
             monkeypatch,
@@ -487,11 +485,7 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
 
         assert payloads == [], "a refused re-cost still sent the larger prompt"
         assert _finish_reasons(events) == ["length"]
-        # Nothing had been shown, so the turn has to say why it stopped rather than
-        # render as an empty message.
         assert _shown(events).strip()
-        # The give-up notice, so the client waits for an explicit Continue rather than
-        # auto-continuing a `length` finish into the same full cache.
         notices = [e for e in events if e.get("type") == "context_truncated"]
         assert [n.get("reason") for n in notices] == [PREEMPT_GAVE_UP_REASON]
         assert notices[0]["fits"] is True and notices[0]["dropped_messages"] == 0
@@ -516,7 +510,6 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
             backend = backend,
             events = events,
             admission_output_allowance = _SHARE,
-            # Round zero, the first final attempt, then the continuation.
             on_conversation_grew = _refuse_on_call(2),
         )
 
@@ -657,7 +650,6 @@ class TestTheLedgerBoundsTheAggregate:
         reset_llama_admission_queues()
 
     def test_a_full_pool_refuses_the_grown_round_rather_than_pricing_it(self):
-        # The queue books its slots against the running loop, as a route would.
         asyncio.run(self._refuses_the_grown_round())
 
     async def _refuses_the_grown_round(self):
@@ -673,8 +665,6 @@ class TestTheLedgerBoundsTheAggregate:
             for _ in range(4)
         ]
         try:
-            # No idle clearing, so a round cannot yield its commitment to wait for room:
-            # Studio launches exactly that way on Windows under full GPU offload.
             backend = SimpleNamespace(
                 context_length = budget,
                 _kv_cache_context_total = budget,
@@ -696,8 +686,6 @@ class TestTheLedgerBoundsTheAggregate:
                     output_tokens = None,
                 )
 
-            # The refusal is what keeps this true: the lease still holds its share, so
-            # the four leases plus this prompt would be over the pool if it were sent.
             assert reservations[0].lease_nowait()._tokens == budget // 4
             assert queue.snapshot().committed == budget
             assert 3 * (budget // 4) + prompt > budget
@@ -712,7 +700,6 @@ class TestTheLedgerBoundsTheAggregate:
         """Charge translated system content and the catalogue once at admission and re-cost."""
         budget = 16384
         share = budget // 4
-        # Keep the prompt and catalogue comfortably below the share, including the wire margin.
         system = "You are a careful assistant. " * 440
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
@@ -746,7 +733,6 @@ class TestTheLedgerBoundsTheAggregate:
             for _ in range(4)
         ]
         try:
-            # The same conversation and catalogue the opening priced: nothing grew.
             _openai_llama_admission_recost(
                 reservations[0],
                 conversation,
@@ -785,7 +771,6 @@ def _reservation():
 
     class _Lease:
         def recost_waiting(self, *_args, **_kwargs):
-            # True is "the new figure is in force"; anything falsy is a refusal now.
             return True
 
     return SimpleNamespace(lease_nowait = lambda: _Lease())
@@ -808,16 +793,14 @@ _CATALOGUE = [
 
 
 class TestEveryCallSiteCarriesIt:
-    """A generation call site added without the bound is the whole defect, again. Read off
-    the route source: what has to hold is that NO branch is left out."""
+    """A generation call site added without the bound is the whole defect, again."""
 
     def _routes_tree(self):
         import ast
         return ast.parse(Path(inf_mod.__file__).read_text(encoding = "utf-8"))
 
     def _generator_calls(self, tree):
-        """Calls on `llama_backend`, the only receiver holding a KV lease. The safetensors
-        twin decodes in-process against no cache, so it takes no reservation."""
+        """Calls on `llama_backend`, the only receiver holding a KV lease."""
         import ast
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -842,7 +825,6 @@ class TestEveryCallSiteCarriesIt:
 
     def test_a_fitting_call_site_re_prices_what_the_fit_leaves(self):
         """Plain generation must reprice after fitting; tool loops do so through re-cost."""
-        # Which hook re-prices the bound on each generator.
         _REPRICES = {
             "generate_chat_completion": "on_prompt_fitted",
             "generate_chat_completion_with_tools": "on_conversation_grew",
@@ -857,8 +839,7 @@ class TestEveryCallSiteCarriesIt:
         assert not blind, f"these fit the prompt but keep the pre-fit bound: {blind}"
 
     def test_an_overflow_retry_re_prices_the_cap_it_kept(self):
-        """The passthrough twins drop history on an upstream overflow. The cap in the body
-        was priced on that history, so a retry that does not re-price sends the floor."""
+        """The passthrough twins drop history on an upstream overflow."""
         import ast
 
         tree = self._routes_tree()
@@ -1014,7 +995,6 @@ class TestWhatTheWireActuallyCarries:
     def test_image_transport_bytes_do_not_come_off_the_answer(self):
         """An Anthropic `image` part is priced as an image on both sides, never as base64
         text (#10669), so the raw payload and its translation agree and neither swamps the share."""
-        # A share (8192) above one image's allowance but below the base64 as prompt text.
         backend = _backend_stub(window = 32768, total = 32768, slots = 4)
         data = "A" * 40000
         payload = _Payload(
@@ -1047,7 +1027,6 @@ class TestWhatTheWireActuallyCarries:
         wire = _openai_llama_admission_enforced_max_tokens(
             payload, request = None, llama_backend = backend, conversation = translated
         )
-        # The two shapes differ only by their JSON envelope around the same image.
         assert (
             abs(raw - wire) <= 32
         ), "the raw Anthropic image must be priced as an image, not as base64"
@@ -1194,7 +1173,6 @@ class TestWhatTheWireActuallyCarries:
         """Charged and permitted must be the same prompt, so both use `gguf_messages`."""
         budget, slots = 16384, 4
         share = budget // slots
-        # Sized so the raw payload sits under its share and the finalized prompt over it.
         turn = "word " * 3200
         payload = _chat(turn, max_tokens = budget)
         injected = [
@@ -1296,13 +1274,10 @@ class TestARetryThatGrewItsPrompt:
             first_messages, image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
         # The charge IS the first attempt's wire occupancy plus the reserve it never sends.
-        # With preemption unset -- the default here -- nothing reclaims the difference, so
-        # the ledger holds the whole share and the reserve comes out of the allowance.
         assert charge == budget // slots
         assert first_prompt + allowance == charge - _RESERVE
 
         grown = first_messages + [
-            # The whole allowance came back as an unparseable call.
             {"role": "assistant", "content": "blah " * allowance},
             {"role": "user", "content": "That was not a valid tool call. Try again."},
         ]
@@ -1317,7 +1292,6 @@ class TestARetryThatGrewItsPrompt:
             request = None,
             llama_backend = backend,
         )
-        # Without the first attempt to measure against, a fresh flat allowance.
         assert unbounded == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS - _RESERVE
 
         bound = _openai_llama_admission_retry_max_tokens(
@@ -1330,7 +1304,6 @@ class TestARetryThatGrewItsPrompt:
         growth = retry_prompt - first_prompt
         assert bound == max(0, allowance - growth)
         assert bound < unbounded
-        # What the retry adds to the prompt it inherited is what the lease still holds.
         assert bound <= max(0, charge - retry_prompt)
 
     def test_a_retry_that_grew_a_little_keeps_the_rest_of_its_allowance(self):
@@ -1338,7 +1311,6 @@ class TestARetryThatGrewItsPrompt:
         malformed answer leaves most of it, so the retry occupies exactly the charge."""
         budget, slots = 16384, 4
         backend = _backend_stub(window = budget, total = budget, slots = slots)
-        # Already past a 4096 share on the first attempt.
         first_messages = [{"role": "user", "content": "word " * 4000}]
         payload = _chat("word " * 4000, max_tokens = budget)
         allowance = _openai_llama_admission_enforced_max_tokens(
@@ -1447,8 +1419,6 @@ class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
         )
         assert wire(profile) > wire(None), "the profile is what makes the marker cost words"
         assert charge(profile) - charge(None) == wire(profile) - wire(None)
-        # The raw surfaces reserve from the payload alone, and their builders neutralise on
-        # the same profile.
         raw = lambda markup: _openai_llama_admission_tokens(
             payload, budget = 65536, capacity = 1, context_window = 65536, markup = markup
         )
@@ -1501,7 +1471,6 @@ class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
 
         from routes.inference import _openai_llama_admission_estimate
 
-        # The estimate the reservation is sized by, split out so it can run off the loop.
         source = inspect.getsource(_openai_llama_admission_estimate)
         assert "markup = _openai_llama_admission_markup(llama_backend)," in source
 
@@ -1687,7 +1656,6 @@ class TestTheAnthropicSurface:
 
         monkeypatch.setattr(inf_mod, "_openai_llama_admission_tokens", _spy)
         share = 16384 // 4
-        # Sized so the raw payload sits under its share and the finalized prompt over it.
         payload = AnthropicMessagesRequest(
             max_tokens = 16384,
             messages = [{"role": "user", "content": "word " * 3260}],
@@ -1706,13 +1674,11 @@ class TestTheAnthropicSurface:
     def test_the_tool_generator_is_bounded(self, monkeypatch):
         seen: dict = {}
         self._install(monkeypatch, seen)
-        # Unsloth's own server-side loop; a client catalogue takes the passthrough instead.
         payload = AnthropicMessagesRequest.model_validate(
             {
                 "max_tokens": 16384,
                 "messages": [{"role": "user", "content": "hi"}],
                 "enable_tools": True,
-                # The route requires an explicit permission mode to run server tools.
                 "permission_mode": "off",
             }
         )
@@ -1798,7 +1764,6 @@ class TestBothPassthroughsPriceTheirRetry:
         retry_prompt = _openai_llama_admission_wire_prompt_tokens(
             retry["messages"], image_tokens = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # Past its share, where the wire bound would otherwise hand out a fresh 1024.
         assert retry_prompt >= 16384 // 4, retry_prompt
         assert retry["max_tokens"] < _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
         growth = retry_prompt - first_prompt
@@ -1971,8 +1936,6 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         capped = self._budget_handed_to_the_tool(monkeypatch, self._ALLOWANCE)
         unbounded = self._budget_handed_to_the_tool(monkeypatch, None)
 
-        # Same conversation both runs, so the prompt spends the same; read that spend back
-        # off the unbounded figure rather than re-deriving the loop's exact count.
         spent = tool_result_budget(_CTX, _CTX, 0) - unbounded
         assert capped == tool_result_budget(_CTX, self._ALLOWANCE, spent)
         assert unbounded == tool_result_budget(_CTX, _CTX, spent)
@@ -1992,8 +1955,8 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         _real = llama_cpp_mod._retrieval_budget
 
         def _recorder(context_length, max_tokens, prompt_tokens, **kwargs):
-            # The final pass is the only caller that leaves `reply_returns` unset: its
-            # answer never returns to the prompt.
+            # The final pass is the only caller that leaves `reply_returns` unset: its answer
+            # never returns to the prompt.
             if not kwargs.get("reply_returns"):
                 seen.append(max_tokens)
             return _real(context_length, max_tokens, prompt_tokens, **kwargs)
@@ -2001,8 +1964,6 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         monkeypatch.setattr(llama_cpp_mod, "_retrieval_budget", _recorder)
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [[_sse({"content": "6.10"}), _done()]], payloads)
-        # The stub has no server to render a template with, and the fit evicts nothing
-        # without a count it can trust.
         monkeypatch.setattr(
             backend,
             "count_chat_tokens",
@@ -2019,7 +1980,6 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
                     {"role": "user", "content": "Which kernel?"},
                 ],
                 tools = [_TOOL],
-                # No round to run, so what is exercised is the synthesized final pass.
                 max_tool_iterations = 0,
                 permission_mode = "off",
                 max_tokens = _CTX,
@@ -2101,7 +2061,6 @@ class TestARoundSizesAgainstWhatItsOwnReCostEarned:
         stale, caps = self._round(monkeypatch, opened = self._OPENED, recosted = None)
         assert caps[0] == self._OPENED, caps
         assert stale == self._round(monkeypatch, opened = self._OPENED, recosted = self._OPENED)[0]
-        # A narrower cap reserves less reply room, so the result gets more of the window.
         assert self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)[0] > stale
 
 
@@ -2156,9 +2115,6 @@ class TestTheSizingSitesReadTheClampedFigure:
         import ast
 
         loop = self._tool_loop()
-        # A nested helper may take the reserve as a parameter, provided every call in the
-        # loop hands it one of the clamped names: the refusal event does, since the loop
-        # and the final pass reserve different figures.
         threaded: dict[str, set[str]] = {}
         for call in ast.walk(loop):
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
@@ -2184,7 +2140,6 @@ class TestTheSizingSitesReadTheClampedFigure:
                 for keyword in call.keywords:
                     if keyword.arg != "max_tokens":
                         continue
-                    # Match bare cap names only; computed reply floors are intentional.
                     if not isinstance(keyword.value, ast.Name):
                         continue
                     if keyword.value.id not in self._CLAMPED:

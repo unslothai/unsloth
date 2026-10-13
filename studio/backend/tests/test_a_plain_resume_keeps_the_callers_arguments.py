@@ -103,7 +103,6 @@ def test_the_resumed_request_keeps_the_thinking_budget(monkeypatch):
 
 
 def test_the_resume_forwards_every_parameter():
-    # `preempt_event` rides a `**` expansion, so it has no keyword of its own.
     source = textwrap.dedent(inspect.getsource(LlamaCppBackend.generate_chat_completion))
     function = ast.parse(source).body[0]
     params = {a.arg for a in function.args.args + function.args.kwonlyargs} - {"self"}

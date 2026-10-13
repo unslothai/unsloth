@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause inside a textual tool call replays the prose, not the half-written call.
-
-The partial went back verbatim, so the resumed request asked the model to finish a call whose
-opening the restarted parser had already discarded: it saw only the tail, and the tool never ran.
-Nothing has run at a pause, so the fragment is dropped and the call is asked for again.
-"""
+"""A pause inside a textual tool call replays the prose, not the half-written call."""
 
 from __future__ import annotations
 
@@ -145,7 +140,6 @@ def test_the_fragment_is_dropped_and_the_call_runs_once(monkeypatch):
                 _finish(),
                 _done(),
             ],
-            # Resumed from the prose: the model asks for the call again, whole.
             [_delta(_CALL), _finish(), _done()],
             [_delta("It is 6.10."), _finish(), _done()],
         ],

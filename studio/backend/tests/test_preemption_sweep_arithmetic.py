@@ -42,7 +42,6 @@ class TestAReclaimedHolderIsNotAVictim:
         controller.note_state("parked", ParticipantState.PARKED_ON_TOOL)
         controller.note_state("live-a", ParticipantState.DECODING)
         controller.note_state("live-b", ParticipantState.DECODING)
-        # Its slot was idle, so an idle reclaim took its cells.
         controller.note_cells_reclaimed()
         assert controller.committed_tokens() > 15616, "the sweep has to actually be under pressure"
 

@@ -91,10 +91,6 @@ class TestPreemptionIsArmedWhereALeaseIsTaken:
         preemption = PREEMPTION.read_text(encoding = "utf-8")
         assert "STREAMING_RAW" in preemption
         # In _HOLDS_KV so it counts, out of _PREEMPTABLE so it is never chosen.
-        #
-        # Read with the ast rather than by splitting on `frozenset({`: the formatter
-        # rewrites that to `frozenset(\n    {`, and a string-split version of this test
-        # would then find nothing and pass while asserting about an empty string.
         module = ast.parse(preemption)
         sets = {}
         for node in ast.walk(module):
@@ -129,7 +125,6 @@ class TestEveryLeaseIsAccountedFor:
                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
             )
 
-        # Every way a surface takes a lease, less the calls the entry points make to each other.
         entries = (
             "_openai_llama_admission_reserve",
             "_openai_llama_admission_reserve_async",

@@ -17,14 +17,12 @@ class TestToolCallsOverlapAcrossChats:
         async def chat(name: str, calls: int, seconds: float) -> None:
             for _ in range(calls):
                 start = time.monotonic()
-                # The shape studio_tool_loop uses: a blocking tool handed to a thread, so
-                # it never occupies the event loop.
+                # The shape studio_tool_loop uses: a blocking tool handed to a thread, so it never
+                # occupies the event loop.
                 await asyncio.to_thread(time.sleep, seconds)
                 windows.append((name, start, time.monotonic()))
 
         started = time.monotonic()
-        # Long enough that thread start-up on a slow runner (0.39s against 0.36s on macOS at
-        # 0.05s a call) is small beside the work.
         await asyncio.gather(*(chat(f"chat{i}", 3, 0.2) for i in range(4)))
         wall = time.monotonic() - started
 
@@ -76,8 +74,6 @@ class TestWithinOneChatCallsAlsoOverlapNow:
 
         source = Path(studio_tool_loop.__file__).read_text(encoding = "utf-8")
         assert "for call in calls:" in source
-        # A gather over the whole loop body would run approvals, the call budget and the
-        # controller's ledger concurrently, which is not what was made parallel.
         assert "asyncio.gather(*(" not in source.split("for call in calls:", 1)[1][:2000]
 
     def test_the_calls_are_launched_before_they_are_drained(self):

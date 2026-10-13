@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A caption or OCR call is refused, not sent, when the chats paused for it never let go.
-
-Those calls count their holder on a worker thread and wait there for the victims. The wait's
-answer was thrown away, so after the hard bound the vision prompt still went upstream into the
-cells the plan had counted as freed. It now raises the admission timeout, as the loop's callers
-do, and leaves nothing registered behind it.
-"""
+"""A caption or OCR call is refused, not sent, when the chats paused for it never let go."""
 
 import threading
 import time

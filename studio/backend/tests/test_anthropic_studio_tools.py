@@ -246,8 +246,7 @@ def test_loop_executes_fragmented_calls_and_replays_signed_and_hosted_blocks(
             await client.close()
 
     lines = asyncio.run(run())
-    # The two calls form one parallel round, so they may start in either order; the
-    # transcript below is what must keep call order.
+    # The two calls form one parallel round, so they may start in either order;
     assert sorted(executed, key = lambda call: call[0]) == [
         ("python", {"query": "one"}),
         ("web_search", {"query": "two"}),

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A resume counts every replay already granted on top of the cache reading.
-
-The reading cannot show a replay that has not prefilled yet. Taking the larger of the reading
-and the ledger let a second resume be granted the room a first one was already given: 9000
-resident plus two 4000 replays committed 17000 cells of a 16384 cache.
-"""
+"""A resume counts every replay already granted on top of the cache reading."""
 
 from __future__ import annotations
 
@@ -24,7 +19,6 @@ def _cache() -> PreemptionController:
     for gen_id in ("a", "b"):
         controller.register(gen_id, tokens = 4000, signal = PreemptSignal())
         controller.set_state(gen_id, ParticipantState.PAUSED)
-    # The live chat plus a finished request's cells that are not idle residue.
     controller.note_resident(9000, 0)
     return controller
 

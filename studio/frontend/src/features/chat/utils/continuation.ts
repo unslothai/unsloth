@@ -93,8 +93,6 @@ export function incompleteReasonAfterError(
 export function isProviderReportedReason(
   reason: IncompleteReason | null | undefined,
 ): boolean {
-  // `paused` too: it has no assistant-ui status of its own, so a reload would relabel it
-  // "Response stopped", which reads as something the user did. The stamp wins.
   return reason === "context_window" || reason === "paused";
 }
 
@@ -149,8 +147,6 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
-  // No failure vocabulary: nothing went wrong, the model was shared out. Deliberately does
-  // not promise text, since the backend can give up before the first token.
   paused: "Response paused while another chat used the model, and did not get it back",
   empty: "The model returned an empty response",
   quote_cut: "This response may have ended early",

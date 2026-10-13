@@ -81,7 +81,6 @@ class TestAnOlderResumeKeepsItsPlaceAtTheRoomGate:
         assert controller.try_grant_resume("old", 7000) is True
         assert controller.participant("old").state == ParticipantState.RESUMING
         controller.end_resume("old")
-        # And the line is clear again, so a later resume is not held back by a ghost.
         _paused(controller, "s", 3000)
         controller.begin_resume("s", 3000)
         assert controller.try_grant_resume("s", 3000) is True
@@ -107,7 +106,6 @@ class TestAnOlderResumeKeepsItsPlaceAtTheRoomGate:
         lease.is_released = True
         _paused(controller, "s", 3000)
         controller.begin_resume("s", 3000)
-        # _prune_locked drops the released lease; its place has to go with it.
         controller.snapshot()
         assert controller.try_grant_resume("s", 3000) is True
         assert controller.resume_queue_depth() == 1
@@ -211,14 +209,12 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         )
         controller.note_resident(5000)
         assert controller.snapshot().committed == 9000, "unmeasured: residency plus the charge"
-        # A probe leaves for /slots, and the prefill finishes while it is in flight.
         epoch = controller.residency_epoch()
         controller.note_measured("raw")
         controller.note_resident(5000, started_at_seq = epoch)
         assert (
             controller.snapshot().committed == 9000
         ), "a reading taken before the prefill swallowed the whole charge"
-        # The next probe starts after the mark, and that one does hold its cells.
         later = controller.residency_epoch()
         controller.note_resident(5000, started_at_seq = later)
         assert controller.snapshot().committed == 5000
@@ -250,8 +246,6 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         assert controller.snapshot().committed == 7000
 
     def test_an_older_sample_finishing_after_a_newer_one_is_dropped(self):
-        # Two probes leave together; the arming one outlives its join window and lands
-        # after the token-path one that read a fuller cache.
         controller = _controller()
         controller.register(
             "raw", lease = _Lease(1000), tokens = 1000, state = ParticipantState.STREAMING_RAW
@@ -264,7 +258,6 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         assert controller.snapshot().committed == 9000, "the older count came back"
         controller.note_resident(None, started_at_seq = arming)
         assert controller.snapshot().committed == 9000, "a stale failed read cleared it"
-        # A probe sent after the recorded one is the newest word, whatever it says.
         later = controller.residency_epoch()
         controller.note_resident(2000, started_at_seq = later)
         assert controller.snapshot().committed == 2000

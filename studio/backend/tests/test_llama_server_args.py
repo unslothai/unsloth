@@ -303,8 +303,6 @@ def test_slot_save_path_is_managed_in_all_forms():
             validate_extra_args(args)
     assert is_managed_flag("--slot-save-path") is True
     assert is_managed_flag("--slot-save-path=/tmp/x") is True
-    # Endpoint exposure stays a user choice: both endpoints are on by default, so these
-    # flags only turn them off.
     assert is_managed_flag("--slots") is False
     assert is_managed_flag("--no-slots") is False
     assert is_managed_flag("--props") is False

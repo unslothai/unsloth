@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A paused chat's resume is bounded once, across the room wait and the slot line.
-
-The room wait has an absolute bound of 80 times its stall window. Room found near it, with
-every slot still taken, started the admission wait on a fresh bound of its own, so one
-resume could stay paused nearly twice the documented limit.
-"""
+"""A paused chat's resume is bounded once, across the room wait and the slot line."""
 
 from __future__ import annotations
 
@@ -54,7 +49,6 @@ async def test_the_slot_line_stops_at_the_bound_it_is_given():
     assert paused.preempt() is True
     holder = _lease(queue, 1000)
     started = time.monotonic()
-    # A moving backend renews the stall window for ever; only the absolute bound ends it.
     got = await asyncio.wait_for(
         paused.resume_async(
             1000,

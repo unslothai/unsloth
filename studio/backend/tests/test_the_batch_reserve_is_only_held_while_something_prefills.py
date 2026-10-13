@@ -18,15 +18,11 @@ from core.inference.llama_preemption import (
 
 pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
-# The shipped shape, and the one every figure in the docstring above is quoted at.
 BUDGET = 8192
 SLOTS = 4
 N_BATCH = 2048
 DRAFTS = 2
-# 192 * 4 reaction headroom, drafts on top. The buffer with nothing prefilling.
 IDLE_BUFFER = 192 * SLOTS + DRAFTS * SLOTS
-# max(768, 2048) + 8. The buffer while a chunk is in flight, and what used to be held
-# back permanently.
 PREFILL_BUFFER = N_BATCH + DRAFTS * SLOTS
 
 
@@ -57,7 +53,6 @@ class TestTheBufferWithNothingPending:
         c = _controller()
         for i in range(SLOTS):
             c.register(f"chat{i}", tokens = 800, signal = PreemptSignal())
-            # A token proves the prompt is in, which is what retires the reserve.
             c.observe(f"chat{i}", 32)
         assert c.snapshot().prefilling == 0
         assert c.snapshot().buffer == IDLE_BUFFER
@@ -97,8 +92,6 @@ class TestOnePendingSmallPrompt:
         c = _controller()
         c.register("chat", tokens = 1000, signal = PreemptSignal())
         c.observe("chat", 40)
-        # It holds 1040 (its prompt and what it generated), so a 2500 token round
-        # submits the 1460 that are new.
         c.note_tokens("chat", 2500)
         assert c.snapshot().prefilling == 1460
         c.observe("chat", 0)
@@ -109,7 +102,6 @@ class TestOnePendingSmallPrompt:
         c = _controller()
         c.register("chat", tokens = 6000, signal = PreemptSignal())
         c.observe("chat", 10)
-        # 6010 held, 6040 stated: 30 new tokens, not 6040.
         c.note_tokens("chat", 6040)
         assert c.snapshot().prefilling == 30
         assert c.snapshot().buffer == IDLE_BUFFER
@@ -164,8 +156,8 @@ class TestAPendingResumeLargerThanTheBatch:
         c = _controller()
         c.register("chat", tokens = 5000, signal = PreemptSignal())
         assert c.snapshot().buffer == PREFILL_BUFFER
-        # The clock moved forward, not the stamp back: on a host up for less than the TTL a
-        # stamp moved back goes below zero and loses to the never-progressed 0.0.
+        # The clock moved forward, not the stamp back: on a host up for less than the TTL a stamp
+        # moved back goes below zero and loses to the never-progressed 0.0.
         later = time.monotonic() + PENDING_PREFILL_TTL_S + 1.0
         monkeypatch.setattr(time, "monotonic", lambda: later)
         assert c.snapshot().prefilling == 0
@@ -201,7 +193,6 @@ class TestAReclaimedHolderRestatesItsWholePrompt:
         assert chat.cells_reclaimed is False
         assert c.snapshot().prefilling == 6200
         assert c.snapshot().buffer == PREFILL_BUFFER
-        # DECODING afterwards adds nothing: the announcement was already the whole prompt.
         assert c.note_state("chat", ParticipantState.DECODING)
         assert c.snapshot().prefilling == 6200
 
@@ -210,7 +201,6 @@ class TestAReclaimedHolderRestatesItsWholePrompt:
         c.register("chat", tokens = 6000, signal = PreemptSignal())
         c.observe("chat", 32)
         assert c.note_state("chat", ParticipantState.TOOLS_RUNNING)
-        # 6032 after the observe: the round boundary restates prompt plus answer.
         c.note_tokens("chat", 6072)
         assert c.snapshot().prefilling == 40
 
@@ -222,10 +212,7 @@ class TestTheRace:
         c = _controller()
         c.register("incumbent", tokens = 5800, signal = PreemptSignal())
         c.observe("incumbent", 0)
-        # 5800 alone is under the idle ceiling of 7416, so nothing is chosen yet.
         assert c.observe("incumbent", 100) == []
-        # A second chat arrives with a 2000 token prompt. Its own prefill raises the
-        # buffer to a full chunk, which is what makes 5900 + 2000 too much.
         c.register("arriving", tokens = 2000, signal = PreemptSignal())
         victims = c.plan_preemptions(needed = 0)
         assert victims, "the arriving chat's chunk was not reserved before the sweep"
@@ -248,18 +235,13 @@ class TestTheRace:
         c.register("waiter", tokens = 10, signal = PreemptSignal())
         c.observe("waiter", 1)
         c.set_state("waiter", ParticipantState.PAUSED)
-        # 4310 + 2500 = 6810: inside the idle ceiling of 7416, outside the 6136 that
-        # granting a replay bigger than one chunk would itself create.
         assert c.room_for("waiter", 2500) is False
-        # And a replay small enough to leave the ceiling alone is still granted.
         assert c.room_for("waiter", 600) is True
 
     def test_the_asker_is_not_charged_twice_for_its_own_announcement(self):
         c = _controller()
         c.register("solo", tokens = 3000, signal = PreemptSignal())
         assert c.snapshot().prefilling == 3000
-        # Its own 3000 is excluded and replaced by the 3000 it is asking about, so the
-        # answer is the same as it would be with no announcement outstanding.
         assert c.room_for("solo", 3000) is True
 
 
@@ -291,11 +273,8 @@ class TestPlanPreemptionsAtTheLowerCeiling:
         c = _controller()
         for i in range(SLOTS):
             c.register(f"chat{i}", tokens = 1700, signal = PreemptSignal())
-            # A token each, so every prompt is in the cache and nothing is outstanding.
             c.observe(f"chat{i}", 0)
             c.observe(f"chat{i}", 1)
-        # 6804: over the old 6136 ceiling, under the 7416 that stands with nothing
-        # prefilling. Nobody should be paused for a batch nobody is submitting.
         assert c.committed_tokens() == 6804
         assert c.snapshot().prefilling == 0
         assert c.plan_preemptions(needed = 0) == []
@@ -316,7 +295,6 @@ class TestPlanPreemptionsAtTheLowerCeiling:
             c.register(f"chat{i}", tokens = 1700, signal = PreemptSignal())
             c.observe(f"chat{i}", 1)
         assert c.plan_preemptions(needed = 0) == []
-        # One of them reaches a round boundary and its prompt grows by a chunk's worth.
         c.note_tokens("chat0", 1701 + 2100)
         assert c.snapshot().prefilling == 2100
         assert c.plan_preemptions(needed = 0), "the growing round's chunk was not covered"
@@ -372,7 +350,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
             requested_n_batch = 512
             extra_args = []
 
-        # The launcher's own flag comes before the extras, so the extras win at launch.
         assert inference._openai_llama_effective_batch_tokens(_Backend()) == 8192
         assert inference._openai_llama_effective_batch_tokens(_Equals()) == 4096
         assert inference._openai_llama_effective_batch_tokens(_Empty()) == 512
@@ -405,7 +382,6 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
         env = {"LLAMA_ARG_BATCH": "8192"}
         assert inference._openai_llama_effective_batch_tokens(_Unstated(), env = env) == 8192
-        # Both are emitted as flags, and llama.cpp's flags beat its env.
         assert inference._openai_llama_effective_batch_tokens(_Typed(), env = env) == 512
         assert inference._openai_llama_effective_batch_tokens(_Extras(), env = env) == 4096
 
@@ -456,7 +432,6 @@ class TestAnArrivalReservesForItsOwnPrompt:
         c.register("arriving", tokens = 3499, signal = PreemptSignal())
         assert c.snapshot().prefilling == 3499
         assert c.snapshot().buffer == PREFILL_BUFFER
-        # And its charge is reserved on top, in `committed` where it belongs.
         assert c.committed_tokens() == 3499
 
     def test_a_round_boundarys_growth_costs_one_too(self):

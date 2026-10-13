@@ -20,9 +20,6 @@ import pytest  # noqa: E402
 
 from core.inference import studio_tool_loop as loop_mod  # noqa: E402
 
-# The scripted transport and the SSE readers, rather than a second copy of them: a fake
-# that drifts from the one the rest of the loop is tested against would be testing a
-# different loop. Same sys.path dance as test_memory_contract.py.
 from test_studio_tool_loop import (  # noqa: E402
     WEB,
     PY,
@@ -77,8 +74,8 @@ def _two_calls(
 @pytest.fixture
 def rendezvous(monkeypatch):
     """A tool that cannot return until another call of it has also started."""
-    # Long enough that a loaded runner still meets it, short enough that the
-    # serialised cases (where it can never be met) do not dominate the suite.
+    # Long enough that a loaded runner still meets it, short enough that the serialised cases
+    # (where it can never be met) do not dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
     order: list[str] = []
     lock = threading.Lock()
@@ -279,8 +276,6 @@ class TestCancellation:
                     cancel_event.set()
             return out
 
-        # The assertion is that this returns at all. A leaked pump or a generator closed
-        # while its worker was still running shows up here as the timeout.
         async def _bounded():
             return await asyncio.wait_for(_collect(), timeout = 30)
 
@@ -288,17 +283,8 @@ class TestCancellation:
         assert lines, "the round produced nothing before it was cancelled"
 
 
-# ── The local GGUF loop ───────────────────────────────────────────────────────────
-#
-# A separate implementation with the same requirement. It matters more for this work than
-# the provider loop does, because it is the path that decodes into the shared KV cache the
-# preemptor manages: a chat parked on three serial searches holds its cells for the sum of
-# the three.
-#
-# Its overlap comes from a different mechanism. `stream_tool_execution` spawns the tool's
-# worker inside its GENERATOR BODY, so building the generator starts nothing and the first
-# next() is what puts the tool in flight. The round primes every call, which starts them
-# all, and then reads their events back in order.
+# ── The local GGUF loop ───────────────────────────────────────────────────────────  A separate
+# implementation with the same requirement.
 
 
 from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
@@ -395,9 +381,7 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert [e.get("result") for e in ends] == ["RESULT<alpha>", "RESULT<beta>"]
 
     def test_a_refused_call_keeps_its_place_in_the_round(self, monkeypatch):
-        """A call whose arguments put the prompt over the window is refused without running.
-        In a parallel round the refusal used to close and append at once while the calls before
-        it were still deferred, so the tool messages settled B, A against the model's A, B."""
+        """A call whose arguments put the prompt over the window is refused without running."""
         payloads: list[dict] = []
         filler = "go"
         backend = _make_backend(
@@ -422,8 +406,6 @@ class TestTheLocalGgufLoopOverlapsToo:
         )
 
         def _count(messages, *_args, **_kwargs):
-            # The edit's own arguments are what put the prompt over the window: any prompt
-            # in which its call is answered, compacted or not, is far past it.
             answered_b = any(
                 m.get("role") == "tool" and m.get("tool_call_id") == "call_b" for m in messages
             )
@@ -456,12 +438,7 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert [m.get("tool_call_id") for m in tool_msgs] == ["call_a", "call_b"], tool_msgs
 
     def test_a_refused_call_does_not_spend_the_turns_one_shot(self, monkeypatch):
-        """A call refused before it ran must not be recorded as a successful execution.
-
-        The refusal text says "Nothing was written", so settling it through the real-execution
-        path told the controller `render_html` had completed: the smaller retry later in the
-        same turn was turned into a no-op and the turn ended without a page.
-        """
+        """A call refused before it ran must not be recorded as a successful execution."""
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
@@ -479,7 +456,6 @@ class TestTheLocalGgufLoopOverlapsToo:
         )
 
         def _count(messages, *_args, **_kwargs):
-            # Everything after the refusal prices small, so only call_b is ever refused.
             if "refused before it ran" in json.dumps(messages, default = str):
                 return 100
             answered_b = any(
@@ -510,11 +486,8 @@ class TestTheLocalGgufLoopOverlapsToo:
         assert [e.get("tool_call_id") for e in ends[:2]] == ["call_a", "call_b"], ends
         assert "Nothing was written" in str(ends[1].get("result") or "")
         assert executed == ["web_search", "render_html"], executed
-        # The refusal is still answered in its own slot of the round.
         tool_msgs = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
         assert [m.get("tool_call_id") for m in tool_msgs] == ["call_a", "call_b"], tool_msgs
-        # And `render_html` is still advertised: `active_tools` drops a one-shot tool the
-        # controller believes completed.
         assert "render_html" in json.dumps(payloads[1].get("tools"), default = str)
 
     def test_a_round_of_refusals_does_not_spend_a_tool_iteration(self, monkeypatch):
@@ -543,7 +516,6 @@ class TestTheLocalGgufLoopOverlapsToo:
         )
 
         def _count(messages, *_args, **_kwargs):
-            # Both calls of the first round are refused; everything after prices small.
             refusals = json.dumps(messages, default = str).count("refused before it ran")
             return 100000 if refusals < 2 else 100
 
@@ -631,18 +603,14 @@ class TestTheLocalGgufLoopOverlapsToo:
             _execute,
         )
         given = [b for b in budgets if isinstance(b, int)]
-        # This build passes result_budget_tokens to every call, so none is a failure.
         assert given, f"no call was handed result_budget_tokens: {budgets}"
-        # Not identical: each call still subtracts the ARGUMENTS of the calls after it,
-        # which is a real cost and differs per position. What must not differ is the
-        # divisor, and a wrong one shows up as a spread far larger than that: with three
-        # calls, B/3 against B/1 is a factor of three, where the argument term moves the
-        # figure by a few per cent.
+        # Not identical: each call still subtracts the ARGUMENTS of the calls after it, which is a
+        # real cost and differs per position.
         assert (
             max(given) <= min(given) * 1.2
         ), f"the calls were priced against different batch sizes: {given}"
-        # And the batch as a whole must not be handed more than one call's worth of the
-        # window three times over.
+        # And the batch as a whole must not be handed more than one call's worth of the window
+        # three times over.
         assert sum(given) <= max(given) * 3.3
 
 
@@ -698,15 +666,11 @@ class TestNothingNewSlipsIntoTheSameHazard:
         import core.inference.llama_cpp as mod
         names = self._nonlocals(mod.__file__, "_settle_tool_call")
         assert names == {
-            # counted at LAUNCH for an overlapped round; the write here is the sequential path
             "_kb_search_count",
-            # spent at launch too, for the same reason
             "_forced_tool_call_pending",
-            # read only after the round, so settling order is enough
             "_last_reprompt_text",
             "_turn_executed_real_tool",
             "_forced_choice_resolved",
-            # rebound by compaction; every call was appended to it before any settled
             "assistant_msg",
         }, (
             f"the settle path now writes {sorted(names)}. If the loop reads any new one "
@@ -717,9 +681,7 @@ class TestNothingNewSlipsIntoTheSameHazard:
         import core.inference.studio_tool_loop as mod
         names = self._nonlocals(mod.__file__, "_settle_call")
         assert names == {
-            # the launch site subtracts len(pending_calls) so the budget counts launches
             "remaining",
-            # read only after the round
             "turn_executed_real_tool",
             "executed_any",
             "last_reprompt_text",
@@ -779,7 +741,6 @@ class TestTheControllerHasExactlyTwoIntraRoundDependencies:
                     and isinstance(inner.ctx, kind)
                 ):
                     out.add(inner.attr)
-                # a container mutated in place is a write, and `ast.Store` will not see it
                 if kind is ast.Store and isinstance(inner, ast.Call):
                     func = inner.func
                     if isinstance(func, ast.Attribute) and func.attr in {
@@ -893,9 +854,6 @@ class TestTheRoundIsPricedOnceForEveryCallInIt:
         counted: list = []
 
         def _count(messages, *_args, **_kwargs):
-            # Each count is dearer than the last, which is what a conversation the round
-            # is settling results into does. Priced once, the round reads one number
-            # whoever asks; priced per worker, every call reads a different one.
             with lock:
                 if threading.current_thread() is not main:
                     off_thread.append(threading.current_thread().name)

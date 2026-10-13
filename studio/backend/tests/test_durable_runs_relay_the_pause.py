@@ -29,8 +29,6 @@ def test_a_piece_carrying_both_keeps_their_order():
 
 
 def test_the_queue_comments_become_status_chunks():
-    # The legacy stream shows "Waiting for a free slot" off these; a durable follower only
-    # sees what the supervisor writes as chunks.
     assert _admission_status_chunks(": admission-wait\n\n") == [{"_admissionStatus": "waiting"}]
     assert _admission_status_chunks(": admission-done\n\n") == [{"_admissionStatus": "admitted"}]
 
@@ -40,7 +38,6 @@ def test_a_repeated_wait_is_one_event():
     relayed = []
     for piece in (": admission-wait\n\n",) * 4 + (": admission-done\n\n", ": admission-wait\n\n"):
         relayed += [c["_admissionStatus"] for c in _admission_status_chunks(piece, last)]
-    # Every keepalive repeats the wait; a later requeue is a change and is relayed again.
     assert relayed == ["waiting", "admitted", "waiting"]
 
 

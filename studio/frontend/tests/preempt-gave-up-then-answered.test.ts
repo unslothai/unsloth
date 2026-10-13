@@ -26,7 +26,6 @@ test("a finished answer clears the give-up, a length stop does not", () => {
     false,
     "a give-up ends on length, so reading it as success would erase the real case",
   );
-  // Nothing terminal has arrived yet, so nothing is decided.
   assert.equal(completedAfterGivingUp(null), false);
   assert.equal(completedAfterGivingUp(undefined), false);
   assert.equal(completedAfterGivingUp(""), false);
@@ -64,7 +63,6 @@ test("a turn that gave up mid-round and then answered is complete", () => {
     replay([
       { finishReason: "tool_calls" },
       { gaveUp: true },
-      // The final synthesis pass the backend breaks into, finishing normally.
       { finishReason: "stop" },
     ]),
     null,
@@ -83,8 +81,6 @@ test("a turn that gave up and stopped there is still paused", () => {
 });
 
 test("a give-up after an answer still wins", () => {
-  // A notice AFTER a pass that stopped normally is a give-up in the final pass itself,
-  // which really did end the turn early.
   assert.equal(replay([{ finishReason: "stop" }, { gaveUp: true }]), "paused");
 });
 

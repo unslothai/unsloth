@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A paused plain chat resumes from the prompt it actually sent, as a respawn does.
-
-The resume rebuilt its request from the caller's messages, so history the rolling fit had
-evicted came back and was fitted out again, and the client was told about the same dropped
-messages twice and added them up.
-"""
+"""A paused plain chat resumes from the prompt it actually sent, as a respawn does."""
 
 from __future__ import annotations
 
@@ -51,7 +46,6 @@ def _run(monkeypatch):
     fits: list[int] = []
 
     def fit(messages, **kwargs):
-        # Evicts everything before the last turn, once per call.
         fits.append(len(messages))
         kept = messages[-1:]
         dropped = len(messages) - len(kept)

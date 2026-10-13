@@ -51,9 +51,6 @@ class TestTheNonStreamingToolBranch:
         armed = _calls(handler, "_openai_llama_preemption_arm")
         disarmed = _calls(handler, "_openai_llama_preemption_disarm")
         assert disarmed >= armed, f"{armed} arm site(s), {disarmed} disarm site(s)"
-        # Two non-streaming finallys close a GGUF chat -- the plain one and the tool one
-        # -- and both have to drop the charge before returning the tokens. Only the plain
-        # one did.
         assert (
             _routes_source().count(
                 """                _openai_llama_preemption_disarm(
@@ -124,7 +121,6 @@ class TestTheRespawnRetryKeepsItsControls:
 
     def test_the_connect_error_retry_forwards_the_preemption_arguments(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
-        # main hoisted the respawn call into one helper the connect and stream retries share.
         retry = source[source.index("def _replay_on_replacement_server(") :]
         retry = retry[: retry.index("_allow_respawn_retry = False")]
         for kwarg in (
@@ -137,8 +133,6 @@ class TestTheRespawnRetryKeepsItsControls:
             assert kwarg in retry, f"the respawn retry drops {kwarg}"
 
     def test_the_resumed_attempt_reprices_the_prompt_it_refits(self):
-        # A resume under truncate_oldest refits the conversation with the partial in it; the
-        # bound has to be for that prompt, not the one the first attempt priced.
         source = LLAMA_CPP.read_text(encoding = "utf-8")
         resume = source[source.index("_preempt_resumes = _preempt_resumes + 1,") - 2500 :]
         resume = resume[: resume.index("_preempt_resumes = _preempt_resumes + 1,")]
@@ -160,9 +154,6 @@ class TestTheRoundBoundaryPublishesTheNewCharge:
             "the sweep publishes `lease.tokens` and must read it after the re-cost that "
             "grew it, not before"
         )
-        # The publish and the sweep that follows it live in the helper both tool loops
-        # call; recording the figure without sweeping on it is what let three chats
-        # prefill past the cache together.
         helper = _function(source, "_openai_llama_publish_round_charge")
         assert _calls(helper, "note_tokens") == 1
         assert _calls(helper, "observe_tokens") == 1
@@ -182,7 +173,6 @@ class TestTheParallelToolClosureBindsItsOwnCall:
             "_compacted_tokens = _compacted_turn_tokens,",
         ):
             assert bound in body, f"{bound} is not bound at closure definition"
-        # And nothing in the body still reads the loop variables it shadows.
         for leaked in ("decision.tool_name", "decision.tool_call_id", "[_call_index + 1 :]"):
             assert f" {leaked}" not in body.replace(
                 f"_{leaked}", ""

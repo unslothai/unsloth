@@ -955,8 +955,8 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
         in inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion).parameters
     )
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
-    # The property, not a count: a literal count turns "one more path that must forward the
-    # flag" into a failure that says only that a number changed.
+    # The property, not a count: a literal count turns "one more path that must forward the flag"
+    # into a failure that says only that a number changed.
     import ast, textwrap
 
     tree = ast.parse(textwrap.dedent(body))

@@ -74,20 +74,13 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
             )
             population.append(i)
 
-        # BEFORE the sweep: plan_preemptions marks each victim PREEMPTING, so reading
-        # state afterwards loses the parked flag and makes a correct implementation look
-        # like a divergence. Cost 31 failing tests before it was spotted.
         sim_chats = [_SimChat(controller.participant(f"gen{i}"), i) for i in population]
 
         victims = [p.gen_id for p in controller.plan_preemptions(needed = ceiling)]
-        # `needed = ceiling` puts every population with a holder past the watermark, so an
-        # empty plan is a failure rather than a case to skip.
         assert victims, "the sweep chose nobody for a population past the watermark"
         expected = [
             f"gen{c.cid}" for c in sorted(sim_chats, key = preempt_sim.POLICIES["newest_first"])
         ]
-        # The sweep stops once it fits and always leaves one holder, so compare the
-        # prefix it actually took rather than the whole ordering.
         assert victims == expected[: len(victims)], (
             f"shipped order {victims} is not the benchmarked newest-first "
             f"{expected[: len(victims)]}"

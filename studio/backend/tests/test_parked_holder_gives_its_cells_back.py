@@ -36,8 +36,6 @@ def _fresh_queues():
 
 def _controller() -> PreemptionController:
     made = PreemptionController("test://parked")
-    # 8192 cells, the buffer this configuration produces is well under 2100, so a
-    # 6000-plus ceiling: the shape of the run that failed.
     made.configure(budget = 8192, kv_unified = True, slots = 4, draft_tokens = 2, batch_tokens = 2048)
     return made
 
@@ -51,10 +49,8 @@ class TestTheLedger:
         assert waiter.state == ParticipantState.PAUSED
         c.note_resident(4676, 0)
 
-        # As it stood: the leader decoding, no room for the waiter beside it.
         assert c.try_grant_resume("waiter", 3092) is False
 
-        # The leader stops on an approval prompt, and its idle slot is erased.
         assert c.note_state("leader", ParticipantState.PARKED_ON_TOOL) is True
         assert c.snapshot().parked == 1
         assert c.note_cells_reclaimed() == 1
@@ -75,7 +71,6 @@ class TestTheLedger:
         c.note_cells_reclaimed()
         assert leader.holds_kv is False
 
-        # Back at the model: llama-server prefills the prompt in before the next token.
         c.note_state("leader", ParticipantState.DECODING)
         assert leader.holds_kv is True
         assert leader.tokens == 3847
@@ -120,7 +115,6 @@ class TestTheLedger:
 class TestTheLease:
     @pytest.mark.asyncio
     async def test_yield_parked_commitment_frees_the_pool_and_recost_takes_it_back(self):
-        # park() wants a running loop for the waiters it may wake.
         queue = llama_admission.get_llama_admission_queue("http://lease.test")
         reservation = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 3847, budget = 8192
@@ -134,14 +128,12 @@ class TestTheLease:
         assert queue.committed_now() == 0
         assert lease.yield_parked_commitment() == 0, "nothing left to hand back"
 
-        # Somebody else can take the room now.
         other = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 3092, budget = 8192
         ).lease_nowait()
         assert other is not None
         assert queue.committed_now() == 3092
 
-        # The parked chat's next round re-states its size and is charged again.
         assert lease.recost(3847) is True
         assert queue.committed_now() == 3092 + 3847
         lease.release()
@@ -171,7 +163,6 @@ class _ApprovalToolBackend(FakeLlamaCppBackend):
     effective_parallel_slots = 2
     supports_tools = True
     context_length = 8192
-    # A unified, sized cache: arming takes the accounting gate, and without one nothing arms.
     _kv_cache_unified = True
     _kv_cache_context_total = 16384
 
@@ -217,7 +208,6 @@ def _scope(app, body: bytes) -> dict:
             (b"host", b"testserver"),
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
-            # The Studio UI's opt-in: tools with confirmation are refused without it.
             (b"x-unsloth-events", b"1"),
         ],
         "client": ("127.0.0.1", 12345),
@@ -289,5 +279,4 @@ class TestTheRouteReports:
             ParticipantState.TOOLS_RUNNING,
             ParticipantState.DECODING,
         ], reported
-        # And the chat is gone from the ledger when it ends.
         assert get_preemption_controller("http://llama.test").snapshot().parked == 0

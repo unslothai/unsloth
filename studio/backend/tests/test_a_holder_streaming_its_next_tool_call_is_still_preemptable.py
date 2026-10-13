@@ -52,12 +52,11 @@ class TestObserveMeansDecoding:
         chosen = []
         for generated in (500, 1000, 1500, 2000):
             chosen.extend(c.observe("toolchat", generated))
-        # Past the 6136 ceiling with the tool chat's own tokens: somebody must have
-        # been chosen, and both remain accounted for.
+        # Past the 6136 ceiling with the tool chat's own tokens: somebody must have been chosen,
+        # and both remain accounted for.
         assert chosen, "the pool passed its ceiling and nobody was paused"
         assert {v.gen_id for v in chosen} <= {"leader", "toolchat"}
         assert c.snapshot().committed > 6136
-        # The victim is signalled and the other holder is left standing.
         victim = chosen[0]
         assert victim.state == ParticipantState.PREEMPTING
         assert victim.preempt_event.is_set()
@@ -72,10 +71,9 @@ class TestOneHolderStanding:
         c.note_tokens("raw", 4000)
         chat = c.register("chat", tokens = 1000)
         c.note_tokens("chat", 1000)
-        # Room while under the ceiling.
         assert c.observe("chat", 1000) == []
-        # Over it, the only preemptable holder is chosen rather than spared, because
-        # the raw stream is standing already and pausing nobody ends both.
+        # Over it, the only preemptable holder is chosen rather than spared, because the raw
+        # stream is standing already and pausing nobody ends both.
         victims = c.observe("chat", 1500)
         assert [v.gen_id for v in victims] == ["chat"]
         assert raw.state == ParticipantState.STREAMING_RAW
@@ -125,9 +123,7 @@ class TestTheRouteReports:
         chat = controller.register("chat", tokens = 1000)
         assert note_state(ParticipantState.TOOLS_RUNNING) == ParticipantState.TOOLS_RUNNING
         assert chat.state == ParticipantState.TOOLS_RUNNING
-        # Tokens arrive: the ledger says DECODING on its own.
         controller.observe("chat", 32)
         assert note_state(None) == ParticipantState.DECODING
-        # The next tool start is not a repeat of the earlier report.
         assert note_state(ParticipantState.TOOLS_RUNNING) == ParticipantState.TOOLS_RUNNING
         assert chat.state == ParticipantState.TOOLS_RUNNING

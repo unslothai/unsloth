@@ -134,7 +134,6 @@ class _RecordingPolicy:
         self.events.append("resumed")
 
 
-# Eight CJK tokens. chars // 4 calls this two.
 _DENSE = "天地玄黄宇宙洪荒"
 
 
@@ -217,7 +216,6 @@ class TestThePlainPathChargesDenseTextByTokens:
     def test_eight_dense_tokens_are_not_charged_as_two(self, monkeypatch):
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
-        # One delta per token, which is what llama-server streams.
         recorder = _Recorder(
             monkeypatch,
             [
@@ -308,7 +306,6 @@ class TestOnlyOutputCountsTowardsTheSweep:
 
         signal = preemption.PreemptSignal()
         reports: list[int] = []
-        # Opener + (every - 1) content deltas + finish: every frames, every - 1 tokens.
         stream = [_opener()] + [_delta("x")] * (_TOKEN_REPORT_EVERY - 1) + [_finish(), _done()]
         recorder = _Recorder(monkeypatch, [stream], signal = signal, pause_after = 10**6)
         self._run(
@@ -329,9 +326,6 @@ class TestOnlyOutputCountsTowardsTheSweep:
         assert reports == [_TOKEN_REPORT_EVERY]
 
     def test_the_servers_own_count_outranks_the_frame_count(self, monkeypatch):
-        # A structured tool-call frame can carry several tokens' worth of arguments: the
-        # per-frame count under-reports the cache. `timings_per_token` puts the server's
-        # count on every frame, and the request asks for it whenever a watermark listens.
         from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
 
         signal = preemption.PreemptSignal()
@@ -389,7 +383,6 @@ class TestOnlyOutputCountsTowardsTheSweep:
         plain = " ".join(inspect.getsource(_B.generate_chat_completion).split())
         tools = " ".join(inspect.getsource(_B.generate_chat_completion_with_tools).split())
         assert plain.count(predicate) == 1
-        # The tool round and the final pass.
         assert tools.count(predicate) == 2
 
 
@@ -436,7 +429,6 @@ class TestARefusedResumeChargesTheAttemptOnce:
         source = " ".join(inspect.getsource(_B.generate_chat_completion_with_tools).split())
         fold = source.index("_accumulated_completion_tokens += _pre_charged_f")
         assert "yield from _final_pause_gave_up(folded = True)" in source[fold:]
-        # The cap-spent ending before the fold reads the whole attempt.
         assert "yield from _final_pause_gave_up()" in source[:fold]
 
 
@@ -458,7 +450,6 @@ class TestASpentCapIsNotReopened:
     def test_the_partial_ends_the_turn_with_length(self, monkeypatch):
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
-        # Eight single-token deltas, paused after the eighth, against a cap of eight.
         recorder = _Recorder(
             monkeypatch,
             [[_delta("x")] * 8 + [_finish(), _done()], [_delta(" more"), _finish(), _done()]],
@@ -472,5 +463,4 @@ class TestASpentCapIsNotReopened:
         dicts = [e for e in events if isinstance(e, dict)]
         finishes = [e["finish_reason"] for e in dicts if e.get("type") == "metadata"]
         assert finishes[-1] == "length"
-        # The caller's own cap ended it, which is not a give-up.
         assert not any(e.get("type") == "context_truncated" for e in dicts)

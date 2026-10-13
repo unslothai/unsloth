@@ -322,7 +322,6 @@ class TestTheFinalPassHandsTheDecisionBack:
                 [_delta("The current kernel"), _finish(), _done()],
             ],
             signal = signal,
-            # The final answering pass, not the round.
             pause_attempts = (1,),
         )
         events = _run(recorder, signal = signal, policy = policy)
@@ -348,7 +347,6 @@ class TestTheControllerItself:
             "a chat that really did pause has moved on under its own transition; putting "
             "it back to DECODING would invent a holder"
         )
-        # And an unknown id is simply nothing.
         controller.note_declined("never-registered")
 
     def test_the_signal_is_cleared_with_the_state(self):

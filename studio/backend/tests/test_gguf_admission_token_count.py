@@ -479,7 +479,6 @@ def test_cancelled_tool_round_does_not_count_or_recost(cancel_during_count):
         backend.count_chat_tokens.side_effect = count
     else:
         cancel.set()
-    # A Stop is a cancel, so the round is not dispatched on the allowance it already had.
     with pytest.raises(LlamaAdmissionCancelled):
         inference._openai_llama_admission_recost(
             reservation,
@@ -651,7 +650,6 @@ def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(monke
             assert seen.get("prompt_tokens") == 4000
             assert seen.get("prompt_counted") is True
             seen.clear()
-            # A different wire catalogue is counted on its own, so its bound is exact too.
             inference._openai_llama_admission_recost(
                 reservation,
                 payload.messages,

@@ -28,11 +28,8 @@ def _clean_registry():
     reset_preemption_controllers()
 
 
-# The blocker's cells as llama-server reports them. Two things ride on this figure: it is
-# far above the ledger's own sum, which is what pins `committed` at a number the decoders
-# do not move, and it is past the ceiling, which is what keeps the waiter refused. Both
-# are the live shape rather than a contrivance -- a full cache with other chats decoding
-# in it is exactly when a chat is evicted and made to wait.
+# The blocker's cells as llama-server reports them. Two things ride on this figure: it is far
+# above the ledger's own sum,
 _BUDGET = 16384
 _RESIDENT = _BUDGET
 _WANT = 4000
@@ -44,7 +41,6 @@ def _pinned_controller(key: str) -> PreemptionController:
     controller.configure(budget = _BUDGET, kv_unified = True)
     controller.register("holder", tokens = 1000, signal = PreemptSignal())
     controller.note_tokens("holder", 1000)
-    # Measured, so a token it decodes lands inside the reading rather than on top of it.
     controller.note_measured("holder")
     controller.note_resident(_RESIDENT, started_at_seq = controller.residency_epoch())
     return controller
@@ -83,11 +79,8 @@ class TestTheSignatureSeesADecodingBackend:
         controller.observe("holder", 512)
         after = controller.progress_signature()
 
-        # The two terms the signature used to consist of, both unmoved: the maximum is
-        # still the resident reading, and the same holder is still there.
         assert after[0] == before[0] == _RESIDENT, "committed must be pinned for this test"
         assert after[1] == before[1], "and the same holder must still hold"
-        # And yet the backend plainly decoded 512 tokens.
         assert after != before, (
             "a signature that cannot see 512 generated tokens is the one that reported "
             "'no progress for 90.0s' about three chats decoding at full rate"
@@ -134,7 +127,6 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
         stop = threading.Event()
 
         def decode_then_free():
-            # Long enough that a wall-clock or committed-only bound has certainly fired.
             deadline = time.monotonic() + timeout * 3
             generated = 0
             while time.monotonic() < deadline and not stop.is_set():
@@ -142,7 +134,6 @@ class TestTheWaiterHoldsOnWhileAnythingMoves:
                 generated += 32
                 controller.observe("holder", generated)
                 decoded["tokens"] = generated
-            # The blocker finishes: its cells come back and the waiter fits at last.
             controller.note_resident(1000)
             controller.note_tokens("holder", 1000)
 

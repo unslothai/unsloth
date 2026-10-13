@@ -99,7 +99,6 @@ class PausingTransport:
         self.signal = signal
         self.request_on_turn = request_on_turn
         self.requests: list[dict] = []
-        # Whether the signal was visible when each turn's stream began.
         self.visible_at_turn_start: list[bool] = []
 
     def stream(self, *, messages, tools, tool_choice, cancel_event):
@@ -113,7 +112,6 @@ class PausingTransport:
             for line in lines:
                 yield line
             if should_request:
-                # Mid-stream, exactly where KV pressure is noticed.
                 self.signal.request("kv_pressure")
 
         return _gen()

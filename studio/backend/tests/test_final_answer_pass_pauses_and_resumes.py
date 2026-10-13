@@ -155,7 +155,6 @@ class _Recorder:
             for chunk in response.chunks:
                 yield chunk
                 if attempt in recorder.pause_attempts and chunk.startswith("data: {"):
-                    # Pressure noticed mid-stream, which is when it really is.
                     recorder.signal.request("kv_pressure")
                     raise preemption.LlamaStreamPreempted
 
@@ -178,7 +177,6 @@ def _run(recorder, *, signal, policy):
             cancel_event = threading.Event(),
             preempt_event = signal,
             preempt_policy = policy,
-            # One round, so the loop breaks mid-round into the synthesized final pass.
             max_tool_iterations = 1,
             permission_mode = "off",
         )
@@ -233,8 +231,6 @@ class TestTheFinalPassPauses:
 
 class TestTheFinalPassResumes:
     def test_an_admission_allowance_does_not_hand_the_cap_back(self, monkeypatch):
-        # Each attempt re-derives max_tokens from its attempt cap and the allowance, so
-        # the pause has to lower the cap itself, or the resume gets the whole 60 again.
         signal = preemption.PreemptSignal()
         recorder = _Recorder(
             monkeypatch,

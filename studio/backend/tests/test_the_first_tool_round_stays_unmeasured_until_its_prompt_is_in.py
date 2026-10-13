@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The first tool round is published before its request opens, so it is not measured yet.
-
-The round boundary marked every non-replayed holder measured, so a `/slots` probe that left
-before the prompt was sent was accepted and folded the whole prompt into other occupancy.
-"""
+"""The first tool round is published before its request opens, so it is not measured yet."""
 
 from __future__ import annotations
 
@@ -33,7 +29,6 @@ def test_a_probe_from_before_the_prompt_does_not_fold_it_in():
     controller.note_resident(6000, started_at_seq = controller.residency_epoch())
     controller.register("loop", lease = _Lease(), tokens = 5000, prompt_tokens = 5000)
     in_flight = controller.residency_epoch()
-    # The first round is published before the upstream request opens.
     controller.note_tokens("loop", 5000, 5000)
     assert controller.participant("loop").measured is False
     controller.note_resident(6000, started_at_seq = in_flight)

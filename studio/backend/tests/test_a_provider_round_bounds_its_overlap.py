@@ -18,8 +18,6 @@ import pytest  # noqa: E402
 
 from core.inference import studio_tool_loop as loop_mod  # noqa: E402
 
-# The scripted transport and the SSE readers the rest of the loop is tested against,
-# rather than a second copy of them.
 from test_studio_tool_loop import (  # noqa: E402
     WEB,
     FakeTransport,
@@ -32,8 +30,6 @@ from test_studio_tool_loop import (  # noqa: E402
 
 _CAP = loop_mod._MAX_PARALLEL_TOOL_CALLS_PER_ROUND
 
-# The value the report was filed against: `max_tool_calls_per_message` at its unlimited
-# sentinel, where nothing above the launch refuses a call.
 _UNLIMITED = 9999
 
 
@@ -69,8 +65,8 @@ def _round_of(count: int) -> FakeTransport:
 @pytest.fixture
 def rendezvous(monkeypatch):
     """A tool that cannot return until another call of it has also started."""
-    # Long enough that a loaded runner still meets it, short enough that the serialised
-    # case (where it can never be met) does not dominate the suite.
+    # Long enough that a loaded runner still meets it, short enough that the serialised case
+    # (where it can never be met) does not dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
     started: list[str] = []
     lock = threading.Lock()

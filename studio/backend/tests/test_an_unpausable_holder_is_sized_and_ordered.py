@@ -32,7 +32,6 @@ class TestTheFirstMeasurementIsOrdered:
         controller.register("raw", tokens = 6000, state = ParticipantState.STREAMING_RAW)
         in_flight = controller.residency_epoch()
         controller.note_measured("raw")
-        # The probe that left before the prompt landed, reporting another holder's cells.
         controller.note_resident(9000, started_at_seq = in_flight)
         assert controller.participant("raw").measured is False, (
             "the reading predates the prompt; promoting on it folds the charge into cells "

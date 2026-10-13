@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A parallel round is decided on the calls as the controller will run them.
-
-Two calls that differ only in what auto-healing repairs heal into one call, so overlapped
-both would run before either result could mark the other a repeat. And every call of an
-overlapped round is handed the branch as it stood before the round, not whatever its
-siblings had settled into by the time its worker thread read it.
-"""
+"""A parallel round is decided on the calls as the controller will run them."""
 
 from __future__ import annotations
 
@@ -43,7 +37,6 @@ class TestTheRoundKeyIsTheHealedOne:
         controller = ToolLoopController(tools = [WEB])
         keys = loop_mod.round_call_keys(controller, [{"function": _BARE}, {"function": _OBJECT}])
         assert keys[0] == keys[1]
-        # The raw key the gate used to read tells them apart, which is the gap.
         assert loop_mod.round_call_key("web_search", "alpha") != loop_mod.round_call_key(
             "web_search", _OBJECT["arguments"]
         )

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A holder parked on a tool approval is freed by the erase, not by its signal.
-
-It is blocked on the user and never reads the signal, so choosing it frees nothing until an
-idle-slot erase takes its cells. With `/slots` unavailable or the erase failing, the plan counted
-its cells as leaving anyway, then netted them out of every later plan, and a decoder grew into
-cells that were still resident.
-"""
+"""A holder parked on a tool approval is freed by the erase, not by its signal."""
 
 from __future__ import annotations
 
@@ -56,7 +50,6 @@ def test_an_erased_parked_holder_frees_its_room():
     controller = _over_with_a_parked_holder()
     controller.plan_preemptions(needed = 0)
     controller.unregister("new")
-    # The erase landed: the parked holder no longer holds cells.
     assert (
         controller.note_cells_reclaimed({"parked": controller.participant("parked").park_seq}) == 1
     )

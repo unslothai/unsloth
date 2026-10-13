@@ -103,7 +103,6 @@ class _Recorder:
             for chunk in response.chunks:
                 yield chunk
                 if attempt in recorder.pause_attempts and chunk.startswith("data: {"):
-                    # Pressure noticed mid-stream, which is when it really is.
                     recorder.signal.request("kv_pressure")
                     raise preemption.LlamaStreamPreempted
 
@@ -308,7 +307,6 @@ class TestWhenItCannotOrMustNotResume:
         events = _run(recorder.backend, signal = signal, policy = policy)
         assert policy.events.count("preempted") == 1, "it paused more than once"
         assert not signal.is_set(), "the signal must be cleared before the turn ends"
-        # No second request: the turn ended rather than decoding without a lease.
         assert len(recorder.payloads) == 1
         assert any(
             e.get("type") == "context_truncated" and e.get("reason") == "preempt_gave_up"
@@ -328,14 +326,12 @@ class TestWhenItCannotOrMustNotResume:
         recorder = _Recorder(
             monkeypatch,
             [
-                # No content delta at all before the pause.
                 [_finish(), _done()],
                 [_delta("a full answer."), _finish(), _done()],
             ],
             signal = signal,
         )
 
-        # Pause on the very first chunk, which carries no content.
         def fake_iter(
             response,
             _cancel_event,

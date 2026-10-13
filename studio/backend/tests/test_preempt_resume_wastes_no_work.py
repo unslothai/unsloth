@@ -130,15 +130,12 @@ class TestACompletedToolRoundIsNotRepeated:
         recorder = _Recorder(
             monkeypatch,
             [
-                # round 1: the model asks for a tool
                 [
                     _tool_call("call_1", "web_search", {"query": "ropes"}),
                     _finish("tool_calls"),
                     _done(),
                 ],
-                # round 2: prose, preempted partway (attempt index 1)
                 [_delta("Based on the search, a rope"), _finish(), _done()],
-                # round 2 resumed
                 [_delta(" is a balanced tree."), _finish(), _done()],
             ],
             signal = signal,
@@ -214,20 +211,17 @@ class TestAPauseInsideAToolCallBacksUpToTheCall:
         recorder = _Recorder(
             monkeypatch,
             [
-                # prose, then the opening of a text-form call; the pause lands here
                 [
                     _delta("First, some context about ropes. "),
                     _delta('<tool_call>{"name": "web_search", "arguments": {"query": '),
                     _finish(),
                     _done(),
                 ],
-                # resume: the model completes the call
                 [
                     _delta('"ropes"}}</tool_call>'),
                     _finish("tool_calls"),
                     _done(),
                 ],
-                # after the tool: the answer
                 [_delta("Ropes are trees."), _finish(), _done()],
             ],
             signal = signal,

@@ -2868,16 +2868,7 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
 
 
 def trailing_assistant_reasoning(messages: list) -> str:
-    """Reasoning text of a trailing assistant turn that showed no prose yet.
-
-    A reasoning model preempted inside its thought block has real work and no visible
-    characters, so ``trailing_assistant_text`` reports "" and every truthiness gate built
-    on it drops the continuation.
-
-    Separate from ``trailing_assistant_text`` on purpose: that one feeds the manual prompt
-    splice, which appends its result as VISIBLE text, so handing it reasoning would paste
-    the thought into the answer.
-    """
+    """Reasoning text of a trailing assistant turn that showed no prose yet."""
     if not messages:
         return ""
     last = messages[-1]
@@ -3171,8 +3162,6 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        # The thought is one turn's work too: a continuation that went on thinking and then
-        # called a tool carried only its own part, and the earlier part left the context.
         prev_reasoning = conversation[-1].get("reasoning_content")
         new_reasoning = assistant_msg.get("reasoning_content")
         if isinstance(prev_reasoning, str) and isinstance(new_reasoning, str):

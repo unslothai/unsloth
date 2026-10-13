@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A final answering pass paused after its thought replays its answer, not its display.
-
-The display wraps the thought in `<think>` ahead of the answer, and the pause checkpoint was
-built from it: the resumed request carried the thought twice, once inside the assistant
-content it extends and once as its reasoning.
-"""
+"""A final answering pass paused after its thought replays its answer, not its display."""
 
 from __future__ import annotations
 

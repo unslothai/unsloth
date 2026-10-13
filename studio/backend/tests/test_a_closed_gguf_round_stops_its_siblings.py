@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Closing the local GGUF tool loop mid-round tells every overlapped call to stop.
-
-The calls of a parallel round are driven on threads of their own, so a close while the first
-is being read left the later ones running with nothing to say the request had ended: a tool
-that only stops on the cancel event went on to its side effect after the response was gone.
-"""
+"""Closing the local GGUF tool loop mid-round tells every overlapped call to stop."""
 
 from __future__ import annotations
 
@@ -51,7 +46,6 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
         query = (arguments or {}).get("query")
         if query == "alpha":
             first_running.set()
-            # Speaks while it works, so the loop is reading this call when it is closed.
             for _ in range(200):
                 if cancel_event is not None and cancel_event.is_set():
                     return "alpha-stopped"
@@ -59,7 +53,6 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
                     output_callback("tick ")
                 time.sleep(0.02)
             return "alpha-done"
-        # The sibling only stops on the request's cancel event.
         stopped = cancel_event is not None and cancel_event.wait(3.0)
         outcome["beta"] = "stopped" if stopped else "side effect after the request ended"
         finished.set()
@@ -100,8 +93,6 @@ def test_a_close_while_draining_the_first_call_stops_the_second(monkeypatch):
 
 
 def test_an_ordinary_error_in_the_drain_is_still_reported(monkeypatch):
-    # Setting the request's cancel event there would make the handler above end the turn
-    # silently instead of reporting the failure.
     import pytest
 
     from core.inference.tool_loop_controller import ToolLoopController

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Arming a chat takes the gate every other holder takes, and the prompt admission counted.
-
-With admission or its KV accounting switched off every lease is free, so a chat armed on the
-preemption switch alone was ledgered at nothing and could be chosen; raw and direct holders
-already stood down there. And where admission had the tokenizer's count, arming re-estimated
-the prompt from characters, which undercounts dense text and is what every report builds on.
-"""
+"""Arming a chat takes the gate every other holder takes, and the prompt admission counted."""
 
 from __future__ import annotations
 

@@ -115,7 +115,6 @@ class TestThePlainChatPath:
         chunks = _run_plain(recorder.backend, signal = signal, policy = policy)
 
         assert len(recorder.payloads) == 1, "a refused resume must not re-open the request"
-        # The partial is still the answer, unchanged by any of this.
         assert any("Once upon a time" in c for c in chunks if isinstance(c, str))
         assert len(_gave_up(chunks)) == 1
         metadata = _metadata(chunks)
@@ -136,7 +135,6 @@ class TestThePlainChatPath:
         chunks = _run_plain(recorder.backend, signal = signal, policy = policy)
         kinds = [c.get("type") for c in chunks if isinstance(c, dict)]
         assert kinds.index("context_truncated") < kinds.index("metadata")
-        # And the pause it resolves came first of all.
         assert kinds.index("preempt") < kinds.index("context_truncated")
 
     def test_a_resume_that_is_granted_says_nothing_of_the_kind(self, monkeypatch):
@@ -172,7 +170,6 @@ class TestTheToolLoopPath:
         chunks = _run_tools(recorder.backend, signal = signal, policy = policy)
 
         assert policy.events.count("preempted") == 1
-        # One request, not two: the turn ends rather than decoding without a lease.
         assert len(recorder.payloads) == 1
         assert len(_gave_up(chunks)) == 1, "the tool loop gave up without telling anyone"
         finishes = [

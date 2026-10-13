@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A parallel round cut short drains and closes every call it launched, not only the first.
-
-The round launches every call and then settles them in order. A cancel while the first is
-settling used to tidy that one and leave its siblings running: their pumps never awaited and
-their streams never closed, so nothing joined a tool still working after the request ended.
-"""
+"""A parallel round cut short drains and closes every call it launched, not only the first."""
 
 from __future__ import annotations
 
@@ -38,10 +33,8 @@ def test_a_cancel_mid_round_drains_and_closes_the_siblings(monkeypatch):
         query = (arguments or {}).get("query", "")
         started[query].set()
         if query == "alpha":
-            # The call being settled: it stops when told to.
             kwargs["cancel_event"].wait(5)
         else:
-            # A sibling still working when the response is cancelled.
             time.sleep(0.5)
         return f"RESULT<{query}>"
 
@@ -102,8 +95,6 @@ def test_a_cancel_mid_round_drains_and_closes_the_siblings(monkeypatch):
             await task
         except asyncio.CancelledError:
             pass
-        # Read the moment the response task has ended: a stream not closed by now is one
-        # nothing will close.
         return list(closed)
 
     closed_at_end = asyncio.run(_main())

@@ -52,8 +52,6 @@ class _Recorder:
     ):
         self.payloads: list[dict] = []
         self.signal = signal
-        # Which data chunk of the first attempt the pressure lands on. One by default, so
-        # the pause is mid-thought; higher to let prose stream first.
         self.pause_after_chunks = pause_after_chunks
         self._streams = [list(stream) for stream in streams]
         self.backend = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -163,8 +161,8 @@ class TestThePromotedFallbackCoversBothAttempts:
             [[_reasoning("Just the one."), _finish(), _done()]],
             signal = signal,
         )
-        # Never pauses: attempt 0 is the only one and the recorder pauses on it, so a
-        # fresh recorder that never signals is what this needs.
+        # Never pauses: attempt 0 is the only one and the recorder pauses on it, so a fresh
+        # recorder that never signals is what this needs.
         recorder.backend._iter_text_cancellable = (
             lambda response, _cancel_event, first_token_deadline = None, preempt_event = None: iter(
                 response.chunks
