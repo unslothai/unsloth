@@ -470,3 +470,69 @@ def test_cached_latent_sampling_moves_before_joining_and_keeps_the_values():
     assert torch.equal(got, a + b * torch.randn_like(a))
     one = dit._to_device_cat([cache[1][0][0]], "cpu")
     assert one is cache[1][0][0] or torch.equal(one, cache[1][0][0])
+
+
+# ── lora_alpha survives the save ─────────────────────────────────────────────
+def test_a_non_default_alpha_reloads_at_the_trained_strength(tmp_path):
+    """diffusers' loader assumes lora_alpha == rank unless the safetensors header carries the adapter config, so a
+    rank-4 / alpha-16 adapter (scale 4) used to come back at scale 1."""
+    from peft import LoraConfig
+    from peft.utils import get_peft_model_state_dict
+    from safetensors import safe_open
+
+    WanPipeline, _ = _wan_classes()
+    trained = _tiny_transformer()
+    trained.add_adapter(
+        LoraConfig(r = 4, lora_alpha = 16, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS))
+    )
+    with torch.no_grad():
+        for n, p in trained.named_parameters():
+            if "lora_B" in n:
+                p.normal_(0.0, 0.2)
+    spec = _SPECS[FAMILY]
+    assert spec.save_takes_metadata
+    dit._adapter_saver(spec, trained)(None, str(tmp_path), get_peft_model_state_dict(trained))
+    with safe_open(str(tmp_path / DEFAULT_LORA_FILENAME), "pt") as f:
+        meta = json.loads(f.metadata()["lora_adapter_metadata"])
+    assert meta["transformer.r"] == 4 and meta["transformer.lora_alpha"] == 16
+
+    fresh = _tiny_transformer()
+    pipe = WanPipeline(
+        tokenizer = None, text_encoder = None, vae = None, scheduler = None, transformer = fresh, expand_timesteps = True
+    )
+    pipe.load_lora_weights(str(tmp_path), weight_name = DEFAULT_LORA_FILENAME)
+    noisy, emb, t = torch.randn(1, Z_DIM, 1, 8, 8), torch.randn(1, 16, 32), torch.tensor([400.0])
+    with torch.no_grad():
+        got = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
+        want = dit._wan_forward(trained, noisy, t, None, (emb,), None, "cpu", torch.float32)
+    assert torch.allclose(got, want, atol = 1e-5)
+
+
+def test_families_without_the_flag_keep_their_three_argument_saver():
+    for name, spec in _SPECS.items():
+        if not spec.save_takes_metadata:
+            assert dit._adapter_saver(spec, object()) is spec.save, name
+
+
+# ── the text encoder and the VAE never share the device ──────────────────────
+def test_load_conditioners_leaves_the_vae_on_the_host(monkeypatch):
+    moved = []
+
+    class _Vae:
+        def to(self, *a, **k):
+            moved.append((a, k))
+            return self
+
+    class _Pipe:
+        def __init__(self, vae):
+            self.vae = vae
+
+    _wan_classes()  # skip where this diffusers cannot import the Wan stack
+    import diffusers
+
+    monkeypatch.setattr(diffusers.AutoencoderKLWan, "from_pretrained", classmethod(lambda cls, *a, **k: _Vae()))
+    monkeypatch.setattr(dit, "_wan_pipeline_cls", lambda: types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: _Pipe(k["vae"])
+    ))
+    pipe, vae = dit._wan_load_conditioners(types.SimpleNamespace(base_model = BASE, hf_token = None), "cuda", None)
+    assert vae is pipe.vae and moved == [], "the VAE must wait for the encoders to be freed"

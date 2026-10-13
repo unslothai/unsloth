@@ -186,6 +186,9 @@ class _FamilySpec:
     # cfg -> the FlowMatchEuler scheduler the loop draws sigmas from. None = load it from the base's scheduler/ subfolder,
     # which is only right when that subfolder IS a FlowMatchEuler config (Wan ships UniPC).
     training_scheduler: Optional[Callable[..., Any]] = None
+    # The saver takes ``adapter_metadata`` (the LoraConfig dict diffusers writes into the safetensors header), so a
+    # non-default lora_alpha reloads at the trained strength. Without it diffusers' loader assumes alpha == rank.
+    save_takes_metadata: bool = False
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -1687,7 +1690,8 @@ def _wan_load_conditioners(cfg, device, weight_dtype):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    pipe.vae.to(device, dtype = torch.float32)
+    # The VAE stays on the host here: the shared loop moves it to the device only after the UMT5-XXL encoder (11.4 GB
+    # bf16) is freed, so the two never sit on the GPU together.
     return pipe, pipe.vae
 
 
@@ -1803,13 +1807,39 @@ def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devic
     )[0]
 
 
-def _wan_save(pipe_cls, out_dir, transformer_lora_layers):
-    # ``transformer.``-prefixed diffusers keys, the format WanPipeline.load_lora_weights reads.
-    _wan_pipeline_cls().save_lora_weights(
+def _wan_save(pipe_cls, out_dir, transformer_lora_layers, adapter_metadata = None):
+    # ``transformer.``-prefixed diffusers keys, the format WanPipeline.load_lora_weights reads. The adapter metadata
+    # (r, lora_alpha, target_modules) goes into the safetensors header, where load_lora_weights reads it back; a
+    # diffusers whose saver predates the argument still gets the weights.
+    import inspect
+
+    save = _wan_pipeline_cls().save_lora_weights
+    kwargs = {}
+    if adapter_metadata and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters:
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
         weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
     )
+
+
+def _lora_adapter_metadata(transformer) -> Optional[dict]:
+    """The attached adapter's LoraConfig as a plain dict (diffusers' ``_collate_lora_metadata`` shape), or None."""
+    try:
+        return transformer.peft_config["default"].to_dict()
+    except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
+        return None
+
+
+def _adapter_saver(spec, transformer):
+    """``spec.save`` with the adapter metadata bound when the family's saver records it."""
+    if not spec.save_takes_metadata:
+        return spec.save
+    import functools
+
+    return functools.partial(spec.save, adapter_metadata = _lora_adapter_metadata(transformer))
 
 
 def _wan_training_scheduler(cfg):
@@ -2000,6 +2030,7 @@ _SPECS: dict[str, _FamilySpec] = {
         forward = _wan_forward,
         save = _wan_save,
         training_scheduler = _wan_training_scheduler,
+        save_takes_metadata = True,
     ),
 }
 
@@ -2659,6 +2690,10 @@ def _train_dit(
             torch.cuda.empty_cache()
         elif device == "xpu":
             torch.xpu.empty_cache()
+        # A family may load its VAE on the host to keep it off the device while the text encoders are resident; a VAE
+        # already there makes this a no-op.
+        if vae is not None:
+            vae.to(device)
 
         # The cache keeps the posterior affine parameters, so per-step sampling noise is preserved.
         if use_cache:
@@ -3109,14 +3144,15 @@ def _train_dit(
         if stopped and done > 0:
             _save_checkpoint(done)
         layers = get_peft_model_state_dict(transformer)
-        spec.save(pipe, str(out_dir), layers)
+        save_adapter = _adapter_saver(spec, transformer)
+        save_adapter(pipe, str(out_dir), layers)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
         catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
                 # Report the adapter FILE, like lora_path, so a caller can load it directly.
-                ema_dir = save_ema_adapter(ema, transformer, spec.save, str(out_dir))
+                ema_dir = save_ema_adapter(ema, transformer, save_adapter, str(out_dir))
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")

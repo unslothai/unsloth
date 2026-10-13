@@ -590,11 +590,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # Measured on a B200 (nf4, 704px stills, rank 32): the training LOOP peaks at 4.25 GB allocated, the RUN at 12.5 GB
-    # process-wide while UMT5-XXL (11.4 GB bf16) + the fp32 VAE are resident for the one-time encode.
+    # Measured on a B200 (nf4, 704px stills, rank 32, default compile) under a 24 GiB per-process cap: the training
+    # LOOP peaks at 4.2 GB allocated, the RUN at 11.6 GB (11.6 GB process-wide) while the UMT5-XXL encoder (11.4 GB bf16)
+    # runs its one-time encode; the VAE joins only after the encoder is freed.
     "wan2.2-ti2v-5b": {
         "params": "5B",
-        "qlora_vram_gb": 14,
+        "qlora_vram_gb": 12,
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
