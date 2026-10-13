@@ -392,6 +392,47 @@ def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, t
     assert "referer" not in sent[1]["headers"]
 
 
+def test_safelisted_headers_follow_a_redirect_to_another_site(monkeypatch):
+    # A video's Range goes on to the CDN, as in a browser; Authorization and custom headers don't.
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/video": (302, b"", {"Location": "https://cdn.test/video"}),
+            "cdn.test/video": (206, b"part", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    answer = _request(
+        url = "https://site.test/video",
+        headers = [
+            ["Range", "bytes=0-3"],
+            ["Accept", "video/mp4"],
+            ["Authorization", "Bearer page"],
+            ["X-Custom", "1"],
+        ],
+    )
+    assert answer["status"] == 206
+    cdn = sent[1]["headers"]
+    assert cdn["range"] == "bytes=0-3" and cdn["accept"] == "video/mp4"
+    assert cdn["origin"] == "https://site.test"
+    assert "authorization" not in cdn and "x-custom" not in cdn and "referer" not in cdn
+
+
+@pytest.mark.parametrize(
+    "name, value, safe",
+    [
+        ("Range", "bytes=0-", True),
+        ("Range", "bytes=-500", False),
+        ("Range", "bytes=0-1,5-6", False),
+        ("Accept-Language", "en-US,en;q=0.9", True),
+        ("Accept", "application/json", True),
+        ("Accept", "a:b", False),
+        ("Content-Type", "text/plain", False),
+    ],
+)
+def test_cors_safelisted_request_headers(name, value, safe):
+    assert browser_mod._cors_safelisted(name, value) is safe
+
+
 @pytest.mark.parametrize("status, method", [(307, "DELETE"), (308, "PUT"), (307, "POST")])
 def test_a_write_redirected_to_another_site_is_never_sent_there(monkeypatch, status, method):
     sent = _serve(

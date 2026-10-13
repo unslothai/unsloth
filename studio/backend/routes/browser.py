@@ -1627,6 +1627,22 @@ def _origin(url: str) -> Optional[tuple[str, str, int]]:
         return None
 
 
+def _cors_safelisted(name: str, value: str) -> bool:
+    """Fetch's CORS-safelisted request-header, for the headers a bodiless GET carries."""
+    lowered = name.lower()
+    if len(value) > 128:
+        return False
+    if lowered == "accept":
+        return not any(
+            (ord(char) < 0x20 and char != "\t") or char in '"():<>?@[\\]{}\x7f' for char in value
+        )
+    if lowered in ("accept-language", "content-language"):
+        return bool(re.fullmatch(r"[0-9A-Za-z *,.;=-]*", value))
+    if lowered == "range":
+        return bool(re.fullmatch(r"bytes=[0-9]+-[0-9]*", value))
+    return False
+
+
 def _allowed_header(name: str, value: str) -> bool:
     lowered = name.lower()
     return (
@@ -1681,10 +1697,10 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     if "accept-language" not in named:
         added["Accept-Language"] = "en-US,en;q=0.9"
     page_headers = {**added, **own}
-    # Whether every hop so far stayed on the page's origin. Once one leaves it, the page's headers
-    # (Authorization among them) are not sent again, as Fetch strips them on an origin change, and the
-    # request is a CORS one carrying Origin: the page's, or "null" once a hop went from one other
-    # origin to another (Fetch's redirect-taint).
+    # Whether every hop so far stayed on the page's origin. Once one leaves it, only the page's
+    # CORS-safelisted headers go on (Range, never Authorization), since the rest would need a preflight
+    # this can't make; and the request is a CORS one carrying Origin: the page's, or "null" once a hop
+    # went from one other origin to another (Fetch's redirect-taint).
     hops = {
         "same_origin": True,
         "stopped": False,
@@ -1714,7 +1730,14 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
 
     def host_headers(current_host: str) -> dict:
         if not hops["same_origin"]:
-            own_headers = {"Origin": hops["origin"]}
+            own_headers = {
+                **{
+                    name: value
+                    for name, value in page_headers.items()
+                    if _cors_safelisted(name, value)
+                },
+                "Origin": hops["origin"],
+            }
         elif hops["rewritten"]:
             own_headers = {
                 name: value
