@@ -4987,7 +4987,14 @@ class FastBaseModel:
         pad_token_id = getattr(tokenizer, "pad_token_id", None)
         lm_head = getattr(model, "lm_head", None)
         lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
+        # Also skipped when the tokenizer appends the pad token to every input: microsoft/harrier-oss-v1-0.6b pools its <|endoftext|> row (#4984).
+        from ..tokenizer_utils import _special_ids_added_on_encode
+
+        if (
+            tokenizer is not None
+            and getattr(tokenizer, "eos_token_id", None) != pad_token_id
+            and pad_token_id not in _special_ids_added_on_encode(tokenizer)
+        ):
             with torch.no_grad():
                 for name, module in model.named_modules():
                     if type(module) is torch.nn.Embedding:

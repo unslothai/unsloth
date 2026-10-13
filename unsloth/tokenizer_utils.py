@@ -145,6 +145,23 @@ def _tokenizer_auto_adds_bos(tokenizer):
     return bool(input_ids) and input_ids[0] == bos_token_id
 
 
+def _special_ids_added_on_encode(tokenizer):
+    """Ids the tokenizer itself adds to plain text (post-processor BOS / EOS); empty if it cannot be asked."""
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    try:
+        with_special = tokenizer("A")["input_ids"]
+        without_special = tokenizer("A", add_special_tokens = False)["input_ids"]
+    except Exception:
+        return frozenset()
+
+    def flat(ids):
+        while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        return ids if isinstance(ids, (list, tuple)) else []
+
+    return frozenset(flat(with_special)) - frozenset(flat(without_special))
+
+
 def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template

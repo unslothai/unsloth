@@ -3800,6 +3800,10 @@ class FastLlamaModel:
         eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
         pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
         if tokenizer is not None and eos_token_id != pad_token_id:
+            from ..tokenizer_utils import _special_ids_added_on_encode
+
+            # A row the tokenizer adds to every input is a real token, not padding (#4984).
+            emitted_ids = _special_ids_added_on_encode(tokenizer)
             lm_head = getattr(model, "lm_head", None)
             lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
             with torch.no_grad():
@@ -3809,7 +3813,10 @@ class FastLlamaModel:
                             getattr(module, "weight", None) is not None
                             and getattr(module, "padding_idx", None) is not None
                         ):
-                            if module.padding_idx < module.weight.shape[0]:
+                            if (
+                                module.padding_idx < module.weight.shape[0]
+                                and module.padding_idx not in emitted_ids
+                            ):
                                 if (
                                     lm_head_weight is not None
                                     and module.weight.data_ptr() == lm_head_weight.data_ptr()
