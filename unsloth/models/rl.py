@@ -2359,6 +2359,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 v = re.escape("\n")
             if v is EMPTY:
                 arguments.append(k)
+            elif type(v) is str and v != re.escape("\n") and ("\n" in v or "'" in v):
+                # A newline or quote ends the bare '...' literal early (SDFT's teacher_prompt_template).
+                arguments.append(f"{k} = {v!r}")
             elif type(v) is str:
                 arguments.append(f"{k} = '{v}'")
             elif type(v) in types:
@@ -3604,6 +3607,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
+    # The generated module has no package, so a function-level relative import (ServerDistillationTrainer's `from ...generation.vllm_client import VLLMClient`) must be made absolute.
+    _source_package = getattr(inspect.getmodule(RLTrainer), "__package__", None)
+    if _source_package:
+        RLTrainer_source = re.sub(
+            r"^([ \t]*from[ \t]+)(\.+[\w.]*)([ \t]+import[ \t])",
+            lambda m: m.group(1)
+            + importlib.util.resolve_name(m.group(2), _source_package)
+            + m.group(3),
+            RLTrainer_source,
+            flags = re.MULTILINE,
+        )
+
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
         _resolved_module.__name__ if _resolved_module is not None else trainer.__name__
@@ -4051,15 +4066,20 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
 
 # TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+# Served-teacher, cross-tokenizer (GOLD) and self-distillation (SDFT) trainers only ever lived in trl.experimental.
+# Not async_distillation: it loads the student from a model name, so an Unsloth model never reaches it.
 _TRL_EXPERIMENTAL_TRAINERS = (
     "bco",
     "cpo",
     "gkd",
+    "gold",
     "nash_md",
     "online_dpo",
     "orpo",
     "ppo",
     "prm",
+    "sdft",
+    "server_distillation",
     "xpo",
 )
 

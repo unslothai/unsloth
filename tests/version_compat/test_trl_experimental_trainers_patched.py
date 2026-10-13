@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""TRL 0.29+ moved ORPO, CPO, GKD, PPO, Online DPO, Nash-MD, XPO, BCO and PRM from trl.trainer to trl.experimental.
+"""TRL 0.29+ moved ORPO, CPO, GKD, PPO, Online DPO, Nash-MD, XPO, BCO and PRM from trl.trainer to trl.experimental, and the
+served-teacher, GOLD and SDFT distillation trainers only ever lived there.
 
 Each check imports unsloth in a fresh CPU-spoofed interpreter, since trainer patching is process-wide and import-order
 sensitive.
@@ -28,11 +29,14 @@ _MOVED = [
     ("bco", "BCO"),
     ("cpo", "CPO"),
     ("gkd", "GKD"),
+    ("gold", "GOLD"),
     ("nash_md", "NashMD"),
     ("online_dpo", "OnlineDPO"),
     ("orpo", "ORPO"),
     ("ppo", "PPO"),
     ("prm", "PRM"),
+    ("sdft", "SDFT"),
+    ("server_distillation", "ServerDistillation"),
     ("xpo", "XPO"),
 ]
 
@@ -49,6 +53,7 @@ spec = importlib.util.spec_from_file_location("_unsloth_tests_conftest", os.path
 spec.loader.exec_module(importlib.util.module_from_spec(spec))
 import _zoo_aggressive_cuda_spoof as spoof
 spoof.apply()
+import inspect, re
 import unsloth, trl, trl.trainer
 in_trainer = set(dir(trl.trainer))
 out = {"unsloth": unsloth.__file__, "trl": trl.__version__, "moved": {}}
@@ -72,6 +77,7 @@ for pkg, prefix in MOVED:
         "module_trainer": getattr(module, f"{prefix}Trainer").__name__,
         "config_has_unsloth_fields": "unsloth_num_chunks" in getattr(config, "__dataclass_fields__", {}),
         "mro": [f"{c.__module__}.{c.__name__}" for c in trainer.__mro__],
+        "relative_imports": re.findall(r"^\s*from \.+[\w.]* import .*$", inspect.getsource(sys.modules[trainer.__module__]), re.M),
         "leaked": [x for x in (f"{prefix}Trainer", f"{prefix}Config") if x in vars(trl) or x in vars(trl.trainer)]
         + ([f"trl.trainer.{pkg}_trainer"] if f"{pkg}_trainer" in vars(trl.trainer) else []),
     }
@@ -115,6 +121,12 @@ def test_experimental_trainers_and_configs_are_patched(after_unsloth):
         assert got["config_has_unsloth_fields"], (pkg, got)
 
 
+def test_generated_trainers_have_no_relative_imports(after_unsloth):
+    """The generated module has no package, so `from ...generation.vllm_client import VLLMClient` would fail in __init__."""
+    for pkg, got in after_unsloth.items():
+        assert got["relative_imports"] == [], (pkg, got["relative_imports"])
+
+
 def test_patching_leaves_no_trl_trainer_aliases(after_unsloth):
     for pkg, got in after_unsloth.items():
         assert got["leaked"] == [], (pkg, got)
@@ -130,3 +142,21 @@ def test_gkd_keeps_trls_own_sft_base_whatever_the_import_order(after_unsloth):
         assert "trl.trainer.sft_trainer.SFTTrainer" in got["mro"], got
         assert not any(c.endswith("SFTTrainer") and "Unsloth" in c for c in got["mro"]), got
     assert after_unsloth["gkd"]["mro"][2:] == before["mro"][2:]
+
+
+@pytest.mark.parametrize(
+    "pkg, parent", [("server_distillation", "DistillationTrainer"), ("gold", "SFTTrainer")]
+)
+def test_distillation_trainers_keep_trls_own_base_whatever_the_import_order(
+    after_unsloth, pkg, parent
+):
+    """ServerDistillationTrainer and GOLDTrainer subclass trainers Unsloth also patches; the import order must not decide their base."""
+    if pkg not in after_unsloth:
+        pytest.skip(f"no trl.experimental.{pkg} on this TRL")
+    before = _run(pre_import = [f"trl.experimental.{pkg}"])[pkg]
+    for got in (after_unsloth[pkg], before):
+        assert any(
+            c.startswith("trl.trainer.") and c.endswith(f".{parent}") for c in got["mro"]
+        ), got
+        assert not any(c.endswith(parent) and "Unsloth" in c for c in got["mro"][2:]), got
+    assert after_unsloth[pkg]["mro"][2:] == before["mro"][2:]
