@@ -477,6 +477,9 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   }
 
   if (action.op === "history") return readHistory(action, signal);
+  if (action.op === "evaluate" && useBrowserAgentStore.getState().scriptAccess === "never") {
+    return { ok: false, error: "The user doesn't let the agent run scripts on pages." };
+  }
 
   const tab = agentTab();
   if (!tab) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
@@ -805,7 +808,8 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
 function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
   const host = hostOfUrl(pageUrl);
-  if (!host || opaqueHosts.has(host) || ruleFor(pageUrl, permissions()).rule.actions === "allow") return null;
+  const rule = ruleFor(pageUrl, permissions()).rule;
+  if (!host || opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
 }
 
