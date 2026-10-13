@@ -1471,9 +1471,7 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     )
 
 
-def _ensure_loading(
-    checkpoint: Checkpoint, unloads: int | None = None
-) -> threading.Thread | None:
+def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threading.Thread | None:
     global _loader, _loading
     # Asked before _state_lock: the training backend takes its own lock.
     _clef_blocked_by_training(checkpoint)
