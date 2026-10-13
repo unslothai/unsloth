@@ -58,6 +58,7 @@ BRANCHES = {
     "csm": {"_audio_type": "csm"},
     "whisper": {"_audio_type": "whisper"},
     "snac": {"_audio_type": "snac"},
+    "diffusion": {"diffusion_lm_profile": "llada"},
 }
 
 
@@ -84,7 +85,7 @@ def peft_calls(monkeypatch):
 @pytest.mark.parametrize("branch", list(BRANCHES))
 def test_lora_init_uses_the_requested_seed(peft_calls, branch):
     t = tmod.UnslothTrainer()
-    t.model = types.SimpleNamespace(config = types.SimpleNamespace())
+    t.model = types.SimpleNamespace(config = types.SimpleNamespace(), named_modules = lambda: iter(()))
     for attr, value in BRANCHES[branch].items():
         setattr(t, attr, value)
 
