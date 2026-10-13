@@ -246,8 +246,8 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[command.index("--settings") + 1] == str(settings_path)
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
-    disallowed = command[command.index("--disallowedTools") + 1]
-    assert disallowed == "AskUserQuestion,EnterPlanMode,ExitPlanMode"
+    assert command[command.index("--tools") + 1] == "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit"
+    assert "--disallowedTools" not in command
     assert captured["cwd"] == str(tmp_path)
     assert captured["stdin"] is bridge.subprocess.DEVNULL
     assert captured["stdout"] is bridge.subprocess.PIPE
@@ -263,6 +263,7 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
     assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "32768"
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
+    assert child_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8192"
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
 
@@ -346,10 +347,9 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
-    disallowed = command[command.index("--disallowedTools") + 1]
-    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
-    # Bash matters: plan mode routes it through a classifier served by this same local model, so
-    # without the deny a "read-only" child can still write files.
+    assert command[command.index("--tools") + 1] == "Read,Grep,Glob,ExitPlanMode"
+    # No Bash: plan mode routes it through a classifier served by this same local model, so a
+    # "read-only" child with Bash can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 
@@ -473,6 +473,32 @@ def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
 
     time.sleep(1.2)
     assert not marker.exists()
+
+
+def test_failed_child_reports_why_it_stopped_not_its_warnings(monkeypatch, tmp_path):
+    _stub_env(monkeypatch, tmp_path)
+    reason = "Autocompact is thrashing: the context refilled to the limit within 3 turns."
+
+    class Process:
+        pid = 1234
+        returncode = 1
+
+        def communicate(self, timeout):
+            payload = {
+                "is_error": True,
+                "terminal_reason": "rapid_refill_breaker",
+                "result": reason,
+            }
+            warning = '[claude-code:unrecognized_model] {"model":"unsloth/model-GGUF:Q4_K_M"}\n'
+            return json.dumps(payload), warning
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", lambda *a, **k: Process())
+    with pytest.raises(RuntimeError) as failure:
+        bridge.run_local_agent("hello")
+    assert str(failure.value) == reason
 
 
 def test_result_parser_accepts_diagnostics_before_json():
