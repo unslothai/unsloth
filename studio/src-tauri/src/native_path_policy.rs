@@ -56,8 +56,9 @@ pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
 ];
 /// Read on the server by the composer; keep in sync with `SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS`.
 pub const SERVER_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &[
-    "doc", "docm", "dotx", "dotm", "xls", "xltx", "xltm", "ppt", "pptm", "potx", "potm", "ppsx",
-    "ppsm", "odp", "ott", "ots", "otp", "msg", "mht", "mhtml", "epub", "xhtml", "xht",
+    "doc", "docm", "dotx", "dotm", "xls", "xlt", "xltx", "xltm", "ppt", "pps", "pptm", "potx",
+    "potm", "ppsx", "ppsm", "odp", "ott", "ots", "otp", "msg", "mht", "mhtml", "epub", "xhtml",
+    "xht",
 ];
 
 pub fn is_server_document_attachment(path: &Path) -> bool {
@@ -636,11 +637,15 @@ pub fn office_template_mime_type(path: &Path) -> &'static str {
     }
 }
 
+/// .dot/.pot, which hold either text (Graphviz, gettext) or a Word/PowerPoint template.
+pub fn has_office_template_extension(path: &Path) -> bool {
+    has_extension(path, "dot") || has_extension(path, "pot")
+}
+
 /// Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
 /// unlike Graphviz `.dot` and gettext `.pot`.
 pub fn is_binary_office_template(path: &Path, bytes: &[u8]) -> bool {
-    (has_extension(path, "dot") || has_extension(path, "pot"))
-        && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    has_office_template_extension(path) && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
 }
 
 /// gfortran writes a compiled `.mod` module as gzip; text `go.mod` never is.

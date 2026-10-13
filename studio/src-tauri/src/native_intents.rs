@@ -786,6 +786,9 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     // reapplied below once the bytes say it is TypeScript.
     let max_bytes = if has_transport_stream_extension(path) {
         MAX_NATIVE_VIDEO_BYTES
+    } else if crate::native_path_policy::has_office_template_extension(path) {
+        // May be a Word/PowerPoint template; the text cap is reapplied below once the bytes say text.
+        MAX_NATIVE_OPEN_DOCUMENT_BYTES
     } else if is_text_attachment || mime_type.starts_with("text/") {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
@@ -1197,6 +1200,24 @@ mod tests {
             read_attachment_payload(&entry).unwrap().mime_type,
             "text/plain"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_large_template_uses_the_document_cap_and_large_text_keeps_the_text_cap() {
+        let size = MAX_NATIVE_TEXT_BYTES as usize + 1;
+        let path = temp_path("big-template").with_extension("dot");
+        let mut ole = vec![0u8; size];
+        ole[..8].copy_from_slice(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        fs::write(&path, &ole).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "application/msword"
+        );
+        fs::write(&path, vec![b'a'; size]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        assert!(read_attachment_payload(&entry).is_err());
         let _ = fs::remove_file(path);
     }
 

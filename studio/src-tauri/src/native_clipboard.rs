@@ -113,9 +113,6 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "xlsm" => "application/vnd.ms-excel.sheet.macroEnabled.12",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        // Read on the server by the composer, which matches them by extension.
-        "doc" | "xls" | "xlt" | "xltx" | "xltm" | "ppt" | "pps" | "pptm" | "ppsx" | "ott"
-        | "ots" | "otp" | "msg" | "mht" | "mhtml" | "xhtml" | "xht" => "application/octet-stream",
         "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
