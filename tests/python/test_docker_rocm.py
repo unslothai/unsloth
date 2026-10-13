@@ -278,7 +278,11 @@ class TestRunShRocm:
     def test_the_workspace_volume_is_not_shared_with_the_cuda_image(self, tmp_path):
         rocm, _ = _run_sh(tmp_path, ["--rocm", "true"])
         cuda, _ = _run_sh(tmp_path, ["true"], nvidia = True)
-        ws = lambda argv: [argv[i + 1] for i, a in enumerate(argv) if a == "-v" and argv[i + 1].endswith(":/workspace")]
+        ws = lambda argv: [
+            argv[i + 1]
+            for i, a in enumerate(argv)
+            if a == "-v" and argv[i + 1].endswith(":/workspace")
+        ]
         assert ws(rocm) == ["unsloth-workspace-rocm:/workspace"], rocm
         assert ws(cuda) == ["unsloth-workspace:/workspace"], cuda
 
