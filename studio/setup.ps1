@@ -5830,8 +5830,7 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        # Windows PowerShell 5.1 turns redirected native stderr (including harmless
-        # Python warnings) into errors. Let the helper's exit code decide success.
+        # PS 5.1 turns redirected native stderr (even Python warnings) into errors; the exit code decides.
         $prevEAPNode = $ErrorActionPreference
         try {
             $ErrorActionPreference = "Continue"

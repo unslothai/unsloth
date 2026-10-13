@@ -196,7 +196,6 @@ def test_node_helper_wrapper_preserves_exit_status(
 def test_node_setup_routes_failure_and_preserves_progress(
     tmp_path, shell, exit_code, diagnostic, route
 ):
-    # Include the real status-handling branches, stopping before any filesystem mutation.
     probe = PROBE.replace(
         "'        if ($nodeExit -eq 3)'",
         "'        # Same condition as the guard above'",
