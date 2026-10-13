@@ -948,6 +948,56 @@ def _with_comfy_compat_rows(
     return existing + found
 
 
+def _row_answers_repo_id(m: LocalModelInfo) -> bool:
+    """Whether *m* can serve its repo id, so it may claim it against a parked copy.
+
+    A weightless skeleton (an aborted download left ``refs`` and an empty snapshot) or a
+    partial row scans as a cache entry but has nothing to load: letting it claim the repo
+    id would take the id away from the loadable parked copy instead (see
+    ``_merge_scan_folder_row``). Any other row -- a complete cache copy, a file row, a
+    manifest store -- answers as before.
+    """
+    if m.partial:
+        return False
+    try:
+        p = Path(m.path)
+        if p.is_file():
+            return True
+        if not p.is_dir():
+            return False
+
+        def _holds_weights(directory: Path) -> bool:
+            # Dotfiles alone (.gitattributes from an aborted download) are not weights.
+            return any(entry.name[:1] != "." for entry in directory.iterdir())
+
+        if p.name.startswith("models--"):
+            # An HF cache row carries the repo dir; only its snapshots hold weights. The row
+            # names the newest snapshot, but the loaders resolve the newest COMPLETE one, so
+            # an aborted re-download beside a complete revision still serves. A repo dir
+            # without any snapshot (bookkeeping only) serves nothing.
+            snapshot = _resolve_hf_cache_realpath(p)
+            if snapshot is None:
+                return False
+            named = Path(snapshot)
+            if named.resolve() == p.resolve():
+                return False
+        elif p.parent.name == "snapshots" and p.parent.parent.name.startswith("models--"):
+            # A scan-folder row names its snapshot dir directly: same newest-complete rule.
+            named = p
+        else:
+            return _holds_weights(p)
+        if _holds_weights(named):
+            return True
+        return any(
+            sibling.is_dir() and _holds_weights(sibling)
+            for sibling in named.parent.iterdir()
+            if sibling != named
+        )
+    except OSError:
+        # An unreadable row keeps today's claiming behavior rather than dropping ids.
+        return True
+
+
 def _merge_scan_folder_row(
     m: LocalModelInfo,
     configured_cache_roots: tuple[Path, ...],
@@ -963,7 +1013,8 @@ def _merge_scan_folder_row(
     same cached-plus-parked listing the Hub inventory side keeps (#12258).
 
     ``model_id`` is cleared with the relabel only when another row already answers to the repo
-    id (``claimed_repo_ids``, casefolded): the media index maps names to picks, and two rows of
+    id (``claimed_repo_ids``, casefolded -- a row answers when it holds weights, see
+    ``_row_answers_repo_id``): the media index maps names to picks, and two rows of
     one repo both answering to it would read as ambiguous and resolve for nobody. The cache row
     keeps the repo id then; a parked-only copy keeps it and claims it, so a media request by repo
     id still finds it.
@@ -978,8 +1029,11 @@ def _merge_scan_folder_row(
         ):
             repo_key = m.model_id.casefold() if m.model_id else None
             claimed = claimed_repo_ids if claimed_repo_ids is not None else set()
-            shadowed = repo_key is not None and repo_key in claimed
-            if repo_key is not None:
+            answers = _row_answers_repo_id(m)
+            # A parked copy that cannot serve gives the id up like a shadowed one: the id
+            # must stay with a loadable row, whichever scan folder it sits in.
+            shadowed = repo_key is not None and (repo_key in claimed or not answers)
+            if repo_key is not None and answers:
                 claimed.add(repo_key)
             return m.model_copy(
                 update = {
@@ -1114,8 +1168,14 @@ def collect_local_models(
 
     custom_identities: set[str] = set()
     # Repo ids the configured caches (and the other built-in sources) already answer to; a parked
-    # scan-folder copy of one of those gives its repo id up (see _merge_scan_folder_row).
-    claimed_repo_ids = {m.model_id.casefold() for m in local_models if m.model_id}
+    # scan-folder copy of one of those gives its repo id up (see _merge_scan_folder_row). A row
+    # answers only when it holds weights: a weightless skeleton or partial download must not
+    # claim the id away from the loadable parked copy.
+    claimed_repo_ids = {
+        m.model_id.casefold()
+        for m in local_models
+        if m.model_id and _row_answers_repo_id(m)
+    }
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:

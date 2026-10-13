@@ -36602,15 +36602,25 @@ async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
         visible = {id(info) for info in catalog}
         rows = [row for row in rows if id(row[0]) in visible]
     pins: dict[str, tuple[str, ...]] = {}
+    # Ids a row that owns its repo id (the one a bare id loads, the resolver's cache row)
+    # has listed from the catalog loop; a path-recovered parked row may not take such an
+    # id back, or the listing would advertise a quant the bare load does not serve.
+    catalog_owned: set[str] = set()
     for info, is_gguf, quants, loaded in rows:
         if account_access.resident_hidden("chat"):
             loaded = False
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid:
             continue
-        if is_gguf and len(quants) > 1:
-            pins.setdefault(cid, quants)
-        if cid in by_id:
+        if is_gguf:
+            # Merge every row's quants instead of first-wins: a parked copy beside the
+            # cache answers its own quants, and the pin rows list the repo's whole
+            # on-disk set.
+            pins[cid] = tuple(dict.fromkeys((*(pins.get(cid, ())), *quants)))
+        owns_id = bool(getattr(info, "model_id", None))
+        if cid in by_id and not (
+            owns_id and cid not in catalog_owned and not by_id[cid].get("loaded")
+        ):
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -36634,6 +36644,8 @@ async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+        if owns_id:
+            catalog_owned.add(cid)
 
     media = await asyncio.to_thread(
         lambda: (
@@ -36645,6 +36657,9 @@ async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
     for obj in media:
         by_id.setdefault(obj["id"], obj)
 
+    # Pin rows are for multi-quant repos; a repo with a single on-disk quant stays the
+    # bare id's own row.
+    pins = {cid: quants for cid, quants in pins.items() if len(quants) > 1}
     rows = list(by_id.values())
     if quant_pins and pins:
         # Off-loop: a loaded row on a cold index reads residency from every slot.
