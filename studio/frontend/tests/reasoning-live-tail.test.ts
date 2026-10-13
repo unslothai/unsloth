@@ -80,7 +80,7 @@ test("a bounded transcript corrects nothing through the thread and mounts the ta
   assert.match(transcript, /boundedRef\.current = bounded;/);
   assert.match(
     transcript,
-    /if \(!bounded \|\| covered\) return;[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?end: fragments\.length[\s\S]*?setIslands\(next\);/,
+    /if \(!bounded \|\| !streaming \|\| covered\) return;[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?end: fragments\.length[\s\S]*?setIslands\(next\);/,
     "the newest rows are not mounted while the prefix catches up",
   );
   assert.match(transcript, /recapture\.current\(true\);\s*\}, \[bounded\]\);/);
