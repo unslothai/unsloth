@@ -21,7 +21,7 @@ the VAE freed: the cache stores the posterior's affine parameters (mean/std fold
 family's latent normalisation), so every step still draws a fresh VAE sample --
 distribution-identical to encoding in the loop, without keeping the VAE resident or paying a
 per-step encode. The transformer trains as a QLoRA (nf4) adapter by default with gradient
-checkpointing and 8-bit AdamW, so only the (small) LoRA params + optimizer state and the frozen
+checkpointing and fused AdamW, so only the (small) LoRA params + optimizer state and the frozen
 4-bit base sit in VRAM during the loop.
 """
 
@@ -46,7 +46,11 @@ from core.training.diffusion_train_common import (
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    TrainingPeakMemory,
+    resume_steps_left,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
@@ -2089,6 +2093,7 @@ def _should_compile(
     base_is_bnb,
     device,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
@@ -2099,9 +2104,33 @@ def _should_compile(
         return False
     if mode == "on":
         return True
-    # Regional compile is the whole point of the dense modes (2.6x measured on Z-Image bf16) but is fragile over
-    # bitsandbytes 4-bit modules, so it stays off for QLoRA.
+    if base_precision == "nf4":
+        steps = cfg.train_steps if steps_left is None else steps_left
+        return steps >= NF4_COMPILE_MIN_STEPS and _nf4_compile_supported()
     return base_precision in ("bf16", "fp8", "mxfp8")
+
+
+# Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
+NF4_COMPILE_MIN_TORCH = "2.10"
+NF4_COMPILE_MIN_BNB = "0.46.1"
+# The nf4 compile only pays back after a few hundred steps, so a short run stays eager.
+NF4_COMPILE_MIN_STEPS = 200
+
+
+def _nf4_compile_supported() -> bool:
+    try:
+        import importlib.metadata
+
+        import torch
+        from packaging.version import Version
+
+        if torch_is_rocm():
+            return False
+        if Version(torch.__version__) < Version(NF4_COMPILE_MIN_TORCH):
+            return False
+        return Version(importlib.metadata.version("bitsandbytes")) >= Version(NF4_COMPILE_MIN_BNB)
+    except Exception:  # noqa: BLE001 -- unknown versions keep the historical eager path
+        return False
 
 
 def _maybe_compile_transformer(
@@ -2111,12 +2140,13 @@ def _maybe_compile_transformer(
     device,
     on_event,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
     dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
     instead of raising mid-run."""
-    if not _should_compile(cfg, base_is_bnb, device, base_precision):
+    if not _should_compile(cfg, base_is_bnb, device, base_precision, steps_left):
         if base_precision in ("fp8", "mxfp8"):
             _emit(
                 on_event,
@@ -2483,13 +2513,7 @@ def _train_dit(
         )
     )
     if cfg.gradient_checkpointing:
-        # Non-reentrant checkpointing: reentrant recompute of a bnb 4-bit LoRA linear can trip an illegal memory
-        # access on the larger FLUX transformer, and it is the recommended mode anyway.
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -2510,8 +2534,15 @@ def _train_dit(
     # conversions so they track the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
+    # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
     compiled = _maybe_compile_transformer(
-        transformer, cfg, base_is_bnb, device, on_event, base_precision
+        transformer,
+        cfg,
+        base_is_bnb,
+        device,
+        on_event,
+        base_precision,
+        resume_steps_left(cfg, identity),
     )
     # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to the dataset's longest
     # caption.
@@ -2519,7 +2550,9 @@ def _train_dit(
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
 
-    optimizer = _make_optimizer(lora_params, cfg.learning_rate)
+    optimizer = _make_optimizer(
+        lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+    )
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
@@ -2719,6 +2752,7 @@ def _train_dit(
     if sample_plan is not None and resumed < cfg.train_steps:
         _sample(resumed)
 
+    train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
         if stop_latched:
@@ -2813,8 +2847,7 @@ def _train_dit(
                 _emit(on_event, "warning", message = reason)
                 compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = train_peak.gb()
             per_step = batch_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
@@ -2834,7 +2867,9 @@ def _train_dit(
             )
         stop_now = _check_stop()
         if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+            train_peak.pause()
             _sample(done)
+            train_peak.resume()
             stop_now = stop_latched
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
         if (
@@ -2908,31 +2943,12 @@ def _train_dit(
     return str(out_dir)
 
 
-def _make_optimizer(params, lr):
-    """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy regression
-    for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this build/device lacks the
-    fused kernel). UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for
-    SDXL: the accuracy guard wants the reference optimizer, and a host where the override means
-    one thing for one trainer and nothing for the other cannot answer "can this checkpoint be
-    resumed here" before the run starts."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
-    # only dies at the first step(), which the except below would never see.
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_optimizer(
+    params,
+    lr,
+    resume_optimizer_class = None,
+):
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def _free_text_encoders(pipe) -> None:
