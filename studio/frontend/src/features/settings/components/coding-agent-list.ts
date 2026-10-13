@@ -15,6 +15,8 @@ export type AgentDetails = {
   darkIcon?: string;
   color?: string;
   mark?: string;
+  /** Draw the mark at 16px in the 20px slot, for marks that fill their whole box. */
+  compact?: boolean;
 };
 
 // names stay untranslated; `settings.agents.intro` includes them for search.
@@ -36,8 +38,9 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     name: "VS Code",
     docsUrl:
       "https://code.visualstudio.com/docs/copilot/customization/language-models",
-    // vscode.svg is the stable icon from code.visualstudio.com/brand, inset to sit with the other marks.
+    // vscode.svg is the stable icon from code.visualstudio.com/brand.
     icon: "vscode.svg",
+    compact: true,
   },
   {
     id: "dsh",
@@ -51,6 +54,7 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://unsloth.ai/docs/integrations/opencode",
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
+    compact: true,
   },
   {
     id: "hermes",
@@ -72,12 +76,14 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     // The monochrome mark from https://pi.dev/favicon.svg, in its light and dark fills.
     icon: "pi-light.svg",
     darkIcon: "pi-dark.svg",
+    compact: true,
   },
   {
     id: "vibe",
     name: "Mistral Vibe",
     docsUrl: "https://github.com/mistralai/mistral-vibe",
     logo: "mistral",
+    compact: true,
   },
 ];
 

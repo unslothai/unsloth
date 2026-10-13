@@ -1230,6 +1230,7 @@ export function AgentsTab() {
                         darkIcon={selectedAgentDetails.darkIcon}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
+                        compact={selectedAgentDetails.compact}
                       />
                       <span className="truncate">
                         {selectedAgentDetails.name}
@@ -1237,10 +1238,10 @@ export function AgentsTab() {
                     </span>
                   </SelectValue>
                 </SelectTrigger>
-                {/* Seven 36px rows, the 24px scroll button and the 4px surface padding: the rest scroll. */}
+                {/* Seven 36px rows and the 4px surface padding; the rest scroll, the scrollbar shows it. */}
                 <SelectContent
                   align="start"
-                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+2rem))]"
+                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
                 >
                   {agents.map((agentId) => {
                     const agent = detailsFor(agentId);
@@ -1253,6 +1254,7 @@ export function AgentsTab() {
                             darkIcon={agent.darkIcon}
                             color={agent.color}
                             mark={agent.mark}
+                            compact={agent.compact}
                           />
                           <span className="truncate">{agent.name}</span>
                           {localDetection &&
