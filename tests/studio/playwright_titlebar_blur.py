@@ -97,7 +97,8 @@ def run():
         blurred(True)
         media_facts = facts()
         if EXPECTED:
-            assert media_facts["blur"] == "blur(2px)", media_facts
+            # #13577: the titlebar backdrop dims like every popup backdrop, without a blur.
+            assert media_facts["blur"] == "none", media_facts
             assert media_facts["pointerEvents"] == "none", media_facts
             assert int(media_facts["controlsZ"]) > int(media_facts["backdropZ"]), media_facts
         else:
@@ -131,7 +132,7 @@ def run():
             elif kind == "tour":
                 tour_facts = facts()
                 if EXPECTED:
-                    assert tour_facts["blur"] == "blur(2px)", tour_facts
+                    assert tour_facts["blur"] == "none", tour_facts
                     assert tour_facts["opacity"] == "1", tour_facts
                 else:
                     assert tour_facts["content"] == "none", tour_facts

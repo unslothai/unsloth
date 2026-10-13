@@ -554,7 +554,6 @@ export const fr = {
     queueingHintShared: "La file d’attente est conservée.",
   },
   rewind: {
-    menuItem: "Revenir en arrière…",
     title: "Revenir en arrière",
     pickDescription: "Choisissez un message auquel revenir.",
     pickEmpty: "Il n'y a pas encore de message auquel revenir.",
@@ -2030,6 +2029,8 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
+        chartToggle: "Graphique",
+        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",

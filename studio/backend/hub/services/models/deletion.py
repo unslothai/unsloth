@@ -275,11 +275,37 @@ def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str],
     names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
     packages = package_variant_files(names)
     if not packages:
-        return frozenset(), frozenset()
+        return _umbrella_variant_scope(target_repo, variant)
     wanted = (variant or "").strip().lower()
     own = next((files for key, files in packages.items() if key.lower() == wanted), ())
     protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
     return frozenset(own), frozenset(protected)
+
+
+def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of one umbrella folder variant (``<Folder>/<file>`` key): its
+    voice embeddings and configs go with it, unless another cached variant of the folder lists them.
+    A sibling in the same directory still downloading is not listed yet, so its extras stay."""
+    from core.inference.audio_cpp_models import folder_row_for_download, resolve
+
+    repo_id = str(getattr(target_repo, "repo_id", ""))
+    row = folder_row_for_download(repo_id, variant)
+    model = resolve(row[0], network = False) if row else None
+    if model is None:
+        return frozenset(), frozenset()
+    # Every umbrella folder downloads on the same repo, so only a peer under this directory counts.
+    sibling_active = downloads.registry.has_active_peer_variant(
+        repo_id, variant, prefix = variant.rsplit("/", 1)[0] + "/"
+    )
+    own: set[str] = set()
+    protected: set[str] = set()
+    for candidate in model.variants:
+        files = {f.path for f in candidate.files}
+        if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
+            own |= files if not sibling_active else {candidate.primary}
+        else:
+            protected |= files
+    return frozenset(own - protected), frozenset(protected)
 
 
 def _delete_gguf_variant_from_repos(
@@ -917,6 +943,38 @@ async def delete_cached_model_response(
     become an installed checkpoint since the list the caller is acting on was built.
     """
     account_access.require_installation_owner()
+    from core.inference.audio_cpp_models import cached_folder_target, folder_row_for_download
+
+    # Delete an umbrella folder's own variant keys, never the repo, which holds every other folder.
+    folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
+    if folder is not None:
+        umbrella, keys = folder
+        if not keys:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+        # Reserve every key first, so a later key's download cannot start midway.
+        repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, umbrella, repo_type = "model")
+        reserved: list[str] = []
+        try:
+            for key in keys:
+                if not downloads.registry.begin_delete(repo_key, key):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Cancel the active downloads before deleting.",
+                    )
+                reserved.append(key)
+            result: dict = {}
+            for key in keys:
+                result = await delete_cached_model_response(
+                    umbrella,
+                    key,
+                    hf_token,
+                    cache_path,
+                    only_if_orphan = only_if_orphan,
+                )
+        finally:
+            for key in reserved:
+                downloads.registry.end_delete(repo_key, key)
+        return {**result, "repo_id": repo_id, "variant": variant}
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -925,16 +983,17 @@ async def delete_cached_model_response(
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant) or (
-            _inference_backend_blocks_delete(repo_id)
+        if _llama_cpp_blocks_delete(guard_id, variant) or (
+            _inference_backend_blocks_delete(guard_id)
         ):
             return "Unload the model before deleting"
-        if _audio_cpp_blocks_delete(repo_id):
+        if _audio_cpp_blocks_delete(guard_id):
             return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -1005,20 +1064,38 @@ async def delete_cached_model_response(
 def _audio_cpp_blocks_delete(repo_id: str) -> bool:
     """Whether an audio.cpp model from this repo is resident or loading. An umbrella id names a
     subfolder of the repo, so the id comparisons of the other guards never match it."""
-    from core.inference.audio_cpp_models import repo_of
+    from core.inference.audio_cpp_models import (
+        is_umbrella_id,
+        parse_identifier,
+        resolve,
+        split_variant_ref,
+    )
     from core.inference.orchestrator import peek_inference_backend
-    from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+    from core.inference.stt_audiocpp_sidecar import QWEN3_ALIGNER, get_audio_cpp_stt_sidecar
 
     wanted = (repo_id or "").strip().lower()
 
     def holds(name) -> bool:
-        repo = repo_of(name) if isinstance(name, str) else None
-        return bool(repo and repo.lower() == wanted)
+        if not isinstance(name, str):
+            return False
+        base = split_variant_ref(name)[0]
+        ref = parse_identifier(base) if not base.lower().endswith(".gguf") else None
+        if ref is None or not ref.repo_id:
+            return False
+        # A folder is also held by a model loading it as a companion (MioTTS opens MioCodec).
+        if wanted in (ref.repo_id.lower(), ref.id.lower()):
+            return True
+        if not is_umbrella_id(wanted):
+            return False
+        model = resolve(base, network = False)
+        return bool(model and any(c.id.lower() == wanted for c in model.companions))
 
     backend = peek_inference_backend()
     active = getattr(backend, "active_model_name", None) if backend is not None else None
     loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
     sidecar = get_audio_cpp_stt_sidecar()
+    if wanted == QWEN3_ALIGNER.id.lower() and sidecar.holds_timestamp_aligner:
+        return True
     return (
         holds(active)
         or any(holds(name) for name in loading)

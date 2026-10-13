@@ -1,7 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every control the thread browser harnesses ask for must still render in the assistant action bar."""
+"""Every action-bar control the thread browser harnesses ask for is still rendered there.
+
+#12735 took Delete off the assistant action bar and made it the last item of the More menu;
+playwright_heavy_thread.py kept asking for a "Delete message" button, so its delete action could
+not run, and probe_dismiss_guard.py kept attacking that button, so every one of its cases would
+have errored. #13615 then put Delete back on the bar as an inline button while the harnesses
+still opened the More menu for it. Both sit behind earlier steps of the same CI job, which hid the breakage until those
+steps went green. This reads the labels the harnesses ask for and requires each to be rendered by
+the assistant action bar in thread.tsx, so the next move of a control fails here, with its name.
+"""
 
 from __future__ import annotations
 
@@ -73,10 +82,11 @@ def test_the_scan_reads_the_controls_the_harnesses_use():
     buttons, items = _asked_for()
     assert {"More"} <= buttons["tests/studio/playwright_heavy_thread.py"]
     assert {"More", "Copy"} <= buttons["tests/studio/probe_dismiss_guard.py"]
-    assert "Delete" in items["tests/studio/playwright_heavy_thread.py"]
-    assert "Delete" in items["tests/studio/playwright_thread_weight.py"]
+    # Delete is an inline bar button since #13615, so both harnesses ask for it as one.
+    assert "Delete" in buttons["tests/studio/playwright_heavy_thread.py"]
+    assert "Delete" in buttons["tests/studio/playwright_thread_weight.py"]
     tooltips, menu_items = _rendered(THREAD_TSX.read_text(encoding = "utf-8"))
-    assert {"Copy", "More"} <= tooltips and "Delete" in menu_items, (
+    assert {"Copy", "More", "Delete"} <= tooltips and menu_items, (
         "parsed fewer controls out of thread.tsx than the assistant bar renders; "
         "the check below would pass on nothing"
     )
