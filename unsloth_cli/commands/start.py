@@ -2160,24 +2160,6 @@ def _resolve_model(
         None,
     )
     match = None if requested and load_has_overrides else loaded_match
-    # A quant the model is already served at needs no load, which would restart a kept model's server.
-    if (
-        match is None
-        and loaded_match is not None
-        and attach_public_id is None
-        and overrides == {"gguf_variant"}
-    ):
-        try:
-            status = _model_status(base, key, loaded_match["id"])
-        except Exception:
-            status = {}
-        # The load route is the only retry of a pending audio probe or a missing drafter, so those must not skip it.
-        retry = status.get("audio_probe_pending") or (
-            status.get("spec_fallback_reason") == "drafter_not_found"
-            and not status.get("spec_dspark_sidecar_absent")
-        )
-        if not retry and not _load_settings_differ(status, load, overrides):
-            match = loaded_match
     if requested and match is None:
         load_requested = True
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).

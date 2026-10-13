@@ -1817,7 +1817,11 @@ def test_connect_claude_as_subagent_attaches_to_a_kept_model(
 
     assert result.exit_code == 0, result.output
     assert "Switching" not in result.output
-    assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
+    assert "unloads" not in result.output
+    loads = [payload for _, url, payload in fake_studio if url.endswith("/api/inference/load")]
+    assert loads == (
+        [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}] if suffix else []
+    )
     assert "model unsloth/Qwen3-1.7B-GGUF:Q8_0" in result.output
     plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
@@ -4908,24 +4912,27 @@ def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
     assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
 
 
-def test_resolve_model_reuses_a_kept_model_at_its_quant(monkeypatch, capsys):
+def test_resolve_model_kept_model_at_its_quant_lets_the_server_dedupe(monkeypatch, capsys):
     models = [
         {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
         {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
     ]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "already_loaded", "model": model}
+
     monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
     monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: _kept_model_status(url))
-    monkeypatch.setattr(
-        start,
-        "_load_model_with_progress",
-        lambda *a, **k: pytest.fail("a kept model at the requested quant must not be reloaded"),
-    )
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
 
-    entry = start._resolve_model(
+    start._resolve_model(
         BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
     )
 
-    assert entry is models[1]
+    # The server alone knows whether a retry or a changed server setting needs a relaunch.
+    assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}]
     out = capsys.readouterr().out
     assert "Switching" not in out
     assert "unloads" not in out
@@ -5054,31 +5061,6 @@ def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch, 
     )
 
     assert payloads == [{"model_path": "unsloth/Qwen3-1.7B-GGUF", "gguf_variant": "Q8_0"}]
-
-
-def test_resolve_model_kept_model_without_a_dspark_sidecar_reuses_it(monkeypatch):
-    models = [
-        {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
-        {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
-    ]
-
-    def status(url):
-        return {
-            **_kept_model_status(url),
-            "spec_fallback_reason": "drafter_not_found",
-            "spec_dspark_sidecar_absent": True,
-        }
-
-    def load(*args, **kwargs):
-        raise AssertionError("an absent DSpark sidecar is permanent, so nothing to retry")
-
-    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
-    monkeypatch.setattr(start, "_http_json", lambda method, url, key, **_: status(url))
-    monkeypatch.setattr(start, "_load_model_with_progress", load)
-
-    start._resolve_model(
-        BASE, "key", "unsloth/Qwen3-1.7B-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
-    )
 
 
 def test_resolve_model_kept_model_at_the_same_settings_does_not_warn(monkeypatch, capsys):
