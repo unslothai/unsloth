@@ -644,6 +644,7 @@ class _MarkdownRenderer(HTMLParser):
         self._site_links = site_links
         self._out: list[str] = []
         self._skip_tags: list[str] = []
+        self._skip_counts: dict[str, int] = {}
 
         # Main-content scoping: emit only while inside a scope tag.
         self._scope_tags = scope_tags
@@ -1298,6 +1299,7 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_tags:
             if tag not in _VOID_TAGS:
                 self._skip_tags.append(tag)
+                self._skip_counts[tag] = self._skip_counts.get(tag, 0) + 1
             return
 
         # Recover optional end tags before the skip decision: a skipped <nav>/<footer> still implicitly closes an open
@@ -1306,6 +1308,7 @@ class _MarkdownRenderer(HTMLParser):
 
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
+            self._skip_counts = {tag: 1}
             return
 
         attr_dict = dict(attrs)
@@ -1439,14 +1442,20 @@ class _MarkdownRenderer(HTMLParser):
             self._title_scan.endtag(tag)
 
         if self._skip_tags:
-            for i in range(len(self._skip_tags) - 1, -1, -1):
-                if self._skip_tags[i] == tag:
-                    del self._skip_tags[i:]
-                    return
-            # an ancestor's end tag also closes the skipped element, as browsers do
-            if tag not in self._open_tags:
+            # counted, so a stray end tag never rescans a long run of unclosed <li>/<p>
+            if self._skip_counts.get(tag):
+                i = len(self._skip_tags) - 1
+                while self._skip_tags[i] != tag:
+                    i -= 1
+                for name in self._skip_tags[i:]:
+                    self._skip_counts[name] -= 1
+                del self._skip_tags[i:]
+                return
+            # an ancestor's end tag also closes the skipped element, as browsers do; a <template> is a scope boundary
+            if self._skip_counts.get("template") or tag not in self._open_tags:
                 return
             self._skip_tags.clear()
+            self._skip_counts.clear()
         # a kept title button closes through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
