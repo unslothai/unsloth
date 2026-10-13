@@ -395,6 +395,27 @@ def test_a_post_redirected_as_a_get_may_go_to_another_site(monkeypatch):
     assert sent[1]["method"] == "GET" and sent[1]["data"] is None
 
 
+def test_a_write_redirected_as_a_get_drops_its_body_headers(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/form": (303, b"", {"Location": "/done"}),
+            "site.test/done": (200, b"ok", {}),
+        },
+    )
+    _request(
+        url = "https://site.test/form",
+        method = "POST",
+        headers = [["Content-Type", "application/json"], ["X-Csrf", "t"]],
+        body = base64.b64encode(b"{}").decode(),
+    )
+    first, second = (hop["headers"] for hop in sent)
+    assert first["content-type"] == "application/json" and first["origin"] == "https://site.test"
+    assert sent[1]["method"] == "GET"
+    assert "content-type" not in second and "origin" not in second
+    assert second["x-csrf"] == "t"
+
+
 @pytest.mark.parametrize(
     "status, method, kept",
     [

@@ -75,6 +75,10 @@ _FORBIDDEN_REQUEST_HEADERS = frozenset(
     "connection content-length cookie cookie2 date dnt expect host keep-alive origin referer "
     "set-cookie te trailer transfer-encoding upgrade user-agent via".split()
 )
+# Fetch drops these, and the request's Origin, when a redirect turns a write into a bodiless GET.
+_REQUEST_BODY_HEADERS = frozenset(
+    "content-encoding content-language content-location content-type".split()
+)
 # What a page reads of a CORS response besides the headers it names in Access-Control-Expose-Headers.
 _CORS_SAFELISTED_RESPONSE_HEADERS = frozenset(
     "cache-control content-language content-length content-type expires last-modified pragma".split()
@@ -1681,12 +1685,19 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
     # (Authorization among them) are not sent again, as Fetch strips them on an origin change, and the
     # request is a CORS one carrying Origin: the page's, or "null" once a hop went from one other
     # origin to another (Fetch's redirect-taint).
-    hops = {"same_origin": True, "stopped": False, "last": origin, "origin": serialized_origin}
+    hops = {
+        "same_origin": True,
+        "stopped": False,
+        "last": origin,
+        "origin": serialized_origin,
+        "rewritten": False,
+    }
 
     def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
+        hops["rewritten"] = hops["rewritten"] or hop_method != method
         last, hops["last"] = hops["last"], _origin(url)
         if hops["last"] != last and last != origin:
             hops["origin"] = "null"
@@ -1700,7 +1711,16 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         return None
 
     def host_headers(current_host: str) -> dict:
-        own_headers = page_headers if hops["same_origin"] else {"Origin": hops["origin"]}
+        if not hops["same_origin"]:
+            own_headers = {"Origin": hops["origin"]}
+        elif hops["rewritten"]:
+            own_headers = {
+                name: value
+                for name, value in page_headers.items()
+                if name.lower() not in _REQUEST_BODY_HEADERS and name != "Origin"
+            }
+        else:
+            own_headers = page_headers
         return {**_studio_headers(current_host), **own_headers}
 
     meta: dict = {}
