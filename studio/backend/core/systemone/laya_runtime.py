@@ -1341,6 +1341,11 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
     started = time.monotonic()
     if unloads is None:
         unloads = _unloads
+    if _unloads != unloads:
+        with _state_lock:
+            _loading = None
+        logger.info("System One dropped %s: it was unloaded before it loaded", checkpoint.name)
+        return
     try:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
