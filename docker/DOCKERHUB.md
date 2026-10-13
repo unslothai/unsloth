@@ -74,6 +74,7 @@ The `core` image has no service manager. Start JupyterLab on the command line:
 ```bash
 docker run -d --gpus all --ipc=host -p 8888:8888 \
   -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
   unsloth/unsloth:core \
   jupyter lab --ip 0.0.0.0 --port 8888 --allow-root
 ```

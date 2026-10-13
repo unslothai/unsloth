@@ -98,7 +98,8 @@ def test_the_quick_starts_keep_the_workspace():
     running = [
         s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
     ]
-    for quick_start in (hub_quick_start, *running):
+    core = hub[hub.index("### Notebooks only") : hub.index("### Scripts")]
+    for quick_start in (hub_quick_start, core, *running):
         assert "-v unsloth-workspace:/workspace " in quick_start, quick_start
 
 
