@@ -299,6 +299,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         '{"Authorization":["Basic qrstuvwxyzabcdef==","Basic abcdefghijklmnop=="]} why',
         "Authorization:\u00a0Basic\u2009abcdefghijklmnop why",
         "Authorization: Digest response\u00a0=\u00a0abcdefghijklmnop why",
+        'Authorization: ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
+        "Authorization: Digest response=abcdefghijklmnop; server echoed abcdefghijklmnop",
         'headers["Authorization"] = ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
         '{"Authorization": [\n    "Basic abcdefghijklmnop=="\n  ]} why',
         "Authorization: SharedKeyLite myaccount:abcdefghijklmnop== why",
@@ -308,6 +310,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     ):
         cleaned = _sanitize_public_query(text)
         assert "abcdefghijklmnop" not in cleaned and "YTpi" not in cleaned, text
+    spaced = "Authorization: Digest response=abcdefghijklmnop\u202fwhy"
+    assert _sanitize_public_query(spaced) == "why"
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(

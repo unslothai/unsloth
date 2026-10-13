@@ -31,7 +31,7 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 # Rich-text pastes carry no-break and thin spaces where a header has plain ones.
 _HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)""".replace(
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
@@ -42,11 +42,11 @@ _QUERY_AUTHORIZATION = re.compile(
 )
 # Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
 _QUERY_AUTHORIZATION_ARRAY = re.compile(
-    r"""(?i)(?<![A-Za-z0-9])authorization\\?["'”’]\]?\s*[:=]\s*\[(?P<members>[^\[\]]*)\]"""
+    r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’])?\]?\s*[:=]\s*\[(?P<members>[^\[\]]*)\]"""
 )
 _ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”""")
 _AUTH_PARAM_PAIR = re.compile(
-    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)""".replace(
+    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,]+)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -248,7 +248,7 @@ def _sanitize_public_query(query: str) -> str:
         for value in _array_values(match)
     ]
     for value in found:
-        for variant in {value, value.rstrip(".!?")}:
+        for variant in {value, value.rstrip(_TOKEN_PUNCTUATION + ".!?")}:
             exact.add(variant)
             credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
     exact.discard("")
