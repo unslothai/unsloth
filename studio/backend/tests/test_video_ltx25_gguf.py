@@ -61,7 +61,11 @@ def test_every_planned_file_routes_to_ltx25_with_its_variant_defaults(filename):
     expected = (30, 3.0) if dev else (8, 1.0)
     assert (
         default_video_generation_params(
-            None, filename, REPO, fallback = (fam.default_steps, fam.default_guidance), family = fam.name
+            None,
+            filename,
+            REPO,
+            fallback = (fam.default_steps, fam.default_guidance),
+            family = fam.name,
         )
         == expected
     )
@@ -84,8 +88,9 @@ def test_a_hub_pick_validates_on_the_pack_base_without_touching_the_hub(filename
 
 def test_a_25_file_in_the_23_repo_and_the_reverse_follow_the_file():
     from core.inference.video import _detect_load_family
-
-    assert _detect_load_family("unsloth/LTX-2.3-GGUF", DISTILLED_FILES[2], None).name == LTX25_FAMILY
+    assert (
+        _detect_load_family("unsloth/LTX-2.3-GGUF", DISTILLED_FILES[2], None).name == LTX25_FAMILY
+    )
     assert (
         _detect_load_family(REPO, "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf", None).name
         == LTX2_FAMILY
@@ -158,14 +163,11 @@ def test_picker_rows_keep_dev_and_distilled_apart_and_rank_ud_first():
     # The automatic default reads root rows only (gguf_variants._default_variant_candidates), as for LTX-2.3:
     # the dev UD-Q4_K_XL, then Q4_K_M.
     assert pick_best_gguf(DEV_FILES) == "ltx-2.5-22b-dev-UD-Q4_K_XL.gguf"
-    assert (
-        pick_best_gguf([f for f in DEV_FILES if "UD-" not in f]) == "ltx-2.5-22b-dev-Q4_K_M.gguf"
-    )
+    assert pick_best_gguf([f for f in DEV_FILES if "UD-" not in f]) == "ltx-2.5-22b-dev-Q4_K_M.gguf"
     assert pick_best_gguf(DISTILLED_FILES) == "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf"
 
 
 def test_unsupported_message_names_both_25_artifacts():
     from core.inference.video_families import unsupported_ltx_message
-
     text = unsupported_ltx_message("2.6", "x")
     assert PACK in text and REPO in text and "unsloth/LTX-2.3-GGUF" in text
