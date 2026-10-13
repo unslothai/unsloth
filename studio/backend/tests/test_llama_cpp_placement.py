@@ -1355,6 +1355,19 @@ def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
     assert backend.effective_parallel_slots == 4
 
 
+def test_a_placement_abandoned_after_the_cut_gives_the_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("placement bug")
+
+    backend._fit_derived_load_mode = boom
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--fit") == "on"
+    assert _launched(result, "--parallel") == "4"
+
+
 def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_path):
     backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
     result = _launch_default_slots(backend, gguf)

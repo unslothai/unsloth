@@ -28758,6 +28758,16 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+                    # Nor are the slots Auto cut for a drafter this plan no longer proves.
+                    if _mtp_slots_asked is not None:
+                        n_parallel = _mtp_slots_asked
+                        _mtp_slots_asked = None
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                        if mtp_overhead_fn is not None:
+                            mtp_overhead_fn = functools.partial(
+                                mtp_overhead_fn, _np = n_parallel, _n_ubatch = _effective_ubatch
+                            )
 
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
