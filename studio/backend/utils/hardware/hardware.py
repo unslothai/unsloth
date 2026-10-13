@@ -2658,6 +2658,9 @@ _INTEL_MULTI_TILE_PCI_IDS = frozenset((
 ))  # fmt: skip
 
 
+_SYCL_DEVICE_FILTER_VARS = ("ONEAPI_DEVICE_SELECTOR", "SYCL_DEVICE_FILTER", "SYCL_DEVICE_ALLOWLIST")
+
+
 def _intel_xpu_single_tile_host(root: str = "/sys/class/drm") -> bool:
     """Whether every Intel GPU this Linux host has is known to be single-tile: an allowlisted Arc / Flex part that is not a Data Center GPU Max, or the integrated GPU at PCI 00:02.0. False with no Intel card, an unknown discrete part, or no sysfs (non-Linux)."""
     if not sys.platform.startswith("linux"):
@@ -2695,6 +2698,9 @@ def _xpu_hierarchy_is_composite() -> bool:
     hierarchy = (os.environ.get("ZE_FLAT_DEVICE_HIERARCHY") or "").strip().upper()
     if hierarchy == "COMPOSITE":
         return True
+    # A SYCL device filter re-indexes torch's devices, so ordinals stop naming roots.
+    if any(os.environ.get(var) for var in _SYCL_DEVICE_FILTER_VARS):
+        return False
     return hierarchy == "" and _intel_xpu_single_tile_host()
 
 

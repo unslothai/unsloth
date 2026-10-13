@@ -7,6 +7,7 @@ tile per root, so FLAT and COMPOSITE enumerate the same devices. Fake sysfs tree
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -61,6 +62,7 @@ def sysfs(tmp_path, monkeypatch):
         ([], False),
     ],
 )
+@pytest.mark.skipif(sys.platform == "win32", reason = "fake sysfs needs ':' in paths and symlinks")
 def test_single_tile_host(sysfs, cards, single_tile):
     add, drm = sysfs
     for pci, vendor, device in cards:
@@ -84,6 +86,8 @@ def test_non_linux_hosts_keep_the_flat_assumption(monkeypatch):
     ],
 )
 def test_hierarchy(monkeypatch, hierarchy, single_tile, composite):
+    for var in hw._SYCL_DEVICE_FILTER_VARS:
+        monkeypatch.delenv(var, raising = False)
     if hierarchy is None:
         monkeypatch.delenv("ZE_FLAT_DEVICE_HIERARCHY", raising = False)
     else:
@@ -94,3 +98,16 @@ def test_hierarchy(monkeypatch, hierarchy, single_tile, composite):
 
 def test_multi_tile_ids_are_allowlisted_pvc():
     assert hw._INTEL_MULTI_TILE_PCI_IDS <= hw._INTEL_XPU_PCI_IDS
+
+
+@pytest.mark.parametrize(
+    "var", ["ONEAPI_DEVICE_SELECTOR", "SYCL_DEVICE_FILTER", "SYCL_DEVICE_ALLOWLIST"]
+)
+def test_a_sycl_device_filter_keeps_ordinals_relative(monkeypatch, var):
+    """The filter re-indexes torch's devices, so ordinal 0 need not be root 0."""
+    monkeypatch.delenv("ZE_FLAT_DEVICE_HIERARCHY", raising = False)
+    monkeypatch.setattr(hw, "_intel_xpu_single_tile_host", lambda: True)
+    monkeypatch.setenv(var, "level_zero:1")
+    assert hw._xpu_hierarchy_is_composite() is False
+    monkeypatch.setenv("ZE_FLAT_DEVICE_HIERARCHY", "COMPOSITE")
+    assert hw._xpu_hierarchy_is_composite() is True
