@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from .diffusion_infer import (
     BlockHead,
     DiffusionGenerationCancelled,
+    host_synced_moe,
     inference_compile,
     make_progress,
     resolve_compile,
@@ -188,7 +189,7 @@ def _llada_sample(
     head = BlockHead(
         base,
         cuda_graphs = compile_mode in ("reduce-overhead", "cudagraphs"),
-        graphs = compile_mode == "graphs",
+        graphs = compile_mode == "graphs" and not host_synced_moe(base),
     )
     # Each block starts fully masked, so the reference's per-row schedule is the same host-side list for every row.
     base_count, extra = divmod(block_length, steps_per_block)
@@ -441,8 +442,18 @@ def _dream_sample(
     progress = unused.get("progress")
     prompt_length = input_ids.shape[1]
     fast_ran = False
+    # diffusion_generate reads eps and top_k from the model's generation_config: the fast path must too.
+    config = getattr(base, "generation_config", None)
+    eps = getattr(config, "eps", None) or 1e-3
     if dream_fast_supported(
-        input_ids, attention_mask, mask_id, temperature, top_p, None, alg, alg_temp
+        input_ids,
+        attention_mask,
+        mask_id,
+        temperature,
+        top_p,
+        getattr(config, "top_k", None),
+        alg,
+        alg_temp,
     ):
         out = dream_fast_sample(
             base,
@@ -451,6 +462,7 @@ def _dream_sample(
             steps = steps,
             mask_id = mask_id,
             alg = alg,
+            eps = eps,
             on_frame = on_frame,
             check_stop = check_stop,
             progress = progress,

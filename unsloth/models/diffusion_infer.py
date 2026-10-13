@@ -5,6 +5,7 @@
 active-block-only output head, and regional compile of the backbone for inference."""
 
 import contextlib
+import os
 import time
 
 import torch
@@ -91,9 +92,12 @@ class Progress:
             return
         # A one-row id snapshot: pinned host buffer + event, so the GPU never waits for the host.
         buffer = torch.empty(row.shape, dtype = row.dtype, pin_memory = True)
-        buffer.copy_(row, non_blocking = True)
-        event = torch.cuda.Event()
-        event.record()
+        with torch.cuda.device(
+            row.device
+        ):  # the event must follow the copy on the canvas's own GPU
+            buffer.copy_(row, non_blocking = True)
+            event = torch.cuda.Event()
+            event.record()
         self._pending = (meta, buffer, event)
         if force:
             self._flush(wait = True)
@@ -113,6 +117,37 @@ def make_progress(
     budget = 0,
 ):
     return Progress(on_frame, stop_callback, interval, mask_id, budget)
+
+
+_SIDE_STREAMS = {}
+
+
+def side_stream(device):
+    """One warm-up / capture side stream per device for the whole process: cuBLAS keeps a workspace per stream,
+    so a fresh stream per capture grows memory call after call."""
+    device = torch.device(device)
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    stream = _SIDE_STREAMS.get(index)
+    if stream is None:
+        stream = _SIDE_STREAMS[index] = torch.cuda.Stream(index)
+    return stream
+
+
+def graphs_disabled():
+    return os.environ.get("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "1") == "0"
+
+
+def host_synced_moe(base):
+    """True when an MoE block would run an expert loop that copies counts to the host (not the grouped
+    dispatch): that forward cannot be captured, and a failed capture is not free (on some torch versions it
+    leaves the CUDA RNG unusable), so graphs are not attempted."""
+    for module in base.modules():
+        experts = getattr(module, "experts", None)
+        if isinstance(experts, torch.nn.ModuleList) and len(experts):
+            stacked = module.__dict__.get("_unsloth_grouped_experts")
+            if not isinstance(stacked, tuple):
+                return True
+    return False
 
 
 class GraphedForward:
@@ -137,20 +172,22 @@ class GraphedForward:
         self.failed = None if owner is None else owner.__dict__.get("_unsloth_graph_capture_failed")
 
     def _capture(self, x):
-        static_x = x.clone()
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(
-                2
-            ):  # warm-up outside capture: lazy buffers, cuBLAS handles, autotuned kernels
-                self.function(static_x)
-        torch.cuda.current_stream().wait_stream(stream)
-        if self.pool is None:
-            self.pool = torch.cuda.graph_pool_handle()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool = self.pool):
-            static_out = self.function(static_x)
+        # The model's GPU, not whichever device is current: capture and warm-up streams live on one device.
+        with torch.cuda.device(x.device):
+            static_x = x.clone()
+            stream = side_stream(x.device)
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(
+                    2
+                ):  # warm-up outside capture: lazy buffers, cuBLAS handles, autotuned kernels
+                    self.function(static_x)
+            torch.cuda.current_stream().wait_stream(stream)
+            if self.pool is None:
+                self.pool = torch.cuda.graph_pool_handle()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, pool = self.pool, stream = stream):
+                static_out = self.function(static_x)
         return graph, static_x, static_out
 
     def __call__(self, x):
@@ -178,7 +215,8 @@ class GraphedForward:
         self.graphs[key] = entry  # most recently used last
         graph, static_x, static_out = entry
         static_x.copy_(x)
-        graph.replay()
+        with torch.cuda.device(x.device):
+            graph.replay()
         return static_out
 
 
@@ -228,7 +266,7 @@ def resolve_compile(compile, device):
     if compile is None or compile is False or device.type != "cuda":
         return None
     if compile is True or compile == "auto":
-        return "graphs"
+        return None if graphs_disabled() else "graphs"
     return str(compile)
 
 

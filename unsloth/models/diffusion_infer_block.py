@@ -18,11 +18,18 @@ block's first step, so the forward count matches the recompute sampler. Token se
 host syncs once per step (has the block finished early) and once per block (EOS)."""
 
 import math
-import os
+import threading
 import time
 
 import torch
 import torch.nn.functional as F
+
+from .diffusion_infer import (
+    DiffusionGenerationCancelled,
+    graphs_disabled,
+    host_synced_moe,
+    side_stream,
+)
 
 __all__ = ["cached_block_sample"]
 
@@ -56,6 +63,10 @@ class _Frames:
         self.progress = progress
         self.last = 0.0
 
+    def check(self):
+        if self.check_stop is not None:
+            self.check_stop()
+
     def step(
         self,
         x,
@@ -70,7 +81,8 @@ class _Frames:
         if self.check_stop is not None:
             self.check_stop()
         if self.progress is not None:
-            self.progress.frame(block, step, total, x[:, prompt_length:end], force = force)
+            # The whole generated region (later blocks still masks), as generate_text's frame contract says.
+            self.progress.frame(block, step, total, x[:, prompt_length:], force = force)
             return
         if self.on_frame is None:
             return
@@ -200,31 +212,45 @@ class _Llada2Graph:
                 )[0]
             return base.lm_head(inner.norm(hidden)).float()
 
-        stream = torch.cuda.Stream(device)
-        stream.wait_stream(torch.cuda.current_stream(device))
-        with torch.cuda.stream(stream):
-            for _ in range(2):
-                forward()
-        torch.cuda.current_stream(device).wait_stream(stream)
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
-            self.logits = forward()
+        self.device = device
+        # One generate at a time per graph: its inputs, cache and logits are shared buffers.
+        self.lock = threading.Lock()
+        with torch.cuda.device(device):
+            stream = side_stream(device)
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(2):
+                    forward()
+            torch.cuda.current_stream().wait_stream(stream)
+            self.graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.graph, stream = stream):
+                self.logits = forward()
 
     def __call__(self, ids, start):
         self.ids.copy_(ids)
         torch.add(self.offsets, start, out = self.rows)
-        self.graph.replay()
+        with torch.cuda.device(self.device):
+            self.graph.replay()
         return self.logits
 
 
 def _llada2_graph(base, batch, block_length, total_length, dtype, device):
     """A cached graph for this shape, or None when graphs are off, unavailable, or the model carries adapters
     (capture would freeze their enabled / disabled state)."""
-    if (
-        os.environ.get("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "1") == "0"
-        or device.type != "cuda"
-        or any(hasattr(module, "lora_A") for module in base.modules())
-    ):
+    if any(hasattr(module, "lora_A") for module in base.modules()):
+        # Adapters were added (typically for training): free any graph captured before, with its pool and cache.
+        base.__dict__.pop("_unsloth_llada2_graphs", None)
+        return None
+    if graphs_disabled() or device.type != "cuda":
+        return None
+    # Decide the grouped MoE dispatch now (it is otherwise decided on the first forward): an expert loop that
+    # copies counts to the host cannot be captured, so it is not attempted.
+    from .remote_moe_shims import _grouped_experts
+
+    for module in base.modules():
+        if getattr(type(module).__dict__.get("moe_infer"), "_unsloth_grouped_moe_infer", False):
+            _grouped_experts(module)
+    if host_synced_moe(base):
         return None
     # Power-of-two capacity (at least 1024) keeps the number of captured graphs small.
     capacity = max(1024, 1 << (total_length - 1).bit_length())
@@ -241,6 +267,10 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
             return None
         try:
             graph = _Llada2Graph(base, batch, block_length, capacity, dtype, device)
+        except DiffusionGenerationCancelled:
+            raise  # a stop during warm-up / capture, not a capture failure
+        except torch.cuda.OutOfMemoryError:
+            return None  # transient: eager for this call, capture again next time
         except Exception as error:
             graphs["failed"] = True
             print(
@@ -369,23 +399,26 @@ def cached_block_sample(
     frames = _Frames(on_frame, check_stop, progress = progress)
     eos = torch.tensor(eos_ids, device = device) if eos_ids else None
 
-    if graph is not None:
-        return _graph_block_sample(
-            graph,
-            x,
-            prompt_length = prompt_length,
-            num_blocks = num_blocks,
-            block_length = block_length,
-            steps = steps,
-            counts = counts,
-            temperature = temperature,
-            top_k = top_k,
-            top_p = top_p,
-            mask_id = mask_id,
-            eos = eos,
-            confidence_threshold = confidence_threshold,
-            frames = frames,
-        )
+    if graph is not None and graph.lock.acquire(blocking = False):
+        try:
+            return _graph_block_sample(
+                graph,
+                x,
+                prompt_length = prompt_length,
+                num_blocks = num_blocks,
+                block_length = block_length,
+                steps = steps,
+                counts = counts,
+                temperature = temperature,
+                top_k = top_k,
+                top_p = top_p,
+                mask_id = mask_id,
+                eos = eos,
+                confidence_threshold = confidence_threshold,
+                frames = frames,
+            )
+        finally:
+            graph.lock.release()
     cache = _PrefixCache() if family == "llada2" else DynamicCache()
 
     def commit_then_step(commit_start, start, end):
@@ -452,6 +485,7 @@ def _graph_block_sample(
     forward of its final tokens (same graph); prompt blocks are committed the same way."""
     first = prompt_length // block_length
     for block in range(first):
+        frames.check()  # replay runs no forward hooks, so the stop check is explicit
         graph(x[:, block * block_length : (block + 1) * block_length], block * block_length)
     for block in range(first, num_blocks):
         start, end = block * block_length, (block + 1) * block_length

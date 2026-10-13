@@ -337,3 +337,25 @@ def test_nemotron_without_on_frame_adds_no_hook():
         progress = make_progress(None, None, 0.0, 99, 4),
     )
     assert set(seen) == {1}
+
+
+def test_graphs_env_opt_out_also_covers_auto(monkeypatch):
+    from unsloth.models.diffusion_infer import resolve_compile
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "0")
+    assert resolve_compile("auto", torch.device("cuda")) is None
+    assert resolve_compile(True, torch.device("cuda")) is None
+    assert resolve_compile("reduce-overhead", torch.device("cuda")) == "reduce-overhead"
+
+
+def test_host_synced_moe_only_for_unstacked_expert_lists():
+    from unsloth.models.diffusion_infer import host_synced_moe
+
+    dense = torch.nn.Sequential(torch.nn.Linear(2, 2))
+    assert not host_synced_moe(dense)
+    moe = torch.nn.Module()
+    moe.experts = torch.nn.ModuleList([torch.nn.Linear(2, 2)])
+    model = torch.nn.Sequential(moe)
+    assert host_synced_moe(model)
+    moe.__dict__["_unsloth_grouped_experts"] = (torch.zeros(1),)
+    assert not host_synced_moe(model)
