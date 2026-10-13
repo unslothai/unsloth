@@ -87,8 +87,7 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
   },
 ];
 
-// VS Code is detected by its `code` launcher, which most developers have. It only adds a model to
-// Copilot Chat, so it is offered but never picked over a terminal agent on its own.
+// Most developers have `code` on PATH, and VS Code is not a terminal agent: offered, never auto-picked.
 export const NOT_AUTO_PICKED_AGENTS: ReadonlySet<string> = new Set(["vscode"]);
 
 export function detailsFor(agentId: string): AgentDetails {

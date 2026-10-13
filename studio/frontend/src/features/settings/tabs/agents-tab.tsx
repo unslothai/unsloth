@@ -1238,7 +1238,7 @@ export function AgentsTab() {
                     </span>
                   </SelectValue>
                 </SelectTrigger>
-                {/* Seven 36px rows and the 4px surface padding; the rest scroll, the scrollbar shows it. */}
+                {/* Seven 36px rows plus the 4px surface padding. */}
                 <SelectContent
                   align="start"
                   className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
@@ -1472,7 +1472,6 @@ export function AgentsTab() {
             copied={copied}
             onCopy={handleCopy}
           />
-          {/* The intro says unsloth start never touches an agent's config; this command writes VS Code's. */}
           {selectedAgent === "vscode" && (
             <p className="text-ui-11 leading-relaxed text-muted-foreground">
               {t("settings.agents.vscodeNote")}

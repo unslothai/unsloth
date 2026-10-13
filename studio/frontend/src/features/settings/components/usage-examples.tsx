@@ -1082,7 +1082,6 @@ export function UsageExamples({
               />
             </button>
           </div>
-          {/* Same disclosure as the Agents tab: this command writes VS Code's settings. */}
           {agent === "vscode" && (
             <span className="text-ui-11 leading-snug text-muted-foreground">
               {t("settings.agents.vscodeNote")}

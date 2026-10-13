@@ -169,7 +169,6 @@ const CONFIG_PATHS: Record<string, string> = {
 // these read the key from UNSLOTH_API_KEY even when the caller passes one.
 const ENV_ONLY_AGENT_IDS: ReadonlySet<string> = new Set(["codex", "vibe"]);
 
-// Agents without a builder (Pi, VS Code) are left out of the MCP picker.
 export function hasMcpSnippet(agentId: string): boolean {
   return BUILDERS.has(agentId);
 }
