@@ -175,6 +175,38 @@ def test_kernel_shim_passes_cpu_tensors_through():
     assert _Kernel.calls[-1][0].type == "cpu"
 
 
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_kernel_shim_switches_to_the_hidden_device(monkeypatch, device_type):
+    # No accelerator needed: the hidden states only have to report a device, and the backend is faked.
+    ns = _load()
+    backend = getattr(torch, device_type)
+    entered = []
+
+    class _Device:
+        def __init__(self, device):
+            self.device = device
+
+        def __enter__(self):
+            entered.append(self.device)
+
+        def __exit__(self, *exc):
+            entered.append(None)
+
+    monkeypatch.setattr(backend, "current_device", lambda: 0)
+    monkeypatch.setattr(backend, "device", _Device)
+    hidden = types.SimpleNamespace(device = torch.device(device_type, 1))
+    kernel = types.SimpleNamespace(apply = lambda h, *a: (entered[-1] if entered else "none", a))
+    assert ns["_ApplyOnInputDevice"](kernel).apply(hidden, 7) == (
+        torch.device(device_type, 1),
+        (7,),
+    )
+    assert entered == [torch.device(device_type, 1), None]
+    entered.clear()
+    hidden.device = torch.device(device_type, 0)
+    assert ns["_ApplyOnInputDevice"](kernel).apply(hidden) == ("none", ())
+    assert entered == []
+
+
 @pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA devices"
 )

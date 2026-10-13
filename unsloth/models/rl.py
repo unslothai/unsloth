@@ -4258,9 +4258,10 @@ class _ApplyOnInputDevice:
 
     def apply(self, hidden, *args):
         device = hidden.device
-        if device.type != "cuda" or device.index == torch.cuda.current_device():
+        backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
+        if backend is None or device.index is None or device.index == backend.current_device():
             return self.function.apply(hidden, *args)
-        with torch.cuda.device(device):
+        with backend.device(device):
             return self.function.apply(hidden, *args)
 
 
