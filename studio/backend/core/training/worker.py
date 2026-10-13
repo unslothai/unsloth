@@ -5444,7 +5444,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                **_loftq_peft_kwargs(config.get("use_loftq")),
+                **_loftq_peft_kwargs(_lora_uses_loftq(config)),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

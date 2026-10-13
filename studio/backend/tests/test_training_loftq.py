@@ -64,6 +64,21 @@ def test_no_get_peft_model_call_passes_loftq_config_alone(path):
             ), f"{path.name}:{node.lineno} passes loftq_config without init_lora_weights"
 
 
+def test_every_worker_lora_site_asks_the_checkpoint_aware_helper():
+    # The persisted toggle alone would rerun LoftQ on a resume saved before LoftQ applied.
+    for node in ast.walk(ast.parse(_WORKER.read_text(encoding = "utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        args = [k.value for k in node.keywords if k.arg == "use_loftq"]
+        if name == "_loftq_peft_kwargs":
+            args = list(node.args)
+        for arg in args:
+            assert (
+                getattr(getattr(arg, "func", None), "id", None) == "_lora_uses_loftq"
+            ), f"worker.py:{node.lineno} reads use_loftq without _lora_uses_loftq"
+
+
 def test_the_fast_encoder_lora_config_forwards_the_initialization():
     # Encoder embedding models (MiniLM, BGE, ModernBERT) build their own LoraConfig.
     for node in ast.walk(ast.parse(_SENTENCE_TRANSFORMER.read_text(encoding = "utf-8"))):
