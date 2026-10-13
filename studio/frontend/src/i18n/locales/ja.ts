@@ -3556,6 +3556,9 @@ export const ja = {
       saveStepsTooltip: "N ステップごとにチェックポイントを保存します。0 で無効化します。",
       evalSteps: "評価ステップ間隔",
       evalStepsTooltip: "評価を行う間隔を、総トレーニングステップに対する割合 (0-1) で指定します。0 に設定すると評価が無効になります。例: 0.01 = ステップの 1% ごとに評価を実行。",
+      earlyStoppingPatience: "早期終了の猶予回数",
+      earlyStoppingPatienceTooltip:
+        "評価ロスが下がらない評価がこの回数続いたらトレーニングを停止し、最良の評価時の重みを保持します。評価が必要です (評価ステップ間隔を 0 より大きく設定)。0 で無効になります。",
       seed: "シード値",
       seedTooltip: "再現性のための乱数シード。",
       offloadLayers: "レイヤーのオフロード",

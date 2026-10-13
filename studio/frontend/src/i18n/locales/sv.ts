@@ -3821,6 +3821,9 @@ export const sv = {
       evalSteps: "Utvärderingssteg",
       evalStepsTooltip:
         "Andel av totala träningssteg mellan utvärderingar (0–1). Ange 0 för att inaktivera utvärdering. Exempel: 0,01 = utvärdera var 1 % av stegen.",
+      earlyStoppingPatience: "Tålamod för early stopping",
+      earlyStoppingPatienceTooltip:
+        "Stoppar träningen efter så här många utvärderingar i rad utan lägre utvärderingsförlust och behåller vikterna från den bästa utvärderingen. Kräver utvärdering (utvärderingssteg över 0). 0 för att stänga av.",
       seed: "Slumptalets startvärde",
       seedTooltip: "Slumptalets startvärde för reproducerbarhet.",
       offloadLayers: "Avlasta lager",

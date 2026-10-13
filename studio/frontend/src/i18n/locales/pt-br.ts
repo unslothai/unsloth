@@ -3629,6 +3629,9 @@ export const ptBR = {
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
+      earlyStoppingPatience: "Paciência de parada antecipada",
+      earlyStoppingPatienceTooltip:
+        "Interrompe o treinamento após este número de validações seguidas sem uma perda de validação menor e mantém os pesos da melhor validação. Requer validação (Passos de Validação acima de 0). 0 para desativar.",
       seed: "Seed",
       seedTooltip: "Semente aleatória para reprodutibilidade.",
       offloadLayers: "Descarregar camadas",

@@ -1602,6 +1602,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           notifyStreamingCompat(streamingPatch);
         },
+        setEarlyStoppingPatience: (earlyStoppingPatience) =>
+          setUserEdit({ earlyStoppingPatience }),
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;

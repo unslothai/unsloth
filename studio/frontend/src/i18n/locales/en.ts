@@ -3634,6 +3634,9 @@ export const en = {
       evalSteps: "Eval Steps",
       evalStepsTooltip:
         "Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps.",
+      earlyStoppingPatience: "Early Stopping Patience",
+      earlyStoppingPatienceTooltip:
+        "Stop training after this many evaluations in a row without a lower eval loss, and keep the weights from the best evaluation. Needs evaluation (Eval Steps above 0). 0 to disable.",
       seed: "Seed",
       seedTooltip: "Random seed for reproducibility.",
       offloadLayers: "Offload layers",

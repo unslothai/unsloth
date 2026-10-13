@@ -3663,6 +3663,9 @@ export const de = {
       evalSteps: "Eval-Schritte",
       evalStepsTooltip:
         "Anteil der gesamten Trainingsschritte zwischen Auswertungen (0-1). Auf 0 setzen, um die Auswertung zu deaktivieren. Z. B. 0.01 = alle 1 % der Schritte auswerten.",
+      earlyStoppingPatience: "Early-Stopping-Geduld",
+      earlyStoppingPatienceTooltip:
+        "Beendet das Training nach so vielen Evaluierungen in Folge ohne niedrigeren Eval-Loss und behält die Gewichte der besten Evaluierung. Erfordert Evaluierung (Eval-Schritte über 0). 0 deaktiviert es.",
       seed: "Seed",
       seedTooltip: "Zufalls-Seed für Reproduzierbarkeit.",
       offloadLayers: "Schichten auslagern",
