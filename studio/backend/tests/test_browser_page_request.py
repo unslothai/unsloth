@@ -188,6 +188,17 @@ def test_headers_no_page_could_send_are_dropped(monkeypatch):
     assert headers["x-ok"] == "1"
 
 
+def test_a_repeated_header_is_combined_as_setrequestheader_does(monkeypatch):
+    sent = _serve(monkeypatch, {"site.test/api": (200, b"", {})})
+    _request(
+        url = "https://site.test/api",
+        headers = [["Accept", "text/html"], ["accept", "application/json"], ["X-Tag", "a"]],
+    )
+    headers = sent[0]["headers"]
+    assert headers["accept"] == "text/html, application/json"
+    assert headers["x-tag"] == "a"
+
+
 def test_forbidden_methods_are_refused(monkeypatch):
     sent = _serve(monkeypatch, {})
     with pytest.raises(HTTPException) as raised:
@@ -253,6 +264,38 @@ def test_a_response_from_another_site_shows_only_the_headers_it_exposes(
     )
     shown = {name for name, _value in _request(url = "https://site.test/go")["headers"]}
     assert shown - {"Access-Control-Allow-Origin", "Access-Control-Expose-Headers"} == readable
+
+
+@pytest.mark.parametrize("allow, readable", [("https://site.test", True), ("null", False)])
+def test_a_redirect_to_another_site_carries_the_pages_origin(monkeypatch, allow, readable):
+    # A first hop off the page's origin is not tainted: Origin is the page's, which the site must allow.
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/file": (302, b"", {"Location": "https://bucket.test/file"}),
+            "bucket.test/file": (200, b"data", {"Access-Control-Allow-Origin": allow}),
+        },
+    )
+    if readable:
+        assert base64.b64decode(_request(url = "https://site.test/file")["body"]) == b"data"
+    else:
+        with pytest.raises(HTTPException):
+            _request(url = "https://site.test/file")
+    assert "origin" not in sent[0]["headers"]
+    assert sent[1]["headers"]["origin"] == "https://site.test"
+
+
+def test_a_second_hop_between_other_sites_sends_a_null_origin(monkeypatch):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": "https://a.test/go"}),
+            "a.test/go": (302, b"", {"Location": "https://b.test/data"}),
+            "b.test/data": (200, b"public", {"Access-Control-Allow-Origin": "null"}),
+        },
+    )
+    assert base64.b64decode(_request(url = "https://site.test/go")["body"]) == b"public"
+    assert [hop["headers"].get("origin") for hop in sent] == [None, "https://site.test", "null"]
 
 
 def test_a_same_origin_redirect_still_shows_every_header(monkeypatch):

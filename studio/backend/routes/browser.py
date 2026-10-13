@@ -1650,8 +1650,14 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
             raise HTTPException(status_code = 400, detail = "The body is not base64.")
         if len(body) > _MAX_PAGE_REQUEST_BODY:
             raise HTTPException(status_code = 413, detail = "The body is too large.")
-    own = {name: value for name, value in request.headers if _allowed_header(name, value)}
-    named = {name.lower() for name in own}
+    # setRequestHeader combines a repeated name, in any case, into one value, as Headers does.
+    own: dict[str, str] = {}
+    named: dict[str, str] = {}
+    for name, value in request.headers:
+        if not _allowed_header(name, value):
+            continue
+        first = named.setdefault(name.lower(), name)
+        own[first] = f"{own[first]}, {value}" if first in own else value
     scheme, host, port = origin
     default_port = 443 if scheme == "https" else 80
     # What a browser adds to a same-origin request: Referer (the default policy keeps the whole
@@ -1662,22 +1668,28 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
+    serialized_origin = f"{scheme}://{host}" + ("" if port == default_port else f":{port}")
     if method not in ("GET", "HEAD"):
-        added["Origin"] = f"{scheme}://{host}" + ("" if port == default_port else f":{port}")
+        added["Origin"] = serialized_origin
     if "accept" not in named:
         added["Accept"] = "*/*"
     if "accept-language" not in named:
         added["Accept-Language"] = "en-US,en;q=0.9"
     page_headers = {**added, **own}
     # Whether every hop so far stayed on the page's origin. Once one leaves it, the page's headers
-    # (Authorization among them) are not sent again, as Fetch strips them on an origin change.
-    hops = {"same_origin": True, "stopped": False}
+    # (Authorization among them) are not sent again, as Fetch strips them on an origin change, and the
+    # request is a CORS one carrying Origin: the page's, or "null" once a hop went from one other
+    # origin to another (Fetch's redirect-taint).
+    hops = {"same_origin": True, "stopped": False, "last": origin, "origin": serialized_origin}
 
     def on_redirect(url: str, hop_method: str, has_body: bool) -> Optional[str]:
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
-        if _origin(url) == origin and hops["same_origin"]:
+        last, hops["last"] = hops["last"], _origin(url)
+        if hops["last"] != last and last != origin:
+            hops["origin"] = "null"
+        if hops["last"] == origin and hops["same_origin"]:
             return None
         hops["same_origin"] = False
         # A browser preflights anything but a bare GET or HEAD to another origin; this can't, so a
@@ -1687,7 +1699,8 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         return None
 
     def host_headers(current_host: str) -> dict:
-        return {**_studio_headers(current_host), **(page_headers if hops["same_origin"] else {})}
+        own_headers = page_headers if hops["same_origin"] else {"Origin": hops["origin"]}
+        return {**_studio_headers(current_host), **own_headers}
 
     meta: dict = {}
     error, raw, _content_type = _fetch_url_raw(
@@ -1725,11 +1738,11 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         for name, value in meta.get("headers") or []
         if name.lower() not in _HIDDEN_RESPONSE_HEADERS
     ]
-    # Redirected to another site, it is a CORS request from an opaque origin, as in a browser: read
-    # only with that site's consent, and only the headers it exposes.
-    if _origin(final_url) != origin:
+    # Redirected through another site, it is a CORS request, as in a browser: read only with the
+    # consent of the site that answered, and only the headers it exposes.
+    if not hops["same_origin"]:
         allow_origin = (meta.get("allow_origin") or "").strip()
-        if allow_origin not in ("*", "null"):
+        if allow_origin not in ("*", hops["origin"]):
             raise HTTPException(status_code = 502, detail = "Redirected to another site.")
         exposed = {
             name.strip().lower()
