@@ -266,7 +266,7 @@ function ReasoningContent({
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   // Colour and size live on ReasoningText: the folded-round path skips this wrapper.
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden outline-none",
+    "aui-reasoning-content relative min-w-0 overflow-hidden supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -576,8 +576,10 @@ function ReasoningTail({
             onExpandedChange(true);
         }}
         className={cn(
+          // The fade mask paints only inside this box, so it reaches into the thread's side padding
+          // (offset by the same padding) to keep hanging list markers.
           capped &&
-            "flex max-h-[min(18rem,40vh)] flex-col overflow-hidden [&>*]:shrink-0",
+            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] flex min-w-0 max-h-[min(18rem,40vh)] flex-col overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip [&>*]:shrink-0",
           capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
             (streaming

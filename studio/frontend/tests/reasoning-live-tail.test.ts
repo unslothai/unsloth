@@ -37,7 +37,7 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
   );
   assert.match(
     tail,
-    /flex max-h-\[[^\]]+\] flex-col overflow-hidden/,
+    /flex min-w-0 max-h-\[[^\]]+\] flex-col overflow-hidden px-\[[^\]]+\] supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip/,
   );
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
