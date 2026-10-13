@@ -140,7 +140,6 @@ export interface ChatsActions {
   toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
-  /** Retitles the chat from its latest turns. Only the Library offers it. */
   regenerateTitle: (chat: SidebarItem) => void;
   togglePin: (chat: SidebarItem) => void;
   setFavorite: (chats: SidebarItem[], favorite: boolean) => void;
@@ -348,8 +347,7 @@ export function MoveSubmenu({
   );
 }
 
-/** Off while any of the chat's threads is generating: the reply is still changing the topic. A
- *  comparison's id is its pair's, so its panes are checked. */
+/** Off while any of its threads generates; a comparison's id is its pair's. */
 function RegenerateTitleItem({ chat }: { chat: SidebarItem }) {
   const t = useT();
   const actions = useChatsActions();
