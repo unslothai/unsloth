@@ -169,9 +169,15 @@ def test_load_and_teardown_wiring():
     from core.inference import diffusion, diffusion_rocm_fused
 
     seen = []
-    orig_install, orig_uninstall = diffusion_rocm_fused.install_for_pipe, diffusion_rocm_fused.uninstall
+    orig_install, orig_uninstall = (
+        diffusion_rocm_fused.install_for_pipe,
+        diffusion_rocm_fused.uninstall,
+    )
     try:
-        diffusion_rocm_fused.install_for_pipe = lambda *a: seen.append(("install", a)) or {"rope": False, "adaln": 0}
+        diffusion_rocm_fused.install_for_pipe = lambda *a: seen.append(("install", a)) or {
+            "rope": False,
+            "adaln": 0,
+        }
         diffusion_rocm_fused.uninstall = lambda: seen.append(("uninstall",))
         pipe = _types.SimpleNamespace(transformer = None)
         ap.install_stage(

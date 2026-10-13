@@ -117,13 +117,21 @@ def _stub_denoiser(name: str) -> Any:
 
 def _image_pipe(fam: Any) -> Any:
     pipe = types.SimpleNamespace()
-    setattr(pipe, getattr(fam, "denoiser_attr", "transformer") or "transformer", _stub_denoiser(fam.transformer_class))
+    setattr(
+        pipe,
+        getattr(fam, "denoiser_attr", "transformer") or "transformer",
+        _stub_denoiser(fam.transformer_class),
+    )
     return pipe
 
 
 def _video_pipe(fam: Any) -> Any:
     pipe = types.SimpleNamespace()
-    setattr(pipe, getattr(fam, "denoiser_attr", "transformer") or "transformer", _stub_denoiser(fam.transformer_class))
+    setattr(
+        pipe,
+        getattr(fam, "denoiser_attr", "transformer") or "transformer",
+        _stub_denoiser(fam.transformer_class),
+    )
     if getattr(fam, "is_moe", False):
         pipe.transformer_2 = _stub_denoiser(fam.transformer_class)
     return pipe
@@ -131,7 +139,6 @@ def _video_pipe(fam: Any) -> Any:
 
 def _target(dtype_name: str) -> Any:
     import torch
-
     return types.SimpleNamespace(
         device = "cuda",
         backend = "cuda",
@@ -151,6 +158,7 @@ def _engaged(result: Any) -> bool:
 def _teardown() -> None:
     """Restore every process-global patch a case may have installed (old and new teardown entry points)."""
     from core.inference import diffusion_arch_patches, diffusion_eager_patches
+
     diffusion_eager_patches.uninstall_patches()
     diffusion_arch_patches.uninstall_arch_patches()
     for mod_name in (
@@ -171,15 +179,23 @@ def _teardown() -> None:
 
 
 # ------------------------------------------------------------------------------------------------- entry points
-def legacy_entry(backend: str, pipe: Any, target: Any, fam: Any, speed: str, offload: bool, gguf: bool) -> dict:
+def legacy_entry(
+    backend: str, pipe: Any, target: Any, fam: Any, speed: str, offload: bool, gguf: bool
+) -> dict:
     """The pre-optimizer load-path sequence (diffusion.py / video.py at 5f38afbc2d), patch installs + speed layer."""
     from core.inference import diffusion_speed as ds
 
     patches: dict = {}
     per_view: list = []
     if backend == "image":
-        from core.inference.diffusion_arch_patches import install_arch_patches, uninstall_arch_patches
-        from core.inference.diffusion_eager_patches import install_compile_safe_patches, uninstall_patches
+        from core.inference.diffusion_arch_patches import (
+            install_arch_patches,
+            uninstall_arch_patches,
+        )
+        from core.inference.diffusion_eager_patches import (
+            install_compile_safe_patches,
+            uninstall_patches,
+        )
 
         if speed != "off":
             patches["eager_fusions"] = _engaged(install_compile_safe_patches())
@@ -213,7 +229,9 @@ def legacy_entry(backend: str, pipe: Any, target: Any, fam: Any, speed: str, off
     from core.inference.video_families import LTX_FAMILIES
 
     if speed != "off":
-        patches["wan_fused"] = _engaged(video_wan_fused.install_for_pipe(pipe, target.dtype, target.device))
+        patches["wan_fused"] = _engaged(
+            video_wan_fused.install_for_pipe(pipe, target.dtype, target.device)
+        )
     else:
         video_wan_fused.uninstall()
     for view in _views_for(pipe, fam):
@@ -242,7 +260,9 @@ def legacy_entry(backend: str, pipe: Any, target: Any, fam: Any, speed: str, off
     return {"patches": patches, "views": per_view}
 
 
-def autoopt_entry(backend: str, pipe: Any, target: Any, fam: Any, speed: str, offload: bool, gguf: bool) -> dict:
+def autoopt_entry(
+    backend: str, pipe: Any, target: Any, fam: Any, speed: str, offload: bool, gguf: bool
+) -> dict:
     """The same load through the optimizer."""
     from core.inference import diffusion_speed as ds
     from core.inference.diffusion_autoopt import apply as ao
@@ -291,7 +311,6 @@ def autoopt_entry(backend: str, pipe: Any, target: Any, fam: Any, speed: str, of
         views = [applied]
     else:
         from core.inference.video import _views_for
-
         results.update(
             ao.install_patches(
                 ap.STAGE_LOAD,
@@ -350,7 +369,6 @@ def _check_audit(audit: Any, applied: dict, speed: str) -> None:
 def _families() -> list[tuple[str, Any]]:
     from core.inference.diffusion_families import _FAMILIES as image
     from core.inference.video_families import _FAMILIES as video
-
     return [("image", f) for f in image] + [("video", f) for f in video]
 
 
@@ -362,7 +380,10 @@ def _observe(pipe: Any, out: dict) -> dict:
             continue
         mods[attr] = {
             "compile_calls": [
-                {k: (v if isinstance(v, (bool, int, float, str, type(None))) else repr(v)) for k, v in c.items()}
+                {
+                    k: (v if isinstance(v, (bool, int, float, str, type(None))) else repr(v))
+                    for k, v in c.items()
+                }
                 for c in getattr(m, "compile_calls", [])
             ],
             "static": bool(getattr(m, "_unsloth_compile_static", False)),
@@ -403,7 +424,13 @@ def snapshot(entry: Callable) -> dict:
 
     stash: dict = {}
 
-    def _patch_function(target, attr, new_fn, match_level = "relaxed", force = False):
+    def _patch_function(
+        target,
+        attr,
+        new_fn,
+        match_level = "relaxed",
+        force = False,
+    ):
         stash.setdefault((target, attr), getattr(target, attr))
         setattr(target, attr, new_fn)
         return True
@@ -415,7 +442,9 @@ def snapshot(entry: Callable) -> dict:
         return True
 
     patch.setattr(
-        diffusion_patch_backend, "_HELPERS", {"patch": _patch_function, "restore": _restore_original}
+        diffusion_patch_backend,
+        "_HELPERS",
+        {"patch": _patch_function, "restore": _restore_original},
     )
     saved_env = {k: os.environ.pop(k, None) for k in _ENV_CLEAR}
     patch.setattr(torch.cuda, "is_available", lambda: True)
@@ -431,12 +460,14 @@ def snapshot(entry: Callable) -> dict:
             for speed in SPEEDS:
                 for dtype_name in DTYPES:
                     for offload in (False, True):
-                        for gguf in ((False, True) if backend == "image" else (False,)):
+                        for gguf in (False, True) if backend == "image" else (False,):
                             case = f"{backend}|{fam.name}|{speed}|{dtype_name}|offload={int(offload)}|gguf={int(gguf)}"
                             pipe = (_image_pipe if backend == "image" else _video_pipe)(fam)
                             flags = ds.snapshot_backend_flags()
                             try:
-                                result = entry(backend, pipe, _target(dtype_name), fam, speed, offload, gguf)
+                                result = entry(
+                                    backend, pipe, _target(dtype_name), fam, speed, offload, gguf
+                                )
                                 out[case] = _observe(pipe, result)
                             except Exception as exc:  # noqa: BLE001 - recorded, compared like any outcome
                                 out[case] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -462,7 +493,9 @@ def captured() -> dict:
 def test_fixture_covers_every_registered_family(captured):
     meta = captured["meta"]
     fams = {f"{b}|{f.name}" for b, f in _families()}
-    assert fams == set(meta["families"]), "a registry family was added / removed: regenerate the fixture"
+    assert fams == set(
+        meta["families"]
+    ), "a registry family was added / removed: regenerate the fixture"
 
 
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
