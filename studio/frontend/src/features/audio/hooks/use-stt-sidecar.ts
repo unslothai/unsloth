@@ -160,7 +160,9 @@ export function useSttSidecar({
       });
       // A pick made while this read was in flight owns the selection now.
       if (selectedSttRepoRef.current !== selectedRepo) return;
-      if (reconciled && reconciled !== selectedRepo && residency) {
+      // The resident engine wins even for the same repo id: another tab can swap a
+      // suffix-less repo onto audio.cpp under the same name.
+      if (reconciled && residency) {
         sttEngines.current.set(reconciled.toLowerCase(), residency.engine);
       }
       selectedSttRepoRef.current = reconciled;

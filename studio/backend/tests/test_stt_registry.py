@@ -645,6 +645,22 @@ def test_the_unload_route_reports_a_model_it_kept(monkeypatch):
     assert sidecar.loaded_model == _ACM_ID
 
 
+def test_the_unload_route_reports_a_replacement_as_kept(monkeypatch):
+    # Another surface swaps in a new model between the route's snapshot and the sidecar lock.
+    sidecar = _resident_audiocpp()
+    unload = sidecar.unload
+    other = "audio-cpp/audio.cpp-gguf/Whisper-Large-v3-GGUF"
+
+    def replaced_then_unload(*args, **kwargs):
+        sidecar._model_id = other
+        return unload(*args, **kwargs)
+
+    sidecar.unload = replaced_then_unload
+    body = _unload_route(monkeypatch, sidecar, _ACM_ID)
+    assert body["released"] is False
+    assert sidecar.loaded_model == other
+
+
 def test_no_stt_sidecar_points_at_a_settings_path_for_downloads():
     from pathlib import Path
     inference = Path(__file__).resolve().parents[1] / "core" / "inference"

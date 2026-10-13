@@ -25487,11 +25487,10 @@ async def stt_unload(
             detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
         )
     # The sidecar keeps a model it does not recognise as the claimed one (or one
-    # mid-request under wait=false), so report whether anything was actually freed.
-    held = {name: model_id for name, model_id in before.items() if model_id is not None}
-    released = not held or any(
-        _stt_resident_model(name) != model_id for name, model_id in held.items()
-    )
+    # mid-request under wait=false, or one swapped in before its lock), so report
+    # whether an engine that held a model is actually empty now.
+    held = [name for name, model_id in before.items() if model_id is not None]
+    released = not held or any(_stt_resident_model(name) is None for name in held)
     return JSONResponse(content = {"loaded_model": None, "device": None, "released": released})
 
 

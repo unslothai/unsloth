@@ -196,6 +196,14 @@ export function useTranscription({
         ? { model: sttLoadedModel, engine: sttLoadedEngine }
         : null,
     );
+    // Nothing is busy during that read, so a pick made meanwhile owns the selection; a
+    // status refresh that cleared it (nothing resident yet) does not.
+    const current = selectedSttRepoRef.current;
+    if (current !== null && current !== repo) return null;
+    if (current === null) {
+      selectedSttRepoRef.current = repo;
+      setSelectedSttRepo(repo);
+    }
     if (
       !resident ||
       resident.engine !== engine ||

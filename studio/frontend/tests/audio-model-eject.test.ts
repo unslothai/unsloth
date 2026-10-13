@@ -277,6 +277,22 @@ test("a status read never overwrites a pick made while it was in flight", () => 
   // The poll widened the window in which a stale read reverted the selection and dropped the pick.
   assert.match(
     source,
-    /if \(selectedSttRepoRef\.current !== selectedRepo\) return;[\s\S]{0,200}?selectedSttRepoRef\.current = reconciled;\s*setSelectedSttRepo\(reconciled\);/,
+    /if \(selectedSttRepoRef\.current !== selectedRepo\) return;[\s\S]{0,400}?selectedSttRepoRef\.current = reconciled;\s*setSelectedSttRepo\(reconciled\);/,
+  );
+});
+
+test("the resident engine is adopted even when the repo id is unchanged", () => {
+  // Reconcile returns the same id when only the engine moved, so a guard on a changed id
+  // left a stale Transformers engine and the row never showed ready.
+  assert.match(
+    source,
+    /if \(reconciled && residency\) \{\s*sttEngines\.current\.set\(reconciled\.toLowerCase\(\), residency\.engine\);\s*\}/,
+  );
+});
+
+test("a pick made while Transcribe reads residency is not overridden by the old run", () => {
+  assert.match(
+    source,
+    /const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
   );
 });

@@ -989,3 +989,20 @@ test("an eject counts as done unless the backend says it kept the model", () => 
   assert.equal(sttEjectSucceeded(undefined), true);
   assert.equal(sttEjectSucceeded(false), false);
 });
+
+test("reconcile keeps the same repo id when only the resident engine changed", () => {
+  // The hook therefore has to adopt the engine without waiting for the id to change.
+  const repo = "someorg/whisper-quant";
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: repo,
+      loadedModel: repo,
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: () => "transformers",
+    }),
+    repo,
+  );
+});
