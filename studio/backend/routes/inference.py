@@ -24915,6 +24915,14 @@ def _stt_sidecar_for(engine: str):
     return stt_registry.sidecar_for(engine)
 
 
+def _stt_resident_model(engine: str) -> Optional[str]:
+    """The model an engine holds right now, or None when that cannot be read."""
+    try:
+        return _stt_sidecar_for(engine).loaded_model
+    except Exception:  # noqa: BLE001 - a broken sidecar holds nothing we can report
+        return None
+
+
 def _stt_lifecycle() -> tuple:
     """(load, unload) for dictation models, off the orchestrator when it exists.
 
@@ -25481,6 +25489,10 @@ async def stt_unload(
                 f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
             )
         ]
+    from core.inference.stt_registry import STT_ENGINES
+
+    targets = list(STT_ENGINES if engines is None else engines)
+    before = {name: _stt_resident_model(name) for name in targets}
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
@@ -25497,7 +25509,12 @@ async def stt_unload(
             status_code = 500,
             detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
         )
-    return JSONResponse(content = {"loaded_model": None, "device": None})
+    # The sidecar keeps a model it does not recognise as the claimed one (or one
+    # mid-request under wait=false, or one swapped in before its lock), so report
+    # whether an engine that held a model is actually empty now.
+    held = [name for name, model_id in before.items() if model_id is not None]
+    released = not held or any(_stt_resident_model(name) is None for name in held)
+    return JSONResponse(content = {"loaded_model": None, "device": None, "released": released})
 
 
 async def _transcribe_audio_bytes(
@@ -46981,6 +46998,22 @@ def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     return {}
 
 
+def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Optional[str]) -> dict:
+    """``sampler`` / ``schedule_type`` for an engine whose generate() takes them (diffusers only).
+
+    A real choice sent to another engine is refused (ValueError -> 400) rather than ignored, so a
+    recipe never records a sampler that did not run."""
+    try:
+        import inspect
+        if "sampler" in inspect.signature(generate).parameters:
+            return {"sampler": sampler, "schedule_type": schedule_type}
+    except (TypeError, ValueError):
+        pass
+    if sampler not in (None, "default") or schedule_type not in (None, "automatic"):
+        raise ValueError("Choosing a sampler is supported on the diffusers engine only.")
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -47118,6 +47151,7 @@ async def generate_diffusion_image(
                         else None
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
+                    **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -47226,6 +47260,8 @@ async def generate_diffusion_image(
                         # From the engine, not the request: an omitted resolution resolves to the family default.
                         "reference_resolution": result.get("reference_resolution"),
                         "localized_edit": result.get("localized_edit"),
+                        "sampler": result.get("sampler"),
+                        "schedule_type": result.get("schedule_type"),
                         "created_at": created_at,
                     },
                 )

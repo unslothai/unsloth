@@ -44,6 +44,7 @@ import {
 import {
   type AudioBusy,
   type AudioGenerationPhase,
+  audioEjectAvailable,
   audioGenerationPresentation,
   audioLoadedSelection,
   deleteCoversRememberedModel,
@@ -335,6 +336,8 @@ export function AudioPage({
     runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
+    sttEngines,
+    sttEngineFor,
     setLastSttRepo,
     sttLoadingGeneration,
     sttLoadAbort,
@@ -343,6 +346,8 @@ export function AudioPage({
     sttSelected,
     sttReady,
     releaseTranscribeSelection,
+    ejectTranscribeModel,
+    readSttResidency,
     ensureSttLoaded,
   } = useSttSidecar({ setBusy, activeRef });
 
@@ -380,6 +385,9 @@ export function AudioPage({
     ensureSttLoaded,
     setLastSttRepo,
     refreshSttStatus,
+    sttEngineFor,
+    readSttResidency,
+    sttLoadGeneration,
   });
 
   const {
@@ -487,8 +495,13 @@ export function AudioPage({
     isMac,
     status,
     releaseTranscribeSelection,
+    ejectTranscribeModel,
     ensureSttLoaded,
     sttGgufVariants,
+    sttEngines,
+    sttEngineFor,
+    refreshSttStatus,
+    sttLoadedModel,
     selectedSttRepoRef,
     setSelectedSttRepo,
     deferredSttLoad,
@@ -1314,7 +1327,10 @@ export function AudioPage({
     string | null
   >(null);
   const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
-  const transcribeCaps = useTranscribeCapabilities(transcribeRepo);
+  const transcribeCaps = useTranscribeCapabilities(
+    transcribeRepo,
+    transcribeRepo ? sttEngineFor(transcribeRepo) : null,
+  );
   const transcribeOptions = transcribeSwitches(
     transcribeCaps.caps,
     transcribePrefs,
@@ -1670,7 +1686,13 @@ export function AudioPage({
               value={selectorValue}
               onValueChange={handleModelSelect}
               onEject={
-                busy === null && selectorValue && !showLastPageModel
+                audioEjectAvailable({
+                  mode,
+                  busy,
+                  hasValue: Boolean(selectorValue),
+                  showLastPageModel,
+                  sttReady,
+                })
                   ? handleEject
                   : undefined
               }

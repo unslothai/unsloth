@@ -2556,6 +2556,13 @@ export const zhCN = {
         "向上滚动后显示一个按钮，用于跳回最新消息。",
       scrollToBottomButtonKeywords:
         "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
+      replyNotification: "回复完成时通知",
+      replyNotificationDescription:
+        "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
+      replyNotificationBlocked:
+        "通知已被阻止。请在浏览器或系统设置中允许 Unsloth 发送通知，然后重试。",
+      replyNotificationKeywords:
+        "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineEditResponse: "在回复上显示编辑回复",
@@ -2575,14 +2582,14 @@ export const zhCN = {
       autoCompactKeywords:
         "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 归档 检索 搜索 compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "工具输出长度",
-      toolResultLimitDescription: "模型读取的单个 Python 或终端结果的字符数。默认值为 {count}。",
-      toolResultLimitHint: "更长的输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
+      toolResultLimitDescription: "模型读取的单个 Python、终端或 MCP 工具结果的字符数。默认值为 {count}。",
+      toolResultLimitHint: "更长的 Python 和终端输出会保存到文件中，模型可以分段读取。更高的上限适用于在 Unsloth 中运行的模型，上下文窗口较小时仍会获得更少的内容。API 模型保持默认值，除非你将其调低。",
       toolResultLimitDefault: "{count}（默认）",
       toolResultLimitLocked: "由 UNSLOTH_TOOL_RESULT_MAX_CHARS 设置",
       toolResultLimitLoadError: "无法加载工具输出长度。",
       toolResultLimitSaveError: "无法保存工具输出长度。",
       toolResultLimitKeywords:
-        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "输出 结果 截断 限制 字符 长度 tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "折叠",
         auto: "运行时展开",

@@ -9,10 +9,9 @@ import {
   MINIMAX_MUSIC_FRAMES_PER_SECOND,
   MINIMAX_MUSIC_MAX_FRAMES,
   MINIMAX_MUSIC_MAX_SECONDS,
+  audioEjectAvailable,
   audioGenerationPresentation,
-  audioLoadedSelection,
   audioRuntimeNoticeMode,
-  deleteCoversRememberedModel,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -25,14 +24,22 @@ import {
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
-  rememberedModelIsGone,
-  rememberedModelUnavailable,
   resolveSttLoadedModel,
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
+  sttEjectSucceeded,
   sttSelectionReady,
+  audioLoadedSelection,
+  deleteCoversRememberedModel,
+  rememberedModelIsGone,
+  rememberedModelUnavailable,
 } from "../src/features/audio/audio-page-policy.ts";
+import {
+  sttEngineForRepoId,
+  sttRepoIdForSidecarKey,
+  sttSidecarKeyFor,
+} from "../src/features/audio/stt-artifacts.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
@@ -1009,5 +1016,126 @@ test("deleting the audio.cpp package forgets the folders remembered from it", ()
   assert.match(
     audioPageSource,
     /\[\.\.\.deleted\]\.some\(\(repoId\) => deleteCoversRememberedModel\(repoId, id\)\)/,
+  );
+});
+
+
+test("Eject is offered only for a resident Transcribe model, and never while busy", () => {
+  const idle = { busy: null, hasValue: true, showLastPageModel: false } as const;
+  assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true }), true);
+  // After an unload the selector still shows the last model; Eject there released nothing.
+  assert.equal(audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: false }), false);
+  assert.equal(audioEjectAvailable({ ...idle, mode: "speak", sttReady: false }), true);
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, busy: "loading" }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "transcribe", sttReady: true, busy: "unloading" }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, hasValue: false }),
+    false,
+  );
+  assert.equal(
+    audioEjectAvailable({ ...idle, mode: "speak", sttReady: false, showLastPageModel: true }),
+    false,
+  );
+});
+
+test("a legacy dictation key or other casing still marks the Transcribe row ready", () => {
+  const row = "audio-cpp/audio.cpp-gguf/Qwen3-ASR-0.6B-GGUF";
+  const ready = (loaded: string, selected = row) =>
+    sttSelectionReady(
+      selected,
+      loaded,
+      sttSidecarKeyFor,
+      "audiocpp",
+      "audiocpp",
+      sttRepoIdForSidecarKey,
+    );
+  assert.equal(ready("audiocpp-qwen3-asr-0.6b"), true);
+  assert.equal(ready(row.toLowerCase()), true);
+  assert.equal(ready(row), true);
+  assert.equal(ready("audio-cpp/audio.cpp-gguf/Qwen3-ASR-1.7B-GGUF"), false);
+  assert.equal(ready("audiocpp-qwen3-asr-1.7b"), false);
+  // Without the mapping (older callers) only the exact key matches.
+  assert.equal(
+    sttSelectionReady(row, "audiocpp-qwen3-asr-0.6b", sttSidecarKeyFor, "audiocpp", "audiocpp"),
+    false,
+  );
+  // An engine mismatch is still not ready.
+  assert.equal(
+    sttSelectionReady(
+      row,
+      "audiocpp-qwen3-asr-0.6b",
+      sttSidecarKeyFor,
+      "transformers",
+      "audiocpp",
+      sttRepoIdForSidecarKey,
+    ),
+    false,
+  );
+  // Reconcile keeps the picked row instead of swapping it for the legacy key's id.
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: row,
+      loadedModel: "audiocpp-qwen3-asr-0.6b",
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: sttEngineForRepoId,
+    }),
+    row,
+  );
+});
+
+test("a GGUF repo without a -GGUF suffix keeps the engine it was picked with", () => {
+  const repo = "someorg/whisper-quant";
+  // Re-derived from the id alone it resolves to Transformers, so it never showed ready.
+  assert.equal(sttEngineForRepoId(repo), "transformers");
+  const engines = new Map([[repo, sttEngineForRepoId(repo, true)]]);
+  const engineFor = (id: string) => engines.get(id) ?? sttEngineForRepoId(id);
+  assert.equal(engineFor(repo), "audiocpp");
+  assert.equal(
+    sttSelectionReady(repo, repo, sttSidecarKeyFor, engineFor(repo), "audiocpp"),
+    true,
+  );
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: repo,
+      loadedModel: repo,
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: engineFor,
+    }),
+    repo,
+  );
+});
+
+test("an eject counts as done unless the backend says it kept the model", () => {
+  assert.equal(sttEjectSucceeded(true), true);
+  assert.equal(sttEjectSucceeded(undefined), true);
+  assert.equal(sttEjectSucceeded(false), false);
+});
+
+test("reconcile keeps the same repo id when only the resident engine changed", () => {
+  // The hook therefore has to adopt the engine without waiting for the id to change.
+  const repo = "someorg/whisper-quant";
+  assert.equal(
+    reconcileSttSelection({
+      selectedRepo: repo,
+      loadedModel: repo,
+      loadedEngine: "audiocpp",
+      preservePending: false,
+      sidecarKeyFor: sttSidecarKeyFor,
+      repoIdForSidecarKey: sttRepoIdForSidecarKey,
+      engineForRepo: () => "transformers",
+    }),
+    repo,
   );
 });
