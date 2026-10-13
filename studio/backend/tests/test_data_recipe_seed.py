@@ -6,6 +6,7 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1502,6 +1503,31 @@ def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch,
         inspect("org/repo")
         inspect(str(workspace / "seeds"))
         assert len(read) == 2
+
+
+def test_a_folder_reached_through_many_links_is_scanned_once(monkeypatch, tmp_path):
+    from core.training import account_jobs
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    workspace = tmp_path / "accounts" / "alice"
+    (workspace / "seeds").mkdir(parents = True)
+    for i in range(20):
+        (workspace / "seeds" / f"part{i}.csv").write_text("a\n1\n")
+    farm = workspace / "farm"
+    farm.mkdir()
+    for i in range(30):
+        (farm / f"link{i}").symlink_to(workspace / "seeds", target_is_directory = True)
+    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
+    monkeypatch.setattr(seed_route, "managed_account", lambda: True)
+    monkeypatch.setattr(account_jobs, "workspace_root", lambda: workspace)
+    scans = []
+    real_scandir = os.scandir
+    monkeypatch.setattr(os, "scandir", lambda path: scans.append(path) or real_scandir(path))
+
+    seed_route._require_own_seed_source(str(farm))
+
+    # The farm and one linked copy of seeds, not one scan per link.
+    assert len(scans) <= 2
 
 
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):
