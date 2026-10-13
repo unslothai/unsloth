@@ -535,25 +535,6 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // The Diffusers pack (distilled DiT, Gemma 4 encoder in Studio's sidecar worker). Its fp8 / int8 loads seed the
-    // hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos), so the row is the bf16 pipeline; the alias keeps
-    // a pasted prequant repo id finding it. Video rows carry no prequantRepo (image-only field).
-    canonicalId: "Lightricks/LTX-2.5-Diffusers",
-    displayName: "LTX-2.5",
-    description: "Text and image to video with audio",
-    scope: "video",
-    aliases: ["unsloth/LTX-2.5-FP8"],
-    capabilities: { audio: true },
-    artifacts: [
-      // Card peak 79.2 GB at 1280x704x121 with the bf16 DiT and the encoder resident.
-      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 80, {
-        gated: true,
-        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
-        totalParams: 18_987_859_200,
-      }),
-    ],
-  },
-  {
     // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against
     // the already-trusted LTX-2 base for the VAE / Gemma3 encoder) plus the GGUF quants. The
     // single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
@@ -579,11 +560,14 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   },
   {
     // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
-    // the official split single-file DiT, which loads against the companion files beside it in the same repo.
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo. The
+    // pack's fp8 / int8 loads seed the hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos); the alias
+    // keeps a pasted prequant repo id finding this group. Video rows carry no prequantRepo (image-only field).
     canonicalId: "Lightricks/LTX-2.5-Diffusers",
     displayName: "LTX 2.5 distilled",
     description: "Text- and image-to-video with audio",
     scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
     capabilities: { audio: true },
     artifacts: [
       // Both repos are gated on the Hub (license + token).
@@ -591,6 +575,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         label: "BF16 - Diffusers",
         gated: true,
         offloadFitTiers: LTX25_OFFLOAD_TIERS,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
       }),
       bf16Single(
         "Lightricks/LTX-2.5",

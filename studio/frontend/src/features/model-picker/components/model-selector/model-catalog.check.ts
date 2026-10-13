@@ -184,15 +184,15 @@ assert.equal(groupForRepoId("lightricks/ltx-2.5-diffusers", VIDEO_CATALOG), ltx2
 assert.equal(curatedArtifactTakesDenseQuant("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG), true);
 assert.equal(
   curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,
-  "LTX-2.5 (Fast FP8)",
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
 );
 assert.equal(
   curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["int8", "fp8"])?.name,
-  "LTX-2.5 (Fast FP8)",
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
 );
 // Only a host that runs the dense quant gets the qualifier; other video rows stay bare there.
-assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX-2.5");
-assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX-2.5");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX 2.5 distilled (Diffusers)");
 assert.equal(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name, "LTX 2 (base)");
 // SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
