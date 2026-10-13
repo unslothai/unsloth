@@ -1493,8 +1493,7 @@ class InferenceOrchestrator:
         rows: Optional[int] = None,
         frames: bool = False,
     ) -> Generator[Any, None, None]:
-        """Yield tokens from a response stream until gen_done/gen_error; with ``frames``, also the text-diffusion
-        canvas frames, as ``{"type": "diffusion_frame", ...}`` dicts."""
+        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts."""
         # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc

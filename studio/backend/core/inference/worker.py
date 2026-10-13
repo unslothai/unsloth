@@ -1150,8 +1150,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     one-at-a-time loop the shared event alone. Nothing is asked during the prefill.
     """
     request_id = cmd.get("request_id", "")
-    # Only a request whose client renders the denoising canvas gets frames; set on the backend so the
-    # text-diffusion sampler can send them while it runs, and cleared when this request ends.
+    # Scoped to this request: cleared when it ends.
     frames = bool(cmd.get("diffusion_frames")) and hasattr(backend, "diffusion_frame_sink")
     if frames:
         backend.diffusion_frame_sink = lambda frame: _send_response(

@@ -710,7 +710,7 @@ _CANVAS_FRAME_INTERVAL_S = 0.1
 
 
 def _accepts_on_frame(generate_text) -> bool:
-    """An older core takes no canvas callback; its samplers would swallow the keyword unused."""
+    """An older core would swallow on_frame unused."""
     import inspect
 
     candidates = [generate_text]
@@ -729,7 +729,6 @@ def _accepts_on_frame(generate_text) -> bool:
 
 
 def _render_canvas(tokenizer, tokens, mask_id) -> str:
-    """Decoded canvas with every still-masked position drawn as one placeholder glyph."""
     tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     parts, run = [], []
     for token in tokens:
@@ -746,8 +745,7 @@ def _render_canvas(tokenizer, tokens, mask_id) -> str:
 
 
 def _diffusion_eos_ids(model, tokenizer, chat) -> tuple:
-    """The ids ``generate_text`` cuts its reply at (EOS, plus the turn-end token for chat); empty on a core
-    without them, where frames are then shown uncut."""
+    """The ids ``generate_text`` cuts its reply at; empty on an older core."""
     import importlib
     try:
         samplers = importlib.import_module("unsloth.models.diffusion_samplers")
@@ -767,19 +765,17 @@ def _diffusion_frame_relay(
     stop = None,
     eos_ids = (),
 ):
-    """on_frame for the core sampler: renders and hands one frame per interval to ``sink``, dropping the rest.
-    Never raises into the sampler, so a broken consumer cannot fail the generation. Each frame is cut at the
-    first ``eos_ids`` token and at the request's stop sequences, as the final reply will be."""
+    """on_frame for the core sampler: one frame per interval to ``sink``, cut where the final reply is.
+    Never raises into the sampler."""
     import time
 
-    # The first frame always goes out, however recently the monotonic clock started.
     last = [float("-inf")]
     if interval_s is None:
         interval_s = _CANVAS_FRAME_INTERVAL_S
 
     def on_frame(frame):
         now = time.monotonic()
-        # A block's last step always goes out: it is the settled block the next frames build on.
+        # A block's last step is never throttled: later frames build on it.
         block_end = int(frame.get("step", 0)) >= int(frame.get("total", 0)) > 0
         if now - last[0] < interval_s and not block_end:
             return
@@ -799,8 +795,7 @@ def _diffusion_frame_relay(
                 {
                     "type": "diffusion_frame",
                     "block": int(frame.get("block", 0)),
-                    # The event's step is zero-based (the canvas shows step + 1 of total); the sampler's
-                    # block-end frame is step == total.
+                    # Zero-based for the canvas; the sampler's block-end frame is step == total.
                     "step": max(min(int(frame.get("step", 0)), total - 1), 0),
                     "total": total,
                     "text": text,
@@ -830,7 +825,7 @@ class InferenceBackend:
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
         self.last_generation_stats = None
-        # Set by the worker for one request that asked for live canvas frames; called with each frame event.
+        # Set by the worker for one request that asked for canvas frames.
         self.diffusion_frame_sink = None
 
         # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):

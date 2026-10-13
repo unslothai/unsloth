@@ -30346,7 +30346,6 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
 
 
 def _accepts_keyword(fn, name: str) -> bool:
-    """Whether ``fn`` names ``name`` in its signature (a backend without it never gets the keyword)."""
     import inspect
     try:
         return name in inspect.signature(fn).parameters
@@ -34685,8 +34684,7 @@ async def produce_openai_chat_completions(
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
     _sf_context_truncation_holder: dict = {"value": None}
-    # Live denoising canvas of a text-diffusion model: only a streaming, single-choice reply to a client that
-    # renders Studio's events gets the frames. The worker sends them only from the text-diffusion sampler.
+    # Diffusion canvas frames only for a streaming, single-choice reply to a client rendering Studio events.
     _sf_ui_events = _ui_stream_events_enabled(request)
     _sf_frame_kwargs = (
         {"diffusion_frames": True}
@@ -34847,7 +34845,7 @@ async def produce_openai_chat_completions(
                                 {key: value for key, value in cumulative.items() if key != "type"},
                             )
                         elif cumulative.get("type") == "diffusion_frame":
-                            # Per-step canvas, as on the GGUF path: no assistant text, never in the transcript.
+                            # As on the GGUF path: never in the transcript.
                             if _sf_ui_events:
                                 yield f"data: {json.dumps(cumulative)}\n\n"
                             elif _drop_keepalive.due():
