@@ -196,8 +196,9 @@ function ModelSelectorTrigger({
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
             "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+          // Header rows: same corners and hover wash as the icon buttons beside it.
           variant === "ghost" &&
-            "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
@@ -245,8 +246,8 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* No vertical offset, so the caps line up with the project switcher. */}
-        <span className="flex min-w-0 flex-1 items-baseline">
+        {/* Hellix's line box puts the caps ~1.9px above the trigger's centre, which shows in the hover box. */}
+        <span className="relative top-[0.11em] flex min-w-0 flex-1 items-baseline">
           {/* The name gives way last: the suffix (format and quant), then the description, shrink
               away first. Their far larger shrink factor makes that order effectively strict. */}
           <span className="flex min-w-0 items-baseline">
