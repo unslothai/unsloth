@@ -433,3 +433,42 @@ def test_checkpointing_falls_back_to_every_block_without_the_zoo_helper(monkeypa
     monkeypatch.setitem(sys.modules, "unsloth_zoo.block_checkpointing", None)
     assert dtc.enable_diffusion_gradient_checkpointing(_Model()) == "plain"
     assert seen["func"].keywords == {"use_reentrant": False}
+
+
+class _FakeAccel:
+    def __init__(self, peak_bytes):
+        self.peak_bytes, self.resets = peak_bytes, 0
+
+    def reset_peak_memory_stats(self):
+        self.resets += 1
+
+    def max_memory_allocated(self):
+        return self.peak_bytes
+
+
+@pytest.mark.parametrize("device", ["cuda", "xpu"])
+def test_training_peak_is_reported_on_cuda_and_xpu(device, monkeypatch):
+    accel = _FakeAccel(3_456_000_000)
+    monkeypatch.setattr(torch, device, accel, raising = False)
+    dtc.reset_training_peak_memory(device)
+    assert accel.resets == 1
+    assert dtc.training_peak_memory_gb(device) == 3.46
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_training_peak_is_unmeasured_elsewhere(device):
+    dtc.reset_training_peak_memory(device)
+    assert dtc.training_peak_memory_gb(device) == 0.0
+
+
+def test_a_failing_peak_probe_reports_unmeasured(monkeypatch):
+    class _Broken(_FakeAccel):
+        def max_memory_allocated(self):
+            raise RuntimeError("no device")
+
+        def reset_peak_memory_stats(self):
+            raise RuntimeError("no device")
+
+    monkeypatch.setattr(torch, "xpu", _Broken(0), raising = False)
+    dtc.reset_training_peak_memory("xpu")
+    assert dtc.training_peak_memory_gb("xpu") == 0.0

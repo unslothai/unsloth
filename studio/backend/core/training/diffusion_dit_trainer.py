@@ -47,6 +47,8 @@ from core.training.diffusion_train_common import (
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
     enable_diffusion_gradient_checkpointing,
+    reset_training_peak_memory,
+    training_peak_memory_gb,
     make_lora_optimizer,
     recorded_optimizer_class,
     _apply_perf_flags,
@@ -2261,8 +2263,7 @@ def _train_dit(
         else nullcontext()
     )
     # Reported peak VRAM = training peak, not the higher load / encode peak.
-    if device == "cuda":
-        torch.cuda.reset_peak_memory_stats()
+    reset_training_peak_memory(device)
     for opt_step in range(resumed, cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -2342,8 +2343,7 @@ def _train_dit(
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = training_peak_memory_gb(device)
             per_step = batch_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)

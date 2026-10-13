@@ -832,6 +832,36 @@ def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
+def _accelerator_memory_module(device: str) -> Any:
+    import torch
+
+    module = getattr(torch, device, None) if device in ("cuda", "xpu") else None
+    if module is None or not hasattr(module, "max_memory_allocated"):
+        return None
+    return module
+
+
+def reset_training_peak_memory(device: str) -> None:
+    """Start the reported peak at the loop: the load / encode peak is higher and not the training cost."""
+    module = _accelerator_memory_module(device)
+    if module is not None:
+        try:
+            module.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001 -- reporting only
+            pass
+
+
+def training_peak_memory_gb(device: str) -> float:
+    """Peak allocated GB since reset_training_peak_memory on CUDA / XPU; 0.0 where unmeasured (reported as None)."""
+    module = _accelerator_memory_module(device)
+    if module is None:
+        return 0.0
+    try:
+        return round(module.max_memory_allocated() / 1e9, 2)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return 0.0
+
+
 GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
 GC_EVERY_N_ENV = "UNSLOTH_DIFFUSION_GC_EVERY_N"
 

@@ -82,6 +82,8 @@ from core.training.diffusion_train_common import (
     _latent_cache_over_budget,
     _restore_perf_flags,
     enable_diffusion_gradient_checkpointing,
+    reset_training_peak_memory,
+    training_peak_memory_gb,
     h3_train_unsupported_reason,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
@@ -690,8 +692,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_steady = None
     done = 0
     # Reported peak VRAM = training peak, not the higher load / encode peak.
-    if device == "cuda":
-        torch.cuda.reset_peak_memory_stats()
+    reset_training_peak_memory(device)
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
@@ -770,8 +771,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         if done == 1:
             t_steady = now
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = training_peak_memory_gb(device)
             per_step = cfg.gradient_accumulation_steps
             if t_steady is not None and done > 1:
                 sps = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)

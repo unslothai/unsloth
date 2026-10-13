@@ -46,6 +46,8 @@ from core.training.diffusion_train_common import (  # noqa: F401
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
     enable_diffusion_gradient_checkpointing,
+    reset_training_peak_memory,
+    training_peak_memory_gb,
     make_lora_optimizer,
     recorded_optimizer_class,
     native_bf16_supported,
@@ -566,8 +568,7 @@ def run_diffusion_lora_training(
             )
 
         # Reported peak VRAM = training peak, not the higher load / encode peak.
-        if device == "cuda":
-            torch.cuda.reset_peak_memory_stats()
+        reset_training_peak_memory(device)
         for opt_step in range(resumed, cfg.train_steps):
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
@@ -658,8 +659,7 @@ def run_diffusion_lora_training(
                 t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
-                if device == "cuda":
-                    peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                peak_gb = training_peak_memory_gb(device)
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
                 if t_steady is not None and ran_here > 1:
                     samples_per_second = round(
