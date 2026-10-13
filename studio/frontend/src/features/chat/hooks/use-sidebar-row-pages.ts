@@ -165,7 +165,9 @@ export async function readAllSidebarRows(
       cursor,
     );
     rows.push(...page.rows);
-    if (!page.hasMore || !page.nextCursor || page.rows.length === 0) break;
+    // a page emptied by chats deleted here still moves the cursor on; only one that did not ends it
+    if (!page.hasMore || !page.nextCursor) break;
+    if (page.rows.length === 0 && page.nextCursor === cursor) break;
     cursor = page.nextCursor;
   }
   return rows;

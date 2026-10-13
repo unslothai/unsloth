@@ -336,6 +336,8 @@ test("a manual order written from loaded rows keeps every unloaded row after the
 function loadRowPages(options: {
   server: "paged" | "old";
   legacyDone?: boolean;
+  /** Answers the paged route instead of the default endless single-row pages. */
+  pages?: (cursor: string | null) => unknown;
 }) {
   const requests: unknown[] = [];
   const repaired: { id: string; title: string }[][] = [];
@@ -377,6 +379,7 @@ function loadRowPages(options: {
         }) => {
           requests.push(request);
           if (options.server === "old") return null;
+          if (options.pages) return options.pages(request.cursor);
           const offset = request.cursor ? Number(request.cursor) : 0;
           const end = offset + request.limit;
           return {
@@ -871,4 +874,24 @@ test("Pinned and custom sections mount every row they have, so navigation sees o
 test("entering the empty state forgets the last empty spell's answer before probing", () => {
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /if \(!sidebarLooksEmpty\) return;\n(?:\s*\/\/.*\n)?\s*setHasUnlistedChats\(null\);/);
+});
+
+test("a whole-list read goes on past a page emptied by chats deleted here", async () => {
+  const row = (id: string) => ({ id, type: "single", threadIds: [id], title: "", createdAt: 1, updatedAt: 1 });
+  const { mod } = loadRowPages({
+    server: "paged",
+    pages: (cursor) =>
+      cursor === null
+        ? { rows: [row("gone")], nextCursor: "a", hasMore: true }
+        : cursor === "a"
+          ? { rows: [row("k1"), row("k2")], nextCursor: "b", hasMore: true }
+          : { rows: [row("k3")], nextCursor: null, hasMore: false },
+  });
+  assert.deepEqual(await mod.readAllSidebarRowIds(sidebarRowQuery({})), ["k1", "k2", "k3"]);
+  // an empty page that does not move the cursor still ends the read
+  const stuck = loadRowPages({
+    server: "paged",
+    pages: (cursor) => ({ rows: cursor === "same" ? [] : [row("k1")], nextCursor: "same", hasMore: true }),
+  });
+  assert.deepEqual(await stuck.mod.readAllSidebarRowIds(sidebarRowQuery({})), ["k1"]);
 });
