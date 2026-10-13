@@ -992,17 +992,19 @@ export function AudioPage({
     (state) => state.lastModelByWorkflow,
   );
   const forgetModel = useAudioWorkspaceStore((state) => state.forgetModel);
-  const modelInventory = useHubInventory({ kind: "models" });
-  // Deleted repos wait here, with the inventory listing current at the delete, until a newer
-  // settled listing shows whether the model is gone.
-  const deletedModelsRef = useRef(new Map<string, ReadonlySet<string>>());
-  const availableSetRef = useRef(modelInventory.availableSet);
-  availableSetRef.current = modelInventory.availableSet;
+  // Folder rows let a single audio.cpp folder delete show the folder is gone.
+  const modelInventory = useHubInventory({
+    kind: "models",
+    includeUmbrellaFolders: true,
+  });
+  // Deleted repos wait here, with the time of the delete, until a settled listing whose Hub
+  // cache fetches started after it shows whether the model is gone.
+  const deletedModelsRef = useRef(new Map<string, number>());
   const [deletedModelsTick, setDeletedModelsTick] = useState(0);
   useEffect(
     () =>
       subscribeModelDeleted((repoId) => {
-        deletedModelsRef.current.set(repoId.toLowerCase(), availableSetRef.current);
+        deletedModelsRef.current.set(repoId.toLowerCase(), Date.now());
         setDeletedModelsTick((tick) => tick + 1);
       }),
     [],
@@ -1014,6 +1016,7 @@ export function AudioPage({
       settled: modelInventory.inventorySettled,
       error: modelInventory.inventoryError,
       available: modelInventory.availableSet,
+      refreshStartedAt: modelInventory.hubCacheRefreshStartedAt,
     };
     for (const id of new Set(Object.values(rememberedModels))) {
       if (
@@ -1037,6 +1040,7 @@ export function AudioPage({
     modelInventory.inventorySettled,
     modelInventory.inventoryError,
     modelInventory.availableSet,
+    modelInventory.hubCacheRefreshStartedAt,
     forgetModel,
   ]);
   const rememberedPageModel = rememberedModels[pageWorkflow] ?? null;
