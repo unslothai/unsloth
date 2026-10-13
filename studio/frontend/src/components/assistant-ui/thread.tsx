@@ -8629,40 +8629,25 @@ function useDeleteMessage() {
   return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
 }
 
-// The More menu's Delete, last and in red.
-const DeleteMessageMenuItem: FC = () => {
+const DeleteMessageButton: FC = () => {
   const { handleDelete, isRunning, hidden } = useDeleteMessage();
   if (hidden) {
     return null;
   }
   return (
-    <ActionBarMorePrimitive.Item
+    <TooltipIconButton
+      tooltip="Delete"
       disabled={isRunning}
-      onSelect={() => void handleDelete()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      onClick={() => void handleDelete()}
+      className="hover:!text-destructive"
     >
       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-      Delete
-    </ActionBarMorePrimitive.Item>
+    </TooltipIconButton>
   );
 };
 
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
-
-const ForkMessageMenuItem: FC = () => {
-  const { forkMessage, forkDisabled } = useForkMessageAction();
-  return (
-    <ActionBarMorePrimitive.Item
-      disabled={forkDisabled}
-      onSelect={() => void forkMessage()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-    >
-      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
-      Fork in new chat
-    </ActionBarMorePrimitive.Item>
-  );
-};
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8707,7 +8692,7 @@ const RewindMessageMenuItem: FC = () => {
   );
 };
 
-// A prompt's More menu: Fork, Rewind, then Delete.
+// A prompt's More menu: Rewind (Fork and Delete sit in the bar).
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
@@ -8727,9 +8712,7 @@ const UserMoreMenu: FC = () => {
       >
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <MenuDismissGuard triggerRef={triggerRef} />
-          <ForkMessageMenuItem />
           <RewindMessageMenuItem />
-          <DeleteMessageMenuItem />
         </div>
       </ActionBarMorePrimitive.Content>
     </ActionBarMorePrimitive.Root>
@@ -8879,7 +8862,7 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Edit response lives in the More menu.
+  // On by default; off moves Edit response into the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8939,6 +8922,7 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}
+        <DeleteMessageButton />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -9033,7 +9017,6 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
-              <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -9126,6 +9109,8 @@ const UserActionBar: FC = () => {
         </ActionBarPrimitive.Edit>
       )}
       <ForkCountBadge />
+      <ForkMessageButton />
+      <DeleteMessageButton />
       <UserMoreMenu />
     </UserMessageActionBar>
   );
