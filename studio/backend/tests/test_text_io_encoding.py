@@ -276,7 +276,24 @@ def _is_locale_default(value: ast.expr) -> bool:
     return isinstance(value, ast.Constant) and value.value in (None, "locale")
 
 
-def _path_text_names_encoding(node: ast.Call, name: str) -> bool:
+_PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+
+
+def _path_class_names(tree: ast.AST) -> set[str]:
+    """The pathlib classes and every name they are imported under in this module.
+
+    `from pathlib import Path as P` still puts the path in front of an unbound `P.read_text(p)`,
+    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for."""
+    names = set(_PATH_CLASSES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            for alias in node.names:
+                if alias.name in _PATH_CLASSES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str]) -> bool:
     """Path.read_text(encoding, errors) / Path.write_text(data, encoding, ...) name an encoding
     by keyword or positionally. The unbound form, Path.read_text(p), has the path in front, so the
     position shifts by one."""
@@ -284,8 +301,8 @@ def _path_text_names_encoding(node: ast.Call, name: str) -> bool:
         if kw.arg == "encoding":
             return not _is_locale_default(kw.value)
     receiver = node.func.value
-    unbound = (isinstance(receiver, ast.Name) and receiver.id == "Path") or (
-        isinstance(receiver, ast.Attribute) and receiver.attr == "Path"
+    unbound = (isinstance(receiver, ast.Name) and receiver.id in path_classes) or (
+        isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
     )
     position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
     if len(node.args) <= position:
@@ -298,6 +315,7 @@ def _offenders(path: Path) -> list[str]:
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     subprocess_aliases = _subprocess_aliases(tree, subprocess_names)
+    path_classes = _path_class_names(tree)
     found: list[str] = []
     for node in _splatted_kwargs_offenders(tree):
         found.append(
@@ -336,7 +354,7 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
-            if _path_text_names_encoding(node, name):
+            if _path_text_names_encoding(node, name, path_classes):
                 continue
             # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
@@ -753,6 +771,10 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "unbound_read_pos.py": 'Path.read_text(p, "utf-8")\n',
         "unbound_write.py": 'pathlib.Path.write_text(p, "x")\n',
         "unbound_write_pos.py": 'pathlib.Path.write_text(p, "x", "utf-8")\n',
+        # Under an alias, or a concrete pathlib class.
+        "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
+        "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
+        "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
     }
     flagged = set()
     for name, source in cases.items():
@@ -769,6 +791,8 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "write_none_pos.py",
         "unbound_read.py",
         "unbound_write.py",
+        "unbound_alias.py",
+        "unbound_posix.py",
     }, flagged
 
 
