@@ -37,6 +37,7 @@ _ENV_CLEAR = (
     "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH",
     "TORCHDYNAMO_DISABLE",
     "UNSLOTH_DIFFUSION_AUTOOPT_DISCOVER",
+    "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT",
 )
 
 
@@ -446,6 +447,15 @@ def snapshot(entry: Callable) -> dict:
         "_HELPERS",
         {"patch": _patch_function, "restore": _restore_original},
     )
+    # diffusers' GGUF utils import the optional `gguf` package, so without it compiled_dequant never installs and
+    # every gguf=1 case would depend on the host. A stand-in module keeps the install path the same everywhere.
+    from core.inference import diffusion_gguf_compile
+
+    fake_gguf_utils = types.ModuleType("diffusers.quantizers.gguf.utils")
+    fake_gguf_utils.dequantize_gguf_tensor = lambda tensor: tensor
+    patch.setattr(diffusion_gguf_compile, "_gguf_utils", lambda: fake_gguf_utils)
+    patch.setattr(diffusion_gguf_compile, "_compiled_dequant_installed", False)
+    patch.setattr(diffusion_gguf_compile, "_compile_error", None)
     saved_env = {k: os.environ.pop(k, None) for k in _ENV_CLEAR}
     patch.setattr(torch.cuda, "is_available", lambda: True)
     patch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
