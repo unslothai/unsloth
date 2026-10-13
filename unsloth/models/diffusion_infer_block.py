@@ -18,6 +18,7 @@ block's first step, so the forward count matches the recompute sampler. Token se
 host syncs once per step (has the block finished early) and once per block (EOS)."""
 
 import math
+import sys
 import threading
 import time
 
@@ -135,7 +136,8 @@ def _llada2_runner(base, ids, mask, position_ids, cache):
     """LLaDA2's model forward only takes a square [B, 1, L, L] mask, so a cached step drives its layers directly
     with the same mask preparation and logits dtype as its forward."""
     inner = base.model
-    module = __import__(type(inner).__module__, fromlist = ["_"])
+    # The remote modeling module is already loaded: the model's class lives in it.
+    module = sys.modules[type(inner).__module__]
     hidden = inner.word_embeddings(ids)
     past = cache.get_seq_length() if cache is not None else 0
     mask = module._prepare_4d_causal_attention_mask_for_sdpa(mask, ids.shape, hidden, past)
