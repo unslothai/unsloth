@@ -218,3 +218,60 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
     restored ? { minimum: measured.bounds.minimum } : measured.bounds,
   );
 }
+
+type MinimumSizeWindow = {
+  isRestored: () => Promise<boolean>;
+  onResized: (handler: () => void) => Promise<() => void>;
+  applyFloor: (minimum: LogicalWindowSize) => Promise<void>;
+};
+
+export type MinimumSizeApplier = {
+  apply: (minimum: LogicalWindowSize) => Promise<void>;
+  /** Drops a floor still waiting, e.g. before setup clears the constraints. */
+  cancel: () => void;
+};
+
+/**
+ * tao applies a size floor by resizing the window to its own inner size, which drops
+ * maximized first: a maximized window comes back unmaximized at full-screen size, its
+ * bottom under the Windows taskbar (#13616). The floor only matters to a restored
+ * window, so a call made while maximized, fullscreen or minimized waits for the restore.
+ */
+export function createMinimumSizeApplier(
+  win: MinimumSizeWindow,
+): MinimumSizeApplier {
+  let pending: LogicalWindowSize | null = null;
+  let listening: Promise<() => void> | null = null;
+
+  const stopListening = () => {
+    const unlisten = listening;
+    listening = null;
+    unlisten?.then((stop) => stop()).catch(() => undefined);
+  };
+
+  const flush = async () => {
+    if (!pending || !(await win.isRestored()) || !pending) return;
+    const minimum = pending;
+    pending = null;
+    stopListening();
+    await win.applyFloor(minimum);
+  };
+
+  return {
+    apply: async (minimum) => {
+      pending = minimum;
+      if (await win.isRestored()) {
+        await flush();
+        return;
+      }
+      listening ??= win.onResized(() => {
+        flush().catch(() => undefined);
+      });
+      await listening;
+    },
+    cancel: () => {
+      pending = null;
+      stopListening();
+    },
+  };
+}
