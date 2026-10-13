@@ -265,6 +265,8 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
         + "\n"
         + bnb_floor_fn
         + "\n"
+        + _sh_function_body(src, "_hsa_override_gfx_arch")
+        + "\n"
         + _sh_function_body(src, "get_torch_index_url")
         + "\n"
         + _INDEX_URL_STUBS

@@ -28,6 +28,7 @@ from core._torchao_stub import (
     is_stubbed,
     torch_is_rocm,
 )
+from core.inference.diffusion_families import _FAMILIES as _IMAGE_REGISTRY
 from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
@@ -35,6 +36,7 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
+from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata
 
@@ -72,9 +74,9 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
 )
 
-# The video registry has no trainable flag, so the trainable set lives here and every name in it MUST resolve through
-# get_trainer; a video base outside it is refused by name.
-TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
+# ``VideoFamily.trainable``; every name in it MUST resolve through get_trainer, and a video base outside it is refused
+# by name.
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGISTRY if f.trainable)
 
 # Families whose flow_shift default is "auto" (reproduce the family's INFERENCE sigma distribution) rather than the
 # identity 1.0. Both schedulers set use_dynamic_shifting, so scheduler.sigmas is the unshifted uniform table and
@@ -538,19 +540,9 @@ def train_defaults(family: str) -> dict[str, Any]:
     return dict(FAMILY_TRAIN_DEFAULTS.get((family or "").strip().lower(), {}))
 
 
-# Display labels + a short VRAM/access note per trainable family, surfaced by the Train UI so users pick a base with
-# realistic expectations.
-_FAMILY_LABELS = {
-    "sdxl": "SDXL",
-    "flux.1": "FLUX.1-dev",
-    "qwen-image": "Qwen-Image",
-    "z-image": "Z-Image",
-    "krea-2": "Krea 2",
-    "flux.2-klein": "FLUX.2 Klein",
-    "flux.2-dev": "FLUX.2-dev",
-    "ltx-2": "LTX-2",
-    "minimax-h3": "MiniMax-H3",
-}
+# Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
+# so users pick a base with realistic expectations.
+_FAMILY_LABELS = {fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label}
 # params is the transformer size (SDXL is not quoted that way); note is the rest.
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},

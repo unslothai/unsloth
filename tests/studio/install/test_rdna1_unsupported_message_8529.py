@@ -747,7 +747,8 @@ class TestSetupShKfdOnlyHost:
     def test_the_report_site_uses_the_lspci_aware_lookup(self):
         src = _normalised(_SETUP_SH)
         assert (
-            'elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then' in src
+            'elif [ -n "$_setup_unsup_gfx" ] || _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then'
+            in src
         ), "studio/setup.sh: the gpu report no longer goes through the lspci-aware lookup"
 
     def test_the_lspci_name_never_reaches_the_routing_table(self):
@@ -1023,7 +1024,7 @@ class TestVulkanAdvice:
 
     # install.ps1's second anchor names $ROCmUnsupportedGfxArch: the earlier sentence is for a supported card.
     _ADVICE_SITES = [
-        (_INSTALL_SH, "Unsloth has no ROCm PyTorch wheels for that arch", 2),
+        (_INSTALL_SH, "Unsloth has no ROCm PyTorch wheels for that arch", 3),
         (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
         (
             _INSTALL_PS1,

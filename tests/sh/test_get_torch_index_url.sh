@@ -43,6 +43,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo
     sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_hsa_override_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
@@ -480,6 +482,29 @@ rm -rf "$_dir"
 _dir=$(make_mock_rocminfo "6.1" "gfx1100" 1)
 _result=$(run_func "$_dir")
 assert_eq "gfx1100 via rocminfo still floors to rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_dir"
+
+# RDNA 1 / Polaris read fine through a real ROCm install and still have no wheels (#8529):
+# every generic tag lacks their kernels, so the readable arch must not pick one.
+_dir=$(make_mock_rocminfo "6.4" "gfx1010" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx1010 via rocminfo with ROCm 6.4 takes the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "7.1" "gfx1012" 2)
+_result=$(run_func "$_dir")
+assert_eq "two gfx1012 agents with ROCm 7.1 take the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_rocminfo "6.4" "gfx803" 1)
+_result=$(run_func "$_dir")
+assert_eq "gfx803 via rocminfo with ROCm 6.4 takes the CPU index" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+# A covered card beside it still gets the generic wheels it can run.
+_dir=$(make_mock_rocminfo_multi "6.4" "gfx1010 gfx1100")
+_result=$(run_func "$_dir")
+assert_eq "gfx1010 beside gfx1100 keeps rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
 rm -rf "$_dir"
 
 # A mixed host is not a sole gfx906 target, so it keeps the generic floor.
