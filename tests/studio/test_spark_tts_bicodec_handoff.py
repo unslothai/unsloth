@@ -18,6 +18,7 @@ import pytest
 _TRAINER = Path(__file__).resolve().parents[2] / "studio/backend/core/training/trainer.py"
 _WORKER = _TRAINER.with_name("worker.py")
 _NAMES = (
+    "_spark_tts_hub_repo",
     "_spark_tts_repo_dir",
     "pre_detect_and_load_tokenizer",
     "resolve_spark_tts_repo",
@@ -142,7 +143,7 @@ def test_a_root_load_model_already_set_is_kept(repo_dir):
     assert codec_roots == [repo_dir]
 
 
-def _fetch(resolve):
+def _fetch(resolve, model_name = "unsloth/Spark-TTS-0.5B"):
     tree = ast.parse(_WORKER.read_text(encoding = "utf-8"))
     node = next(
         n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_fetch_spark_tts_repo"
@@ -166,12 +167,13 @@ def _fetch(resolve):
     exec(compile(ast.Module(body = [node], type_ignores = []), str(_WORKER), "exec"), ns)
     queue = SimpleNamespace(put = lambda event: events.append(event["type"]))
     trainer = SimpleNamespace(
-        resolve_spark_tts_repo = lambda on_model_resolved: resolve(on_model_resolved)
+        resolve_spark_tts_repo = lambda on_model_resolved: resolve(on_model_resolved),
+        spark_tts_hub_repo = lambda: "unsloth/Spark-TTS-0.5B",
     )
     hf_xet = SimpleNamespace(start_watchdog = start_watchdog)
     with patch.dict("sys.modules", {"utils": SimpleNamespace(), "utils.hf_xet_fallback": hf_xet}):
         try:
-            ns["_fetch_spark_tts_repo"](trainer, queue, "unsloth/Spark-TTS-0.5B")
+            ns["_fetch_spark_tts_repo"](trainer, queue, model_name)
         except OSError:
             events.append("raised")
     return events, watched
@@ -194,3 +196,8 @@ def test_a_failed_spark_download_still_closes_the_model_load_lifecycle():
 
     events, _ = _fetch(fail)
     assert events == ["model_load_started", "watchdog_stopped", "model_load_completed", "raised"]
+
+
+def test_the_watchdog_watches_the_repo_behind_the_llm_alias():
+    _, watched = _fetch(lambda report: None, model_name = "Spark-TTS-0.5B/LLM")
+    assert watched == [["Spark-TTS-0.5B/LLM", "unsloth/Spark-TTS-0.5B"]]

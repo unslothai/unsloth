@@ -238,6 +238,13 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     return {"subfolder": "LLM"}
 
 
+def _spark_tts_hub_repo(model_name: str) -> str:
+    """The Hub repo behind a Spark-TTS name: the "Spark-TTS-0.5B/LLM" registry alias is a subfolder, not a repo."""
+    if model_name.endswith("/LLM"):
+        return f"unsloth/{model_name.rsplit('/', 1)[0]}"
+    return model_name
+
+
 def _spark_tts_repo_dir(
     model_name: str,
     lookup_name: str,
@@ -250,10 +257,7 @@ def _spark_tts_repo_dir(
         return os.path.abspath(lookup_name)
     from huggingface_hub import snapshot_download
 
-    if model_name.endswith("/LLM"):
-        hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
-    else:
-        hf_repo = model_name
+    hf_repo = _spark_tts_hub_repo(model_name)
     if on_model_resolved is not None:
         on_model_resolved(hf_repo)
     return os.path.abspath(snapshot_download(hf_repo, revision = model_revision))
@@ -683,6 +687,9 @@ class UnslothTrainer:
             self._spark_tts_repo_dir = _spark_tts_repo_dir(
                 *self._spark_tts_repo_source, on_model_resolved
             )
+
+    def spark_tts_hub_repo(self) -> str:
+        return _spark_tts_hub_repo(self._spark_tts_repo_source[0])
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         self.progress_callbacks.append(callback)

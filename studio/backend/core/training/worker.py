@@ -955,8 +955,9 @@ def _fetch_spark_tts_repo(trainer, event_queue: Any, model_name: str) -> None:
 
     _send_status(event_queue, "Loading model...")
     event_queue.put({"type": "model_load_started", "ts": time.time()})
+    # The download lands under the resolved repo, not the "Spark-TTS-0.5B/LLM" alias.
     watchdog_stop = start_watchdog(
-        repo_ids = [model_name],
+        repo_ids = list(dict.fromkeys([model_name, trainer.spark_tts_hub_repo()])),
         on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
     )
