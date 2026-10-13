@@ -3400,10 +3400,7 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const entries = diffusionStagingEntries(plan.entries, repoId, {
-            ...opts,
-            checkpointBytes: plan.checkpoint_bytes,
-          });
+          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;

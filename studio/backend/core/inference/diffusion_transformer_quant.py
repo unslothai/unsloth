@@ -148,6 +148,7 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
     "ltx-2": _LTX2_INT8_EXCLUDES,
     "ltx-2.3": _LTX2_INT8_EXCLUDES,  # same audiovisual DiT
+    "ltx-2.5": _LTX2_INT8_EXCLUDES,  # the 2.3 DiT less the video FFN bias
 }
 
 

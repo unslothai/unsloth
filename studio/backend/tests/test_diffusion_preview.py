@@ -322,3 +322,36 @@ def test_smoothing_removes_the_period_two_patch_grid():
     # A smooth ramp passes through (interior; edges are replicated).
     ramp = torch.linspace(0, 1, w).expand(h, w)[..., None].expand(h, w, 3).contiguous()
     assert torch.allclose(DP.smooth_patch_grid(ramp)[2:-2, 2:-2], ramp[2:-2, 2:-2], atol = 1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_a_half_size_stage_unpacks_with_its_own_grid(monkeypatch):
+    # LTX-2.5's first stage denoises at half size: unpacked with the full-size grid its tokens tile 4 frames into one
+    # scrambled picture, so the render names each stage's size before it runs.
+    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
+    prev = DP.LatentPreviewer.create(
+        family = "ltx-2.5",
+        requested = None,
+        height = 704,
+        width = 1280,
+        device = "cuda",
+        publish = lambda url, seq: None,
+        min_interval_s = 0.0,
+    )
+    assert prev is not None
+    try:
+        half = torch.randn(1, 16 * 11 * 20, 128, device = "cuda")
+        # Full-size grid: 880 tokens per frame divides the 3520 of 16 half-size frames, so it "fits" but is wrong.
+        assert tuple(DP.latent_grid(half, prev.spec, prev.height, prev.width).shape) == (22, 40, 128)
+        prev._prev = object()
+        prev.set_render_size(352, 640)
+        assert (prev.height, prev.width) == (352, 640) and prev._prev is None
+        grid = DP.latent_grid(half, prev.spec, prev.height, prev.width)
+        assert torch.equal(grid.reshape(220, 128), half[0, :220])
+        # Never above the size the slots were sized for; back to full size for stage 2.
+        prev.set_render_size(1408, 2560)
+        assert (prev.height, prev.width) == (352, 640)
+        prev.set_render_size(704, 1280)
+        assert (prev.height, prev.width) == (704, 1280)
+    finally:
+        prev.finish()
