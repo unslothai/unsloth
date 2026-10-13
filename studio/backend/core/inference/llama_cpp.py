@@ -9186,7 +9186,7 @@ class LlamaCppBackend:
     ) -> Optional[bool]:
         """True for a thinking-off follow-up with no reasoning in its history, where the template proves
         that only preserve_thinking replays each answer's empty think block as generated."""
-        # Omitted reads as off: API clients rarely send it, and the probe proves what replays.
+        # Omitted reads as off; the probe proves what replays.
         if preserve_thinking is True or not getattr(self, "_supports_preserve_thinking", False):
             return preserve_thinking
         mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
@@ -9231,7 +9231,7 @@ class LlamaCppBackend:
         cached = getattr(self, "_empty_think_preserve_probe", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        # Concurrent first turns (agents open several) wait for one probe instead of each sending three.
+        # Concurrent first turns share one probe.
         with _EMPTY_THINK_PROBE_LOCK:
             cached = getattr(self, "_empty_think_preserve_probe", None)
             if cached is not None and cached[0] == key:
@@ -9264,7 +9264,7 @@ class LlamaCppBackend:
                             "chat_template_kwargs": {**off, "preserve_thinking": preserve},
                         },
                     )
-                    # The template's own answer; 408 / 429 are the server being busy, asked again.
+                    # A 4xx is the template's answer, cached; 408 / 429 mean busy.
                     if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
                         refused.append(r.status_code)
                     prompt = r.json().get("prompt") if r.status_code == 200 else None
@@ -9274,7 +9274,6 @@ class LlamaCppBackend:
                 kept = _render(history, True)
                 dropped = _render(history, False)
             if generated is None or kept is None or dropped is None:
-                # A 4xx is the template's answer, cached; busy or unreachable asks again next time.
                 if refused:
                     self._empty_think_preserve_probe = (key, False)
                 return False
@@ -42155,8 +42154,7 @@ class LlamaCppBackend:
         # continuing to request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
-                # Two user turns in a row break strict templates (Gemma), so ride the trailing user
-                # turn: the over-cap notice, or the image turn a tool's result was promoted into.
+                # Ride the trailing user turn (over-cap notice or promoted image): two in a row break Gemma.
                 if conversation[-1].get("role") == "user":
                     conversation[-1] = {
                         **conversation[-1],

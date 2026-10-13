@@ -1880,7 +1880,7 @@ def run_safetensors_tool_loop(
                 last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            # A trailing user turn (the over-cap notice, or a promoted image turn) carries it.
+            # Ride a trailing user turn, as the GGUF loop does.
             if over_cap or conversation[-1].get("role") == "user":
                 conversation[-1] = {
                     **conversation[-1],

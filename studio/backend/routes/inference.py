@@ -2583,7 +2583,7 @@ def _preserve_probe_pending(llama_backend) -> bool:
 def _replay_preserve_thinking(llama_backend, payload, messages):
     """The preserve_thinking generation will render with, so counts price the same prompt."""
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
-    # An Anthropic recount: its conversion dropped replayed thinking the resolver must not miss.
+    # An Anthropic recount: conversion dropped replayed thinking the resolver would miss.
     if resolver is None or _anthropic_history_has_thinking(payload):
         return payload.preserve_thinking
     return resolver(
@@ -5576,7 +5576,7 @@ async def _resolved_anthropic_reasoning_args_async(llama_backend, payload, messa
 
 
 def _resolved_anthropic_reasoning_args(llama_backend, payload, messages) -> dict:
-    """``_anthropic_reasoning_args`` with preserve_thinking resolved for ``messages`` as generation resolves it."""
+    """``_anthropic_reasoning_args`` with preserve_thinking resolved as generation resolves it."""
     args = _anthropic_reasoning_args(payload)
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
     # Conversion drops thinking it does not preserve, so ask the payload whether any was replayed.
@@ -42442,7 +42442,7 @@ async def anthropic_messages(
             else:
                 reservation.cancel()
 
-    # Off the loop: first use probes the template. Passthrough sends it, and every count prices it.
+    # Passthrough sends it and every count prices it.
     _reasoning_args = await _resolved_anthropic_reasoning_args_async(
         llama_backend, payload, openai_messages
     )
@@ -44800,7 +44800,7 @@ async def _openai_messages_for_gguf_chat_async(
     is_vision: bool,
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
-    # Restoring a replayed tool result may parse its envelope or source map, so tool turns go off the loop too.
+    # Restoring a tool result may parse its envelope or source map.
     if _request_has_image(payload) or any(
         getattr(message, "role", None) == "tool" for message in payload.messages
     ):
