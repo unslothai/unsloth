@@ -2582,6 +2582,9 @@ def cached_folder_target(
     ref = parse_identifier(base)
     if ref is None or not ref.folder:
         return None
+    # No Hub folder name holds a colon; on Windows ``snapshot / "C:"`` would name the snapshot root.
+    if ":" in ref.folder:
+        return AUDIO_CPP_REPO, []
     wanted = (variant or "").strip() or inline or ref.variant_hint
     model = resolve(ref.id, wanted, network = False)
     if model is None or not model.repo_id:
@@ -2626,7 +2629,7 @@ def _cached_variants_named(
 def folder_snapshot_dir(identifier: Optional[str]) -> Optional[Path]:
     """``<snapshot>/<Folder>`` of the first cached snapshot holding an umbrella folder row."""
     ref = parse_identifier(split_variant_ref(str(identifier or ""))[0])
-    if ref is None or not ref.folder or not ref.repo_id:
+    if ref is None or not ref.folder or not ref.repo_id or ":" in ref.folder:
         return None
     for snapshot in snapshot_dirs(ref.repo_id):
         if (snapshot / ref.folder).is_dir():

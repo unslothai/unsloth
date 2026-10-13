@@ -163,3 +163,18 @@ test("pickers render folder rows through the label, group, link and menu helpers
     /<span aria-hidden="true" className=\{cn\(ROW_ACTIONS_CLASS, "h-6"\)\} \/>/,
   );
 });
+
+test("Transcribe re-reads its STT On Device list when a cached model is deleted", () => {
+  const api = readSrc("features/hub/inventory/api.ts");
+  const start = api.indexOf("export async function deleteCachedModel(");
+  assert.ok(start > 0);
+  assert.match(
+    api.slice(start, api.indexOf("\n}\n", start)),
+    /bumpInventoryVersion\(\);/,
+  );
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /const inventoryVersion = useInventoryVersion\(\);\s*const seenInventoryVersion = useRef\(inventoryVersion\);\s*useEffect\(\(\) => \{\s*if \(!active \|\| seenInventoryVersion\.current === inventoryVersion\) return;\s*seenInventoryVersion\.current = inventoryVersion;\s*void refreshSttStatus\(\);\s*\}, \[active, inventoryVersion, refreshSttStatus\]\);/,
+  );
+});

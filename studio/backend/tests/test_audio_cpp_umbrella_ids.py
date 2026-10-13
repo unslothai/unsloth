@@ -405,3 +405,46 @@ def test_a_folder_delete_preview_counts_extras_its_variants_share(hub, monkeypat
     asyncio.run(deletion.delete_cached_model_response(pocket, None))
     assert not path.exists() and not voice.exists()
     assert len(_left(hub)) == 3
+
+
+def test_a_variant_delete_keeps_voice_files_a_downloading_sibling_needs(hub, monkeypatch):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    snap = hub / SNAPSHOT
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
+    rel = "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf"
+    _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+    voice = blobs / "voice-english"
+    voice.write_bytes(b"v" * 900)
+    path = snap / "PocketTTS-GGUF/english/embeddings/alba.safetensors"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    os.symlink(os.path.relpath(voice, path.parent), path)
+    acm.forget()
+    # english BF16 is downloading: its voices landed first, its GGUF is not listed yet.
+    monkeypatch.setattr(
+        deletion.downloads.registry, "has_active_peer_variant", lambda *a, **k: True
+    )
+    asyncio.run(deletion.delete_cached_model_response(pocket, "english/Q8_0"))
+    assert not (snap / rel).exists()
+    assert path.exists() and voice.exists()
+
+
+@pytest.mark.parametrize("folder", ["C:", "C:Qwen3-TTS-GGUF"])
+def test_a_drive_like_folder_id_names_nothing(hub, monkeypatch, folder):
+    from hub.services.models import companion_cleanup, deletion
+
+    _idle(monkeypatch)
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    assert acm.cached_folder_target(row, None) == (AUDIO_CPP_REPO, [])
+    assert acm.folder_snapshot_dir(row) is None
+    for call in (
+        lambda: _path(row, ""),
+        lambda: asyncio.run(deletion.delete_cached_model_response(row, None)),
+        lambda: asyncio.run(companion_cleanup.delete_impact_response(row, None)),
+    ):
+        with pytest.raises(HTTPException) as err:
+            call()
+        assert err.value.status_code == 404
+    assert len(_left(hub)) == 3
