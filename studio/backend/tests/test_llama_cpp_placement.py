@@ -1185,6 +1185,63 @@ def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
     assert backend.spec_fallback_reason == "drafter_no_vram"
 
 
+def test_a_wider_subset_holding_the_drafter_does_not_justify_the_cut(tmp_path):
+    """Fewer slots fit the drafter at full context only across both cards, but the walk
+    takes the first card that holds it at any context, here a few hundred tokens."""
+    gb, mib = 1024**3, 1024 * 1024
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    def fit(
+        requested,
+        budget_mib,
+        base,
+        *args,
+        mtp_engaged = False,
+        mtp_overhead_fn = None,
+        **kw,
+    ):
+        ctx = requested
+        while ctx > 0:
+            drafter = mtp_overhead_fn(ctx) if mtp_engaged and mtp_overhead_fn else 0
+            if (base + gb + drafter) / mib <= budget_mib:
+                return ctx
+            ctx -= 256
+        return 0
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 16 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: gb
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            1.5 * gb * int(_np or n_parallel or 1) + 24 * gb * n_ctx / 8192
+        )
+    )
+    backend._fit_context_to_vram = fit
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
 @pytest.mark.parametrize("extras", [["--parallel", "4"], ["-np=4"]])
 def test_a_slot_count_in_the_extras_is_kept(tmp_path, extras):
     backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
