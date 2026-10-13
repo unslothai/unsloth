@@ -524,15 +524,18 @@ function ReasoningBody({
   );
 }
 
-// The newest lines of a live trace in a fixed box (#11703), clipped at the top rather than an inner
-// scroller, which split the reading anchor across two containers and wrote its own scroll (#11704).
+// A trace in a fixed box (#11703): the newest lines while it streams, clipped at the top, and its start
+// once finished, clipped at the bottom. Not an inner scroller, which split the reading anchor across
+// two containers and wrote its own scroll (#11704).
 // Expand and Collapse toggle the box without opening the block for good, so the toggle never goes away.
 function ReasoningTail({
   cappable,
   expanded,
+  streaming,
   onExpandedChange,
   children,
 }: {
+  streaming: boolean;
   /** The setting bounds this block; `expanded` lifts the bound by hand. */
   cappable: boolean;
   expanded: boolean;
@@ -567,19 +570,23 @@ function ReasoningTail({
         data-capped={capped ? "" : undefined}
         data-overflowing={clipped ? "" : undefined}
         onFocus={(event) => {
-          // Clipped lines cannot scroll into view: a link focused up there expands the trace.
+          // Clipped lines cannot scroll into view: a link focused in them expands the trace.
+          const target = event.target.getBoundingClientRect();
+          const box = event.currentTarget.getBoundingClientRect();
           if (
             clipped &&
-            event.target.getBoundingClientRect().top <
-              event.currentTarget.getBoundingClientRect().top
+            (streaming ? target.top < box.top : target.bottom > box.bottom)
           )
             onExpandedChange(true);
         }}
         className={cn(
           capped &&
-            "flex max-h-[min(18rem,40vh)] flex-col justify-end overflow-hidden [&>*]:shrink-0",
+            "flex max-h-[min(18rem,40vh)] flex-col overflow-hidden [&>*]:shrink-0",
+          capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
-            "[mask-image:linear-gradient(to_bottom,transparent,black_3rem)]",
+            (streaming
+              ? "[mask-image:linear-gradient(to_bottom,transparent,black_3rem)]"
+              : "[mask-image:linear-gradient(to_top,transparent,black_3rem)]"),
         )}
       >
         {children}
@@ -924,6 +931,7 @@ const ReasoningGroupBlock = ({
         <ReasoningTail
           cappable={capped}
           expanded={tailExpanded}
+          streaming={isReasoningStreaming}
           onExpandedChange={(expanded) => {
             setTailExpanded(expanded);
             if (expanded) handleOpenChange(true);

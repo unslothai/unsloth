@@ -38,7 +38,7 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
   );
   assert.match(
     tail,
-    /flex max-h-\[[^\]]+\] flex-col justify-end overflow-hidden/,
+    /flex max-h-\[[^\]]+\] flex-col overflow-hidden/,
   );
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
@@ -62,7 +62,7 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
   );
   assert.match(
     tail,
-    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onExpandedChange\(true\);/,
+    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&\s*\(streaming \? target\.top < box\.top : target\.bottom > box\.bottom\)[\s\S]*?onExpandedChange\(true\);/,
   );
 });
 
@@ -105,4 +105,14 @@ test("Expand thinking ends in the header's chevron: right while bounded, down on
     tail,
     /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?!expanded && "-rotate-90"/,
   );
+});
+
+test("a streaming box shows the newest lines, a finished one shows the start", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  assert.match(tail, /capped && \(streaming \? "justify-end" : "justify-start"\)/);
+  assert.match(tail, /to_bottom,transparent[\s\S]*?to_top,transparent/);
+  assert.match(reasoning, /streaming=\{isReasoningStreaming\}\s*onExpandedChange=/);
 });
