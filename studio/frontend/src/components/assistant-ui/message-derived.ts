@@ -166,7 +166,7 @@ function hasToolCall(message: MessageLike, toolCallId: string): boolean {
 }
 
 /** Places each compaction where it cut: above the prompt whose request compacted (or the reply when no
- *  prompt precedes it), or, for one a tool loop ran mid-reply, right after the tool call it followed.
+ *  prompt precedes it), and the last one a tool loop ran mid-reply right after the tool call it followed.
  *  Replies saved before markers existed keep one divider above the prompt. */
 const compactionDividers = memoOnArray(
   (messages: readonly MessageLike[]): CompactionDividers => {
@@ -182,6 +182,9 @@ const compactionDividers = memoOnArray(
       const markers =
         message.role === "assistant" ? compactionMarkersOf(message) : null;
       if (markers) {
+        // A small window resets on nearly every tool round. Everything above the last reset was out of
+        // the model's view when it answered, so that one is the boundary worth drawing.
+        let lastInLoop: CompactionMarker | null = null;
         for (const marker of markers) {
           if (!shouldShowCompactionNotice(marker.truncation, previousBoundary)) {
             continue;
@@ -194,10 +197,13 @@ const compactionDividers = memoOnArray(
             marker.afterToolCallId !== null &&
             hasToolCall(message, marker.afterToolCallId)
           ) {
-            afterToolCalls.set(marker.afterToolCallId, marker.truncation);
+            lastInLoop = marker;
           } else if (!rows.has(row)) {
             rows.set(row, marker.truncation);
           }
+        }
+        if (lastInLoop?.afterToolCallId) {
+          afterToolCalls.set(lastInLoop.afterToolCallId, lastInLoop.truncation);
         }
       } else if (notices.has(message.id)) {
         const truncation = (

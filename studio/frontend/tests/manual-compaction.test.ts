@@ -12,6 +12,7 @@ import { ggufCompactionRequestFields } from "../src/features/chat/utils/auto-com
 import {
   appendCompactionMarker,
   type CompactionMarker,
+  compactionAnchorToolCallId,
   type ContextTruncation,
 } from "../src/features/chat/utils/context-truncation.ts";
 import {
@@ -169,4 +170,44 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\)/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
+});
+
+test("a fit that recalled anchors before the recall it already emitted", () => {
+  const recalled = fit(4, { checkpoint_started: true, recalled_chunks: 3 });
+  const search = { toolCallId: "recall", toolName: "search_conversation" };
+  const terminal = { toolCallId: "call-1", toolName: "terminal" };
+  // At the start of a reply the recall is the only call so far: the cut goes above the prompt.
+  assert.equal(compactionAnchorToolCallId([search], recalled), null);
+  assert.equal(compactionAnchorToolCallId([terminal, search], recalled), "call-1");
+  // Without a recall, a search the model ran itself is just the last call.
+  assert.equal(compactionAnchorToolCallId([terminal, search], fit(4)), "recall");
+  assert.equal(compactionAnchorToolCallId([], fit(4)), null);
+});
+
+test("a reply that reset on many tool rounds draws only its last reset", () => {
+  const reset = (dropped: number) =>
+    fit(0, { dropped_messages: dropped, checkpoint_started: true });
+  const first = reset(4);
+  const last = reset(2);
+  const messages = [
+    { id: "u1", role: "user" },
+    {
+      id: "a1",
+      role: "assistant",
+      parts: [toolCall("c1"), toolCall("c2"), toolCall("c3")],
+      metadata: {
+        custom: {
+          contextTruncation: last,
+          compactionMarkers: [
+            { afterToolCallId: "c1", truncation: first },
+            { afterToolCallId: "c2", truncation: reset(3) },
+            { afterToolCallId: "c3", truncation: last },
+          ],
+        },
+      },
+    },
+  ];
+
+  assert.deepEqual([...compactionToolCallDividers(messages)], [["c3", last]]);
+  assert.equal(compactionDividerCount(messages), 1);
 });

@@ -333,6 +333,7 @@ import {
 import {
   appendCompactionMarker,
   type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -5922,7 +5923,6 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
-      // Where in the reply each compaction landed, so the transcript can mark the spot.
       let compactionMarkers: CompactionMarker[] | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
@@ -7325,7 +7325,10 @@ export function createOpenAIStreamAdapter(
                 compactionMarkers = appendCompactionMarker(
                   compactionMarkers,
                   chunk.context_truncated,
-                  toolCallParts[toolCallParts.length - 1]?.toolCallId ?? null,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were

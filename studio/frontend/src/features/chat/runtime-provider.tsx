@@ -186,6 +186,7 @@ import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import {
   appendCompactionMarker,
   type CompactionMarker,
+  compactionAnchorToolCallId,
   mergeContextTruncation,
 } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
@@ -1759,13 +1760,12 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
-                const lastToolCall = [...carried]
-                  .reverse()
-                  .find(
-                    (entry) =>
-                      (entry.part as { type?: unknown } | null)?.type ===
-                      "tool-call",
-                  )?.part as { toolCallId?: unknown } | undefined;
+                const toolCalls = carried
+                  .map((entry) => entry.part as { type?: unknown } | null)
+                  .filter((part) => part?.type === "tool-call") as Array<{
+                  toolCallId?: unknown;
+                  toolName?: unknown;
+                }>;
                 currentMetadata = {
                   ...currentMetadata,
                   contextTruncation: mergeContextTruncation(
@@ -1775,9 +1775,7 @@ function scheduleGenerationRecovery(
                   compactionMarkers: appendCompactionMarker(
                     currentMetadata.compactionMarkers as CompactionMarker[] | undefined,
                     chunk.context_truncated,
-                    typeof lastToolCall?.toolCallId === "string"
-                      ? lastToolCall.toolCallId
-                      : null,
+                    compactionAnchorToolCallId(toolCalls, chunk.context_truncated),
                   ),
                 };
               }

@@ -58,6 +58,23 @@ export interface CompactionMarker {
   truncation: ContextTruncation;
 }
 
+/** The call a fit followed. A fit that recalled has already emitted its `search_conversation` exchange,
+ *  which belongs after the cut, not before it. */
+export function compactionAnchorToolCallId(
+  toolCalls: ReadonlyArray<{ toolCallId?: unknown; toolName?: unknown }>,
+  truncation: ContextTruncation,
+): string | null {
+  let end = toolCalls.length;
+  if (
+    (truncation.recalled_chunks ?? 0) > 0 &&
+    toolCalls[end - 1]?.toolName === "search_conversation"
+  ) {
+    end -= 1;
+  }
+  const id = toolCalls[end - 1]?.toolCallId;
+  return typeof id === "string" ? id : null;
+}
+
 /** Adds a fit that cut something new. A tool loop refits every round and replays the same cut. */
 export function appendCompactionMarker(
   markers: CompactionMarker[] | undefined,
