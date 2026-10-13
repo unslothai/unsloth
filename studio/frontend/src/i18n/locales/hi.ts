@@ -2008,6 +2008,8 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
+        chartToggle: "चार्ट",
+        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",

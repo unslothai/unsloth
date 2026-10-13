@@ -2010,6 +2010,8 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
+        chartToggle: "График",
+        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",
