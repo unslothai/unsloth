@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -186,19 +186,42 @@ test("an adopted resident model does not use a cached load ID", () => {
   );
 });
 
-test("the shared agent list keeps the seven agents in order", () => {
+test("the shared agent list keeps the nine agents in order", () => {
   assert.deepEqual(
     SUPPORTED_AGENTS.map((agent) => agent.id),
-    ["claude", "codex", "hermes", "openclaw", "opencode", "dsh", "vibe"],
+    [
+      "claude",
+      "codex",
+      "vscode",
+      "dsh",
+      "opencode",
+      "hermes",
+      "openclaw",
+      "pi",
+      "vibe",
+    ],
   );
   assert.equal(detailsFor("codex").name, "OpenAI Codex");
-  assert.deepEqual(detailsFor("pi"), {
-    id: "pi",
-    name: "pi",
+  assert.deepEqual(detailsFor("unknown"), {
+    id: "unknown",
+    name: "unknown",
     docsUrl: UNSLOTH_START_DOCS_URL,
     color: "#64748B",
-    mark: "pi",
+    mark: "un",
   });
+});
+
+test("every listed agent icon ships in public/agent-logos", () => {
+  for (const agent of SUPPORTED_AGENTS) {
+    for (const file of [agent.icon, agent.darkIcon]) {
+      if (file) {
+        assert.ok(
+          existsSync(new URL(`../public/agent-logos/${file}`, import.meta.url)),
+          file,
+        );
+      }
+    }
+  }
 });
 
 test("the Agents tab uses the shared agent list and copy blocks", () => {

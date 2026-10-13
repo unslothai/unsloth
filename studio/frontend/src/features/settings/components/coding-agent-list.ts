@@ -32,6 +32,27 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     logo: "openai",
   },
   {
+    id: "vscode",
+    name: "VS Code",
+    docsUrl:
+      "https://code.visualstudio.com/docs/copilot/customization/language-models",
+    // vscode.svg is the stable icon from code.visualstudio.com/brand.
+    icon: "vscode.svg",
+  },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+    logo: "deepseek",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    docsUrl: "https://unsloth.ai/docs/integrations/opencode",
+    icon: "opencode-light.svg",
+    darkIcon: "opencode-dark.svg",
+  },
+  {
     id: "hermes",
     name: "Hermes Agent",
     docsUrl: "https://unsloth.ai/docs/integrations/hermes-agent",
@@ -45,17 +66,11 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     icon: "openclaw.svg",
   },
   {
-    id: "opencode",
-    name: "OpenCode",
-    docsUrl: "https://unsloth.ai/docs/integrations/opencode",
-    icon: "opencode-light.svg",
-    darkIcon: "opencode-dark.svg",
-  },
-  {
-    id: "dsh",
-    name: "DeepSeek Harness",
-    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
-    logo: "deepseek",
+    id: "pi",
+    name: "Pi",
+    docsUrl: "https://pi.dev",
+    // pi.svg is https://pi.dev/logo-auto.svg, the logo the earendil-works/pi README uses.
+    icon: "pi.svg",
   },
   {
     id: "vibe",
@@ -64,6 +79,10 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     logo: "mistral",
   },
 ];
+
+// VS Code is detected by its `code` launcher, which most developers have. It only adds a model to
+// Copilot Chat, so it is offered but never picked over a terminal agent on its own.
+export const NOT_AUTO_PICKED_AGENTS: ReadonlySet<string> = new Set(["vscode"]);
 
 export function detailsFor(agentId: string): AgentDetails {
   return (
