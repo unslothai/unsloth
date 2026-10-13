@@ -2937,8 +2937,8 @@ _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 class FastBaseModel:
     @staticmethod
-    @hf_token_for_load
     @_offline_aware_load
+    @hf_token_for_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,

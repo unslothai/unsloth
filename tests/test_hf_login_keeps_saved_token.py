@@ -121,3 +121,15 @@ def test_the_load_scope_still_saves_a_token_on_a_machine_with_no_login(hub):
 
     assert load("org/gated", token = "hf_passed") == "hf_passed"
     assert huggingface_hub.get_token() == "hf_passed"
+
+
+@pytest.mark.parametrize(
+    "path, cls",
+    [("loader.py", "FastLanguageModel"), ("loader.py", "FastModel"), ("vision.py", "FastBaseModel")],
+)
+def test_the_token_scope_runs_inside_the_offline_guard(path, cls):
+    tree = ast.parse((UTILS_PATH.parent / path).read_text(encoding = "utf-8"))
+    klass = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
+    method = next(n for n in klass.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    names = [d.id for d in method.decorator_list if isinstance(d, ast.Name)]
+    assert names.index("_offline_aware_load") < names.index("hf_token_for_load")

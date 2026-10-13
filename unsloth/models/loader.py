@@ -960,9 +960,9 @@ def _vllm_unavailable_error():
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
-    @hf_token_for_load
     @tokenizers_v1_on_return
     @_offline_aware_load
+    @hf_token_for_load
     @mistral_format_redirect
     @track_explicit_4bit_request
     def from_pretrained(
@@ -1839,10 +1839,10 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
-    @hf_token_for_load
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load
+    @hf_token_for_load
     @mistral_format_redirect
     @track_explicit_4bit_request
     def from_pretrained(
