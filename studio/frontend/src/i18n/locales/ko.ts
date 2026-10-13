@@ -2363,7 +2363,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령어를 사용하면 Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 완전히 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
+        "명령어를 사용하면 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 완전히 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",

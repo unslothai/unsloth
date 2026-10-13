@@ -2540,7 +2540,7 @@ export const sv = {
       description:
         "Anslut kodagenter som Claude Code och Codex till en lokal modell med unsloth start.",
       intro:
-        "ansluter Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode och andra agenter till en modell som Unsloth kör lokalt, helt offline. Den kör en OpenAI-kompatibel server och ändrar aldrig agentens konfigurationsfiler.",
+        "ansluter Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode och andra agenter till en modell som Unsloth kör lokalt, helt offline. Den kör en OpenAI-kompatibel server och ändrar aldrig agentens konfigurationsfiler.",
       readDocs: "Läs dokumentationen",
       copy: "Kopiera",
       copied: "Kopierat",

@@ -2463,7 +2463,7 @@ export const he = {
       description:
         "חבר סוכני תכנות כגון Claude Code ו-Codex למודל מקומי באמצעות unsloth start.",
       intro:
-        "מחבר את Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode וסוכנים נוספים למודל המוגש מקומית על ידי Unsloth, במצב לא מקוון לחלוטין. הוא מפעיל שרת תואם OpenAI ולעולם אינו נוגע בקובצי ההגדרות של הסוכן שלך.",
+        "מחבר את Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode וסוכנים נוספים למודל המוגש מקומית על ידי Unsloth, במצב לא מקוון לחלוטין. הוא מפעיל שרת תואם OpenAI ולעולם אינו נוגע בקובצי ההגדרות של הסוכן שלך.",
       readDocs: "קרא את התיעוד",
       copy: "העתק",
       copied: "הועתק",
