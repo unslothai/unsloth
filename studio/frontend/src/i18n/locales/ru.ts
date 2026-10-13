@@ -88,6 +88,8 @@ export const ru = {
         submit: "Разрешить Unsloth отправить эту форму на {host}?",
         click: "Разрешить Unsloth нажать «{name}» на {host}?",
         history: "Разрешить Unsloth читать историю браузера?",
+        script: "Разрешить Unsloth запустить этот скрипт на {host}?",
+        pointer: "Разрешить Unsloth нажимать на неподписанные области {host}, например холст?",
       },
     },
     title: "Браузер",

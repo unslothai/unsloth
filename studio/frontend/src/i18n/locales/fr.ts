@@ -88,6 +88,8 @@ export const fr = {
         submit: "Autoriser Unsloth à envoyer ce formulaire sur {host} ?",
         click: "Autoriser Unsloth à cliquer sur « {name} » sur {host} ?",
         history: "Autoriser Unsloth à lire votre historique de navigation ?",
+        script: "Autoriser Unsloth à exécuter ce script sur {host} ?",
+        pointer: "Autoriser Unsloth à cliquer sur des zones sans libellé de {host}, comme un canevas ?",
       },
     },
     title: "Navigateur",

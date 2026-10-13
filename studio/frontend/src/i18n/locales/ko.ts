@@ -88,6 +88,8 @@ export const ko = {
         submit: "Unsloth가 {host}에서 이 양식을 제출하도록 허용할까요?",
         click: "Unsloth가 {host}에서 “{name}”을(를) 클릭하도록 허용할까요?",
         history: "Unsloth가 방문 기록을 읽도록 허용할까요?",
+        script: "Unsloth가 {host}에서 이 스크립트를 실행하도록 허용할까요?",
+        pointer: "Unsloth가 {host}에서 캔버스처럼 레이블이 없는 부분을 클릭하도록 허용할까요?",
       },
     },
     title: "브라우저",

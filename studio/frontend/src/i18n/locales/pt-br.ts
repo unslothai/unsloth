@@ -88,6 +88,8 @@ export const ptBR = {
         submit: "Permitir que o Unsloth envie este formulário em {host}?",
         click: "Permitir que o Unsloth clique em “{name}” em {host}?",
         history: "Permitir que o Unsloth leia seu histórico de navegação?",
+        script: "Permitir que o Unsloth execute este script em {host}?",
+        pointer: "Permitir que o Unsloth clique em partes sem rótulo de {host}, como um canvas?",
       },
     },
     title: "Navegador",
