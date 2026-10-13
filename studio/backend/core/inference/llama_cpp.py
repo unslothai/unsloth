@@ -294,6 +294,9 @@ def _fit_context(messages, **kwargs):
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
+    # /compact: only a checkpoint reset can honour it, since only its turns are archived.
+    force_reset = bool(kwargs.pop("force_reset", False))
+    sticky_manual = bool(kwargs.pop("sticky_manual", False))
     try:
         from core.inference import checkpoint
 
@@ -313,7 +316,11 @@ def _fit_context(messages, **kwargs):
             # header's tool sentence swapped for one that promises no lookup this request
             # cannot perform. If the replay cannot fit, fall through to rolling BELOW.
             fitted, truncation = checkpoint.fit_checkpoint_context(
-                messages, can_reset = False, searchable = False, **kwargs
+                messages,
+                can_reset = False,
+                searchable = False,
+                sticky_manual = sticky_manual,
+                **kwargs,
             )
             if truncation is not None and truncation.get("fits"):
                 return fitted, truncation
@@ -354,6 +361,8 @@ def _fit_context(messages, **kwargs):
                 messages,
                 can_reset = lambda: not _is_degraded(),
                 searchable = lambda: recall_offered and not _is_degraded(),
+                force_reset = force_reset,
+                sticky_manual = sticky_manual,
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -479,12 +488,14 @@ from core.inference.mcp_images import (
 )
 from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
+    BROWSER_TOOL_NAMES,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
     awaiting_approval_status,
     deferred_nudge_text,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
@@ -681,6 +692,8 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # Slots left at the default: Auto speculation may lower them to keep a drafter (#8872).
+    n_parallel_from_default: bool = False
     # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
@@ -777,11 +790,21 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
-    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+def _apply_seeded_llama_request(
+    payload: dict,
+    seed: Optional[int],
+    *,
+    reuse_prompt_cache: bool = False,
+) -> None:
+    """Disable prompt caching for fixed seeds so repeated requests stay reproducible.
+
+    ``reuse_prompt_cache``: a tool-loop continuation of this run; cold, it re-prefills (#10698).
+    """
     if seed is None:
         return
     payload["seed"] = seed
+    if reuse_prompt_cache:
+        return
     # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
@@ -1911,7 +1934,25 @@ def _sticky_compaction_state(
     can_reset: bool = True,
     compaction_headroom_ratio: Optional[float] = None,
 ) -> tuple[int, bool]:
-    """How many leading messages this thread last compacted away, and who compacted them.
+    """`_sticky_compaction_details` without the manual flag."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[:2]
+
+
+def _sticky_compaction_details(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> tuple[int, bool, bool]:
+    """How many leading messages this thread last compacted away, who compacted them, and
+    whether the user asked for it (/compact), which replays even while the prompt fits.
 
     The provenance decides which fitter may consume the count. A rolling boundary handed
     to `fit_checkpoint_context` reads as an epoch already in force, so the fit returns
@@ -1930,7 +1971,7 @@ def _sticky_compaction_state(
     a non-persisting API client, or a storage error all mean "no boundary".
     """
     if not thread_id:
-        return 0, False
+        return 0, False, False
     requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
         from storage import studio_db
@@ -1938,24 +1979,25 @@ def _sticky_compaction_state(
         stored = list(studio_db.list_chat_messages(thread_id) or [])
         states = _compaction_branch_states(stored, branch_messages)
         if not states:
-            return 0, False
+            return 0, False, False
 
         boundaries = []
         origins = []
+        manual = []
         branch_wire = _archive_as_wire(branch_messages)
         for state in states:
             truncation = state.truncation
             recorded = state.recorded
             if truncation is None:
-                return 0, False
+                return 0, False, False
             # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
-                return 0, False
+                return 0, False, False
             # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
             # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
             # original turns without retaining their summary.
             if truncation.get("summarized") is True:
-                return 0, False
+                return 0, False, False
             # A boundary is valid only under the fit that will consume it, and the two
             # directions fail differently.
             #
@@ -1976,9 +2018,9 @@ def _sticky_compaction_state(
             recorded_checkpoint = bool(truncation.get("checkpoint"))
             effective_checkpoint = _request_uses_checkpoint(context_policy)
             if recorded_checkpoint and not effective_checkpoint:
-                return 0, False
+                return 0, False, False
             if not recorded_checkpoint and effective_checkpoint and can_reset:
-                return 0, False
+                return 0, False, False
             # Changing the extra trim has to change something. Phase one of
             # `fit_rolling_context` re-applies this count before anything else and stops
             # once the result fits, so a boundary cut under a DIFFERENT ratio never reaches
@@ -1994,9 +2036,9 @@ def _sticky_compaction_state(
                         recorded_ratio is not None
                         and abs(float(recorded_ratio) - requested_ratio) > 1e-9
                     ):
-                        return 0, False
+                        return 0, False, False
                 except (TypeError, ValueError):
-                    return 0, False
+                    return 0, False, False
             # A count is only valid against the transcript it was counted on. Deleting an
             # already-evicted turn shortens the front, and replaying the count then evicts
             # that many LIVE messages instead. Re-derive it from the anchor's position on
@@ -2010,11 +2052,29 @@ def _sticky_compaction_state(
                         break
             boundaries.append(recorded)
             origins.append(recorded_checkpoint)
+            manual.append(recorded_checkpoint and truncation.get("manual") is True)
         if not boundaries:
-            return 0, False
-        return min(boundaries), all(origins)
+            return 0, False, False
+        return min(boundaries), all(origins), all(manual)
     except Exception:
-        return 0, False
+        return 0, False, False
+
+
+def _sticky_compaction_manual(
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
+    can_reset: bool = True,
+    compaction_headroom_ratio: Optional[float] = None,
+) -> bool:
+    """Whether the epoch `_sticky_compaction_state` replays was started by /compact."""
+    return _sticky_compaction_details(
+        thread_id,
+        branch_messages,
+        context_policy = context_policy,
+        can_reset = can_reset,
+        compaction_headroom_ratio = compaction_headroom_ratio,
+    )[2]
 
 
 def _sticky_compaction_boundary(
@@ -4521,6 +4581,8 @@ def _auto_mode_drops_mtp(
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
 # Smallest context Auto shrinks to so a fast MLA head still launches.
 _FAST_MTP_MIN_CTX = 65536
+# Max share of the target-only Auto context a drafter may take at one slot.
+_MTP_SLOT_CTX_TRIM = 0.10
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -4571,7 +4633,8 @@ _CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
 _CPU_FFN_COUNT_FLAGS = frozenset({"-ncffn", "--n-cpu-ffn"})
 # User controls over llama.cpp's own fitter. Studio emits neither on Metal, so a launch carrying
 # one is placed by a fitter the Metal memory probe did not run.
-_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target", "-fitc", "--fit-ctx"})
+_FIT_CTX_FLAGS = frozenset({"-fitc", "--fit-ctx"})
+_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target"}) | _FIT_CTX_FLAGS
 _FIT_CONTROL_ENV_VARS = ("LLAMA_ARG_FIT_TARGET", "LLAMA_ARG_FIT_CTX")
 _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
     {"-ot", "--override-tensor"}
@@ -5006,6 +5069,33 @@ def _shim_supports_ngl(shim_cmd: List[str]) -> bool:
         if _source_declares_option(source, "--ngl"):
             return True
     return False
+
+
+def _visual_server_splits_gpus(visual_bin: Optional[str]) -> bool:
+    """Whether the diffusion visual server survives a model split over several GPUs.
+
+    Builds before the fix abort on the first request once split: with the prompt-KV store
+    off (it is single-device) every [prompt|canvas] row asked for logits past the server's
+    canvas-sized output cap. Fixed builds answer ``--capabilities`` with ``multi_gpu_split``;
+    read that literal from the binary rather than spawning it, since an old build takes
+    10-30 s to fail on the unknown argument.
+    """
+    if not visual_bin:
+        return False
+    try:
+        st = os.stat(visual_bin)
+    except OSError:
+        return False
+    return _binary_has_marker(visual_bin, st.st_mtime_ns, st.st_size, b"multi_gpu_split")
+
+
+@functools.lru_cache(maxsize = 16)
+def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return marker in f.read()
+    except OSError:
+        return False
 
 
 def _swa_full_from_args_or_env(
@@ -5525,6 +5615,25 @@ def _extra_args_requests_dspark(
 ) -> bool:
     """True if DSpark lands in llama.cpp's accumulated spec-type vector."""
     return "draft-dspark" in _accumulated_spec_types(extra_args, env)
+
+
+def _dflash_drafter_breaks_on_images(
+    model_path: Optional[str], dflash_path: Optional[str], projector: Optional[str]
+) -> bool:
+    """#13511: llama.cpp skips an M-RoPE image in the DFlash drafter (its rows share one
+    position) and a NeoX drafter then rejects the jump, so the first image sent after any
+    text fails the slot. Unreadable headers fail open."""
+    if not (model_path and dflash_path and projector):
+        return False
+    try:
+        from utils.models.gguf_metadata import gguf_has_mrope_sections, mmproj_accepts_image
+        return bool(
+            mmproj_accepts_image(projector)
+            and gguf_has_mrope_sections(model_path) is True
+            and gguf_has_mrope_sections(dflash_path) is False
+        )
+    except Exception:
+        return False
 
 
 def _extra_args_requests_dflash(
@@ -6739,6 +6848,23 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+def _with_parallel_slots(
+    cmd: Sequence[str], slots: int, *, n_batch: Optional[int], supports_kv_unified: bool
+) -> list[str]:
+    """``cmd`` relaunched at ``slots``: Unsloth's own --parallel, its batch floor, and the
+    --kv-unified a multi-slot launch adds. Each is emitted before the extras, so the
+    first occurrence is the one to rewrite and a hand-typed flag still last-wins."""
+    out = [str(a) for a in cmd]
+    at = out.index("--parallel")
+    out[at + 1] = str(slots)
+    if n_batch is not None and "--batch-size" in out:
+        b = out.index("--batch-size")
+        out[b + 1] = str(_emitted_n_batch(n_batch, slots))
+    if slots > 1 and supports_kv_unified and "--kv-unified" not in out and "-kvu" not in out:
+        out[at + 2 : at + 2] = ["--kv-unified"]
+    return out
+
+
 def _extra_args_split_mode(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -7156,6 +7282,79 @@ def _expert_spill_places_tensors_on_cpu(
 # GPU cache of host-resident experts (ggml-org/llama.cpp#29887); "auto" is sized by the
 # fork's fitter (unslothai/llama.cpp#251). One run, so a retry can strip it.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
+# --moe-cache-mib auto only beats the --fit split at a middling resident expert share r
+# (unknown r keeps the split). Cache vs split decode / prompt t/s, L4 gemma-4-26B-A4B:
+# r 0.23 23.5/384 vs 24.5/448, r 0.53 44.9/556 vs 31.2/593, r 0.82 48.5/592 vs 42.0/897.
+# RTX PRO 6000 Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
+_MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
+_MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
+# Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
+# MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
+_MOE_CACHE_WITH_DRAFTER = True
+# Skip the spill micro-batch raise if it pushes more than this share of resident experts
+# off the GPU. L4 gemma-4: r 0.23 lost 14% (decode -3%), r 0.53/0.82 lost 4-6%.
+_MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
+# "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
+_MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
+_MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
+_MOE_SWITCH_ON = frozenset({"1", "on", "true", "yes", "force"})
+_MOE_SWITCH_OFF = frozenset({"0", "off", "false", "no", "never"})
+
+
+def _moe_switch(name: str, env: Optional[Mapping[str, str]] = None) -> str:
+    """``"on"``, ``"off"`` or ``"auto"`` for one of the MoE override env vars."""
+    raw = str((os.environ if env is None else env).get(name) or "").strip().lower()
+    if raw in _MOE_SWITCH_ON:
+        return "on"
+    if raw in _MOE_SWITCH_OFF:
+        return "off"
+    return "auto"
+
+
+def _moe_resident_expert_share(
+    shortfall_bytes: Optional[float], expert_bytes: Optional[int]
+) -> Optional[float]:
+    """1 - shortfall / expert bytes (the fitter offloads experts first); None if unknown."""
+    if shortfall_bytes is None or not expert_bytes or expert_bytes <= 0:
+        return None
+    return min(1.0, max(0.0, 1.0 - float(shortfall_bytes) / float(expert_bytes)))
+
+
+def _moe_cache_share_admits(
+    resident_share: Optional[float],
+    *,
+    drafter: bool,
+    switch: str = "auto",
+) -> bool:
+    """Whether ``--moe-cache-mib auto`` beats the --fit split at this resident share."""
+    if switch != "auto":
+        return switch == "on"
+    if drafter and not _MOE_CACHE_WITH_DRAFTER:
+        return False
+    return (
+        resident_share is not None
+        and _MOE_CACHE_MIN_RESIDENT_SHARE <= resident_share <= _MOE_CACHE_MAX_RESIDENT_SHARE
+    )
+
+
+def _moe_spill_raise_keeps_experts(
+    share_before: Optional[float],
+    share_after: Optional[float],
+    *,
+    switch: str = "auto",
+) -> bool:
+    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+    if switch != "auto":
+        return switch == "on"
+    if share_before is None:
+        return True
+    if share_before >= 1.0:
+        return False
+    if share_after is None:
+        return True
+    return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
+
+
 # User placement: the fitter aborts on most of it, and the cache refuses >1 device (--rpc adds one).
 _MOE_CACHE_USER_OWNED_FLAGS = (
     frozenset({"--moe-cache-mib", "-ot", "--override-tensor", "--rpc"})
@@ -7449,6 +7648,33 @@ def _backfill_usage_from_timings(usage, timings):
         out.get("completion_tokens") or 0
     )
     return out
+
+
+def _context_usage_event(usage, timings):
+    """UI frame pricing the context one finished tool-loop pass leaves behind, or None.
+
+    ``timings.prompt_n`` excludes the KV-cache hit (``cache_n``) while ``usage.prompt_tokens``
+    includes it, so a prompt read from timings adds the hit back.
+    """
+    usage = usage or {}
+    timings = timings or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or timings.get(
+        "cache_n"
+    )
+    prompt = usage.get("prompt_tokens")
+    if not prompt and timings.get("prompt_n") is not None:
+        prompt = int(timings.get("prompt_n") or 0) + int(timings.get("cache_n") or 0)
+    completion = usage.get("completion_tokens") or timings.get("predicted_n")
+    if not prompt:
+        return None
+    prompt, completion = int(prompt), int(completion or 0)
+    return {
+        "type": "context_usage",
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "context_tokens": prompt + completion,
+        "cached_tokens": int(cached or 0),
+    }
 
 
 def _llama_chunk_has_generated_output(data: dict) -> bool:
@@ -8146,6 +8372,7 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        self._slots_cut_for_drafter: bool = False
         # Budget the running child was sized against; None before any load, so the
         # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
@@ -8733,6 +8960,7 @@ class LlamaCppBackend:
         self._effective_parallel_slots = 1
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
+        self._slots_cut_for_drafter = False
         self._requested_n_batch = None
         self._requested_n_ubatch = None
         self._requested_load_mode = None
@@ -8945,6 +9173,94 @@ class LlamaCppBackend:
             )
         return {"enable_thinking": enable_thinking}
 
+    def _replay_preserve_thinking(
+        self,
+        preserve_thinking: Optional[bool],
+        messages,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Optional[bool]:
+        """True for a thinking-off follow-up with no reasoning in its history, where the template proves
+        that only preserve_thinking replays each answer's empty think block as generated."""
+        if preserve_thinking is not False or not getattr(
+            self, "_supports_preserve_thinking", False
+        ):
+            return preserve_thinking
+        mode = self._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
+        if mode.get("enable_thinking") is not False:
+            return preserve_thinking
+        answered = False
+        for message in messages or ():
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            answered = True
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return preserve_thinking
+            # Inline reasoning counts too.
+            content = message.get("content")
+            parts = content if isinstance(content, list) else [content]
+            if any(
+                "</think>" in (part.get("text") if isinstance(part, dict) else part)
+                for part in parts
+                if isinstance(part, str)
+                or (isinstance(part, dict) and isinstance(part.get("text"), str))
+            ):
+                return preserve_thinking
+        if not answered:
+            return preserve_thinking
+        return True if self._empty_think_replays_with_preserve() else preserve_thinking
+
+    def _empty_think_replays_with_preserve(self) -> bool:
+        """Probed once per server: generation prompt + answer prefixes the next render only when kept."""
+        key = (
+            getattr(self, "base_url", None),
+            id(getattr(self, "_chat_template", None)),
+            id(getattr(self, "_chat_template_override", None)),
+        )
+        cached = getattr(self, "_empty_think_preserve_probe", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = False
+        try:
+            off = dict(self._request_reasoning_kwargs(False, None, None) or {})
+            answer = "Studio replay probe answer."
+            first = [{"role": "user", "content": "Studio replay probe question."}]
+            history = first + [
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "Studio replay probe follow-up."},
+            ]
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+
+                def _render(msgs, preserve):
+                    r = client.post(
+                        f"{self.base_url}/apply-template",
+                        json = {
+                            "messages": msgs,
+                            "chat_template_kwargs": {**off, "preserve_thinking": preserve},
+                        },
+                    )
+                    prompt = r.json().get("prompt") if r.status_code == 200 else None
+                    return prompt if isinstance(prompt, str) else None
+
+                generated = _render(first, False)
+                kept = _render(history, True)
+                dropped = _render(history, False)
+            if generated is None or kept is None or dropped is None:
+                return False  # Unanswered: not cached, so the next request asks again.
+            result = kept.startswith(generated + answer) and not dropped.startswith(
+                generated + answer
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the caller's setting
+            return False
+        self._empty_think_preserve_probe = (key, result)
+        return result
+
     def _request_reasoning_kwargs(
         self,
         enable_thinking: Optional[bool],
@@ -9112,14 +9428,15 @@ class LlamaCppBackend:
         A regular GGUF load may narrow the requested placement pool to the
         smallest fitting subset. Accept both the original request and the
         effective status-echoed subset so either can round-trip without a
-        needless reload. Diffusion drives one device and keeps its existing
-        lowest-device normalization.
+        needless reload. Diffusion records the lowest device of a pick that fits it,
+        else the whole pick it split over, so either form matches.
         """
         if self._is_diffusion:
-            requested = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            full = sorted(int(x) for x in gpu_ids) if gpu_ids else None
             # Raw pick accepted too: a forced-CPU runner records no effective pin, so
             # without it re-sending the same selection would reload every time.
-            return requested in ((self._gpu_ids or None), (self._requested_gpu_ids or None))
+            held = ((self._gpu_ids or None), (self._requested_gpu_ids or None))
+            return (full[:1] if full else None) in held or full in held
 
         requested = [int(x) for x in gpu_ids] if gpu_ids else None
         raw = self._requested_gpu_ids or None
@@ -9143,7 +9460,11 @@ class LlamaCppBackend:
         later reload do not restore GPUs the user just removed.
         """
         if self._is_diffusion:
-            self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            full = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+            # Keep the whole pick when the fit moved off its lowest GPU (a split, or one
+            # higher card), or a later pick of that lowest GPU would match and not reload.
+            moved = bool(self._gpu_ids) and bool(full) and self._gpu_ids != full[:1]
+            self._requested_gpu_ids = full if moved else (full[:1] if full else None)
         else:
             self._requested_gpu_ids = [int(x) for x in gpu_ids] if gpu_ids else None
         if self._last_load_intent is not None:
@@ -9166,6 +9487,13 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        # The same count chosen rather than defaulted is one Auto may not cut.
+        if (
+            not self._is_diffusion
+            and self._slots_cut_for_drafter
+            and not intent.n_parallel_from_default
+        ):
             return False
         if not self._is_diffusion and (
             self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
@@ -19473,6 +19801,59 @@ class LlamaCppBackend:
                 return first
         return "0"
 
+    @classmethod
+    def _diffusion_fit_gpus(
+        cls,
+        model_size_bytes: int,
+        gpu_ids: Optional[List[int]],
+        gpu: str,
+        visual_bin: Optional[str],
+    ) -> Optional[List[int]]:
+        """Physical GPUs to layer-split a diffusion GGUF over, or None to keep ``gpu`` alone.
+
+        The visual server loads with llama.cpp's default layer split over every device in
+        its mask, so widening the mask is the whole change. Only a GGUF that does not fit
+        ``gpu`` moves: alone it overflows the card (a hang on Windows, where it spills into
+        shared memory, #6347). The pool is the explicit pick, else every visible GPU; when
+        no subset holds it, None leaves the single-device GPU / CPU layer fit in charge.
+        Each device is charged the runner's own context on top of its weights, the same fit
+        test as _diffusion_auto_ngl, so the two never disagree on whether ``gpu`` suffices.
+        Shared with the training guard, so both budget the devices the runner will use. A
+        runner that cannot split keeps today's single device."""
+        if not gpu.isdigit() or not model_size_bytes or not _visual_server_splits_gpus(visual_bin):
+            return None
+        # Unpinned: only ids the child resolves the same way under PCI order (no inherited
+        # mask to reinterpret, ids from nvidia-smi / NVML), as for llama-server auto fits.
+        if not gpu_ids and ("DG_GPU" in os.environ or "CUDA_VISIBLE_DEVICES" in os.environ):
+            return None
+        try:
+            binary = cls._find_llama_server_binary()
+            # Vulkan ordinals are not the CUDA ids the runner's mask takes.
+            if binary and cls._is_vulkan_backend(binary):
+                return None
+            memory = cls._get_gpu_memory(binary)
+        except Exception as e:
+            logger.debug(f"DiffusionGemma GPU fit skipped: {e}")
+            return None
+        if not gpu_ids and cls._GPU_IDS_ARE_PCI_INDICES is not True:
+            return None
+        pool = set(int(i) for i in gpu_ids) if gpu_ids else None
+        gpus = [(idx, free) for idx, free, _ in memory if pool is None or idx in pool]
+        total_by_idx = {idx: total for idx, _, total in memory}
+        first = [(idx, free) for idx, free in gpus if idx == int(gpu)]
+        if len(gpus) < 2 or not first:
+            return None
+        overhead = int(_DIFFUSION_RUNNER_OVERHEAD_MIB * 1024 * 1024)
+        need = model_size_bytes + overhead
+        if cls._select_gpus(need, first, total_by_idx = total_by_idx)[0]:
+            return None
+        picked, _ = cls._select_gpus(
+            need, gpus, total_by_idx = total_by_idx, per_device_overhead_bytes = overhead
+        )
+        if not picked or sorted(picked) == [int(gpu)]:
+            return None
+        return sorted(picked)
+
     def _diffusion_fit_ngl(
         self, model_path: str, gpu: str, maxtok: int, *, pinned: bool
     ) -> Optional[int]:
@@ -19579,20 +19960,37 @@ class LlamaCppBackend:
         # weights off every backend, and a real --gpu token there would let the child hold a
         # CUDA context while _gpu_offload_active reports False, which the coordinator trusts.
         holds_no_gpu = manual_ngl == 0
-        # Honor the GPU picker first: the diffusion runner takes a single device,
-        # so use the lowest selected GPU (matches the sorted set recorded below, so
-        # the device used == the echoed gpu_ids[0]). With no pick, fall back to the
-        # CPU-only mask, else DG_GPU / 0.
+        # Honor the GPU picker first: start from the lowest selected GPU. With no pick,
+        # fall back to the CPU-only mask, else DG_GPU / 0. A manual split already says
+        # where the layers go; otherwise a GGUF too big for that one device is
+        # layer-split over the pool (#6347).
         gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = holds_no_gpu)
-        # Auto: a GGUF too large for that device gets the split that fits it (#6456).
+        # Auto: a GGUF too large for that device is layer-split over the GPU pool when the
+        # runner supports it (#6347), else gets the GPU / CPU split that fits it (#6456).
         fit_ngl = None
+        fit_gpus = None
         if manual_ngl is None:
             fit_ngl = self._diffusion_fit_ngl(model_path, gpu, maxtok, pinned = bool(gpu_ids))
+            try:
+                fit_gpus = self._diffusion_fit_gpus(
+                    self._get_gguf_size_bytes(model_path),
+                    gpu_ids,
+                    gpu,
+                    visual_bin,
+                )
+            except OSError as e:
+                logger.debug(f"DiffusionGemma GPU fit skipped: {e}")
             # The probe runs under the load lock and can be slow: honour a Stop that came in.
             if cancelled is not None and cancelled():
                 logger.info("Load cancelled before diffusion server start")
                 self._health_wait_cancelled = True
                 return False
+            if fit_gpus:
+                fit_ngl = None
+                gpu = ",".join(str(i) for i in fit_gpus)
+                logger.info(
+                    f"DiffusionGemma does not fit one GPU; splitting layers over GPUs {gpu}"
+                )
             if fit_ngl is not None and not _shim_supports_ngl(shim_cmd):
                 logger.warning(
                     "DiffusionGemma does not fit GPU %s and the installed unsloth_zoo shim "
@@ -19658,7 +20056,7 @@ class LlamaCppBackend:
             env.setdefault("UNSLOTH_ALLOW_CPU", "1")
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
-        if gpu_ids:
+        if gpu_ids or fit_gpus:
             # The visual server remasks via CUDA_VISIBLE_DEVICES=<gpu>; pin PCI
             # order (as the llama-server path does) so the picked physical id maps
             # to the GPU the picker showed, not CUDA's default fastest-first order.
@@ -19805,18 +20203,19 @@ class LlamaCppBackend:
         # leftover arch-gate flag would answer holds_no_vram True and let the arbiter
         # run a competing workload into its memory (#7624).
         self._arch_gate_forced_cpu = False
-        # The single-device runner records only the lowest selected GPU (chosen
-        # above), not the whole pick, and clears any explicit pin from a prior
-        # chat load; a multi-GPU list would misreport placement and mis-dedup.
+        # Record the devices the runner got: the lowest selected GPU, or the split above.
+        # Unused members of a pick that fits one device are dropped, or /status misreports
+        # placement and the dedup reloads. Clears any explicit pin from a prior chat load.
         # A zero-layer split on virtualised Metal masks the child's devices outright, so
         # it pins nothing: record no effective pin, or /status names a device the runner
         # never used and clearing that pick reloads the same CPU runner.
         _pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()
-        self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids and not _pv_diffusion_cpu else None
+        _pinned = (fit_gpus or [sorted(gpu_ids)[0]]) if gpu_ids else None
+        self._gpu_ids = _pinned if not _pv_diffusion_cpu else None
         # The frontend prefers requested_gpu_ids when hydrating the picker.
-        # Diffusion uses only one device, so echo the collapsed effective pin,
-        # not unused members of the original request.
-        self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
+        self._requested_gpu_ids = (
+            sorted(int(i) for i in gpu_ids) if gpu_ids and fit_gpus else _pinned
+        )
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -21058,6 +21457,7 @@ class LlamaCppBackend:
     _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
+            "qwen_image21",
             "flux",
         )
     )
@@ -21149,6 +21549,16 @@ class LlamaCppBackend:
             return moe_pick_pairs(fam, gguf_path) and _video_family_buildable(fam)
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for video arch: %s", e)
+            return True
+
+    @staticmethod
+    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
+        """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
+        try:
+            from routes.models import _gguf_family_buildable
+            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for image arch: %s", e)
             return True
 
     @staticmethod
@@ -21259,9 +21669,16 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
-                    "cannot run as a chat model. Open it from the Images page instead."
+                    "cannot run as a chat model. No image engine installed here can build "
+                    "this model family, so the Images page does not list it either. "
+                    "Updating Unsloth may add support for it."
                 )
             if arch in self._AMBIGUOUS_IMAGE_ARCHES:
                 if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
@@ -22070,7 +22487,10 @@ class LlamaCppBackend:
                     "a chat/completion model. Unsloth cannot assemble this particular "
                     "model from a GGUF, so the Video page does not list it either."
                 )
-            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+            if (
+                arch in LlamaCppBackend._IMAGE_ARCHES
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
+            ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
             ):
@@ -22079,6 +22499,13 @@ class LlamaCppBackend:
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES:
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. No image engine "
+                    "installed here can build this model family, so Unsloth's Images page "
+                    "does not list it either. Updating Unsloth may add support for it."
                 )
             if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
                 # Same shared-arch resolution as the pre-launch refusal: unresolved means
@@ -24991,6 +25418,17 @@ class LlamaCppBackend:
                         return False
                 return False
 
+            def _dflash_breaks_on_images() -> bool:
+                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
+                    return False
+                try:
+                    projector = self._resolve_launch_mmproj_path(
+                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
+                    )
+                except Exception:
+                    return False
+                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
+
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
@@ -25162,11 +25600,30 @@ class LlamaCppBackend:
                             "keeping tensor split with the MTP drafter "
                             "(llama.cpp cannot run DFlash2 with --split-mode tensor yet)."
                         )
+                    elif _dflash_breaks_on_images():
+                        logger.info(
+                            "Auto: DFlash sidecar %s has no M-RoPE sections, so llama.cpp "
+                            "cannot carry it past an image on this vision model; keeping "
+                            "vision and skipping DFlash. Choose DFlash in the Speculative "
+                            "Decoding dropdown to force it, or turn Vision off.",
+                            dflash_draft_path,
+                        )
                     else:
                         _spec_canon = "dflash"
                         logger.info("Auto: DFlash sidecar available, using draft-dflash.")
                 except Exception as exc:
                     logger.debug("DFlash capability probe failed during Auto: %s", exc)
+            elif (
+                _spec_canon == "dflash"
+                and not _extra_args_set_spec_type(extra_args)
+                and _dflash_breaks_on_images()
+            ):
+                logger.warning(
+                    "DFlash forced with sidecar %s, which has no M-RoPE sections: llama.cpp "
+                    "will fail the first image sent after text in a chat. Use Auto or turn "
+                    "Vision off to keep images working.",
+                    dflash_draft_path,
+                )
 
             # MTP and DSpark are mutually exclusive, and the drafter sizing and
             # lifecycle path below is architecture agnostic, so it carries the
@@ -25774,6 +26231,8 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
+                _mtp_slots_asked: Optional[int] = None
+                _mtp_slots_target_ctx: Optional[int] = None
                 # The projector runs on the CPU and so allocates no VRAM:
                 # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates its whole
                 # GPU backend on that, leaving no partial offload. Only the paravirtual
@@ -26415,6 +26874,16 @@ class LlamaCppBackend:
                             - _cc_bytes(ctx, 1, slots, cache_type),
                         )
 
+                    def _layer_compute_buffer(slots: int) -> int:
+                        cb = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _ubatch_for_slots(slots),
+                            n_parallel = slots,
+                            per_device_tensor = False,
+                        )
+                        return (
+                            cb if cb > 0 else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        )
+
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
                     # fold it into the model footprint for the branches below. Falls
@@ -26845,7 +27314,11 @@ class LlamaCppBackend:
                                 else 0.0
                             )
 
-                        def _probe_base(drafter: bool, n: int) -> int:
+                        def _probe_base(
+                            drafter: bool,
+                            n: int,
+                            slots: int = 0,
+                        ) -> int:
                             # model_size_fit's terms, before it is built below.
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
                             if effective_is_vision and mmproj_size > 0:
@@ -26854,7 +27327,11 @@ class LlamaCppBackend:
                                 _soft += self._MTP_DRAFT_COMPUTE_BYTES
                             return (
                                 model_size
-                                + _compute_buffer_pipeline
+                                + (
+                                    _layer_compute_buffer(slots)
+                                    if slots
+                                    else _compute_buffer_pipeline
+                                )
                                 + _soft
                                 + max(0, n - 1) * _pipeline_overhead_bytes
                             )
@@ -26904,6 +27381,9 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
+                        # (GPU count, target-only ctx, budget with drafter) per drafter-ranked subset.
+                        _target_placements: list[tuple[int, int, float]] = []
+                        _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
@@ -26987,6 +27467,8 @@ class LlamaCppBackend:
                                         _foot_w,
                                         _budget_w,
                                     )
+                                if _probe_ranked is _drafter_order:
+                                    _target_placements.append((_n, _ctx_wo, _budget_w))
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
@@ -27046,6 +27528,104 @@ class LlamaCppBackend:
                                             _budget_w / 1024,
                                         )
                                     break
+                        # Fewer slots before no drafter. The walk takes the first subset holding the
+                        # drafter, so it must keep its target-only ctx (less the trim at one slot).
+                        # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
+                        if (
+                            _target_fits_somewhere
+                            and not _both_fit_somewhere
+                            and n_parallel > 1
+                            and intent.n_parallel_from_default
+                            and _extra_args_n_parallel(extra_args, env = {}) is None
+                        ):
+
+                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                                ub = _ubatch_for_slots(s)
+                                return (
+                                    _probe_base(True, n, s)
+                                    + self._estimate_kv_cache_bytes(
+                                        ctx,
+                                        cache_type_kv,
+                                        n_parallel = s,
+                                        swa_full = swa_full,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = ub,
+                                        flash_attn = planned_flash_attn,
+                                    )
+                                    + _cc_bytes(ctx, n, s)
+                                    + _mtp_bytes(ctx, s, ub)
+                                ) / (1024 * 1024)
+
+                            def _ctx_with_drafter(n: int, ctx: int, budget: float, s: int) -> int:
+                                if explicit_ctx:
+                                    return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
+                                ub = _ubatch_for_slots(s)
+                                fitted = self._fit_context_to_vram(
+                                    ctx,
+                                    budget,
+                                    _probe_base(True, n, s),
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = s,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = ub,
+                                    flash_attn = planned_flash_attn,
+                                    mtp_engaged = True,
+                                    mtp_overhead_fn = (
+                                        functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
+                                        if mtp_overhead_fn is not None
+                                        else None
+                                    ),
+                                    compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
+                                    budget_frac = 1.0,
+                                    pooled = True,
+                                    total_mib = None,
+                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                )
+                                return (
+                                    fitted
+                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
+                                    else 0
+                                )
+
+                            _mtp_slots = _mtp_slots_ctx = 0
+                            for _s in range(n_parallel - 1, 0, -1):
+                                _keep = 1 - (
+                                    _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
+                                )
+                                for _n, _ctx_c, _budget_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s)
+                                    if _c <= 0:
+                                        continue
+                                    if _c >= _ctx_c * _keep:
+                                        _mtp_slots, _mtp_slots_ctx = _s, _c
+                                        _mtp_slots_target_ctx = _ctx_c
+                                    break
+                                if _mtp_slots:
+                                    break
+                            if _mtp_slots:
+                                logger.info(
+                                    "Auto: serving slots reduced %d -> %d so the drafter fits "
+                                    "in VRAM at context %d (target alone: %d). Set Parallel "
+                                    "Slots to keep %d without the drafter.",
+                                    n_parallel,
+                                    _mtp_slots,
+                                    _mtp_slots_ctx,
+                                    _probe_ctx,
+                                    n_parallel,
+                                )
+                                _mtp_slots_asked = n_parallel
+                                n_parallel = _mtp_slots  # allow-slot-clamp: the drafter fits in VRAM only at fewer slots
+                                _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                if mtp_overhead_fn is not None:
+                                    # Its defaults were bound at the requested count.
+                                    mtp_overhead_fn = functools.partial(
+                                        mtp_overhead_fn,
+                                        _np = n_parallel,
+                                        _n_ubatch = _effective_ubatch,
+                                    )
+                                _both_fit_somewhere = True
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
@@ -28075,6 +28655,171 @@ class LlamaCppBackend:
                                 max_available_ctx = _ceiling[0]
                                 _vram_fit_ctx = _ceiling[0]
 
+                    # Single-GPU VRAM shortfall vs free less --fit-target (None = unpriceable).
+                    _model_size_fit_cb = _compute_buffer_pipeline
+
+                    def _fit_ctx_overridden(
+                        child_extras: Optional[Iterable[str]], child_env: Mapping[str, str]
+                    ) -> bool:
+                        """A --fit-ctx / -fitc (argv, else LLAMA_ARG_FIT_CTX) the child
+                        runs with that is not the value _ctx_integrity_flags emits."""
+                        _studio_fitc: Optional[int] = None
+                        if (
+                            use_fit
+                            and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                            and server_caps.get("supports_fit_ctx")
+                        ):
+                            if requested_ctx > 0 and effective_ctx > 0:
+                                _studio_fitc = int(effective_ctx)
+                            elif gpu_memory_mode == "manual" and gpu_layers < 0:
+                                _studio_fitc = 8192
+                        try:
+                            _raw = _last_flag_value(child_extras, _FIT_CTX_FLAGS)
+                        except ValueError:
+                            return True
+                        # The emitted flag beats the env; argv after it beats both.
+                        if _raw is None and _studio_fitc is None:
+                            _raw = child_env.get("LLAMA_ARG_FIT_CTX")
+                        if _raw is None or not str(_raw).strip():
+                            return False
+                        try:
+                            return int(str(_raw).strip()) != _studio_fitc
+                        except ValueError:
+                            return True
+
+                    def _fitter_vram_shortfall() -> Optional[float]:
+                        if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
+                            return None
+                        # Smart offload may still pin experts to CPU against Unsloth's budget.
+                        from core.inference.offload_planner import smart_offload_enabled
+
+                        if smart_offload_enabled(os.environ):
+                            return None
+                        # A drafter priced with a flat cushion has no draft-KV term here.
+                        if _flat_mtp_engages:
+                            return None
+                        _on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        # Per-device placement (common/fit.cpp) can spill despite a pooled fit.
+                        if len(_on) != 1:
+                            return None
+                        _child_extras = (
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        _child_env = dict(os.environ)
+                        if _gpu_ids_own_device_flags:
+                            self._clear_device_placement_env(_child_env)
+                        if _pass_through_overrides_placement(
+                            _child_extras,
+                            _child_env,
+                            len(_on),
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = gpu_indices,
+                        ):
+                            return None
+                        # Priced at Unsloth's --parallel; any other pass-through one wins.
+                        _np_override = _extra_args_n_parallel(_child_extras, {})
+                        if _np_override is not None and _np_override != n_parallel:
+                            return None
+                        # A later pass-through -c 0 lets llama.cpp pick the context.
+                        if parse_ctx_override(_child_extras) == 0:
+                            return None
+                        # A --fit-ctx Studio did not emit moves llama.cpp's fit.
+                        if _fit_ctx_overridden(_child_extras, _child_env):
+                            return None
+                        # A GPU projector Studio never sized; Vision off keeps only audio-only.
+                        _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
+                        # The emitted --mmproj replaces an inherited path (argv after env).
+                        if effective_is_vision:
+                            _env_mmproj = None
+                        # --mmproj-device / MTMD_BACKEND_DEVICE re-enable the GPU projector.
+                        _mmproj_dev = _extra_args_device(
+                            _child_extras, {"--mmproj-device", "-mmdev"}
+                        )
+                        if _mmproj_dev is None:
+                            _mmproj_dev = _child_env.get("MTMD_BACKEND_DEVICE")
+                        _mmproj_dev_gpu = bool(
+                            _mmproj_dev is not None and str(_mmproj_dev).strip().lower() != "none"
+                        )
+                        if _resolved_mmproj_offload(_child_extras, _child_env) is False:
+                            if _mmproj_dev_gpu:
+                                return None
+                        elif disable_vision:
+                            if _mmproj_env_is_audio_only(_env_mmproj):
+                                return None
+                        elif (
+                            _env_mmproj
+                            or _child_env.get("LLAMA_ARG_MMPROJ_URL")
+                            or (
+                                not launch_mmproj_path
+                                and extra_args_mmproj_auto(_child_extras, _child_env)
+                            )
+                        ):
+                            return None
+                        # --fit-target precedence: argv, Studio's emitted value, env, default.
+                        _supports_fit_target = bool(server_caps.get("supports_fit_target"))
+                        _auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                        _managed_mib = self._fit_target_margin_mib(
+                            auto_fit = _auto_fit,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            supports_fit_target = _supports_fit_target,
+                        )
+                        # A per-device list reads as its largest entry (the larger shortfall).
+                        _margin_mib = fit_target_margin_in(_child_extras or (), None)
+                        if _margin_mib is None:
+                            _emits = _supports_fit_target and (
+                                _auto_fit or _managed_mib != _LLAMA_FIT_TARGET_DEFAULT_MIB
+                            )
+                            _env_mib = None if _emits else fit_target_margin_in((), _child_env)
+                            # An inherited 0 is a valid margin, not "unset".
+                            _margin_mib = _managed_mib if _env_mib is None else _env_mib
+                        # A lazily read table stays mmap'd on the host, never on the GPU.
+                        _lazy_host = self._lazy_read_host_bytes(
+                            model_path,
+                            caps = server_caps,
+                            extra_args = _child_extras,
+                            env = _child_env,
+                            auto_resolves_off = self._lazy_auto_resolves_off(
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = is_vulkan_backend,
+                            ),
+                        )
+                        _need = (
+                            model_size_fit
+                            - _lazy_host
+                            - _model_size_fit_cb
+                            + _compute_buffer_pipeline
+                            + (
+                                _kv_bytes(effective_ctx)
+                                if _kv_offload_from_args(_child_extras, _child_env)
+                                else 0
+                            )
+                            + (
+                                _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                if _mtp_will_engage
+                                else 0
+                            )
+                            + _cc_bytes(effective_ctx, len(_on))
+                        )
+                        _free = sum(max(0.0, free - _margin_mib) for _idx, free in _on)
+                        return _need - _free * 1024 * 1024
+
+                    def _moe_resident_share_now() -> Optional[float]:
+                        if self.n_moe_layers <= 0:
+                            return None
+                        try:
+                            _short = _fitter_vram_shortfall()
+                            if _short is None:
+                                return None
+                            _scan = self._gguf_tensor_scan(model_path) or (None, {}, 0)
+                            return _moe_resident_expert_share(_short, _scan[2])
+                        except Exception as e:
+                            logger.debug(f"MoE resident share unpriceable ({e})")
+                            return None
+
                     # MoE experts in host RAM: a larger micro-batch amortises the expert
                     # copies of prompt processing (see _MOE_SPILL_N_UBATCH). The placement
                     # verdict above was priced at the default micro-batch, so a model that
@@ -28106,14 +28851,18 @@ class LlamaCppBackend:
                         discrete_gpu = _moe_spill_discrete_gpu,
                         user_named_batch = _user_named_batch,
                     )
-                    if _spill_n_ubatch != n_ubatch:
-                        logger.info(
-                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
-                            "%s -> %s for faster prompt processing.",
-                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
-                            _spill_n_ubatch,
+                    _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
+                    if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
+                        _share_before = (
+                            _moe_resident_share_now() if _moe_ub_switch == "auto" else None
                         )
-                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
                         n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         # Same calls and fallbacks as above, at the new micro-batch.
@@ -28127,6 +28876,41 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _share_after = (
+                            _moe_resident_share_now()
+                            if _moe_ub_switch == "auto" and _share_before is not None
+                            else None
+                        )
+                        if _moe_spill_raise_keeps_experts(
+                            _share_before, _share_after, switch = _moe_ub_switch
+                        ):
+                            logger.info(
+                                "MoE experts are offloaded to system RAM; raising "
+                                "--ubatch-size %s -> %s for faster prompt processing.",
+                                (
+                                    _pre_raise[1]
+                                    if _pre_raise[1] is not None
+                                    else _DEFAULT_LLAMA_N_UBATCH
+                                ),
+                                _spill_n_ubatch,
+                            )
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            logger.info(
+                                "MoE experts: keeping the default --ubatch-size; %s would "
+                                "move the GPU's resident share of the routed experts "
+                                "%.0f%% -> %.0f%%.",
+                                _spill_n_ubatch,
+                                100 * (_share_before or 0.0),
+                                100 * (_share_after or 0.0),
+                            )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
@@ -28521,6 +29305,31 @@ class LlamaCppBackend:
                     )
                     _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
+                        _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
+                        _moe_share = (
+                            _moe_resident_share_now() if _moe_cache_switch == "auto" else None
+                        )
+                        if not _moe_cache_share_admits(
+                            _moe_share, drafter = _mtp_will_engage, switch = _moe_cache_switch
+                        ):
+                            _moe_cache_candidate = False
+                            if _moe_cache_switch == "off":
+                                _why = f"{_MOE_CACHE_ENV} is off"
+                            elif _moe_share is None:
+                                _why = "the share of routed experts left on the GPU is unknown"
+                            elif _mtp_will_engage and not _MOE_CACHE_WITH_DRAFTER:
+                                _why = "a drafter is engaged"
+                            else:
+                                _why = (
+                                    f"an estimated {100 * _moe_share:.0f}% of the routed "
+                                    "experts stay on the GPU"
+                                )
+                            logger.info(
+                                "MoE cache: %s; keeping the --fit split without "
+                                "--moe-cache-mib.",
+                                _why,
+                            )
+                    if _moe_cache_candidate:
                         # The cache frees no host RAM: every routed expert plus the prompt
                         # cache must fit pinned (moved out of model_size, not counted twice).
                         _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
@@ -28573,6 +29382,16 @@ class LlamaCppBackend:
                     _vram_fit_ctx = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+                    # Nor is a slot cut for the drafter: requested count, no drafter, as before.
+                    if _mtp_slots_asked is not None:
+                        n_parallel = _mtp_slots_asked
+                        _mtp_slots_asked = _mtp_slots_target_ctx = None
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                        _spec_dropped_no_vram = True
+                        _mtp_will_engage = False
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
 
                 # A hand-set context unified memory cannot hold. Raised here so the handler
                 # above cannot turn it back into the launch it refuses, and ahead of the
@@ -32820,12 +33639,88 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    # Restore the cut slots; if they fail (unified KV refused), retry as cut.
+                    _fb_cut = (
+                        (
+                            fallback_cmd,
+                            n_parallel,
+                            effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        )
+                        if _mtp_slots_asked is not None
+                        else None
+                    )
+                    if _fb_cut is not None:
+                        n_parallel = _mtp_slots_asked
+                        fallback_cmd = _with_parallel_slots(
+                            fallback_cmd,
+                            n_parallel,
+                            n_batch = n_batch,
+                            supports_kv_unified = bool(server_caps.get("supports_kv_unified")),
+                        )
+                        # The cut may have bought context; the restored count was priced at this.
+                        if _mtp_slots_target_ctx and "-c" in fallback_cmd:
+                            effective_ctx = _mtp_slots_target_ctx
+                            fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
+                            # The ceiling was priced at the cut count; this is the one proven here.
+                            self._effective_context_length = self._max_context_length = (
+                                effective_ctx
+                            )
+                        # The checkpoint cap is per slot; same re-decide as the single-seq rung.
+                        if _auto_ckpt_emitted:
+                            fallback_cmd = self._without_flag_pairs(
+                                fallback_cmd, _auto_ckpt_emitted
+                            )
+                        _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
+                        _auto_ckpt_emitted = _emit_auto_ctx_checkpoints(fallback_cmd)
+                        kv_cache_unified = _kv_unified_from_args(fallback_cmd)
+                        # The plan other loads place against was priced at the cut count.
+                        _fb_cut_plan = dict(self._pending_plan_mib)
+                        if self._pending_plan_mib and self._can_estimate_kv():
+                            kv_cache_bytes = self._estimate_kv_cache_bytes(
+                                effective_ctx,
+                                cache_type_kv,
+                                n_parallel = n_parallel,
+                                swa_full = swa_full,
+                                kv_unified = bool(kv_cache_unified),
+                                n_ubatch = _ubatch_for_slots(n_parallel),
+                                flash_attn = planned_flash_attn,
+                            )
+                            self._pending_plan_mib = _gpu_plan_mib(
+                                gguf_size + mmproj_size + kv_cache_bytes,
+                                list(self._pending_plan_mib),
+                                gpus,
+                            )
                     _unified_withdraw_if_unneeded(
                         fallback_cmd,
                         mtp_engages = False,
                         why = "The retry without speculative decoding",
                     )
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
+                    if not healthy and _fb_cut is not None and not _load_cancelled():
+                        logger.warning(
+                            "The retry without speculative decoding failed at %d slots; "
+                            "retrying at the %d the drafter launch ran.",
+                            n_parallel,
+                            _fb_cut[1],
+                        )
+                        self._kill_process()
+                        (
+                            fallback_cmd,
+                            _fb_slots,
+                            effective_ctx,
+                            (self._effective_context_length, self._max_context_length),
+                            _auto_ctx_checkpoints,
+                            _auto_ckpt_emitted,
+                        ) = _fb_cut
+                        self._pending_plan_mib = _fb_cut_plan
+                        n_parallel = (
+                            _fb_slots  # allow-slot-clamp: the restored count failed to start
+                        )
+                        kv_cache_unified = _kv_unified_from_args(fallback_cmd)
+                        healthy = _spawn_and_wait(fallback_cmd, label = "-retry-cut")
                     if healthy:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
@@ -33230,6 +34125,9 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._slots_cut_for_drafter = (
+                    _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                )
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
                 # marker intact, and the diffusion runner returns well before it without
@@ -37321,6 +38219,7 @@ class LlamaCppBackend:
         tools_withheld: bool = False,
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
+        compact_context: bool = False,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -37332,6 +38231,9 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
@@ -37400,7 +38302,7 @@ class LlamaCppBackend:
                     _backend_supports_tools(self),
                     tools_withheld = tools_withheld,
                 )
-                _sticky, _sticky_is_checkpoint = _sticky_compaction_state(
+                _sticky, _sticky_is_checkpoint, _sticky_manual = _sticky_compaction_details(
                     thread_id,
                     _before_fit,
                     context_policy = context_policy,
@@ -37426,6 +38328,8 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
+                    sticky_manual = _sticky_manual,
+                    force_reset = compact_context,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
                     recall_offered = False,
@@ -37551,6 +38455,7 @@ class LlamaCppBackend:
                 # tools as the first attempt was.
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
+                compact_context = compact_context,
                 _allow_respawn_retry = False,
             )
 
@@ -37782,6 +38687,7 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
+        compact_context: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -37796,6 +38702,9 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
+        preserve_thinking = self._replay_preserve_thinking(
+            preserve_thinking, messages, enable_thinking, reasoning_effort
+        )
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -37841,7 +38750,7 @@ class LlamaCppBackend:
             messages = note_attached_image(
                 messages, mcp_image_targets(_gguf_active_tool_names(tools))
             )
-        conversation = list(messages)
+        conversation = restore_replayed_tool_results(messages)
         # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # The loop refits on every iteration; recall must fire once per request, or each
@@ -37862,14 +38771,15 @@ class LlamaCppBackend:
         # injected into `conversation`. The archive is keyed by thread and the stored rows
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
         # has to be told which branch is live, and the client's messages are the answer.
-        _request_branch: list[dict] = list(messages)
+        # Restored dicts are new; both branch lists match by identity.
+        _request_branch: list[dict] = list(conversation)
         # ...and everything this request adds to it. A long agent run can evict its own
         # earlier tool exchange, which is archived; filtered against the messages the
         # client sent, that document looks like an abandoned branch and is refused, so the
         # model cannot get back a tool result it still needs to answer. Accumulated rather
         # than read off `conversation`, which has already lost what earlier fits evicted.
-        _live_branch: list[dict] = list(messages)
-        _live_branch_ids: set[int] = {id(message) for message in messages}
+        _live_branch: list[dict] = list(conversation)
+        _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
             for message in current:
@@ -37883,6 +38793,10 @@ class LlamaCppBackend:
                 _rolling_anchor_ids.add(id(message))
                 break
 
+        _tool_card_by_message: dict[int, str] = {}
+        # Feedback folded in after tool_end, reported so the client replays it.
+        _model_note_events: list[dict] = []
+
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
             if not conversation or conversation[-1].get("role") != "tool":
@@ -37893,7 +38807,18 @@ class LlamaCppBackend:
             # Replaced, not mutated: ``conversation`` copies the list, not the dicts, and
             # /v1/messages passes a caller's own history through, which may end on a tool
             # result. An in-place edit would leave the nudge there and re-send it next turn.
-            conversation[-1] = {**conversation[-1], "content": f"{content}\n\n{feedback}"}
+            previous = conversation[-1]
+            conversation[-1] = {**previous, "content": f"{content}\n\n{feedback}"}
+            card_id = _tool_card_by_message.pop(id(previous), None)
+            if card_id:
+                _tool_card_by_message[id(conversation[-1])] = card_id
+                _model_note_events.append(
+                    {
+                        "type": "tool_model_note",
+                        "tool_call_id": card_id,
+                        "suffix": f"\n\n{feedback}",
+                    }
+                )
             return True
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
@@ -38135,6 +39060,12 @@ class LlamaCppBackend:
         _reprompt_count = 0
         # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
         _post_tool_reprompts = 0
+        # A browser task is many steps, each a chance to announce the next one and stop: there the
+        # budget is one nudge per tool turn, as in the external loop, not one per request.
+        _browser_turns = any(
+            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
+            for tool in (tools or [])
+        )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
         # Gates ``max_tool_iterations`` on real tool turns (not the enlarged range) so reserved
@@ -38308,6 +39239,10 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # A fixed seed keeps the prompt cache once this run has sent a request (#10698).
+        _prompt_sent = False
+        # Resent on the final pass with tool_choice "none": tools head the system prompt.
+        _last_sent_tools = None
         iteration = -1
         # Outside the loop: the cap is across the whole run, and a per-iteration list
         # would only ever see the current batch, leaving every earlier iteration's
@@ -38318,6 +39253,8 @@ class LlamaCppBackend:
         loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
             # Here rather than at each append: six sites grow the conversation and all of
             # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
@@ -38405,10 +39342,12 @@ class LlamaCppBackend:
                         _backend_supports_tools(self),
                         tools_withheld = _memory_tool_withheld(thread_id, tools),
                     )
-                    _iteration_sticky, _iteration_sticky_is_checkpoint = (
-                        (0, True)
+                    # The saved boundary and /compact both apply once, to the loop's first fit.
+                    _iteration_force_reset = compact_context and not _sticky_boundary_applied
+                    _iteration_sticky, _iteration_sticky_is_checkpoint, _iteration_sticky_manual = (
+                        (0, True, False)
                         if _sticky_boundary_applied
-                        else _sticky_compaction_state(
+                        else _sticky_compaction_details(
                             thread_id,
                             _request_branch,
                             context_policy = context_policy,
@@ -38444,6 +39383,8 @@ class LlamaCppBackend:
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
+                        sticky_manual = _iteration_sticky_manual,
+                        force_reset = _iteration_force_reset,
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Accounted for in this request now, whatever the fit decided.
@@ -38551,6 +39492,7 @@ class LlamaCppBackend:
             if safe_tools:
                 payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
+                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             if thinking_budget_tokens is not None:
@@ -38580,7 +39522,8 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            _apply_seeded_llama_request(payload, seed)
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = _prompt_sent)
+            _prompt_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -39950,6 +40893,9 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
+                # Refreshes the context meter from the usage llama-server already reported (no
+                # recount). Sent once the first tool is running, so it never delays a tool.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 # Collapse exact-duplicate calls and cap the count for the TEXTUAL
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
@@ -39980,7 +40926,8 @@ class LlamaCppBackend:
                                 _novel_kept += 1
                             _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
-                        elif _key in _seen_keys:
+                        # A browser call acts on the page as it is then: two scrolls are two scrolls.
+                        elif _key in _seen_keys and _fn.get("name") not in BROWSER_TOOL_NAMES:
                             continue
                         _seen_keys.add(_key)
                         if len(_deduped) < _MAX_TOOL_CALLS_PER_TURN:
@@ -40061,6 +41008,8 @@ class LlamaCppBackend:
                                 provisional = provisional_match,
                                 allowed_tool_names = {forced_name} if forced_name else None,
                             )
+                    # The frontend groups a parallel batch into one assistant message by this.
+                    decision.provenance["round_id"] = iteration
 
                     if not decision.should_execute:
                         if provisional_match:
@@ -40149,6 +41098,10 @@ class LlamaCppBackend:
                             ),
                         }
                         yield start_event
+                        if needs_confirm and _pending_context_usage is not None:
+                            # Nothing runs while a human decides, so the meter need not wait for it.
+                            yield _pending_context_usage
+                            _pending_context_usage = None
 
                         _decision = (
                             wait_tool_decision(
@@ -40787,12 +41740,17 @@ class LlamaCppBackend:
                         # Without this the handler below re-raises and a bad
                         # argument kills the whole answer. A raising tool is the
                         # tool's failure; the other two loops hand it back.
+                        _started_events = (
+                            (_pending_context_usage,) if _pending_context_usage is not None else ()
+                        )
+                        _pending_context_usage = None
                         try:
                             result = yield from stream_tool_execution(
                                 _invoke_tool,
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
                                 cancel_event = cancel_event,
+                                started_events = _started_events,
                             )
                         except _LlamaStreamCancelled:
                             # Subclasses Exception, so the arm below would eat
@@ -40913,8 +41871,11 @@ class LlamaCppBackend:
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     _forced_choice_resolved = True
-                    yield completion.tool_end_event()
+                    _tool_end = completion.tool_end_event()
+                    yield _tool_end
                     conversation.append(completion.tool_message())
+                    if _tool_end.get("tool_call_id"):
+                        _tool_card_by_message[id(conversation[-1])] = _tool_end["tool_call_id"]
                     # Parsed only for a result that carries them and a model that will
                     # be shown them; the marker test first, so a text result never asks.
                     _completion_images = (
@@ -41105,6 +42066,11 @@ class LlamaCppBackend:
                             "provenance": provisional_tool_provenance(_pname),
                         }
 
+                # No call in the batch ran (denied, duplicate, capped), so nothing was waiting on it.
+                if _pending_context_usage is not None:
+                    yield _pending_context_usage
+                    _pending_context_usage = None
+
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
@@ -41114,6 +42080,8 @@ class LlamaCppBackend:
                 # extra tool rounds; a no-op correction turn doesn't consume budget (GGUF parity).
                 if _turn_executed_real_tool:
                     _tool_iters_done += 1
+                    if _browser_turns:
+                        _post_tool_reprompts = 0
                     if _tool_iters_done >= max_tool_iterations:
                         break
                 continue
@@ -41167,10 +42135,13 @@ class LlamaCppBackend:
                 else:
                     conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
 
+        while _model_note_events:
+            yield _model_note_events.pop(0)
         # Clear status.
         yield {"type": "status", "text": ""}
 
         # Final streaming pass with the full conversation context.
+        _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
         _reasoning_kw = self._request_reasoning_kwargs(
@@ -41188,7 +42159,7 @@ class LlamaCppBackend:
             try:
                 _before_final_fit = conversation
                 # Withheld, not `tools`: this is the synthesised final answer and
-                # `stream_payload` below sends no tools array at all, so the request's
+                # `stream_payload` below sends tool_choice "none", so the request's
                 # catalogue answers a question it does not pose and would let a NEW epoch
                 # start on the one pass that can never call `search_conversation`.
                 # Replaying an epoch already in force is unaffected.
@@ -41215,7 +42186,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41236,9 +42207,7 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline, not tool: this final-answer request is counted and sent
-                        # with no tools array, so a forged tool role has no catalogue to
-                        # match and breaks strict templates.
+                        # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.
@@ -41258,7 +42227,7 @@ class LlamaCppBackend:
                                 self.markup_profile,
                             ),
                             None,
-                            None,
+                            _final_tools,
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
@@ -41315,6 +42284,9 @@ class LlamaCppBackend:
         }
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
+        if _final_tools:
+            stream_payload["tools"] = llama_grammar_tools(_final_tools)
+            stream_payload["tool_choice"] = "none"
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:
@@ -41322,7 +42294,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        _apply_seeded_llama_request(stream_payload, seed)
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _prompt_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
@@ -41377,7 +42349,7 @@ class LlamaCppBackend:
                             messages_without_unpriced_media(fitted), None, self.markup_profile
                         ),
                         None,
-                        None,
+                        _final_tools,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
@@ -41388,7 +42360,7 @@ class LlamaCppBackend:
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
-                        # The final pass again, so again no tools array is sent.
+                        # The final pass again, so again tool_choice is "none".
                         tools_withheld = True,
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
@@ -41437,7 +42409,7 @@ class LlamaCppBackend:
                                 break
                         _refit_evicted = _evict_until_it_fits(
                             stream_payload["messages"],
-                            None,
+                            _final_tools,
                             stream_payload.get("chat_template_kwargs"),
                             _refit_continue,
                             _refit_protect,
@@ -41530,7 +42502,7 @@ class LlamaCppBackend:
                 _tokens = self.count_chat_tokens(
                     messages_without_unpriced_media(candidate_messages),
                     None,
-                    None,
+                    _final_tools,
                     strict = True,
                     chat_template_kwargs = (
                         stream_payload.get("chat_template_kwargs")
@@ -41761,7 +42733,7 @@ class LlamaCppBackend:
                             # gets that eviction rather than being abandoned.
                             _evicted_f = _evict_until_it_fits(
                                 _candidate_messages,
-                                None,
+                                _final_tools,
                                 stream_payload.get("chat_template_kwargs"),
                                 True,
                             )
@@ -41885,7 +42857,7 @@ class LlamaCppBackend:
                             )
                             if _next_cap_r != 0 and not _served_r:
                                 _evicted_r = _evict_until_it_fits(
-                                    _candidate_r, None, _off_kw, False, _recovery_protect
+                                    _candidate_r, _final_tools, _off_kw, False, _recovery_protect
                                 )
                                 if _evicted_r is not None and _continuation_would_be_served(
                                     _evicted_r, False, _off_kw

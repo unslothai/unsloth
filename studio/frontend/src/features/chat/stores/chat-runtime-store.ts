@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
@@ -125,6 +126,10 @@ import {
   CHAT_SPECULATIVE_TYPE_KEY,
 } from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  type EngineLaunchFields,
+} from "../lib/engine-launch-fields";
 
 export {
   CHAT_GPU_MEMORY_MODE_KEY,
@@ -1124,7 +1129,7 @@ function buildThreadScopedSnapshot(
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
   }
   // Same for deep research, which apply() also holds back, or toggling any other pill erases
-  // the stored true. Unless the user just cleared it by enabling Search, Code or Images.
+  // the stored true. Unless the user just cleared it by enabling Search, Tools or Images.
   if (
     threadId === threadScopedSettingsThreadId &&
     !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
@@ -1241,7 +1246,10 @@ export function replayUnconfirmedThreadSettings(): void {
       body: JSON.stringify(body),
       signal: timeout.signal,
     })
-      .finally(() => clearTimeout(timer))
+      .finally(() => {
+        clearTimeout(timer);
+        forgetThreadReads([threadId]);
+      })
       // Only an ok response means it landed: authFetch resolves for 404 and 5xx too, and the
       // missing-row case this exists for is exactly the one that 404s.
       .then((res) => {
@@ -1319,7 +1327,9 @@ function sendThreadScopedSettingsBeacon(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     keepalive: true,
-  }).catch(() => undefined);
+  })
+    .finally(() => forgetThreadReads([threadId]))
+    .catch(() => undefined);
 }
 
 // One chain per thread: the write REPLACES settings_json, so two unordered writes pick a
@@ -1901,7 +1911,7 @@ function savePermissionMode(mode: PermissionMode): void {
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
-/** Re-picking the level already in force is not a fresh grant, so a manual Code-off stands. */
+/** Re-picking the level already in force is not a fresh grant, so a manual Tools-off stands. */
 function codeDeclinedOnEnteringFullAccess(state: ChatRuntimeStore): boolean {
   return state.permissionMode === "full"
     ? state.codeToolsDeclinedUnderFullAccess
@@ -2335,6 +2345,7 @@ type ChatRuntimeStore = {
   loadedEngine: "auto" | "vllm" | "sglang";
   loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
   loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
+  loadedEngineLaunch: EngineLaunchFields;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
@@ -4218,6 +4229,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedEngine: "auto",
   loadedEnginePrecision: "auto",
   loadedEngineParallelism: "tensor",
+  loadedEngineLaunch: DEFAULT_ENGINE_LAUNCH_FIELDS,
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,

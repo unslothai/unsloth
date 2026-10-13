@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -166,6 +167,19 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
     assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+
+
+@pytest.mark.parametrize(
+    ("window", "output"), [(32768, "8192"), (65536, "16384"), (98304, None), (131072, None)]
+)
+def test_claude_local_env_leaves_room_to_compact_a_small_window(window, output):
+    local_env = start._claude_local_env(
+        BASE, "sk-unsloth-test", {**MODEL, "context_length": window}
+    )
+    assert local_env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == output
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in start._claude_local_env(
+        BASE, "sk-unsloth-test", {"id": MODEL["id"]}
+    )
 
 
 def test_claude_settings_files_preserve_concurrent_sessions(tmp_path):
@@ -783,6 +797,44 @@ def test_opencode_command_falls_back_to_v1(monkeypatch):
     assert start._opencode_command() == ("opencode", False)
 
 
+@pytest.mark.parametrize(
+    "version_output, v2",
+    [("opencode v2.0.27\n", True), ("1.19.0\n", False), (OSError("probe failed"), False)],
+)
+def test_opencode_command_detects_v2_installed_as_opencode(monkeypatch, version_output, v2):
+    # Arch's opencode package ships V2 as plain `opencode` (#13476).
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/bin/opencode" if name == "opencode" else None,
+    )
+
+    def check_output(argv, **_):
+        assert argv == ["/usr/bin/opencode", "--version"]
+        if isinstance(version_output, Exception):
+            raise version_output
+        return version_output
+
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+    assert start._opencode_command() == ("opencode", v2)
+
+
+def test_opencode_command_probes_real_v2_binary_named_opencode(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        (bin_dir / "opencode.cmd").write_text("@echo opencode v2.0.27\r\n")
+    else:
+        script = bin_dir / "opencode"
+        script.write_text("#!/bin/sh\necho opencode v2.0.27\n")
+        script.chmod(0o755)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert start._opencode_command() == ("opencode", True)
+
+
 def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
     install_dir = tmp_path / ".opencode" / "bin"
     install_dir.mkdir(parents = True)
@@ -1310,6 +1362,14 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
     assert f"--as-subagent is not supported for {agent}." in result.output
 
 
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh", "vibe"])
+@pytest.mark.parametrize("flag", ["--auto-route", "--auto-route=true"])
+def test_unsupported_agents_reject_auto_route(agent, flag):
+    result = CliRunner().invoke(start.start_app, [agent, flag])
+    assert result.exit_code == 1
+    assert f"--auto-route is not supported for {agent}." in result.output
+
+
 @pytest.mark.parametrize(
     "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
@@ -1756,6 +1816,301 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     assert "spawn an Unsloth agent or local agent" in skill
     assert "In plan mode" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+def test_claude_auto_route_tells_the_parent_to_delegate_routine_work(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--auto-route", "--no-launch", "hello"],
+    )
+    assert result.exit_code == 0, result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    assert _launch_command(result.output) == [
+        "claude",
+        "--plugin-dir",
+        str(plugin),
+        f"--allowedTools={start._CLAUDE_SUBAGENT_TOOL},{start._CLAUDE_SUBAGENT_PLAN_TOOL}",
+        "hello",
+    ]
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["env"][start._CLAUDE_SUBAGENT_AUTO_ROUTE_ENV] == "1"
+    skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
+    assert "without being asked" in skill
+    assert "Use when the user asks" not in skill
+    assert "Claude hands routine work to it on its own." in result.output
+
+
+def test_claude_auto_route_alone_adds_the_local_subagent(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    command = _launch_command(result.output)
+    assert command[:3] == ["claude", "--plugin-dir", str(plugin)]
+    assert "--model" not in command
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["env"][start._CLAUDE_SUBAGENT_AUTO_ROUTE_ENV] == "1"
+    assert "Claude hands routine work to it on its own." in result.output
+
+
+def test_claude_auto_route_blocks_the_parents_own_file_and_shell_tools(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    plan_gate, route_gate = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"][
+        "PreToolUse"
+    ]
+    assert plan_gate["matcher"] == start._CLAUDE_SUBAGENT_TOOL
+    assert route_gate["matcher"] == "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
+    [hook] = route_gate["hooks"]
+    assert hook["type"] == "command"
+    assert start._b64_path(plugin / "hooks" / "route_gate.py") in hook["command"]
+    assert 0 < hook["timeout"] <= 30
+    payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "about.txt"}})
+    for run in (
+        lambda: subprocess.run(
+            [sys.executable, str(plugin / "hooks" / "route_gate.py")],
+            input = payload,
+            capture_output = True,
+            text = True,
+            timeout = 30,
+        ),
+        lambda: subprocess.run(
+            hook["command"], input = payload, shell = True, capture_output = True, text = True, timeout = 30
+        ),
+    ):
+        denied = run()
+        assert denied.returncode == 0, denied.stderr
+        output = json.loads(denied.stdout)["hookSpecificOutput"]
+        assert output["hookEventName"] == "PreToolUse"
+        assert output["permissionDecision"] == "deny"
+        assert "unsloth_agent" in output["permissionDecisionReason"]
+        assert "--auto-route" in output["permissionDecisionReason"]
+
+
+def test_claude_auto_route_gate_lets_the_parent_work_after_a_local_failure(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    marker = plugin / "hooks" / start._CLAUDE_ROUTE_FALLBACK_FILE
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["env"][start._CLAUDE_SUBAGENT_FALLBACK_ENV] == str(marker)
+
+    def gate():
+        return subprocess.run(
+            [sys.executable, str(plugin / "hooks" / "route_gate.py")],
+            input = json.dumps({"tool_name": "Read"}),
+            capture_output = True,
+            text = True,
+            timeout = 30,
+        )
+
+    assert json.loads(gate().stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    marker.touch()
+    allowed = gate()
+    assert allowed.returncode == 0 and allowed.stdout == ""
+
+
+def test_claude_persisted_plugin_drops_auto_route_state_without_the_flag(fake_studio, tmp_path):
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    marker = plugin / "hooks" / start._CLAUDE_ROUTE_FALLBACK_FILE
+    assert (
+        CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"]).exit_code
+        == 0
+    )
+    marker.touch()
+    assert (
+        CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"]).exit_code
+        == 0
+    )
+    assert not marker.exists()
+    marker.touch()
+    result = CliRunner().invoke(start.start_app, ["claude", "--as-subagent", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in (plugin / "hooks").iterdir()) == ["hooks.json", "plan_gate.py"]
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert start._CLAUDE_SUBAGENT_FALLBACK_ENV not in mcp["env"]
+
+
+def test_claude_as_subagent_without_auto_route_keeps_only_the_plan_gate(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["claude", "--as-subagent", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    [plan_gate] = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    assert plan_gate["matcher"] == start._CLAUDE_SUBAGENT_TOOL
+    assert sorted(p.name for p in (plugin / "hooks").iterdir()) == ["hooks.json", "plan_gate.py"]
+
+
+def test_claude_auto_route_rejects_the_windows_claude_under_wsl(fake_studio, monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda command: "/mnt/c/claude.exe")
+    result = CliRunner().invoke(start.start_app, ["claude", "--auto-route", "--no-launch"])
+    assert result.exit_code == 1
+    assert "--auto-route needs claude installed inside WSL" in result.output
+    assert not (tmp_path / "agents" / "claude-subagent").exists()
+
+
+@pytest.mark.parametrize("flag", ["--auto-route", "--auto-route=true"])
+def test_pi_rejects_auto_route(flag):
+    result = CliRunner().invoke(start.start_app, ["pi", "--as-subagent", flag])
+    assert result.exit_code == 1
+    assert "--auto-route is not supported for pi." in result.output
+
+
+@pytest.mark.parametrize("auto_route", [False, True])
+def test_opencode_auto_route_adds_a_read_only_plan_agent(fake_studio, monkeypatch, auto_route):
+    captured = {}
+
+    def inline_config(path, permission, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline_config)
+    flag = "--auto-route" if auto_route else "--as-subagent"
+    result = CliRunner().invoke(start.start_app, ["opencode", flag, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert captured["auto_route"] is auto_route
+    agents = _opencode_inline_config(result.output)["agent"]
+    if not auto_route:
+        assert set(agents) == {"unsloth"}
+        assert agents["unsloth"]["description"] == start._SUBAGENT_DESCRIPTION
+        return
+    assert set(agents) == {"unsloth", "unsloth-plan"}
+    assert agents["unsloth"]["description"] == start._OPENCODE_AUTO_ROUTE_DESCRIPTION
+    assert "permission" not in agents["unsloth"]
+    plan = agents["unsloth-plan"]
+    assert plan["mode"] == "subagent"
+    assert plan["model"] == agents["unsloth"]["model"]
+    assert plan["prompt"] == start._SUBAGENT_PLAN_INSTRUCTIONS
+    assert plan["permission"] == {"edit": "deny", "bash": "deny"}
+    assert "hands routine work to it on its own" in result.output
+
+
+def _opencode_effective_config(monkeypatch, effective):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, json.dumps(effective), ""),
+    )
+
+
+def test_opencode_auto_route_restricts_every_agent_the_user_can_be_in(monkeypatch, tmp_path):
+    effective = {
+        "agent": {
+            "reviewer": {"mode": "primary", "permission": {"read": "allow"}},
+            "helper": {"mode": "subagent"},
+        }
+    }
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
+    _opencode_effective_config(monkeypatch, effective)
+    path = tmp_path / "opencode.json"
+    plain = start._opencode_subagent_inline_config(path, {})
+    assert "agent" not in plain and "plugin" not in plain
+    assert not (tmp_path / start._OPENCODE_ROUTE_PLUGIN).exists()
+    agents = start._opencode_subagent_inline_config(path, {}, auto_route = True)["agent"]
+    assert set(agents) == {"build", "plan", "general", "explore", "reviewer", "helper"}
+    for name in ("build", "general", "explore", "reviewer", "helper"):
+        permission = agents[name]["permission"]
+        for tool in ("grep", "glob", "list", "lsp", "edit"):
+            assert permission[tool] == "deny"
+        # OpenCode's free tier rejects a request without read or bash, so the plugin blocks them instead.
+        assert not {"read", "bash"} & set(permission)
+        # Last match wins in OpenCode, so the catch-all deny must come before the allow.
+        assert list(permission["task"].items()) == [("*", "deny"), ("unsloth", "allow")]
+    plan = agents["plan"]["permission"]
+    assert plan["grep"] == plan["lsp"] == "deny"
+    assert not {"read", "bash", "edit"} & set(plan)
+    assert list(plan["task"].items()) == [("*", "deny"), ("unsloth-plan", "allow")]
+
+
+def test_opencode_auto_route_blocks_read_and_bash_with_a_session_plugin(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
+    _opencode_effective_config(monkeypatch, {})
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {}, auto_route = True)
+    plugin = tmp_path / start._OPENCODE_ROUTE_PLUGIN
+    assert inline["plugin"] == [str(plugin)]
+    script = plugin.read_text()
+    assert script == start._OPENCODE_ROUTE_PLUGIN_SCRIPT
+    assert 'const ROUTED = new Set(["read", "bash"]);' in script
+    assert 'const LOCAL = new Set(["unsloth", "unsloth-plan"]);' in script
+    assert '"tool.execute.before"' in script and '"chat.params"' in script
+    assert "Hand the complete task to the @" in script
+    assert "plugin" not in start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+    assert not plugin.exists()
+
+
+def test_opencode_auto_route_recipe_loads_the_route_plugin(fake_studio, monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
+    plugin = tmp_path / "agents" / "opencode-subagent" / start._OPENCODE_ROUTE_PLUGIN
+    result = CliRunner().invoke(start.start_app, ["opencode", "--auto-route", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert inline["plugin"] == [str(plugin)]
+    assert plugin.read_text() == start._OPENCODE_ROUTE_PLUGIN_SCRIPT
+    assert "read" not in inline["agent"]["build"]["permission"]
+    result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert "plugin" not in inline
+    assert set(inline["agent"]) == {"unsloth"}
+    assert not plugin.exists()
+
+
+def test_opencode_auto_route_keeps_the_users_plugins(monkeypatch, tmp_path):
+    inherited = {"plugin": ["opencode-wakatime", ["./mine.js", {"level": 2}]]}
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    _opencode_effective_config(monkeypatch, {"plugin": ["from-global"]})
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {}, auto_route = True)
+    assert inline["plugin"] == [
+        *inherited["plugin"],
+        str(tmp_path / start._OPENCODE_ROUTE_PLUGIN),
+    ]
+
+
+def test_opencode_auto_route_keeps_an_inherited_agent_config(monkeypatch, tmp_path):
+    inherited = {"agent": {"build": {"permission": {"webfetch": "ask"}, "steps": 5}}}
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    inline = start._opencode_subagent_inline_config(
+        tmp_path / "opencode.json", {}, v2 = True, auto_route = True
+    )
+    build = inline["agent"]["build"]
+    assert build["steps"] == 5
+    assert build["permission"]["webfetch"] == "ask"
+    assert build["permission"]["read"] == build["permission"]["bash"] == "deny"
+    assert inline["agent"]["plan"]["permission"]["read"] == "deny"
+    assert "plugin" not in inline
+    assert not (tmp_path / start._OPENCODE_ROUTE_PLUGIN).exists()
+
+
+@pytest.mark.parametrize("auto_route", [False, True])
+def test_codex_auto_route_disables_only_the_parents_shell(
+    fake_studio, tmp_path, monkeypatch, auto_route
+):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    flag = "--auto-route" if auto_route else "--as-subagent"
+    result = CliRunner().invoke(start.start_app, ["codex", flag, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    home = tmp_path / "agents" / "codex-subagent"
+    bridge = json.loads((home / "subagent.json").read_text())
+    instructions = (home / "parent" / "AGENTS.md").read_text()
+    child_profile = (home / "child" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert "shell_tool" not in child_profile
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
+    if not auto_route:
+        assert not any(value.startswith("features.") for value in command)
+        assert "auto_route" not in bridge
+        assert start._CODEX_AUTO_ROUTE_INSTRUCTIONS not in instructions
+        return
+    features = [command[i + 1] for i, value in enumerate(command) if value == "-c"]
+    for feature in ("shell_tool", "multi_agent", "view_image"):
+        assert f"features.{feature}=false" in features
+    assert bridge["auto_route"] is True
+    assert start._CODEX_AUTO_ROUTE_INSTRUCTIONS in instructions
+    assert "Codex hands routine work to it on its own." in result.output
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -6016,6 +6371,17 @@ def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypa
     assert "enabled_providers" not in _opencode_inline_config(result.output)
     assert "disabled_providers" not in _opencode_inline_config(result.output)
     assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
+
+
+def test_connect_opencode_v2_named_opencode_launches_without_model_flag(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", True))
+    launched = []
+    monkeypatch.setattr(start, "_run", lambda *a, **k: launched.append(a[3]))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--yolo"])
+
+    assert result.exit_code == 0, result.output
+    assert launched == [["opencode", "--standalone", "--auto"]]
 
 
 def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(

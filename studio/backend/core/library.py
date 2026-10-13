@@ -817,7 +817,9 @@ def _sandbox_sessions() -> list[_SandboxSession]:
         threads = conn.execute(
             "SELECT id, title, pair_id FROM chat_threads WHERE project_id IS NULL"
         ).fetchall()
-        projects = conn.execute("SELECT id, name, root_path FROM chat_projects").fetchall()
+        projects = conn.execute(
+            "SELECT id, name, root_path FROM chat_projects WHERE COALESCE(working_folder, '') = ''"
+        ).fetchall()
     finally:
         conn.close()
     return [
@@ -858,7 +860,7 @@ def _sandbox_session_eligible(session_id: str) -> bool:
         if not session_id.startswith(_PROJECT_SESSION_PREFIX):
             return False
         row = conn.execute(
-            "SELECT root_path FROM chat_projects WHERE id = ?",
+            "SELECT root_path FROM chat_projects WHERE id = ? AND COALESCE(working_folder, '') = ''",
             (session_id[len(_PROJECT_SESSION_PREFIX) :],),
         ).fetchone()
     finally:

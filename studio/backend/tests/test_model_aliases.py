@@ -183,7 +183,7 @@ def test_alias_rows_follow_the_visible_catalog(store):
 def test_catalog_listing_drops_the_model_row_an_alias_shadows(store, monkeypatch):
     import routes.inference as inference
 
-    async def catalog():
+    async def catalog(quant_pins = False):
         return [
             {"id": "unsloth/Qwen3-4B-GGUF", "object": "model", "loaded": False},
             {"id": "local-model", "object": "model", "loaded": False},
@@ -247,7 +247,7 @@ def test_retrieve_prefers_an_alias_over_a_same_named_loaded_model(store, monkeyp
 
     loaded = [{"id": "local-model", "object": "model"}]
 
-    async def catalog():
+    async def catalog(quant_pins = False):
         return [{"id": "unsloth/Qwen3-4B-GGUF", "object": "model", "loaded": False}, *loaded]
 
     monkeypatch.setattr(inference, "_openai_model_objects", lambda: loaded)
@@ -255,3 +255,22 @@ def test_retrieve_prefers_an_alias_over_a_same_named_loaded_model(store, monkeyp
     set_model_aliases([{"name": "local-model", "model": "unsloth/Qwen3-4B-GGUF"}])
     got = asyncio.run(inference.openai_retrieve_model("local-model", current_subject = "owner"))
     assert got["alias_for"] == "unsloth/Qwen3-4B-GGUF"
+
+
+def test_list_keeps_quant_pin_rows_next_to_aliases(store, monkeypatch):
+    import routes.inference as inference
+
+    async def catalog(quant_pins = False):
+        rows = [{"id": "unsloth/Qwen3-4B-GGUF", "object": "model", "loaded": False}]
+        if quant_pins:
+            rows.append({"id": "unsloth/Qwen3-4B-GGUF:Q4_K_M", "object": "model", "loaded": False})
+        return rows
+
+    monkeypatch.setattr(inference, "_openai_catalog_objects", catalog)
+    set_model_aliases([{"name": "fast-chat", "model": "unsloth/Qwen3-4B-GGUF:Q4_K_M"}])
+    listed = asyncio.run(inference.openai_list_models(current_subject = "owner"))["data"]
+    assert [(m["id"], m.get("alias_for")) for m in listed] == [
+        ("unsloth/Qwen3-4B-GGUF", None),
+        ("unsloth/Qwen3-4B-GGUF:Q4_K_M", None),
+        ("fast-chat", "unsloth/Qwen3-4B-GGUF:Q4_K_M"),
+    ]

@@ -515,7 +515,7 @@ def exercise_permission_mode_controls(page, shoot):
     choose("Run automatically")
     expect_mode("Run automatically")
     expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
-    expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
+    expect(page.locator('button[data-pill-label="Tools"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
@@ -1868,8 +1868,8 @@ with sync_playwright() as p:
     # 7. Composer toggle buttons. Each aria-label flips between
     # "Disable X" / "Enable X" with state (shared-composer.tsx).
     # ─────────────────────────────────────────────────────
-    step("composer toggle buttons (Thinking / Web search / Code execution)")
-    for feature in ("thinking", "web search", "code execution"):
+    step("composer toggle buttons (Thinking / Web search / Tools)")
+    for feature in ("thinking", "web search", "tools"):
         # Match whichever of "Disable X" / "Enable X" is rendered.
         toggle = page.locator(
             f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
@@ -2811,6 +2811,33 @@ with sync_playwright() as p:
             fail(f"server still up after Shutdown click; /api/health={r.status}")
         except urllib.error.URLError as exc:
             info(f"OK /api/health unreachable: {exc!r}")
+
+    # The port closes as soon as shutdown starts; the process stays up while it stops its children
+    # (llama-server: up to 5 s SIGTERM + 5 s SIGKILL). When CI names the server (STUDIO_PID from
+    # boot-studio-api-only.sh), the cleanup must also finish: a closed port alone no longer shows it.
+    studio_pid = os.environ.get("STUDIO_PID", "").strip()
+    if studio_pid.isdigit() and os.name != "nt":  # Windows os.kill(pid, 0) would terminate it
+        t0 = time.time()
+        while time.time() - t0 < 60:
+            try:
+                os.kill(int(studio_pid), 0)
+                if Path("/proc/self").exists():  # Linux: exited but not yet reaped is done
+                    try:
+                        stat = Path(f"/proc/{studio_pid}/stat").read_text(encoding = "utf-8")
+                    except FileNotFoundError:  # reaped between the probe and the read
+                        raise ProcessLookupError from None
+                    if stat.rsplit(")", 1)[1].split()[0] == "Z":
+                        raise ProcessLookupError
+            except ProcessLookupError:
+                info(
+                    f"OK server process {studio_pid} exited {time.time() - t0:.1f}s after the port closed"
+                )
+                break
+            except PermissionError:
+                break  # not ours to signal: nothing to check
+            time.sleep(0.5)
+        else:
+            fail(f"server process {studio_pid} still running 60s after Shutdown closed its port")
 
     # Some pageerrors are benign: chat-completions 422s (network-layer bubble-up, not a JS bug; per-turn flow already
     # validates each turn) and fetch failures after Shutdown (server is dead by design). Full list in

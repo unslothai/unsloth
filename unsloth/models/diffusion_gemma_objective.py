@@ -9,6 +9,7 @@ import contextlib
 import torch
 import torch.nn.functional as F
 
+from .diffusion_loss import chunked_cross_entropy, compile_loss
 from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, unwrap_diffusion_model
 
 __all__ = ["DiffusionGemmaProfile"]
@@ -157,32 +158,43 @@ class DiffusionGemmaProfile(DiffusionProfile):
             diffusion_logits = diffusion_logits.float().scatter_add(
                 2, canvas_ids.unsqueeze(-1), bump[:, :, None].expand(-1, block_size, 1)
             )
-        if (diffusion_target != -100).any():
-            diffusion_loss = F.cross_entropy(
-                diffusion_logits.flatten(0, 1), diffusion_target.flatten(), ignore_index = -100
-            )
-        else:
-            diffusion_loss = outputs.logits.sum() * 0.0
+        # Eager under "auto": compiled chunks were 5-10% slower per step on DiffusionGemma-26B-A4B (B200) at equal memory.
+        compiled = compile_loss(args, device, auto = False)
+        # Sum / count instead of a mean: an all-ignored batch gives 0 (with grad), not NaN, and needs no branch.
+        diffusion_sum, _, diffusion_count = chunked_cross_entropy(
+            diffusion_logits, diffusion_target, compiled = compiled
+        )
+        diffusion_loss = diffusion_sum / diffusion_count.clamp_min(1)
 
+        # Encoder AR co-loss straight from the hidden states: the [B, L, V] encoder logits never exist.
         lm_head = base.get_output_embeddings()
         hidden_states = outputs.encoder_last_hidden_state.to(lm_head.weight.dtype)
-        with _gather_lm_head(lm_head.weight, lm_head.bias):
-            encoder_logits = hidden_states @ lm_head.weight.t()
-            if lm_head.bias is not None:
-                encoder_logits = encoder_logits + lm_head.bias
-        encoder_logits = encoder_logits.float()
-        encoder_logits = torch.tanh(encoder_logits / softcap) * softcap
         ar_mask = attention_mask[:, :-1].bool() & attention_mask[:, 1:].bool()
         ar_targets = torch.where(ar_mask, input_ids[:, 1:], -100)
-        ar_loss = F.cross_entropy(
-            encoder_logits[:, :-1].flatten(0, 1), ar_targets.flatten(), ignore_index = -100
-        )
+        if hasattr(lm_head.weight, "ds_id"):
+            # ZeRO-3 re-partitions the head when the gather exits, so the projection must happen inside it
+            # (autograd then keeps the gathered tensor); the fused path would re-read it in backward.
+            with _gather_lm_head(lm_head.weight, lm_head.bias):
+                encoder_logits = F.linear(hidden_states[:, :-1], lm_head.weight, lm_head.bias)
+            ar_sum, _, ar_count = chunked_cross_entropy(
+                encoder_logits, ar_targets, softcap = softcap, compiled = compiled
+            )
+        else:
+            ar_sum, _, ar_count = chunked_cross_entropy(
+                hidden_states[:, :-1],
+                ar_targets,
+                weight = lm_head.weight,
+                bias = lm_head.bias,
+                softcap = softcap,
+                compiled = compiled,
+            )
+        ar_loss = ar_sum / ar_count.clamp_min(1)
 
         loss = diffusion_loss + ar_weight * ar_loss
         metrics = {
-            "diffusion_loss": diffusion_loss.detach().item(),
-            "encoder_ar_loss": ar_loss.detach().item(),
-            "mean_t": t.mean().item(),
+            "diffusion_loss": diffusion_loss.detach(),
+            "encoder_ar_loss": ar_loss.detach(),
+            "mean_t": t.mean().detach(),
         }
         return loss, outputs, metrics
 
