@@ -364,10 +364,11 @@ def _coordinate(arguments: dict, key: str) -> Optional[float]:
 def _target(arguments: dict, prefix: str = "") -> dict:
     """A ref or an x/y point, as `{"ref": ...}` or `{"x": ..., "y": ...}`, keyed with `prefix`."""
     ref = _ref({"ref": arguments.get(f"{prefix}ref")})
-    x = _coordinate(arguments, f"{prefix}x")
-    y = _coordinate(arguments, f"{prefix}y")
+    # The exact ref wins, whatever else came with it.
     if ref:
         return {f"{prefix}ref": ref}
+    x = _coordinate(arguments, f"{prefix}x")
+    y = _coordinate(arguments, f"{prefix}y")
     if x is None or y is None:
         raise ValueError(
             f"give {prefix}ref from the latest snapshot, or both {prefix}x and {prefix}y."

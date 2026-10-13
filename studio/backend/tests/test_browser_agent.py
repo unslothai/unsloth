@@ -118,6 +118,7 @@ def test_pointer_tools_take_a_ref_or_a_point():
     }
     # A ref wins over a point, as the snapshot's refs are exact.
     assert _request("browser_click", {"ref": "r3", "x": 1, "y": 2}) == {"op": "click", "ref": "r3"}
+    assert _request("browser_click", {"ref": "r3", "x": -1}) == {"op": "click", "ref": "r3"}
     assert _request("browser_move_mouse", {"ref": "r9"}) == {"op": "move", "ref": "r9"}
     assert _request("browser_drag", {"ref": "r1", "to_x": 300, "to_y": 40}) == {
         "op": "drag",

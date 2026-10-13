@@ -285,6 +285,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     doc: str(raw.doc, 16),
     scrollX: num(raw.scrollX),
     scrollY: num(raw.scrollY),
+    scrolls: num(raw.scrolls),
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {
@@ -673,7 +674,15 @@ async function afterward(tab: BrowserTab, before: string, action: BrowserAction,
 // CSS pixels per pixel of the agent's last screenshot of each tab: the model reads x and y off that
 // picture (browser_agent.py _POINT_NOTE). 1 until it takes one. Kept with the page and viewport it
 // was taken of: on another, the picture's x and y point at nothing it showed.
-type ShotView = { url: string; width?: number; height?: number; scrollX?: number; scrollY?: number; doc?: string };
+type ShotView = {
+  url: string;
+  width?: number;
+  height?: number;
+  scrollX?: number;
+  scrollY?: number;
+  scrolls?: number;
+  doc?: string;
+};
 const pointScale = new Map<string, ShotView & { scale: number }>();
 const MAX_SHOT_EDGE = 1024;
 
@@ -684,7 +693,7 @@ async function pagePoint(tab: BrowserTab, x?: number, y?: number): Promise<{ x: 
   if (tabUrl(tab) !== shot.url) return STALE_SHOT;
   const status = await pageCall(tab, { op: "status" });
   // A scroll, resize or reload moves what sits at each of the picture's points.
-  const keys = ["width", "height", "scrollX", "scrollY", "doc"] as const;
+  const keys = ["width", "height", "scrollX", "scrollY", "scrolls", "doc"] as const;
   if (keys.some((key) => status[key] !== shot[key])) return STALE_SHOT;
   return { x: x * shot.scale, y: y * shot.scale };
 }
@@ -780,8 +789,9 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     if (refused) return cancel(refused);
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
   }
-  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end });
-  if (!up.ok) return { ok: false, error: up.error };
+  // In the same call as the drop: nothing can swap the target between the check and the release.
+  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "" });
+  if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, up.note);
 }
 
@@ -956,7 +966,15 @@ async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Pro
     const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(cssWidth, cssHeight));
     const width = Math.max(1, Math.round(cssWidth * fit));
     const height = Math.max(1, Math.round(cssHeight * fit));
-    const at: ShotView = { url: tabUrl(tab), width: size.width, height: size.height, scrollX: size.scrollX, scrollY: size.scrollY, doc: size.doc };
+    const at: ShotView = {
+      url: tabUrl(tab),
+      width: size.width,
+      height: size.height,
+      scrollX: size.scrollX,
+      scrollY: size.scrollY,
+      scrolls: size.scrolls,
+      doc: size.doc,
+    };
     pointScale.set(tab.id, { ...at, scale: cssWidth / bitmap.width });
     if (width === bitmap.width && height === bitmap.height) return blob;
     const canvas = document.createElement("canvas");

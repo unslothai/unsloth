@@ -57,6 +57,8 @@ export type AgentAnswer = {
   height?: number;
   scrollX?: number;
   scrollY?: number;
+  /** How many scrolls the page has seen, any element's. */
+  scrolls?: number;
   /** `evaluate`, `evaluated`: the script hasn't finished yet. */
   pending?: boolean;
   /** `describe` at a point: the element there, for a click or drag's `expect`. */
@@ -123,6 +125,9 @@ export function installPageAgent(): PageAgent {
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
   let lastMutation = performance.now();
+  // Any scroll, a table's or a carousel's as much as the page's, moves what a screenshot's points show.
+  let scrolls = 0;
+  addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
     new MutationObserver(() => {
       lastMutation = performance.now();
@@ -560,7 +565,8 @@ export function installPageAgent(): PageAgent {
     const el = holder instanceof HTMLLabelElement && holder.control ? holder.control : holder;
     const field = el as HTMLInputElement;
     const form = (field.form ?? el.closest("form")) as HTMLFormElement | null;
-    const anchor = el.closest("a[href]") as HTMLAnchorElement | null;
+    // Through shadow roots, as linkOut finds it, so the link is gated before a native click follows it.
+    const anchor = lineage(el).find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement && node.hasAttribute("href")) ?? null;
     const tag = el.tagName.toLowerCase();
     const type = (field.type || "").toLowerCase();
     const submits = Boolean(form) && isSubmitter(el);
@@ -734,7 +740,8 @@ export function installPageAgent(): PageAgent {
     );
 
   const pointer = (phase: unknown, at: Point, expect: unknown): Record<string, unknown> => {
-    const el = phase === "down" ? stillAt(at, expect) : elementAt(at);
+    // The press and the release are held to the elements the user was asked about; moves are not.
+    const el = phase === "down" || phase === "up" ? stillAt(at, expect) : elementAt(at);
     if (phase === "down") {
       pressAt(el, at);
       drag = { html: null };
@@ -1167,6 +1174,7 @@ export function installPageAgent(): PageAgent {
       height: window.innerHeight,
       scrollX: Math.round(window.scrollX),
       scrollY: Math.round(window.scrollY),
+      scrolls,
       doc: refOf(document.documentElement),
     };
   }
