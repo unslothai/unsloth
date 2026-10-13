@@ -410,6 +410,14 @@ def test_block_start_closes_paragraph_before_skipped_form_chrome(block, main_con
     assert "intro" in out and "After" in out
 
 
+@pytest.mark.parametrize("main_content", [False, True])
+def test_paragraph_start_recovery_stops_at_button_scope_barrier(main_content):
+    html = "<p hidden><object><center>SECRET</center></object><p>AFTER</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "SECRET" not in out
+    assert "AFTER" in out
+
+
 @pytest.mark.parametrize("table_tag", ["caption", "tbody", "td", "tfoot", "th", "thead", "tr"])
 @pytest.mark.parametrize("main_content", [False, True])
 def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, main_content):
@@ -512,6 +520,22 @@ def test_heading_start_closes_open_heading_before_skip_recovery(heading, main_co
     html = f"<{heading}>Title<h2>Sub</h2><nav>Hidden</{heading}>Menu text</nav><p>After</p>"
     out = html_to_markdown(html, main_content = main_content)
     assert "Title" in out and "Sub" in out and "After" in out
+    assert "Hidden" not in out and "Menu text" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_start_only_pops_a_current_heading(main_content):
+    html = "<h1><span>Title<h2>Sub</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Sub" in out and "Menu text" in out and "After" in out
+    assert "Hidden" not in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_mismatched_heading_end_reconciles_before_skip_recovery(main_content):
+    html = "<h1>Title</h2><nav>Hidden</h1>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "After" in out
     assert "Hidden" not in out and "Menu text" not in out
 
 

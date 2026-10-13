@@ -680,7 +680,9 @@ class _TitleButtonScan:
         """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
         if not self._closable_open:
             return
-        barriers = _CLOSE_BARRIERS.get(tag, ())
+        barriers = _CLOSE_BARRIERS.get(tag, frozenset())
+        if tag in _P_CLOSING_TAGS:
+            barriers = barriers | _BUTTON_SCOPE_BARRIERS
         while True:
             close_at = None
             for i in range(len(self._open) - 1, -1, -1):
@@ -1212,7 +1214,9 @@ class _MarkdownRenderer(HTMLParser):
         for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
         if not self._closable_open:
             return
-        barriers = _CLOSE_BARRIERS.get(tag, ())
+        barriers = _CLOSE_BARRIERS.get(tag, frozenset())
+        if tag in _P_CLOSING_TAGS:
+            barriers = barriers | _BUTTON_SCOPE_BARRIERS
         while True:
             close_at = None
             for i in range(len(self._open_tags) - 1, -1, -1):
@@ -1715,10 +1719,8 @@ class _MarkdownRenderer(HTMLParser):
             if tag not in _SKIP_RECOVERY_END_TAGS:
                 return
             if tag in _HEADING_TAGS:
-                target = max(
-                    (self._open_at[name][-1] for name in _HEADING_TAGS if self._open_at.get(name)),
-                    default = -1,
-                )
+                heading = self._latest_indexed_open_tag(_HEADING_TAGS)
+                target = heading[0] if heading else -1
             else:
                 positions = self._open_at.get(tag)
                 target = positions[-1] if positions else -1
@@ -1735,6 +1737,11 @@ class _MarkdownRenderer(HTMLParser):
 
         if recovered_target >= 0:
             self._close_open_target(recovered_target)
+            return
+        if tag in _HEADING_TAGS:
+            heading = self._latest_indexed_open_tag(_HEADING_TAGS)
+            if heading and self._open_target_in_scope(tag, heading[0]):
+                self._close_open_target(heading[0])
             return
         self._close_rendered_tag(tag)
 
