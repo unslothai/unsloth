@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the Wan2.2-TI2V-5B (video) family of the flow-matching DiT LoRA trainer.
-
-CPU-only. The first half needs no diffusers import (fakes stand in for the VAE, the text encoder
-and the transformer). The second half builds a TINY random ``WanTransformer3DModel`` (2 blocks,
-2 heads) in memory, so the forward contract, the PEFT target selection, and the saved LoRA keys
-are checked against the real diffusers classes without a download. What a Wan family gets wrong
-by default, and so what these pin: training on the unshifted sigmas because Wan ships a UniPC
-scheduler, a 1-D timestep where TI2V-5B's pipeline conditions per token, the VAE latent
-normalisation direction, the UMT5 zero padding, and the family never reaching the Train tab."""
+"""CPU-only tests for the Wan2.2-TI2V-5B DiT LoRA trainer family (fakes plus a tiny random WanTransformer3DModel)."""
 
 from __future__ import annotations
 
@@ -174,8 +166,7 @@ def test_wan_rejects_fp16_before_loading(tmp_path):
 
 
 def test_wan_default_flow_shift_stays_the_models_own_schedule(tmp_path):
-    # None means "the model's own schedule"; for Wan that is the spec's shift-5 table, NOT "auto"
-    # (auto returns scheduler.sigmas for a static-shift scheduler, which is the same table).
+    # None = the model's own schedule, i.e. the spec's shift-5 table.
     cfg = _cfg(tmp_path, resolution = 704).normalized()
     assert cfg.flow_shift is None
 
@@ -341,9 +332,7 @@ def test_encode_latent_stats_returns_the_posterior_affine_pair():
 
 # ── the real diffusers transformer, tiny + random ────────────────────────────
 def test_forward_matches_the_pipelines_expand_timesteps_call():
-    """The spec's forward must equal the call WanPipeline makes for TI2V-5B (expand_timesteps): a [B, seq] per-token
-    timestep built as (mask[:, ::2, ::2] * t).flatten() with an all-ones mask for text-to-video. The trainer passes
-    the cheaper [B] form; this pins that the two agree."""
+    """The trainer's [B] timestep must match WanPipeline's per-token expand_timesteps call for T2V."""
     transformer = _tiny_transformer()
     noisy = torch.randn(2, Z_DIM, 1, 8, 12)
     t = torch.tensor([937.5, 120.0])
@@ -417,8 +406,6 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
     assert "transformer.blocks.0.attn1.to_q.lora_A.weight" in keys
     assert "transformer.blocks.1.ffn.net.2.lora_B.weight" in keys
 
-    # A fresh base through the real loader the inference path uses: the adapter attaches to every module and
-    # changes the output, and disabling it restores the base exactly.
     fresh = _tiny_transformer()
     pipe = WanPipeline(
         tokenizer = None, text_encoder = None, vae = None, scheduler = None, transformer = fresh, expand_timesteps = True

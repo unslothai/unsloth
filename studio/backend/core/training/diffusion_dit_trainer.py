@@ -183,11 +183,9 @@ class _FamilySpec:
     latent_shape: Optional[Callable[..., tuple]] = None
     decode_latents: Optional[Callable[..., Any]] = None
     sample_forward_kwargs: Optional[dict] = None
-    # cfg -> the FlowMatchEuler scheduler the loop draws sigmas from. None = load it from the base's scheduler/ subfolder,
-    # which is only right when that subfolder IS a FlowMatchEuler config (Wan ships UniPC).
+    # cfg -> FlowMatchEuler scheduler. None = load scheduler/ (only valid if it IS FlowMatchEuler; Wan ships UniPC).
     training_scheduler: Optional[Callable[..., Any]] = None
-    # The saver takes ``adapter_metadata`` (the LoraConfig dict diffusers writes into the safetensors header), so a
-    # non-default lora_alpha reloads at the trained strength. Without it diffusers' loader assumes alpha == rank.
+    # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
     save_takes_metadata: bool = False
 
 
@@ -1650,11 +1648,8 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
-# Wan2.2-TI2V-5B (video). Trained from STILL IMAGES like LTX-2: Wan's causal VAE maps a 1-frame clip to one latent frame
-# (temporal compression 4, frame counts 4k+1), so a still is a valid T2V sample. It is a single-stream video DiT with no
-# audio, so every block's self-attention, text cross-attention and FFN are adapter sites: the q/k/v/o + ffn.0/ffn.2 set
-# DiffSynth-Studio and musubi-tuner train on Wan. A bare "to_q" is safe here (no other stream carries one), and
-# attn2.add_k_proj / add_v_proj exist only on the CLIP-conditioned I2V-14B checkpoints, not on TI2V-5B.
+# Wan2.2-TI2V-5B, trained from stills (a 1-frame clip is a valid T2V sample). Targets match DiffSynth-Studio /
+# musubi-tuner; bare "to_q" is safe (single stream), add_k/v_proj exist only on I2V-14B.
 _WAN_TARGETS = (
     "to_q",
     "to_k",
@@ -1663,7 +1658,7 @@ _WAN_TARGETS = (
     "ffn.net.0.proj",
     "ffn.net.2",
 )
-# WanPipeline.__call__'s default: UMT5 embeddings are cut at the prompt's real length and zero-padded back to this.
+# WanPipeline.__call__'s default zero-pad length for UMT5 embeddings.
 _WAN_MAX_SEQUENCE_LENGTH = 512
 
 
@@ -1674,9 +1669,7 @@ def _wan_pipeline_cls():
 
 
 def _wan_load_conditioners(cfg, device, weight_dtype):
-    """UMT5 + tokenizer + VAE, no transformer. The VAE loads in fp32 straight from its fp32 checkpoint: the shared
-    loader casts the whole pipeline to bf16 first and then up to fp32, which would round every VAE weight through bf16
-    on the way (Studio's Wan inference keeps it fp32 for the same reason, ``vae_force_fp32``)."""
+    """UMT5 + tokenizer + VAE. VAE loads fp32 directly; the shared bf16-then-fp32 cast would round it through bf16."""
     import torch
     from diffusers import AutoencoderKLWan
 
@@ -1690,8 +1683,7 @@ def _wan_load_conditioners(cfg, device, weight_dtype):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # The VAE stays on the host here: the shared loop moves it to the device only after the UMT5-XXL encoder (11.4 GB
-    # bf16) is freed, so the two never sit on the GPU together.
+    # VAE stays on host; the shared loop moves it only after UMT5-XXL (11.4 GB) is freed.
     return pipe, pipe.vae
 
 
@@ -1701,9 +1693,7 @@ def _wan_load_transformer(cfg, device, weight_dtype, base_precision):
 
 
 def _wan_trim_padding(embeds):
-    """Drop the trailing all-zero rows WanPipeline pads to max_sequence_length. Lossless: ``_wan_collate`` pads with
-    zeros again, so the transformer sees the exact tensor the pipeline builds, while the cache holds ~20 tokens per
-    caption instead of 512 (4 MB each in bf16)."""
+    """Drop trailing zero-pad rows; lossless since ``_wan_collate`` re-pads."""
     nonzero = embeds[0].abs().amax(dim = -1) > 0
     idx = nonzero.nonzero()
     keep = int(idx.max()) + 1 if idx.numel() else 1
@@ -1729,8 +1719,7 @@ def _wan_encode_prompts(pipe, captions, device):
 
 
 def _wan_latent_affine(vae, ref):
-    """The per-channel (mean, std) WanPipeline normalises with: decode computes ``latents / (1 / std) + mean``, so the
-    training latent is ``(z - mean) / std``."""
+    """Per-channel (mean, std); training latent is ``(z - mean) / std``."""
     import torch
 
     z = int(vae.config.z_dim)
@@ -1744,8 +1733,7 @@ def _wan_latent_affine(vae, ref):
 
 
 def _wan_pixels(vae, pixel_values):
-    # A still is a 1-frame clip: [B,3,H,W] -> [B,3,1,H,W]. TI2V-5B's VAE compresses 16x spatially (z_dim 48), so a
-    # 704px still becomes [B,48,1,44,44].
+    # [B,3,H,W] -> [B,3,1,H,W]: a still is a 1-frame clip.
     return pixel_values.to(dtype = next(vae.parameters()).dtype).unsqueeze(2)
 
 
@@ -1776,10 +1764,7 @@ def _wan_collate(
     import torch
     import torch.nn.functional as F
 
-    # Re-pad every trimmed embed to the pipeline's fixed length with zeros, exactly as _get_t5_prompt_embeds does. On the
-    # DEVICE: only the ~100 KB trimmed rows cross the bus, and the pad / cat never run as host ops in the step loop
-    # (padding on the host meant a pageable 4 MB copy per step, and on a loaded host the multi-threaded CPU fill + cat
-    # stalled each step for ~100 ms).
+    # Zero-pad as _get_t5_prompt_embeds does, on the DEVICE: host-side pad/cat stalled steps ~100 ms.
     length = max(_WAN_MAX_SEQUENCE_LENGTH, *(e[0].shape[1] for e in entries))
     padded = [
         F.pad(
@@ -1793,12 +1778,8 @@ def _wan_collate(
 
 def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
     (prompt_embeds,) = embeds_batch
-    # Wan conditions on the scheduler timestep itself (sigma * 1000), like the pipeline passes it. TI2V-5B's pipeline
-    # sets expand_timesteps and passes a per-TOKEN [B, F*H/2*W/2] timestep, so an image-to-video request can pin its
-    # first-frame latent at t = 0. A text-to-video sample (what a still trains as) has every token at t, and the
-    # transformer then computes the same modulation per token as the [B] form broadcasts (scale_shift_table + temb,
-    # pinned by test_forward_matches_the_pipelines_expand_timesteps_call), so pass [B] and skip the [B, L, 6, D]
-    # per-token projections.
+    # [B] timestep equals the pipeline's per-token expand_timesteps form for T2V (all tokens at t); see
+    # test_forward_matches_the_pipelines_expand_timesteps_call.
     return transformer(
         hidden_states = noisy,
         timestep = timesteps.to(device = noisy.device).reshape(-1),
@@ -1808,9 +1789,7 @@ def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devic
 
 
 def _wan_save(pipe_cls, out_dir, transformer_lora_layers, adapter_metadata = None):
-    # ``transformer.``-prefixed diffusers keys, the format WanPipeline.load_lora_weights reads. The adapter metadata
-    # (r, lora_alpha, target_modules) goes into the safetensors header, where load_lora_weights reads it back; a
-    # diffusers whose saver predates the argument still gets the weights.
+    # Older diffusers savers lack the metadata argument; they still get the weights.
     import inspect
 
     save = _wan_pipeline_cls().save_lora_weights
@@ -1843,12 +1822,8 @@ def _adapter_saver(spec, transformer):
 
 
 def _wan_training_scheduler(cfg):
-    """Wan ships a UniPC scheduler (``use_flow_sigmas``, ``flow_shift`` 5.0 on TI2V-5B), not FlowMatchEuler. Loading
-    FlowMatchEuler from that config silently drops ``flow_shift`` and trains on unshifted sigmas, a distribution the
-    model never denoises at inference. Build the FlowMatchEuler table with the same static shift baked in: UniPC's
-    flow sigmas are ``shift * u / (1 + (shift - 1) * u)``, exactly FlowMatchEuler's static shift, so the default
-    flow_shift (None, the model's own schedule) is the inference distribution and a numeric flow_shift still re-shifts
-    from the unshifted u."""
+    """FlowMatchEuler with Wan's UniPC ``flow_shift`` baked in; loading it from the UniPC config silently drops the
+    shift. UniPC flow sigmas equal FlowMatchEuler's static shift."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     conf = FlowMatchEulerDiscreteScheduler.load_config(
@@ -2016,10 +1991,8 @@ _SPECS: dict[str, _FamilySpec] = {
     "wan2.2-ti2v-5b": _FamilySpec(
         family = "wan2.2-ti2v-5b",
         lora_targets = _WAN_TARGETS,
-        # Wan trains and runs in bf16 (its RoPE is float64/fp32 internally); fp16 is unvalidated.
+        # fp16 is unvalidated.
         force_bf16 = True,
-        # 5B params; the transformer ships fp32 on disk (20 GB), so bf16 resident is ~10 GB. UMT5-XXL (11.4 GB bf16)
-        # is loaded, encoded and freed BEFORE this lands on the device.
         dense_bf16_gb = 10.0,
         load_conditioners = _wan_load_conditioners,
         load_transformer = _wan_load_transformer,
@@ -2324,9 +2297,7 @@ def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
 
 
 def _to_device_cat(parts, device):
-    """Copy the (pinned) cached tensors to ``device`` and join them THERE. ``torch.cat`` on the host returns a fresh
-    PAGEABLE tensor, so the old cat-then-copy turned every pinned async copy into a synchronous pageable one, and ran
-    a multi-threaded host op per step. Values are identical."""
+    """Copy pinned parts, then cat on ``device``: a host cat yields pageable memory and a sync copy."""
     import torch
 
     moved = [p.to(device, non_blocking = True) for p in parts]
@@ -2690,8 +2661,7 @@ def _train_dit(
             torch.cuda.empty_cache()
         elif device == "xpu":
             torch.xpu.empty_cache()
-        # A family may load its VAE on the host to keep it off the device while the text encoders are resident; a VAE
-        # already there makes this a no-op.
+        # Some families keep the VAE on host while text encoders are resident.
         if vae is not None:
             vae.to(device)
 

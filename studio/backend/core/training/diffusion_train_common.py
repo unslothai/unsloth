@@ -96,8 +96,7 @@ TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGI
 AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2", "minimax-h3"})
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
-# silently changes the latent geometry. LTX-2's VAE compresses 32x spatially, matching its resolution_multiple; Wan2.2-TI2V-5B's
-# compresses 16x and its transformer patchifies 2x2, the same 32 grid.
+# silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -533,8 +532,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
-    # DiffSynth-Studio's Wan LoRA recipe: rank 32, lr 1e-4. 704 is TI2V-5B's native short edge (it renders 1280x704 /
-    # 704x1280 only) and sits on the 32 grid (16x VAE x 2x patch): a still is 44x44 latents, 484 tokens.
+    # DiffSynth-Studio's Wan recipe; 704 is TI2V-5B's native short edge.
     "wan2.2-ti2v-5b": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
@@ -590,9 +588,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # Measured on a B200 (nf4, 704px stills, rank 32, default compile) under a 24 GiB per-process cap: the training
-    # LOOP peaks at 4.2 GB allocated, the RUN at 11.6 GB (11.6 GB process-wide) while the UMT5-XXL encoder (11.4 GB bf16)
-    # runs its one-time encode; the VAE joins only after the encoder is freed.
+    # Measured on a B200 (nf4, 704px, rank 32): run peaks at 11.6 GB during the one-time UMT5-XXL encode.
     "wan2.2-ti2v-5b": {
         "params": "5B",
         "qlora_vram_gb": 12,
@@ -2053,7 +2049,6 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "lightricks/ltx-2",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
-        # Wan2.2-TI2V-5B's official diffusers base, same reason: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
     }
 )
