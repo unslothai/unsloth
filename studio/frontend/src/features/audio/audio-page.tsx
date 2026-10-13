@@ -46,6 +46,7 @@ import {
   type AudioGenerationPhase,
   audioGenerationPresentation,
   audioLoadedSelection,
+  deleteCoversRememberedModel,
   rememberedModelIsGone,
   rememberedModelUnavailable,
 } from "./audio-page-policy";
@@ -986,7 +987,12 @@ export function AudioPage({
       available: modelInventory.availableSet,
     };
     for (const id of new Set(Object.values(rememberedModels))) {
-      if (!id || !deleted.has(id.toLowerCase())) continue;
+      if (
+        !id ||
+        ![...deleted].some((repoId) => deleteCoversRememberedModel(repoId, id))
+      ) {
+        continue;
+      }
       if (rememberedModelIsGone(id, inventory)) {
         deleted.delete(id.toLowerCase());
         forgetModel(id);

@@ -821,6 +821,15 @@ export function ModelSelector({
     return all;
   }, [externalModels, loraModels, models]);
 
+  // A task-owned quant names the trigger only while the trigger shows that loaded model.
+  const triggerGgufVariant =
+    loadedGgufVariantOverride !== undefined
+      ? selected &&
+        loadedModelIdOverride &&
+        selected.toLowerCase() === loadedModelIdOverride.toLowerCase()
+        ? loadedGgufVariantOverride
+        : null
+      : activeGgufVariant;
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
@@ -840,9 +849,9 @@ export function ModelSelector({
     // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path. The leaf,
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
-    if (activeGgufVariant) {
+    if (triggerGgufVariant) {
       // The variant is the quant, so it goes in the suffix.
-      const desc = `GGUF · ${activeGgufVariant}`;
+      const desc = `GGUF · ${triggerGgufVariant}`;
       return found
         ? { ...found, description: undefined, descriptionSuffix: desc }
         : { id: selected, name: fallbackName, descriptionSuffix: desc };
@@ -867,7 +876,7 @@ export function ModelSelector({
     selected,
     optionById,
     catalog,
-    activeGgufVariant,
+    triggerGgufVariant,
     externalModels,
     externalConnections,
     t,

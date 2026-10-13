@@ -12,6 +12,7 @@ import {
   audioGenerationPresentation,
   audioLoadedSelection,
   audioRuntimeNoticeMode,
+  deleteCoversRememberedModel,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -952,10 +953,7 @@ test("a deleted model is forgotten only once the settled inventory lacks it", ()
   );
   // Only a delete puts a model up for forgetting, so a load racing the inventory keeps it.
   assert.match(audioPageSource, /subscribeModelDeleted\(\(repoId\) => \{\s*deletedModelsRef\.current\.add\(repoId\.toLowerCase\(\)\);/);
-  assert.match(
-    audioPageSource,
-    /if \(!id \|\| !deleted\.has\(id\.toLowerCase\(\)\)\) continue;\s*if \(rememberedModelIsGone\(id, inventory\)\) \{/,
-  );
+  assert.match(audioPageSource, /if \(rememberedModelIsGone\(id, inventory\)\) \{\s*deleted\.delete/);
 });
 
 test("pages a loaded model cannot run point at the page it does run, not always Speak", () => {
@@ -985,5 +983,31 @@ test("a remembered Hub repo the inventory no longer lists is not offered, but ke
   assert.match(
     audioPageSource,
     /rememberedPageModel &&\s*!rememberedModelUnavailable\(rememberedPageModel, \{/,
+  );
+});
+
+test("deleting the audio.cpp package forgets the folders remembered from it", () => {
+  const qwenTts = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF";
+  assert.equal(deleteCoversRememberedModel("audio-cpp/audio.cpp-gguf", qwenTts), true);
+  assert.equal(deleteCoversRememberedModel(qwenTts, qwenTts.toUpperCase()), true);
+  assert.equal(deleteCoversRememberedModel("hexgrad/Kokoro-82M", "hexgrad/Kokoro-82M"), true);
+  assert.equal(deleteCoversRememberedModel("hexgrad/Kokoro", "hexgrad/Kokoro-82M"), false);
+  assert.equal(deleteCoversRememberedModel("audio-cpp/audio.cpp-gguf", "unsloth/orpheus"), false);
+  const settled = { settled: true, error: false };
+  // The package repo is gone, so is every folder in it.
+  assert.equal(
+    rememberedModelIsGone(qwenTts, { ...settled, available: new Set(["hexgrad/kokoro-82m"]) }),
+    true,
+  );
+  assert.equal(
+    rememberedModelIsGone(qwenTts, {
+      ...settled,
+      available: new Set(["audio-cpp/audio.cpp-gguf"]),
+    }),
+    false,
+  );
+  assert.match(
+    audioPageSource,
+    /\[\.\.\.deleted\]\.some\(\(repoId\) => deleteCoversRememberedModel\(repoId, id\)\)/,
   );
 });

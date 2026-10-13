@@ -11,6 +11,7 @@ import {
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
+  AUDIO_CPP_REPO,
   audioCppModelFor,
   isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
@@ -405,17 +406,30 @@ export function audioLoadedSelection(
 }
 
 /** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
- *  the model listed. audio.cpp folders are judged only once the inventory lists folder rows. */
+ *  the model listed. An audio.cpp folder is gone with its package repo, or, once the inventory
+ *  lists folder rows, when its own row is missing. */
 export function rememberedModelIsGone(
   id: string,
   inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
 ): boolean {
   if (!inventory.settled || inventory.error) return false;
   if (inventory.available.has(id.toLowerCase())) return false;
+  if (!isAudioCppFolderId(id)) return true;
   return (
-    !isAudioCppFolderId(id) ||
+    !inventory.available.has(AUDIO_CPP_REPO.toLowerCase()) ||
     [...inventory.available].some((listed) => isAudioCppFolderId(listed))
   );
+}
+
+/** Whether a delete of `deletedRepoId` can have removed the remembered model: the same repo, or
+ *  the audio.cpp package that holds the remembered folder. */
+export function deleteCoversRememberedModel(
+  deletedRepoId: string,
+  rememberedId: string,
+): boolean {
+  const deleted = deletedRepoId.toLowerCase();
+  const remembered = rememberedId.toLowerCase();
+  return remembered === deleted || remembered.startsWith(`${deleted}/`);
 }
 
 const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;

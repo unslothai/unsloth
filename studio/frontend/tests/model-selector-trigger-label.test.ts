@@ -109,3 +109,14 @@ test("the trigger's suffix keeps the space in its ' - ' separator", () => {
   );
   assert.doesNotMatch(selector, /\{subtitle \? " - " : ""\}/);
 });
+
+test("an audio page's loaded quant names the trigger only for the model it belongs to", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /const triggerGgufVariant =\s*loadedGgufVariantOverride !== undefined\s*\? selected &&\s*loadedModelIdOverride &&\s*selected\.toLowerCase\(\) === loadedModelIdOverride\.toLowerCase\(\)\s*\? loadedGgufVariantOverride\s*: null\s*: activeGgufVariant;/,
+  );
+  assert.match(selector, /const desc = `GGUF · \$\{triggerGgufVariant\}`;/);
+});
