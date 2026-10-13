@@ -43,8 +43,9 @@ function Redact-InstallOutput($t) { $t }
 function Get-UsableMemoryMb { if ($env:FAKE_MB -eq "throw") { throw "no probe" }; [long]$env:FAKE_MB }
 '@
 Set-Content -LiteralPath $helpers -Value ($prelude + "`n" + ($src -join "`n")) -Encoding utf8
-$trapLine = @(Get-Content -LiteralPath $setupPath | Where-Object { $_ -like 'trap { if ($script:FrontendBuildProc)*' })
-Check "setup.ps1 has the frontend build trap" ($trapLine.Count -eq 1)
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$null, [ref]$null)
+$trapLine = @($setupAst.EndBlock.Traps | Where-Object { $_.Extent.Text -like '*FrontendBuildProc*' } | ForEach-Object { $_.Extent.Text })
+Check "setup.ps1 has the frontend build trap at script scope" ($trapLine.Count -eq 1)
 $pwshExe = (Get-Process -Id $PID).Path
 $mark = Join-Path $fe ".unsloth-build.local"
 
@@ -141,6 +142,32 @@ if ($gc) { $alive = $null -ne (Get-Process -Id $gc -ErrorAction SilentlyContinue
 Check "the build's child process is gone" ($gc -ne 0 -and -not $alive)
 if ($alive) { Stop-Process -Id $gc -Force -ErrorAction SilentlyContinue }
 Check "hidden .gitignore restored" (Test-Path -LiteralPath (Join-Path $work "outer/.gitignore"))
+
+Write-Host "== the trap still removes the WoA override file =="
+$overrides = Join-Path $work "overrides.merged.txt"
+Set-Content -LiteralPath $overrides -Value "secret"
+$woa = Get-FunctionSource -Path $setupPath -Name "Remove-WoaMergedOverrides"
+$r = Invoke-Case @"
+$woa
+`$script:WoaMergedOverrides = '$overrides'
+$($trapLine[0])
+throw "unexpected"
+"@
+Check "setup still fails" ($r.Code -ne 0)
+Check "override file removed" (-not (Test-Path -LiteralPath $overrides))
+
+Write-Host "== a build that cannot start leaves no temp files and stays serial =="
+$before = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter "tmp*.tmp" -ErrorAction SilentlyContinue).Count
+$r = Invoke-Case "Write-Output (`"started=`" + (Start-FrontendBuildBackground -WorkingDirectory '$fe' -FilePath '$work/no-such-exe'))"
+$after = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter "tmp*.tmp" -ErrorAction SilentlyContinue).Count
+Check "start reports failure" ($r.Out -match "started=False")
+Check "no temp files left" ($after -le $before)
+
+if (-not (Get-Command npm.cmd, npm.exe, npm.bat -CommandType Application -ErrorAction SilentlyContinue)) {
+    Write-Host "== no npm launcher cmd.exe can run: stay serial =="
+    $r = Invoke-Case "`$env:ComSpec = '$pwshExe'; Write-Output (`"started=`" + (Start-FrontendBuildBackground -WorkingDirectory '$fe'))"
+    Check "an npm.ps1-only host builds serially" ($r.Out -match "started=False")
+}
 
 Write-Host "== a rerun waits for a build its killed setup left running =="
 $r = Invoke-Case @"

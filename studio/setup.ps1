@@ -234,14 +234,19 @@ function Start-FrontendBuildBackground {
         [string]$FilePath = $env:ComSpec,
         [string[]]$ArgumentList = @("/d", "/c", "npm run build")
     )
+    # cmd.exe finds only npm.cmd / .exe / .bat; a PowerShell-only npm.ps1 keeps the serial path.
+    if ($FilePath -eq $env:ComSpec -and
+        -not (Get-Command npm.cmd, npm.exe, npm.bat -CommandType Application -ErrorAction SilentlyContinue)) { return $false }
+    $files = @()
     try {
-        $files = @((New-UnslothTemporaryFile).FullName, (New-UnslothTemporaryFile).FullName, (New-UnslothTemporaryFile).FullName)
+        foreach ($i in 1..3) { $files += (New-UnslothTemporaryFile).FullName }
         $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory `
             -NoNewWindow -PassThru -RedirectStandardOutput $files[0] -RedirectStandardError $files[1] `
             -RedirectStandardInput $files[2] -ErrorAction Stop
         # Windows PowerShell only reports ExitCode later if the handle was taken now.
         $null = $proc.Handle
     } catch {
+        foreach ($f in $files) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
         return $false
     }
     $script:FrontendBuildProc = $proc
@@ -268,7 +273,11 @@ function Wait-FrontendBuildOwner {
 }
 
 # Frontend build in the background: stop it on any terminating error, then fail as before.
-trap { if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }; break }
+trap {
+    if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }
+    if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
+    break
+}
 
 function Restore-FrontendBuildGitignores {
     foreach ($gi in $script:FrontendBuildHidden) {
