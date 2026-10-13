@@ -75,6 +75,8 @@ _NAMES = {
     "_CARRIER_MUTATORS",
     "_nested_scope_ids",
     "_pass_through_child",
+    "_PASS_THROUGH_ATTRS",
+    "_pass_through_attr",
     "_local_assignments",
     "_is_count_get",
     "_forward_consumes_num_items_in_batch",

@@ -5496,9 +5496,27 @@ def _loss_head(model):
     return None
 
 
+# Unwrapped forward -> the child it hands the loss count to (or None): parsed once, not every step.
+_PASS_THROUGH_ATTRS = {}
+
+
 def _pass_through_child(m, modules):
     try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
+        forward = inspect.unwrap(type(m).forward)
+    except Exception:
+        return None
+    try:
+        attr = _PASS_THROUGH_ATTRS[forward]
+    except KeyError:
+        attr = _PASS_THROUGH_ATTRS[forward] = _pass_through_attr(forward)
+    except TypeError:
+        attr = _pass_through_attr(forward)
+    return modules[attr] if attr is not None and attr in modules else None
+
+
+def _pass_through_attr(forward):
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(forward)))
     except Exception:
         return None
     node = next(
@@ -5521,7 +5539,6 @@ def _pass_through_child(m, modules):
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
         and func.value.id == "self"
-        and func.attr in modules
     ):
         return None
     kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
@@ -5543,7 +5560,7 @@ def _pass_through_child(m, modules):
         or (kw.arg == "num_items_in_batch" and carries_count(kw.value))
         for kw in call.keywords
     )
-    return modules[func.attr] if forwards_count else None
+    return func.attr if forwards_count else None
 
 
 def _call_forwards_count(node, call):
