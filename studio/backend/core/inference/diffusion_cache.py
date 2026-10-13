@@ -47,13 +47,13 @@ _REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
+
 # Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
 # needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
 # Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
 # The rows are ``FamilyProfile.auto_static_skip`` on the registry; the registries are torch-free, so this stays light.
 def _auto_static_skip_table() -> dict:
     from .family_profile import profile_table
-
     return {
         repo.strip().lower(): dict(entry)
         for rows in profile_table("auto_static_skip").values()
