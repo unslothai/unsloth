@@ -406,6 +406,70 @@ def test_flash_impl_allows_reads_torch_active_impl(monkeypatch):
     assert fi.flash_impl_allows(256, None, torch.device("cuda", 0))
 
 
+@pytest.mark.parametrize("mean_len", [150.0, 700, 1023])
+def test_blackwell_auto_keeps_bundled_flash_for_short_documents(fake, monkeypatch, mean_len):
+    # B200: FA4's extra host time per call outweighs its kernel win on short documents.
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert f"{mean_len:.0f}" in fi.FLASH_IMPL_STATE["reason"]
+    # Long documents, or none known, keep FA4.
+    for long_or_unknown in (fi._BLACKWELL_AUTO_MIN_MEAN_DOC_LEN, 8192, None):
+        assert (
+            fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = long_or_unknown)
+            == "FA4"
+        )
+    # A later short-document run restores torch's bundled flash.
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    # fa4 still opts in for short documents.
+    monkeypatch.setenv(fi._ENV, "fa4")
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA4"
+    fi.deactivate_flash_attention_impl()
+    # sm90 is not gated on document length.
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA3"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_mean_document_length_reads_packed_and_padding_free_rows():
+    datasets = pytest.importorskip("datasets")
+    packed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], [6]]}
+    )
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    packed.set_format("torch")
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    rows = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "labels": [[1], [1]]})
+    assert fi._mean_document_length(rows) == 200
+    assert fi._mean_document_length(rows, rows = 1) == 100
+    # Unknown: no dataset, no length, no token column, nothing to read.
+    assert fi._mean_document_length(None) is None
+    assert fi._mean_document_length(datasets.Dataset.from_dict({"text": ["a"]})) is None
+    assert fi._mean_document_length(rows.select([])) is None
+    streamed = rows.to_iterable_dataset()
+    assert fi._mean_document_length(streamed) is None
+
+
+def test_scope_to_train_reads_the_train_dataset_document_length(fake):
+    datasets = pytest.importorskip("datasets")
+    seen = []
+
+    class Trainer:
+        def train(self):
+            seen.append(fake.current_impl)
+
+    short = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[200] * 40]})
+    long = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[4096, 4096]]})
+    for dataset in (short, long, None):
+        trainer = Trainer()
+        trainer.model, trainer.train_dataset = _model(), dataset
+        fi.scope_flash_attention_impl_to_train(trainer, trainer.model)
+        trainer.train()
+    assert seen == [None, "FA4", "FA4"] and fake.current_impl is None
+    assert len(fake.probes) == 1
+
+
 def _fa4_ready():
     if not has_real_cuda() or torch.version.hip is not None:
         return False

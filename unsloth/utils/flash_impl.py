@@ -50,6 +50,12 @@ FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": se
 _HOPPER_AUTO_MIN_HIDDEN = 2048
 _logger = logging.getLogger(__name__)
 
+# B200, torch 2.14, FA4 4.0.0b34: FA4 costs ~0.1 ms more host time per forward call than torch's bundled flash,
+# more than its kernel saves on short documents: packed LoRA SFT on alpaca rows (~170 tokens per document) trains
+# 8 to 11% slower. Longer documents keep FA4's 2 to 3x faster kernels; the Unsloth path only sends rows averaging
+# <= 1024 tokens per document to varlen (attention_dispatch._VARLEN_CUDNN_MAX_MEAN_LEN) anyway.
+_BLACKWELL_AUTO_MIN_MEAN_DOC_LEN = 1024
+
 
 def _requested():
     value = os.environ.get(_ENV, "auto").strip().lower()
@@ -396,8 +402,10 @@ def _probe_error(impl, cases, activate, restore):
     return None
 
 
-def maybe_activate_flash_attention_impl(model = None):
-    """Returns the active impl or None. Never call while a backward is pending."""
+def maybe_activate_flash_attention_impl(model = None, mean_document_length = None):
+    """Returns the active impl or None. Never call while a backward is pending.
+
+    mean_document_length: mean tokens per packed document in the training data, None when unknown."""
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
@@ -430,6 +438,18 @@ def maybe_activate_flash_attention_impl(model = None):
             return None
     facts = model_facts(model) if model is not None else (False, [], None, None, None, None)
     cases = _probe_cases(facts)
+    if (
+        requested == "auto"
+        and major == 10
+        and mean_document_length is not None
+        and mean_document_length < _BLACKWELL_AUTO_MIN_MEAN_DOC_LEN
+    ):
+        FLASH_IMPL_STATE["reason"] = (
+            f"auto keeps torch's bundled flash on sm100 for documents averaging under "
+            f"{_BLACKWELL_AUTO_MIN_MEAN_DOC_LEN} tokens ({mean_document_length:.0f}); {_ENV}=fa4 opts in"
+        )
+        deactivate_flash_attention_impl()
+        return None
     # auto falls through to the next impl when one is missing, refuses this model or fails its probe.
     for impl in candidates:
         error = _package_error(impl) or _model_gate(impl, major, facts)
@@ -477,6 +497,27 @@ def deactivate_flash_attention_impl():
             pass
 
 
+def _mean_document_length(dataset, rows = 128):
+    """Mean tokens per document over the first rows: TRL's packed ``seq_lengths``, else one document per row."""
+    try:
+        n = min(len(dataset), rows)
+        if n <= 0:
+            return None
+        columns = set(dataset.column_names)
+        key = "seq_lengths" if "seq_lengths" in columns else "input_ids"
+        if key not in columns:
+            return None
+        head = dataset.select_columns([key])[:n][key]
+        if key == "seq_lengths":
+            lengths = [int(x) for row in head for x in row]
+        else:
+            lengths = [len(row) for row in head]
+    except Exception:
+        return None
+    lengths = [x for x in lengths if x > 0]
+    return sum(lengths) / len(lengths) if lengths else None
+
+
 def scope_flash_attention_impl_to_train(trainer, model) -> None:
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
@@ -492,7 +533,8 @@ def scope_flash_attention_impl_to_train(trainer, model) -> None:
         activated = None
         try:
             activated = maybe_activate_flash_attention_impl(
-                getattr(trainer, "model", None) or model
+                getattr(trainer, "model", None) or model,
+                mean_document_length = _mean_document_length(getattr(trainer, "train_dataset", None)),
             )
         except Exception as exc:
             FLASH_IMPL_STATE["reason"] = f"activation error ({type(exc).__name__}: {exc})"
