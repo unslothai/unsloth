@@ -18,9 +18,7 @@ SNAPSHOT_IGNORE_PATTERNS: tuple[str, ...] = (
     "*.bin.index.json.bak",
 )
 CONSOLIDATED_PATTERN = "consolidated*"
-# Folder names publishers use for one precision of the same checkpoint: 4-bit, 4bit, 2bit-lite,
-# mlx-8bit, bf16, mxfp4. No q4: GGUF quant names (Q4_K_M) must never read as one.
-# [0-9], not \d, to stay identical to PRECISION_FOLDER_SOURCE in the frontend's dataset-size.ts.
+# No q<N>: GGUF quant names (Q4_K_M) must never match. [0-9], not \d: mirrored in dataset-size.ts.
 PRECISION_FOLDER_SOURCE = (
     "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*"
     "|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)"
@@ -174,7 +172,6 @@ def resolve_snapshot_ignore_patterns_for_files(filenames: Iterable[str]) -> list
         ignore.extend(DUPLICATE_WEIGHT_FORMAT_PATTERNS)
         # Exact names, not globs: fnmatch treats "." literally, so each entry matches only itself.
         ignore.extend(redundant_torch_bin_files(names))
-        # A load of the root never reads the other precisions, which can be several times its size.
         ignore.extend(f"{folder}/*" for folder in precision_variant_subfolders(names))
     return ignore
 

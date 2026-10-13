@@ -3454,8 +3454,7 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
     from hub.utils.mlx_variants import is_precision_folder
 
-    # A cached Transformers, diffusers or adapter checkpoint, or an MLX precision folder
-    # (``6-bit/``), can still load from that cache.
+    # A cached Transformers, diffusers, adapter or MLX precision-folder checkpoint can still load.
     names = ["config.json", "model_index.json", "adapter_config.json"]
     if is_precision_folder(gguf_variant):
         names.append(f"{gguf_variant.strip()}/config.json")
@@ -4942,7 +4941,6 @@ class ModelConfig:
         else:
             check_model = identifier
 
-        # A precision folder of an MLX repo (``6-bit/``) is the checkpoint, so it is the one classified.
         precision_folder = None
         if gguf_variant and not is_local and not is_lora:
             from hub.utils.mlx_variants import precision_folder_config_dir

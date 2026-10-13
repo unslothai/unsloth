@@ -20,8 +20,7 @@ export interface HubModelRunSelection {
   ggufVariant?: string;
   ggufFilename?: string;
   expectedBytes?: number;
-  /** ggufVariant names a precision folder of an MLX repo (6-bit/), which loads through MLX and
-   *  is fetched by the load itself when it is not on device yet. */
+  /** ggufVariant is an MLX precision folder, fetched by the load itself. */
   precisionFolder?: boolean;
   downloaded?: boolean;
 }

@@ -65,7 +65,6 @@ export function DownloadSection({
   showMemoryBar?: boolean;
   mediaPage?: MediaStudioPage;
   assetRuntime?: AssetRuntime;
-  /** An MLX repo, whose precision folders (6-bit/, 8-bit/) are offered above the repo card. */
   isMlx?: boolean;
   onRunPrecision?: (selection: HubModelRunSelection) => void;
 }) {

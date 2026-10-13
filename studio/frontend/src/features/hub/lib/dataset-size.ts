@@ -327,9 +327,7 @@ function redundantTorchBinFiles(names: string[]): Set<string> {
   return out;
 }
 
-// Mirrors PRECISION_FOLDER_SOURCE and precision_variant_subfolders in snapshot_filters.py: top-level
-// folders that each hold the whole checkpoint at one precision (4-bit/, 8bit/), which a download of
-// the repo root skips.
+// Mirrors PRECISION_FOLDER_SOURCE and precision_variant_subfolders in snapshot_filters.py.
 const PRECISION_FOLDER_SOURCE =
   "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)";
 const PRECISION_FOLDER_RE = new RegExp(`^(?:${PRECISION_FOLDER_SOURCE})$`, "i");

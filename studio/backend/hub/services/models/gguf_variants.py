@@ -1219,7 +1219,7 @@ async def _mlx_precision_variants_answer(
             ),
             key = lambda row: row.size_bytes,
         )
-        # The folder the repo root duplicates is what a plain load of the repo serves today.
+        # The folder the root duplicates is what a plain load serves.
         default = next(
             (
                 folder
@@ -1242,7 +1242,6 @@ async def _mlx_precision_variants_answer(
     response = await asyncio.to_thread(_listing)
     if response is None:
         return None
-    # No GGUF metadata to read a context window from.
     return VariantsAnswer(response, None, cache_authorized = False)
 
 
@@ -2401,7 +2400,7 @@ async def get_gguf_variants_answer(
     )
     try:
         answer = await _shared_variants_scan(inflight_key, _compute_with_cleanables)
-        # Asked only once a repo has no GGUF rows, so every GGUF listing is answered as before.
+        # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
             mlx_answer = await _mlx_precision_variants_answer(repo_id, hf_token, offline)
             if mlx_answer is not None:

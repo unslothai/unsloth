@@ -600,8 +600,7 @@ export const ModelInspector = memo(function ModelInspector({
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
-  // A precision folder downloads as it loads, like a hub pick in the chat picker, so it does not
-  // wait for the repo to be on device.
+  // A precision folder downloads as it loads, so it need not be on device.
   const isMlx =
     !model.isGguf &&
     (model.libraryName?.toLowerCase() === "mlx" ||

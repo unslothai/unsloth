@@ -10,8 +10,7 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import { CardDivider, ModelRunActionButton } from "./download-card";
 
-/** The precisions an MLX repo keeps one per folder (2-bit/, 6-bit/, 8-bit/), offered the way a
- *  GGUF repo offers its quants. Renders nothing for a repo without such folders. */
+/** An MLX repo's precision folders (2-bit/, 6-bit/); nothing for a repo without them. */
 export function MlxPrecisionCard({
   repoId,
   onRun,
@@ -40,7 +39,6 @@ export function MlxPrecisionCard({
         }
       })
       .catch(() => {
-        // No listing leaves the repo-level card below as the only option, as before.
       });
     return () => controller.abort();
   }, [repoId, hfToken]);

@@ -108,7 +108,6 @@ interface ModelSelectorProps {
    *  every caller assumed until an image or video load started evicting the chat model. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
-  /** The loaded variant is an MLX precision folder (6-bit/), not a GGUF quant. */
   activeVariantIsMlx?: boolean;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;

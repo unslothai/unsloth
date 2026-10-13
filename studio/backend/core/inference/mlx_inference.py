@@ -4765,8 +4765,7 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
-        # A precision folder of the repo (``6-bit/``) is fetched alone and loaded from disk; the
-        # repo id stays the model's name.
+        # A precision folder (``6-bit/``) loads from disk under the repo id.
         precision_folder = (
             None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
         )
@@ -4995,7 +4994,6 @@ class MLXInferenceBackend:
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
-            # Reported back so the UI names the precision that is loaded.
             "gguf_variant": precision_folder,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,

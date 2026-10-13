@@ -1935,7 +1935,6 @@ function GgufVariantExpander({
   // Whether the LISTING resolved this identifier off disk. Not derivable from loadId/cachePath,
   // which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
-  // MLX precision folders (4-bit/, 8bit/) load through MLX, never llama.cpp.
   const [variantsAreGguf, setVariantsAreGguf] = useState(true);
   const localSource = loadId || cachePath || null;
   const showAllQuantizations = useChatRuntimeStore(
@@ -2233,7 +2232,7 @@ function GgufVariantExpander({
     setCompanionBytesByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
     // larger half, so suppressing the request understated a local row by many gigabytes. An MLX
-    // precision folder has no companions, so its own size is its footprint.
+    // precision folder has no companions.
     if (!resolveDownloadFootprint || !variantsAreGguf) {
       return () => {
         cancelled = true;
@@ -3241,8 +3240,7 @@ export function HubModelPicker({
     [modelGgufIds, resultGgufIds],
   );
 
-  // Lowercased MLX repos in the listings, and those the backend confirmed keep each precision in its
-  // own folder, which expand into those folders like a GGUF repo's quants.
+  // MLX repos in the listings, and those confirmed to keep precisions in folders.
   const resultMlxIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [
@@ -5897,8 +5895,7 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row: GGUF repos and MLX repos with precision folders expand, others
-   *  load directly. */
+  /** Handle clicking a model row: GGUF repos and MLX precision-folder repos expand, others load. */
   const handleModelClick = useCallback(
     (id: string) => {
       const key = id.toLowerCase();
@@ -5920,8 +5917,7 @@ export function HubModelPicker({
         select();
         return;
       }
-      // An MLX repo can keep each precision in its own folder (2-bit/ ... 8-bit/): offer them the
-      // way GGUF quants are offered, and load the repo as before when it has none.
+      // An MLX repo without precision folders loads as before.
       void listGgufVariants(id, hfToken || undefined)
         .then((res) => {
           if (res.variant_format === "mlx" && res.variants.length > 0) {
