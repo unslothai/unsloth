@@ -292,3 +292,27 @@ def test_a_folder_swapped_for_a_link_is_never_written_through(chat, tmp_path):
         "chat-1", ["u1"], lambda wd: tools._history_snapshot(tools._snapshot_workdir_files(wd))
     )
     assert report.errors and (elsewhere / "a.txt").read_text() == "2\n"
+
+
+def test_deleting_a_chat_that_only_read_files_releases_its_baseline(chat):
+    workdir, history = chat
+    (workdir / "data.csv").write_text("a,b\n")
+    file_history.set_turn("chat-1", "u1")
+    execute_tool("python", {"code": "print(open('data.csv').read())"}, session_id = "s")
+    assert history._db.execute("SELECT COUNT(*) FROM workdir_state").fetchone()[0] == 1
+    history.delete_chat("chat-1")
+    assert history._db.execute("SELECT COUNT(*) FROM workdir_state").fetchone()[0] == 0
+    assert history._db.execute("SELECT COUNT(*) FROM blobs").fetchone()[0] == 0
+
+
+def test_an_edit_missed_by_a_capped_first_walk_restores_the_original(chat, monkeypatch):
+    workdir, history = chat
+    (workdir / "a").mkdir()
+    (workdir / "z").mkdir()
+    (workdir / "z" / "keep.txt").write_text("original\n")
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_DIRS", 1)
+    file_history.set_turn("chat-1", "u1")
+    _edit("z/keep.txt", "original", "changed")
+    report = _rewind(history, ["u1"])
+    assert report.restored == ["z/keep.txt"] and report.deleted == []
+    assert (workdir / "z" / "keep.txt").read_text() == "original\n"

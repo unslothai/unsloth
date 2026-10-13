@@ -22838,6 +22838,8 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
         return {}
     if baseline:
         snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
+        snap = {**_history_file_snapshot(workdir, rel), **snap}
     else:
         snap, complete = _history_file_snapshot(workdir, rel), True
     token = file_history.begin_call(session_id, workdir, snap, paths = {rel}, complete = complete)

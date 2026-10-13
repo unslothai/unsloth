@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS workdir_state(
   kind TEXT NOT NULL, blob TEXT, mode INTEGER, PRIMARY KEY(workdir, rel_path));
 CREATE INDEX IF NOT EXISTS ws_blob ON workdir_state(blob);
 CREATE TABLE IF NOT EXISTS workdirs(workdir TEXT PRIMARY KEY, baseline_at REAL);
+CREATE TABLE IF NOT EXISTS chat_workdirs(chat_id TEXT NOT NULL, workdir TEXT NOT NULL,
+  PRIMARY KEY(chat_id, workdir));
 """
 
 
@@ -385,6 +387,10 @@ class FileHistory:
             running = self._active.setdefault(workdir, [])
 
             def body():
+                # Kept even when the call changes nothing: deleting the chat releases its folder's images.
+                self._db.execute(
+                    "INSERT OR IGNORE INTO chat_workdirs VALUES(?,?)", (chat_id, workdir)
+                )
                 changes = self._sync(workdir, snap, paths, complete)
                 if running:
                     # Another chat's call is writing this folder right now: its writes cannot be told
@@ -575,17 +581,21 @@ class FileHistory:
             workdirs = [
                 row[0]
                 for row in self._db.execute(
-                    "SELECT DISTINCT workdir FROM checkpoints WHERE chat_id=?", (chat_id,)
+                    "SELECT workdir FROM chat_workdirs WHERE chat_id=?"
+                    " UNION SELECT workdir FROM checkpoints WHERE chat_id=?",
+                    (chat_id, chat_id),
                 )
             ]
             self._db.execute("DELETE FROM checkpoints WHERE chat_id=?", (chat_id,))
-            # A folder no other chat has history in keeps no stored images either.
+            self._db.execute("DELETE FROM chat_workdirs WHERE chat_id=?", (chat_id,))
+            # A folder no other chat uses keeps no stored images either.
             for workdir in workdirs:
                 if (
                     workdir not in self._active
                     and self._db.execute(
-                        "SELECT 1 FROM checkpoints WHERE workdir=? AND chat_id IS NOT NULL LIMIT 1",
-                        (workdir,),
+                        "SELECT 1 FROM chat_workdirs WHERE workdir=? UNION ALL"
+                        " SELECT 1 FROM checkpoints WHERE workdir=? AND chat_id IS NOT NULL LIMIT 1",
+                        (workdir, workdir),
                     ).fetchone()
                     is None
                 ):
