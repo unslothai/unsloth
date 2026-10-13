@@ -345,6 +345,7 @@ def test_graphs_env_opt_out_also_covers_auto(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_CUDA_GRAPHS", "0")
     assert resolve_compile("auto", torch.device("cuda")) is None
     assert resolve_compile(True, torch.device("cuda")) is None
+    assert resolve_compile("graphs", torch.device("cuda")) is None
     assert resolve_compile("reduce-overhead", torch.device("cuda")) == "reduce-overhead"
 
 

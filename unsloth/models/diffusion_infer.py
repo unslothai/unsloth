@@ -265,7 +265,7 @@ def resolve_compile(compile, device):
     "default" / "reduce-overhead" (fused kernels, so greedy output can drift from eager)."""
     if compile is None or compile is False or device.type != "cuda":
         return None
-    if compile is True or compile == "auto":
+    if compile is True or compile in ("auto", "graphs"):
         return None if graphs_disabled() else "graphs"
     return str(compile)
 
