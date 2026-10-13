@@ -144,7 +144,6 @@ def test_experimental_trainers_and_configs_are_patched(after_unsloth):
 
 
 def test_generated_trainers_have_no_relative_imports(after_unsloth):
-    """The generated module has no package, so `from ...generation.vllm_client import VLLMClient` would fail in __init__."""
     for pkg, got in after_unsloth.items():
         assert got["relative_imports"] == [], (pkg, got["relative_imports"])
 
@@ -172,7 +171,6 @@ def test_gkd_keeps_trls_own_sft_base_whatever_the_import_order(after_unsloth):
 def test_distillation_trainers_keep_trls_own_base_whatever_the_import_order(
     after_unsloth, pkg, parent
 ):
-    """ServerDistillationTrainer and GOLDTrainer subclass trainers Unsloth also patches; the import order must not decide their base."""
     if pkg not in after_unsloth:
         pytest.skip(f"no trl.experimental.{pkg} on this TRL")
     before = _run(pre_import = [f"trl.experimental.{pkg}"])[pkg]
@@ -185,7 +183,6 @@ def test_distillation_trainers_keep_trls_own_base_whatever_the_import_order(
 
 
 def test_gold_keeps_trls_num_generations_default(after_unsloth):
-    """GRPO's num_generations=8 default must not reach GOLD, where it is samples per prompt and would also lift the batch size to 8."""
     if "gold" not in after_unsloth:
         pytest.skip("no trl.experimental.gold on this TRL")
     patched, pristine = after_unsloth["gold"]["num_generations"]
@@ -193,7 +190,6 @@ def test_gold_keeps_trls_num_generations_default(after_unsloth):
 
 
 def test_gold_keeps_a_valid_batch_size(after_unsloth):
-    """TRL accepts num_generations=8 with batch 4 x grad accum 2; GRPO's multiple-of-num_generations rewrite must not double it."""
     got = after_unsloth.get("gold")
     if got is None:
         pytest.skip("no trl.experimental.gold on this TRL")
@@ -201,7 +197,6 @@ def test_gold_keeps_a_valid_batch_size(after_unsloth):
 
 
 def test_sdft_config_with_evaluation_still_builds(after_unsloth):
-    """SDFT needs the eval batch divisible by num_generations (8); Unsloth's eval batch default of 4 made this raise."""
     got = after_unsloth.get("sdft")
     if got is None:
         pytest.skip("no trl.experimental.sdft on this TRL")

@@ -3081,10 +3081,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_steps"] = 0.1
     else:
         replacements["warmup_ratio"] = 0.1
-    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group: 8 would also lift its batch size to 8.
+    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group.
     if trainer_file == "gold_trainer":
         replacements.pop("num_generations")
-    # SDFT requires the eval batch to divide by num_generations (8), so keep TRL's eval batch of 8, not 4.
+    # SDFT needs the eval batch divisible by num_generations (8).
     if trainer_file == "sdft_trainer":
         replacements.pop("per_device_eval_batch_size")
 
@@ -3299,7 +3299,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
-    # GOLD only needs generation_batch_size * num_generations == batch * grad accum, which TRL checks itself.
+    # GOLD: TRL already checks generation_batch_size * num_generations == batch * grad accum.
     elif (
         "per_device_train_batch_size" in call_args
         and "num_generations" in call_args
@@ -3618,7 +3618,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
-    # The generated module has no package, so a function-level relative import (ServerDistillationTrainer's `from ...generation.vllm_client import VLLMClient`) must be made absolute.
+    # The generated module has no package: make function-level relative imports (ServerDistillationTrainer.__init__) absolute.
     _source_package = getattr(inspect.getmodule(RLTrainer), "__package__", None)
     if _source_package:
         RLTrainer_source = re.sub(
@@ -4077,7 +4077,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
 
 # TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
-# Served-teacher, cross-tokenizer (GOLD) and self-distillation (SDFT) trainers only ever lived in trl.experimental.
 # Not async_distillation: it loads the student from a model name, so an Unsloth model never reaches it.
 _TRL_EXPERIMENTAL_TRAINERS = (
     "bco",
