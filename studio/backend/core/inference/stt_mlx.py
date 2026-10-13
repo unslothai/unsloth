@@ -33,6 +33,10 @@ def is_mlx_stt_config(config: object) -> bool:
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or model_type.strip().lower() not in MLX_STT_MODEL_TYPES:
         return False
+    # Qwen3-ForcedAligner shares model_type qwen3_asr but needs a transcript to align, not audio alone.
+    thinker = config.get("thinker_config")
+    if isinstance(thinker, dict) and thinker.get("model_type") == "qwen3_forced_aligner":
+        return False
     return mlx_stt_available()
 
 
