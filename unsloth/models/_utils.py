@@ -18,6 +18,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
@@ -93,6 +94,7 @@ __all__ = [
     "_get_inference_mode_context_manager",
     "hf_login",
     "maybe_prefetch_hf_snapshot",
+    "resolve_vllm_model_path",
     "is_moe_model",
     "install_block_swap",
     "offload_embedding_if_tight",
@@ -3018,37 +3020,49 @@ def maybe_prefetch_hf_snapshot(
     weights_at_root = False,
     variant = None,
     gguf_file = None,
+    return_path = False,
 ):
-    """Warm the HF cache for a remote repo before the in-process load. Xet can hang on a blob with no progress or exception and a blocked native Xet thread cannot be killed in-process, so pull the snapshot first in a killable subprocess that falls back Xet -> HTTP on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit. Returns True iff warmed (caller can clear force_download), else False. Only a both-transports-stalled DownloadStallError is raised; other failures are left for from_pretrained to surface."""
+    """Warm the HF cache for a remote repo before the in-process load. Xet can hang on a blob with no progress or exception and a blocked native Xet thread cannot be killed in-process, so pull the snapshot first in a killable subprocess that falls back Xet -> HTTP on a stall (unsloth_zoo.hf_xet_fallback), making from_pretrained a cache hit. Returns the snapshot directory when return_path is set, otherwise whether the cache was warmed. Only a both-transports-stalled DownloadStallError is raised; return_path also surfaces other download errors because its caller cannot fall back to a tokenless remote load."""
+    snapshot_download_with_xet_fallback = None
+    DownloadStallError = ()
     try:
         from unsloth_zoo.hf_xet_fallback import (
             snapshot_download_with_xet_fallback,
             DownloadStallError,
         )
     except Exception:
-        return False  # older unsloth_zoo without the helper: load normally
+        if not return_path:
+            return False  # older unsloth_zoo without the helper: load normally
 
     if not isinstance(model_name, str) or not model_name:
-        return False
+        return model_name if return_path else False
     # Local path: nothing to download. Expand ~ first, which os.path.exists does not.
     model_path = os.path.expanduser(model_name)
     if os.path.isdir(model_path) or os.path.exists(model_path):
-        return False
+        return model_path if return_path else False
     # Looks local but is not yet on disk (an uncreated output dir): not a Hub repo id, so leave it for from_pretrained.
     if (
         os.path.isabs(model_path)
         or model_name.startswith(("~", "./", "../", ".\\", "..\\"))
         or "\\" in model_name
     ):
-        return False
-    if local_files_only:  # cache-only: never reach out
-        return False
-    if any(
+        return model_name if return_path else False
+    offline = any(
         os.environ.get(flag, "0").lower() in ("1", "true", "yes", "on")
         for flag in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
-    ):
-        return False
-    if fast_inference:  # vLLM has its own download path
+    )
+    if local_files_only or offline:  # cache-only: never reach out
+        if not return_path:
+            return False
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            repo_id = model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = True,
+        )
+    if fast_inference and not return_path:  # vLLM has its own download path
         return False
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
@@ -3115,26 +3129,56 @@ def maybe_prefetch_hf_snapshot(
         if not st_module_paths:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
-        snapshot_download_with_xet_fallback(
-            model_name,
-            token = token,
-            revision = revision,
-            cache_dir = cache_dir,
-            allow_patterns = allow_patterns,
-            ignore_patterns = ignore_patterns,
-            force_download = force_download,
-            variant = variant,
-        )
-        return True
+        if snapshot_download_with_xet_fallback is not None:
+            path = snapshot_download_with_xet_fallback(
+                model_name,
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                allow_patterns = allow_patterns,
+                ignore_patterns = ignore_patterns,
+                force_download = force_download,
+                variant = variant,
+            )
+        else:
+            from huggingface_hub import snapshot_download
+            path = snapshot_download(
+                repo_id = model_name,
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                allow_patterns = allow_patterns,
+                ignore_patterns = ignore_patterns,
+                force_download = force_download,
+            )
+        return path if return_path else True
     except DownloadStallError:
         # Both transports stalled: surface a clear network error, not a silent in-process hang.
         raise
     except Exception as exception:
+        if return_path:
+            raise
         logger.warning_once(
             f"Unsloth: Could not pre-download {model_name} "
             f"({type(exception).__name__}: {exception}); continuing with the normal load."
         )
         return False
+
+
+def resolve_vllm_model_path(
+    model_name,
+    token = None,
+    **kwargs,
+):
+    """Give tokenless vLLM integrations a credential-free local snapshot path."""
+    if not isinstance(token, str) or not token:
+        return model_name
+    return maybe_prefetch_hf_snapshot(
+        model_name,
+        token = token,
+        return_path = True,
+        **kwargs,
+    )
 
 
 class HideLoggingMessage(logging.Filter):
@@ -4577,6 +4621,28 @@ def _mark_forced_float32(model, forced):
         model._unsloth_forced_float32 = bool(forced)
     except Exception:
         pass
+    return model
+
+
+def _drop_float16_overflowing_attention_dropout(model, dtype):
+    """Granite 3.0-3.2 dense ship attention_dropout = 0.1 (3.3+ ship 0). Dropping the attention sink in training pushes the last layer's SwiGLU past float16's 65504 (85k measured in bfloat16), so float16 training NaNs (#3002)."""
+    if dtype != torch.float16:
+        return model
+    changed = False
+    for module in model.modules():
+        dropout = getattr(module, "attention_dropout", None)
+        if (
+            type(module).__name__ == "GraniteAttention"
+            and isinstance(dropout, (int, float))
+            and dropout > 0
+        ):
+            module.attention_dropout = 0.0
+            changed = True
+    if changed:
+        print(
+            "Unsloth: Granite's attention dropout overflows float16 during training and makes the loss NaN, "
+            "so it is turned off for this float16 load. Use bfloat16 to keep it."
+        )
     return model
 
 
@@ -7191,7 +7257,8 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
         with torch.no_grad():
             W = in_emb.weight.detach().clone()
-        out_proj.weight = torch.nn.Parameter(W)  # new storage, keeps dtype/device
+        # Same trainability as the embedding, so a LoRA model keeps the head frozen.
+        out_proj.weight = torch.nn.Parameter(W, requires_grad = in_emb.weight.requires_grad)
 
     def _no_tie(self):
         return
@@ -7210,6 +7277,129 @@ def _filter_fn_to_fqns(
             yield fqn
 
 
+def _unquantized_filter(filter_fn):
+    from torchao.quantization.quant_api import _is_linear
+    from torchao.utils import TorchAOBaseTensor
+
+    filter_fn = filter_fn or _is_linear
+
+    def _filter(module, fqn):
+        if not filter_fn(module, fqn):
+            return False
+        weight = getattr(module, "weight", None)
+        return isinstance(weight, torch.Tensor) and not isinstance(weight, TorchAOBaseTensor)
+
+    return _filter
+
+
+def _strip_torchao_fake_quantization(model):
+    """Swap fake-quantized modules back to plain ones, weights untouched (QATConfig(step = "convert") without a base config)."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    quantize_(
+        model,
+        QATConfig(step = "convert"),
+        filter_fn = lambda m, _: hasattr(m, "weight_fake_quantizer"),
+    )
+
+
+def _peft_merged_module_name(fqn):
+    """A PEFT module name as the merged 16-bit checkpoint names it, or None for adapter-only modules."""
+    parts = fqn.split(".")
+    if parts[:2] == ["base_model", "model"]:
+        parts = parts[2:]
+    # Adapter weights are merged into their base layer; a modules_to_save copy is saved under its wrapper's name.
+    if any(p.startswith("lora_") or p == "original_module" for p in parts):
+        return None
+    if "modules_to_save" in parts:
+        i = parts.index("modules_to_save")
+        parts = parts[:i] + parts[i + 2 :]
+    return ".".join(p for p in parts if p != "base_layer")
+
+
+def _peft_untied_lm_head(model):
+    """(merged checkpoint key, weight) of the lm_head when QAT untied it from the embedding, else None."""
+    config = getattr(model, "_torchao_config", None)
+    if getattr(config, "prequantization_transform", None) is not _untie_input_output_embeddings:
+        return None
+    lm_head = model.get_output_embeddings()
+    names = [_peft_merged_module_name(n) for n, m in model.named_modules() if m is lm_head]
+    if not names or not names[0]:
+        return None
+    return names[0] + ".weight", lm_head.weight
+
+
+def _merged_torchao_config_for_peft_qat(model):
+    """TorchAoConfig for the merged 16-bit reload of a QAT LoRA model, naming modules as the reload does (PEFT wrappers removed)."""
+    from transformers import TorchAoConfig
+    from torchao.quantization import ModuleFqnToConfig
+    from torchao.quantization.quant_api import _is_linear
+
+    _merged_name = _peft_merged_module_name
+
+    configs = model._torchao_config.base_config_and_filter_fns
+    if len(configs) == 1:
+        # Plain config + skip list, not FqnToConfig: transformers 5 applies a module entry to its bias too.
+        base_config, filter_fn = configs[0]
+        filter_fn = filter_fn or _is_linear
+        skip = [
+            name
+            for fqn, module in model.named_modules()
+            if isinstance(module, (torch.nn.Linear, torch.nn.Embedding))
+            and (name := _merged_name(fqn))
+            and not filter_fn(module, fqn)
+        ]
+        return TorchAoConfig(quant_type = base_config, modules_to_not_convert = skip)
+
+    embeddings = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            embedding = getattr(model, getter)()
+        except Exception:
+            embedding = None
+        embeddings.update(_merged_name(fqn) for fqn, m in model.named_modules() if m is embedding)
+
+    # transformers 5 also applies module and "_default" entries to a Linear bias; 4.x reads module names only.
+    weight_keys = Version(importlib_version("transformers")) >= Version("5.0.0") and Version(
+        importlib_version("torchao")
+    ) >= Version("0.15.0")
+    suffix = ".weight" if weight_keys else ""
+
+    module_to_fqn_dict = {}
+    include_embeddings = False
+    default_config = None
+    for base_config, filter_fn in configs:
+        if filter_fn is None:
+            if default_config is not None:
+                raise ValueError("Cannot use multiple default quantization configs")
+            default_config = base_config
+            continue
+        for fqn, module in model.named_modules():
+            if not filter_fn(module, fqn):
+                continue
+            name = _merged_name(fqn)
+            if not name:
+                continue
+            if name + suffix in module_to_fqn_dict:
+                raise ValueError(f"Found multiple quantization configs for {name}")
+            module_to_fqn_dict[name + suffix] = base_config
+            include_embeddings = include_embeddings or name in embeddings
+    if default_config is not None and not weight_keys:
+        module_to_fqn_dict["_default"] = default_config
+    elif default_config is not None:
+        for fqn, module in model.named_modules():
+            name = _merged_name(fqn)
+            if name and _is_linear(module, fqn) and name + suffix not in module_to_fqn_dict:
+                module_to_fqn_dict[name + suffix] = default_config
+
+    kwargs = {}
+    if include_embeddings:
+        kwargs["include_input_output_embeddings"] = True
+        kwargs["modules_to_not_convert"] = []
+    return TorchAoConfig(quant_type = ModuleFqnToConfig(module_to_fqn_dict), **kwargs)
+
+
 def _convert_torchao_model(model):
     from transformers import TorchAoConfig
     from torchao.quantization import quantize_, ModuleFqnToConfig
@@ -7219,6 +7409,8 @@ def _convert_torchao_model(model):
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
+        # The QAT notebook's manual QATConfig(step = "convert") leaves plain, unquantized modules.
+        quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
 
         if filter_fn is None:
             if "_default" in module_to_fqn_dict:
@@ -7299,6 +7491,26 @@ def _prepare_model_for_qat(
                 )
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
+            from torchao.quantization.quant_api import _is_linear
+
+            group_size = 32
+            # PerGroup(32) rejects in_features not divisible by 32, e.g. lora_B at rank 16.
+            linear_filter = lambda m, fqn: _is_linear(m, fqn) and m.in_features % group_size == 0
+            skipped = [
+                name
+                for name, module in model.named_modules()
+                if _is_linear(module, name)
+                and module.in_features % group_size != 0
+                and ".lora_" not in name
+            ]
+            if skipped:
+                warnings.warn(
+                    f"Unsloth: qat_scheme='int8-int4' uses PerGroup({group_size}); these Linear layers "
+                    f"have in_features not divisible by {group_size} and stay in full precision: "
+                    + ", ".join(skipped[:8])
+                    + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+                    stacklevel = 2,
+                )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
@@ -7308,9 +7520,9 @@ def _prepare_model_for_qat(
                     ),
                     (
                         Int8DynamicActivationIntxWeightConfig(
-                            weight_dtype = torch.int4, weight_granularity = PerGroup(32)
+                            weight_dtype = torch.int4, weight_granularity = PerGroup(group_size)
                         ),
-                        None,
+                        linear_filter,
                     ),
                 ],
                 prequantization_transform = _untie_input_output_embeddings,
@@ -7478,22 +7690,52 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     return torch.inference_mode()
 
 
-def hf_login(token: Optional[str] = None) -> Optional[str]:
-    if token is None:
-        try:
-            from huggingface_hub import get_token
-            token = get_token()
-            if token is None:
-                return None
-        except:
-            return None
+_HF_TOKEN_LOGIN_LOCK = threading.RLock()
+
+
+def _saved_hf_token_without_oidc() -> Optional[str]:
+    """Read persistent Hub credentials without resolving a workflow OIDC identity."""
     try:
-        from huggingface_hub import login
-        login(token = token)
+        from huggingface_hub.utils import _auth
+    except Exception:
+        return None
+
+    getters = [getattr(_auth, "_get_token_from_environment", None)]
+    getters.append(
+        getattr(_auth, "_get_token_from_file_refreshed", None)
+        or getattr(_auth, "_get_token_from_file", None)
+    )
+    getters.append(getattr(_auth, "_get_token_from_google_colab", None))
+    for getter in getters:
+        if getter is None:
+            continue
+        try:
+            saved_token = getter()
+        except Exception:
+            continue
+        if saved_token is not None:
+            return saved_token
+    return None
+
+
+def hf_login(token: Optional[str] = None) -> Optional[str]:
+    with _HF_TOKEN_LOGIN_LOCK:
+        if token is False:
+            return token
+        if token is None:
+            try:
+                from huggingface_hub import get_token
+                return get_token()
+            except:
+                return None
+        saved_token = _saved_hf_token_without_oidc()
+        if saved_token is None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except Exception as e:
+                logger.info(f"Failed to login to huggingface using token with error: {e}")
         return token
-    except Exception as e:
-        logger.info(f"Failed to login to huggingface using token with error: {e}")
-    return token
 
 
 def _check_block_swap(model_or_config):

@@ -41,6 +41,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -12514,6 +12515,28 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     return None
 
 
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -12770,7 +12793,28 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    history: dict = {}
+    try:
+        text = _defuse_sentinels(
+            _edit_file_apply(arguments, session_id, disable_sandbox, created, history)
+        )
+    finally:
+        _history_end_file(history)
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict,
+    session_id: "str | None",
+    disable_sandbox: bool,
+    created: "list[str]",
+    history: "dict | None" = None,
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -12789,6 +12833,8 @@ def _edit_file(
         os.path.realpath(target)
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+    if history is not None:
+        history.update(_history_begin_file(session_id, target))
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -12799,13 +12845,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -21525,6 +21574,14 @@ _DIR_FD_WRITES = (
 )
 
 
+# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
+# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
+# follow a symlink source, and os.link there takes no such flag.
+_LINK_NOFOLLOW = (
+    {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
+)
+
+
 def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
@@ -21559,7 +21616,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
-            os.link(tmp, installed)
+            os.link(tmp, installed, **_LINK_NOFOLLOW)
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
@@ -21576,7 +21633,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on POSIX, and the name may have
         # been taken since the caller looked. link fails with EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd, **_LINK_NOFOLLOW)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever the name resolves to by the
         # time this returns.
@@ -21702,7 +21759,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, os.path.join(target, name))
+                os.link(tmp, os.path.join(target, name), **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp)
         return
@@ -21722,7 +21779,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1], **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp, dir_fd = fds[-1])
     finally:
@@ -21798,7 +21855,7 @@ def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrit
         if not existed:
             try:
                 # link, not rename: it fails when a tool took the name since the check.
-                os.link(tmp, dest, **pair)
+                os.link(tmp, dest, **pair, **_LINK_NOFOLLOW)
                 return False
             except FileExistsError:
                 if not overwrite:
@@ -22200,7 +22257,7 @@ def _restore_pruned_path(private: str, path: str) -> None:
     last resort is to leave the data under the private name and say where it went, rather than
     unlink it."""
     try:
-        os.link(private, path)
+        os.link(private, path, **_LINK_NOFOLLOW)
         _quiet_unlink(private)
         return
     except OSError:
@@ -22600,6 +22657,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -22617,7 +22684,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
-            return snapshot
+            return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
@@ -22630,6 +22697,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
             ]
         )
         for name in names:
@@ -22654,8 +22722,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return snapshot
+                return _CappedSnapshot(snapshot)
     return snapshot
+
+
+class _CappedSnapshot(dict):
+    """A walk cut short by a cap: a file missing from it is not known to be gone."""
 
 
 # Scratch scripts of calls running right now. Chats in one project share a workdir and each snapshots all of it, so
@@ -22688,6 +22760,9 @@ def _call_finished(token: "dict | None") -> None:
     """Drop a call's registration. Its token keeps whatever it learned."""
     if not token or not token.get("workdir"):
         return
+    if token.get("history") is not None and not token["history"].done:
+        # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
+        _history_end(token, _snapshot_workdir_files(token["workdir"]))
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -22698,6 +22773,98 @@ def _call_finished(token: "dict | None") -> None:
             pass
         if not running:
             _workdir_calls.pop(token["workdir"], None)
+
+
+def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+    """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
+    says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    with _scratch_lock:
+        scratch = set(_active_scratch)
+    kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
+    return kept, not isinstance(snap, _CappedSnapshot)
+
+
+def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+    if file_history.current_turn() is None:
+        return
+    snap, complete = _history_snapshot(before)
+    call_token["history"] = file_history.begin_call(
+        session_id, call_token.get("workdir"), snap, complete = complete
+    )
+
+
+def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+    if not call_token or call_token.get("history") is None:
+        return
+    if call_token.get("shared"):
+        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
+        call_token["history"].ambiguous = True
+    snap, complete = _history_snapshot(after)
+    file_history.end_call(call_token["history"], snap, complete = complete)
+
+
+def _walk_lists(workdir: str, rel: str) -> bool:
+    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
+    taken for a deletion by the next python or terminal walk."""
+    parts = rel.split("/")
+    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
+        map(_servable_segment, parts)
+    ):
+        return False
+    base = workdir
+    for part in parts[:-1]:
+        if part.startswith(".") or _snapshot_skips_dir(base, part):
+            return False
+        base = os.path.join(base, part)
+    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
+
+
+def _history_begin_file(session_id: "str | None", target: str) -> dict:
+    """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
+    if file_history.current_turn() is None or not session_id:
+        return {}
+    workdir = os.path.realpath(_get_workdir(session_id))
+    try:
+        rel = os.path.relpath(os.path.realpath(target), workdir)
+    except ValueError:  # Windows: another drive, so outside the folder
+        return {}
+    if rel.startswith(os.pardir) or os.path.isabs(rel):
+        return {}
+    rel = rel.replace(os.sep, "/")
+    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+        return {}
+    try:
+        baseline = file_history.store().needs_baseline(workdir)
+    except Exception:
+        # History is an extra: an index it cannot open must not stop the edit.
+        logger.warning("file history: could not open the index", exc_info = True)
+        return {}
+    if baseline:
+        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
+        snap = {**_history_file_snapshot(workdir, rel), **snap}
+    else:
+        snap, complete = _history_file_snapshot(workdir, rel), True
+    token = file_history.begin_call(session_id, workdir, snap, paths = {rel}, complete = complete)
+    return {"token": token, "workdir": workdir, "rel": rel} if token is not None else {}
+
+
+def _history_file_snapshot(workdir: str, rel: str) -> dict:
+    try:
+        info = os.lstat(os.path.join(workdir, rel))
+    except OSError:
+        return {}
+    return {rel: (info.st_mtime_ns, info.st_size, None)} if S_ISREG(info.st_mode) else {}
+
+
+def _history_end_file(history: dict) -> None:
+    if history.get("token") is None:
+        return
+    file_history.end_call(
+        history["token"],
+        _history_file_snapshot(history["workdir"], history["rel"]),
+        paths = {history["rel"]},
+    )
 
 
 def _snapshot_differs(before: tuple, after: tuple) -> bool:
@@ -22719,11 +22886,12 @@ def _created_file_sentinels(
     """Sentinels naming the files this call created or overwrote. ``__IMAGES__`` renders inline as
     before; ``__FILES__`` carries every file with its size so the UI can offer a download. Both
     are stripped before the model sees the result."""
-    if token is not None and token.get("shared"):
+    if token is not None and token.get("shared") and token.get("history") is None:
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
+    _history_end(token, after)
     if token is not None and token.get("shared"):
         # A call that started while that walk was running. What it wrote is in `after` and cannot be told apart from
         # ours, so the same rule applies: the check above only saves the walk when the sharing was already known.
@@ -22863,6 +23031,7 @@ def _python_exec(
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
+    _history_begin(call_token, session_id, _before)
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's helper.py stays importable and __file__
         # resolves inside the sandbox.
@@ -23129,6 +23298,7 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
+        _history_begin(call_token, session_id, _before)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox

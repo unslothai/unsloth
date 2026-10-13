@@ -202,7 +202,7 @@ export function BrowserAgentSettings() {
     <>
       <SettingsSection title={t("browser.agentSettings.title")}>
         <SettingsRow
-          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="size-6" />}
+          icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="me-1.5 size-7" />}
           label={t("browser.agentSettings.enable")}
           description={t("browser.agentSettings.enableDescription")}
         >
