@@ -861,6 +861,7 @@ def _evict(external: bool = False) -> None:
         _generation += 1
         _unloads += external
     _close(agent)
+    del agent
     _release_memory()
 
 
@@ -2308,6 +2309,8 @@ def unload() -> bool:
         _generation += 1
         _unloads += 1
     _close(agent)
+    # Dropped first, so an in-process MLX or MPS Laya is collected before the allocator caches are cleared.
+    del agent
     _release_memory()
     return was_loaded
 

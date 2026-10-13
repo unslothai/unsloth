@@ -749,6 +749,25 @@ def _tiny_laya_checkpoint(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize("evict", [False, True])
+def test_an_unloaded_in_process_laya_is_gone_before_device_caches_clear(
+    runtime, monkeypatch, evict
+):
+    class MLXLaya:
+        device = "mlx"
+
+    agent = MLXLaya()
+    alive = weakref.ref(agent)
+    cleared = []
+    monkeypatch.setattr(laya_runtime, "_agent", agent)
+    monkeypatch.setattr(laya_runtime, "_loaded", catalog.CHECKPOINTS["laya-multilingual"])
+    monkeypatch.setattr(laya_runtime, "_device_name", "mlx")
+    monkeypatch.setattr(laya_runtime, "_release_memory", lambda: cleared.append(alive() is None))
+    del agent
+    laya_runtime._evict() if evict else laya_runtime.unload()
+    assert cleared == [True]
+
+
 def test_laya_worker_answers_like_laya_in_process(tmp_path):
     pytest.importorskip("torch")
     from core.systemone.laya_worker import LayaWorker
