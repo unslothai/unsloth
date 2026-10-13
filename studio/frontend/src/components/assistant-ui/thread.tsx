@@ -8039,13 +8039,13 @@ const ToolGroupThenCompaction = memo<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 >(({ startIndex, endIndex, children }) => {
   const truncation = useAuiState(({ thread, message }) => {
-    const dividers = compactionToolCallDividers(thread.messages);
-    if (dividers.size === 0) return null;
-    for (let index = endIndex; index >= startIndex; index -= 1) {
+    const marker = compactionToolCallDividers(thread.messages).get(message.id);
+    if (!marker) return null;
+    for (let index = startIndex; index <= endIndex; index += 1) {
       const part = message.parts[index];
-      if (part?.type !== "tool-call") continue;
-      const found = dividers.get(part.toolCallId);
-      if (found) return found;
+      if (part?.type === "tool-call" && part.toolCallId === marker.afterToolCallId) {
+        return marker.truncation;
+      }
     }
     return null;
   });

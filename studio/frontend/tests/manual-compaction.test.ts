@@ -106,7 +106,10 @@ test("a compaction inside a tool loop is drawn after the call it followed", () =
 
   // Not above the first prompt, where nothing older existed to compact.
   assert.equal(compactionDividerRows(messages).size, 0);
-  assert.equal(compactionToolCallDividers(messages).get("call-2"), midLoop);
+  assert.deepEqual(compactionToolCallDividers(messages).get("a1"), {
+    afterToolCallId: "call-2",
+    truncation: midLoop,
+  });
   assert.equal(compactionDividerCount(messages), 1);
 });
 
@@ -134,7 +137,10 @@ test("a request that compacted before replying keeps its divider above the promp
   ];
 
   assert.deepEqual([...compactionDividerRows(messages)], [["u2", atStart]]);
-  assert.deepEqual([...compactionToolCallDividers(messages)], [["call-9", inLoop]]);
+  assert.deepEqual(
+    [...compactionToolCallDividers(messages)].map(([id, m]) => [id, m.afterToolCallId, m.truncation]),
+    [["a2", "call-9", inLoop]],
+  );
   assert.equal(compactionDividerCount(messages), 2);
 });
 
@@ -212,6 +218,38 @@ test("a reply that reset on many tool rounds draws only its last reset", () => {
     },
   ];
 
-  assert.deepEqual([...compactionToolCallDividers(messages)], [["c3", last]]);
+  assert.deepEqual(
+    [...compactionToolCallDividers(messages)].map(([id, m]) => [id, m.afterToolCallId, m.truncation]),
+    [["a1", "c3", last]],
+  );
   assert.equal(compactionDividerCount(messages), 1);
+});
+
+test("two replies reusing a tool call id keep their own dividers", () => {
+  const reset = (dropped: number) =>
+    fit(0, { dropped_messages: dropped, checkpoint_started: true });
+  const reply = (id: string, truncation: ContextTruncation) => ({
+    id,
+    role: "assistant",
+    parts: [toolCall("tool_call_0")],
+    metadata: {
+      custom: {
+        contextTruncation: truncation,
+        compactionMarkers: [{ afterToolCallId: "tool_call_0", truncation }],
+      },
+    },
+  });
+  const first = reset(4);
+  const second = reset(5);
+  const messages = [
+    { id: "u1", role: "user" },
+    reply("a1", first),
+    { id: "u2", role: "user" },
+    reply("a2", second),
+  ];
+
+  const dividers = compactionToolCallDividers(messages);
+  assert.equal(dividers.get("a1")?.truncation, first);
+  assert.equal(dividers.get("a2")?.truncation, second);
+  assert.equal(compactionDividerCount(messages), 2);
 });

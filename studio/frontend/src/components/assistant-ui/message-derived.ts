@@ -132,8 +132,9 @@ export const compactionNoticeMessageIds = memoOnArray(
 type CompactionDividers = {
   /** Row id -> the compaction drawn above that row: the prompt whose request compacted, or the reply. */
   rows: ReadonlyMap<string, ContextTruncation>;
-  /** Tool call id -> the compaction a tool loop ran right after that call returned. */
-  afterToolCalls: ReadonlyMap<string, ContextTruncation>;
+  /** Reply id -> its last in-loop compaction and the tool call it followed. Keyed by reply, since
+   *  each reply draws at most one and tool call ids are only unique within it. */
+  afterToolCalls: ReadonlyMap<string, CompactionMarker>;
 };
 
 const NO_COMPACTION_DIVIDERS: CompactionDividers = {
@@ -174,7 +175,7 @@ const compactionDividers = memoOnArray(
     // streamed tokens create new arrays, so reuse this result until a thread compacts.
     if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
     const rows = new Map<string, ContextTruncation>();
-    const afterToolCalls = new Map<string, ContextTruncation>();
+    const afterToolCalls = new Map<string, CompactionMarker>();
     let previous: MessageLike | undefined;
     let previousBoundary = 0;
     for (const message of messages) {
@@ -203,7 +204,7 @@ const compactionDividers = memoOnArray(
           }
         }
         if (lastInLoop?.afterToolCallId) {
-          afterToolCalls.set(lastInLoop.afterToolCallId, lastInLoop.truncation);
+          afterToolCalls.set(message.id, lastInLoop);
         }
       } else if (notices.has(message.id)) {
         const truncation = (
@@ -231,7 +232,7 @@ export const compactionDividerRows = (
 
 export const compactionToolCallDividers = (
   messages: readonly MessageLike[],
-): ReadonlyMap<string, ContextTruncation> =>
+): ReadonlyMap<string, CompactionMarker> =>
   compactionDividers(messages).afterToolCalls;
 
 /** What the context meter counts: one per divider on screen. */
