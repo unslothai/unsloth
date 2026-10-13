@@ -355,9 +355,7 @@ def test_rocm_forward_without_fp8e4nv_skips_act_quant(monkeypatch, gcn_arch):
 
 
 def test_real_device_forward_matches_the_dequant_reference():
-    # Unmocked: whatever this GPU is (sm80, sm89+, gfx1151, gfx942 ...), the public forward must run
-    # and agree with a float32 dequant reference. On a card triton cannot compile fp8e4nv for, the
-    # guard is the only thing between this call and a compile error.
+    # Unmocked: on any GPU the public forward must run and match a float32 dequant reference.
     from unsloth.kernels import fp8
 
     torch.manual_seed(0)
