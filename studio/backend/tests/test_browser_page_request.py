@@ -420,7 +420,9 @@ def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, t
     _request(url = "https://site.test/go", headers = [["Authorization", "Bearer page"]])
     assert sent[0]["headers"]["authorization"] == "Bearer page"
     assert "authorization" not in sent[1]["headers"]
-    assert "referer" not in sent[1]["headers"]
+    # Only the page's origin as Referer, and none on the downgrade to http.
+    expected = "https://site.test/" if target.startswith("https") else None
+    assert sent[1]["headers"].get("referer") == expected
 
 
 @pytest.mark.parametrize("allow", [None, "*"])
@@ -489,7 +491,9 @@ def test_safelisted_headers_follow_a_redirect_to_another_site(monkeypatch):
     cdn = sent[1]["headers"]
     assert cdn["range"] == "bytes=0-3" and cdn["accept"] == "video/mp4"
     assert cdn["origin"] == "https://site.test"
-    assert "authorization" not in cdn and "x-custom" not in cdn and "referer" not in cdn
+    assert "authorization" not in cdn and "x-custom" not in cdn
+    # Origin-only, as the default referrer policy sends it to another site.
+    assert cdn["referer"] == "https://site.test/"
 
 
 @pytest.mark.parametrize(

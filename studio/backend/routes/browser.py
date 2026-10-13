@@ -1764,6 +1764,10 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
                 },
                 "Origin": hops["origin"],
             }
+            # The default referrer policy sends another site the page's origin, and nothing on a
+            # downgrade from https to http.
+            if not (scheme == "https" and hops["last"][0] == "http"):
+                own_headers["Referer"] = serialized_origin + "/"
         return {**_studio_headers(current_host), **own_headers}
 
     meta: dict = {}
