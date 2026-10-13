@@ -2664,8 +2664,11 @@ def _xpu_hierarchy_is_composite() -> bool:
     return hierarchy == "COMPOSITE"
 
 
-# The prefix C stoul(entry, nullptr, 0) consumes: sign, then hex, octal or decimal ("08" -> 0, "+1abc" -> 1).
-_ZE_MASK_ROOT_RE = re.compile(r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|(0[0-7]*)|([1-9][0-9]*))")
+# The prefix C stoul(entry, nullptr, 0) consumes: sign, then hex, binary (C23 strtoul, which current
+# compute-runtime builds link), octal or decimal ("08" -> 0, "+1abc" -> 1, "0b10" -> 2).
+_ZE_MASK_ROOT_RE = re.compile(
+    r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|0[bB]([01]+)|(0[0-7]*)|([1-9][0-9]*))"
+)
 
 
 def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[int]:
@@ -2678,19 +2681,19 @@ def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[in
         match = _ZE_MASK_ROOT_RE.match(token.strip(" \t\n\v\f\r").split(".", 1)[0])
         if not match:
             continue
-        sign, hex_digits, octal, decimal = match.groups()
-        digits = hex_digits or octal or decimal
+        sign, hex_digits, binary, octal, decimal = match.groups()
+        digits = hex_digits or binary or octal or decimal
         # More digits than any unsigned long in any base: stoul throws out_of_range.
-        if len(digits.lstrip("0")) > 24:
+        if len(digits.lstrip("0")) > 64:
             continue
-        root = int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
+        root = int(digits, 16 if hex_digits else 2 if binary else 8 if octal else 10)
         if root >= ulong_limit:
             continue
         # Negation is unsigned: "-1" wraps past every root, "-0" is 0.
         if sign == "-":
             root = -root % ulong_limit
-        # No host has 2**32 roots, so a wrapped value is out of range even without a bound.
-        if root < 2**32:
+        # No host has 2**16 roots, so a wrapped value is out of range even without a bound.
+        if root < 2**16:
             roots.add(root)
     return sorted(root for root in roots if root_count is None or root < root_count)
 

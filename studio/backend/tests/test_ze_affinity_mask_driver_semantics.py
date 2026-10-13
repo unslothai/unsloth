@@ -140,7 +140,8 @@ def test_torch_still_wins_the_visible_count(xpu_host):
         ("-18446744073709551615", [1]),
     ],
 )
-def test_parse_ze_mask_roots(mask, roots):
+def test_parse_ze_mask_roots(monkeypatch, mask, roots):
+    monkeypatch.setattr(hw.sys, "platform", "linux")
     assert hw._parse_ze_mask_roots(mask) == roots
 
 
@@ -148,12 +149,16 @@ def test_parse_ze_mask_roots(mask, roots):
     ("platform", "mask", "roots"),
     [
         ("win32", "-4294967295", [1]),  # 32-bit unsigned long
+        ("win32", "-1", []),
         ("linux", "-4294967295", []),
         ("win32", "-18446744073709551615", []),  # out_of_range on Windows
         ("linux", "1" + "0" * 5000, []),  # past Python's int-digit limit
         ("linux", "\u20031", []),  # not C whitespace
         ("linux", "\t1", [1]),
         ("linux", "0" * 40 + "1", [1]),
+        ("linux", "0b10", [2]),  # C23 strtoul, linked by compute-runtime 26.35
+        ("linux", "-0b1", []),
+        ("linux", "0b", [0]),
     ],
 )
 def test_parse_ze_mask_roots_follows_the_platform_stoul(monkeypatch, platform, mask, roots):
