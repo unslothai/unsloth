@@ -237,3 +237,35 @@ test("every agent whose unsloth start supports --as-subagent shows the subagent 
     /const SUBAGENT_AGENT_IDS = new Set\(\["claude", "codex", "opencode", "pi"\]\);/,
   );
 });
+
+test("every listed agent is findable from settings search", async () => {
+  const { SETTINGS_SEARCH_KEYWORDS } = await import(
+    "../src/features/settings/settings-search.ts"
+  );
+  assert.equal(
+    SETTINGS_SEARCH_KEYWORDS["settings.agents.agent"],
+    "settings.agents.agentKeywords",
+  );
+  for (const name of ["vs code", "pi", "mistral vibe"]) {
+    assert.ok(en.settings.agents.agentKeywords.includes(name), name);
+  }
+});
+
+test("selecting VS Code says its command edits VS Code's model list", () => {
+  assert.match(
+    TAB,
+    /\{selectedAgent === "vscode" && \([\s\S]*?t\("settings\.agents\.vscodeNote"\)/,
+  );
+  assert.match(en.settings.agents.vscodeNote, /chatLanguageModels\.json/);
+});
+
+test("every locale lists Pi among the --as-subagent agents", async () => {
+  const { readdirSync } = await import("node:fs");
+  const dir = fileURLToPath(new URL("../src/i18n/locales/", import.meta.url));
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts"))) {
+    const source = readFileSync(`${dir}${file}`, "utf8");
+    const at = source.indexOf("asSubagent:");
+    assert.ok(at !== -1, file);
+    assert.match(source.slice(at, at + 400), /OpenCode[^"]*Pi/, file);
+  }
+});

@@ -2462,6 +2462,9 @@ export const he = {
       title: "סוכנים",
       description:
         "חבר סוכני תכנות כגון Claude Code ו-Codex למודל מקומי באמצעות unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code הוא היוצא מן הכלל: הפקודה מוסיפה את המודל המוגש לרשימת המודלים של Copilot Chat ב-VS Code (chatLanguageModels.json).",
       intro:
         "מחבר את Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode וסוכנים נוספים למודל המוגש מקומית על ידי Unsloth, במצב לא מקוון לחלוטין. הוא מפעיל שרת תואם OpenAI ולעולם אינו נוגע בקובצי ההגדרות של הסוכן שלך.",
       readDocs: "קרא את התיעוד",
@@ -2541,7 +2544,7 @@ export const he = {
         launch: "הפעל את הסוכן, או הדפס רק את הפקודה ומשתני הסביבה.",
         persist: "שמור את אחסון הסוכן המנוהל על ידי Unsloth בין הרצות.",
         asSubagent:
-          "השאר את סוכן האב במודל הנוכחי שלו ורשום את Unsloth כתת-סוכן מקומי (Claude Code, Codex, ו-OpenCode).",
+          "השאר את סוכן האב במודל הנוכחי שלו ורשום את Unsloth כתת-סוכן מקומי (Claude Code, Codex, OpenCode ו-Pi).",
         apiKey: "ספק את מפתח ה-API של Unsloth (או הגדר את UNSLOTH_API_KEY).",
         reasoning:
           "השתמש בחשיבה (Reasoning) בצ'אט: on, off, או auto. המצב auto פועל לפי תבנית הצ'אט של המודל, שלרוב מפעילה חשיבה.",

@@ -1472,6 +1472,12 @@ export function AgentsTab() {
             copied={copied}
             onCopy={handleCopy}
           />
+          {/* The intro says unsloth start never touches an agent's config; this command writes VS Code's. */}
+          {selectedAgent === "vscode" && (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.agents.vscodeNote")}
+            </p>
+          )}
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.configurationNote")}{" "}
             <a

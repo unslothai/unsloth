@@ -2362,6 +2362,9 @@ export const ko = {
       title: "에이전트",
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code는 예외입니다. 이 명령은 제공 중인 모델을 VS Code Copilot Chat 모델 목록(chatLanguageModels.json)에 추가합니다.",
       intro:
         "명령어를 사용하면 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 여러 에이전트를 Unsloth가 로컬에서 실행하는 모델에 연결해 완전히 오프라인으로 사용할 수 있습니다. OpenAI 호환 서버를 실행하며, 에이전트의 설정 파일은 변경하지 않습니다.",
       readDocs: "문서 보기",
@@ -2441,7 +2444,7 @@ export const ko = {
         persist:
           "Unsloth가 관리하는 에이전트 저장소를 실행 사이에 유지합니다.",
         asSubagent:
-          "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
+          "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode, Pi).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
         reasoning:

@@ -2539,6 +2539,9 @@ export const sv = {
       title: "Agenter",
       description:
         "Anslut kodagenter som Claude Code och Codex till en lokal modell med unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code är undantaget: kommandot lägger till den betjänade modellen i Copilot Chats modellista i VS Code (chatLanguageModels.json).",
       intro:
         "ansluter Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode och andra agenter till en modell som Unsloth kör lokalt, helt offline. Den kör en OpenAI-kompatibel server och ändrar aldrig agentens konfigurationsfiler.",
       readDocs: "Läs dokumentationen",
@@ -2619,7 +2622,7 @@ export const sv = {
         launch: "Starta agenten eller skriv bara ut kommandot och miljön.",
         persist: "Behåll Unsloth-hanterad agentlagring mellan körningar.",
         asSubagent:
-          "Låt föräldraagenten behålla sin nuvarande modell och registrera Unsloth som en lokal underagent (Claude Code, Codex och OpenCode).",
+          "Låt föräldraagenten behålla sin nuvarande modell och registrera Unsloth som en lokal underagent (Claude Code, Codex, OpenCode och Pi).",
         apiKey: "Ange din Unsloth-API-nyckel (eller ställ in UNSLOTH_API_KEY).",
         reasoning:
           "Använd resonemang i chatten: på, av eller automatiskt. Automatiskt följer modellens chattmall, vilket vanligtvis innebär på.",

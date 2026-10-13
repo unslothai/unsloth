@@ -2397,6 +2397,9 @@ export const de = {
       title: "Agenten",
       description:
         "Verbinden Sie Coding-Agenten wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code ist die Ausnahme: Dieser Befehl fügt das bereitgestellte Modell der Copilot-Chat-Modellliste von VS Code hinzu (chatLanguageModels.json).",
       intro:
         "verbindet Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
       readDocs: "Dokumentation lesen",
@@ -2483,7 +2486,7 @@ export const de = {
         persist:
           "Behält die von Unsloth verwalteten Agent-Daten über Läufe hinweg bei.",
         asSubagent:
-          "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex und OpenCode).",
+          "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex, OpenCode und Pi).",
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
         reasoning:

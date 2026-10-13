@@ -2333,6 +2333,9 @@ export const zhCN = {
       title: "智能体",
       description:
         "使用 unsloth start 将 Claude Code、Codex 等编程智能体连接到本地模型。",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code 是例外：此命令会将正在提供的模型添加到 VS Code 的 Copilot Chat 模型列表（chatLanguageModels.json）中。",
       intro:
         "可将 Claude Code、Codex、DeepSeek Harness、Hermes、OpenClaw、OpenCode 等智能体连接到由 Unsloth 在本地提供服务的模型，全程离线。它会启动一个兼容 OpenAI 的服务器，并且从不改动智能体的配置文件。",
       readDocs: "查看文档",
@@ -2411,7 +2414,7 @@ export const zhCN = {
         launch: "启动智能体，或仅打印命令和环境变量。",
         persist: "在多次运行之间保留由 Unsloth 管理的智能体存储。",
         asSubagent:
-          "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex 和 OpenCode）。",
+          "让父智能体保持当前模型，并将 Unsloth 注册为本地子智能体（Claude Code、Codex、OpenCode 和 Pi）。",
         apiKey: "提供你的 Unsloth API 密钥（或设置 UNSLOTH_API_KEY）。",
         reasoning:
           "是否在对话中使用推理：on、off 或 auto。auto 会遵循模型的对话模板，通常为开启。",

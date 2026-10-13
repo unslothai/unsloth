@@ -2407,6 +2407,9 @@ export const en = {
       title: "Agents",
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code is the exception: this command adds the served model to VS Code's Copilot Chat model list (chatLanguageModels.json).",
       intro:
         "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
