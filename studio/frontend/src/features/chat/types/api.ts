@@ -207,6 +207,8 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(

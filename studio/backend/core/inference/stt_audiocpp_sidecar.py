@@ -37,6 +37,7 @@ from core.inference.audio_cpp_models import (
     AudioCppModelError,
     CompanionModel,
     downloaded_models,
+    family_from_names,
     forget,
     parse_identifier,
     require_runnable,
@@ -647,6 +648,15 @@ class AudioCppSttSidecar:
         """The row id a load in flight is reading, so a delete of its repo can wait for it."""
         with self._load_state_lock:
             return self._loading_model if self._loading else None
+
+    @property
+    def holds_timestamp_aligner(self) -> bool:
+        """Whether the forced aligner is open, or may be opened by a load in flight: neither names it
+        as the loaded model, so a folder-scoped delete guard would miss it."""
+        if self._aligned and self._server_alive():
+            return True
+        loading = self.loading_model
+        return bool(loading) and family_from_names([loading]) in _ALIGNED_FAMILIES
 
     @property
     def keep_alive_seconds(self) -> float:

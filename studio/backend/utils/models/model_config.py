@@ -3465,12 +3465,13 @@ _GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
 
 
 def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
-    # A cached Transformers, diffusers or adapter checkpoint can still load from that cache.
-    if any(
-        (snap / name).is_file()
-        for snap in _iter_hf_cache_snapshots(repo_id)
-        for name in ("config.json", "model_index.json", "adapter_config.json")
-    ):
+    from hub.utils.mlx_variants import is_precision_folder
+
+    # A cached Transformers, diffusers, adapter or MLX precision-folder checkpoint can still load.
+    names = ["config.json", "model_index.json", "adapter_config.json"]
+    if is_precision_folder(gguf_variant):
+        names.append(f"{gguf_variant.strip()}/config.json")
+    if any((snap / name).is_file() for snap in _iter_hf_cache_snapshots(repo_id) for name in names):
         return False
     return bool(gguf_variant) or bool(
         _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
@@ -4957,6 +4958,14 @@ class ModelConfig:
         else:
             check_model = identifier
 
+        precision_folder = None
+        if gguf_variant and not is_local and not is_lora:
+            from hub.utils.mlx_variants import precision_folder_config_dir
+            folder_config = precision_folder_config_dir(identifier, gguf_variant.strip(), hf_token)
+            if folder_config is not None:
+                precision_folder = gguf_variant.strip()
+                check_model = str(folder_config)
+
         with _offline_while_reading(check_model):
             vision = is_vision_model(check_model, hf_token = hf_token)
             audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
@@ -4965,6 +4974,7 @@ class ModelConfig:
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
         return cls(
+            gguf_variant = precision_folder,
             identifier = identifier,
             display_name = display_name,
             path = path,
