@@ -2043,7 +2043,6 @@ class AudioCppModel:
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
-    # Whether the file listing came from the Hub rather than the HF cache.
     from_hub: bool = field(default = False, hash = False, compare = False)
 
     @property
@@ -2548,24 +2547,20 @@ def download_target(
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
-    # A cache-only listing (offline, or a failed Hub call) can name a crowded folder's file by its
-    # bare quant; only the Hub's is kept.
+    # A cache-only listing can name a crowded folder's file by its bare quant: record Hub listings only.
     if model.from_hub:
         row = (model.id, model.variant.key)
         with _job_rows_lock:
             _job_rows[(model.repo_id.lower(), key.lower())] = row
-        # Status polls come through here too: write only what the file does not hold yet.
         if _saved_job_row(key) != row:
             _save_job_row(key, row)
     return model.repo_id, key
 
 
-# (umbrella repo, planner key) -> the row and quant a download was started for. A file in flight has
-# no cache entry yet, and a folder with several sizes per quant needs its whole listing to name it.
+# (umbrella repo, planner key) -> (row id, quant) at job start: a file in flight has no cache entry yet.
 _job_rows: dict[tuple[str, str], tuple[str, str]] = {}
 _job_rows_lock = threading.Lock()
-# The same records on disk, so a backend restarted mid-download (or another backend on this install)
-# still names the job by row. One file per planner key, so concurrent writers never merge a map.
+# Persisted for restarted / sibling backends; one file per key so concurrent writers never merge a map.
 _JOB_ROWS_DIR = "audio_cpp_job_rows"
 
 
@@ -2594,8 +2589,7 @@ def _saved_job_row(key: str) -> Optional[tuple[str, str]]:
     if not (isinstance(data, list) and len(data) == 3 and all(isinstance(v, str) for v in data)):
         return None
     saved_key, row_id, quant = data
-    # A record must name its own key and its own folder's row, so a damaged file cannot rename
-    # another model.
+    # A damaged file must not rename another model.
     folder = key.split("/", 1)[0]
     if saved_key.lower() != key.lower() or not quant:
         return None

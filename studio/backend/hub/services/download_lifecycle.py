@@ -597,11 +597,9 @@ def finalize_worker_exit(
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
     if repo_type == "model" and state == "complete":
-        # The cache names a finished file's row now. A cancelled or failed job keeps its record: it is
-        # still right, and another backend may be downloading the same key.
+        # Only on completion: another backend may still be downloading a cancelled key.
         try:
             from core.inference.audio_cpp_models import forget_job_row
-
             forget_job_row(repo_id, download_registry.variant_from_key(key))
         except Exception:
             logger.debug("audio.cpp download row was not pruned", exc_info = True)
@@ -613,7 +611,6 @@ def finalize_worker_exit(
             # audio.cpp remembers a cache miss (the timing aligner) for 20 s; the UI re-reads it on complete.
             try:
                 from core.inference.audio_cpp_models import forget
-
                 forget()
             except Exception:
                 logger.debug("audio.cpp resolve cache was not cleared", exc_info = True)
