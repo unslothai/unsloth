@@ -487,6 +487,24 @@ def variant_remaining_bytes_from_state(
     )
 
 
+def _audio_cpp_remaining_bytes(
+    repo_id: str, key: str, missing_files: list, missing_companion_bytes: int
+) -> int:
+    """What resuming an audio.cpp row still fetches. Its whole manifest, not the generic plan, which keeps
+    one GGUF per quant and so drops a package's other components; without a manifest, the missing files."""
+    try:
+        manifest = download_manifest.read_manifest("model", repo_id, key)
+        files = manifest.expected_files if manifest is not None else ()
+        if files:
+            have = download_registry.existing_blob_bytes(
+                "model", repo_id, frozenset(f.sha256 for f in files if f.sha256)
+            )
+            return max(0, sum(max(0, int(f.size or 0)) for f in files) - have)
+    except Exception as e:
+        logger.warning(f"Manifest pricing failed for {repo_id} [{key}]: {e}")
+    return sum(size for _path, size in missing_files) + missing_companion_bytes
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -1103,6 +1121,11 @@ async def _audio_cpp_variants_answer(
             c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
         )
         companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
+        missing_companion_bytes = sum(
+            c.variant.size_bytes
+            for c in companions
+            if c is not None and audio_cpp_files.cached_files(c) is None
+        )
         try:
             incomplete = download_registry.incomplete_blob_hashes(
                 "model", model.repo_id, active_only = True
@@ -1144,15 +1167,16 @@ async def _audio_cpp_variants_answer(
                 except Exception as e:
                     logger.warning(f"Partial check failed for {model.id} [{variant.key}]: {e}")
                     partial = own_cached
-                if partial and model.is_package:
-                    # The generic manifest plan keeps one GGUF per quant, so it drops a package's other components.
-                    remaining = sum(size for _path, size in missing_files) + sum(
-                        c.variant.size_bytes
-                        for c in companions
-                        if c is not None and audio_cpp_files.cached_files(c) is None
+                if partial:
+                    remaining = (
+                        None
+                        if model.is_package
+                        else variant_remaining_bytes_from_state(model.repo_id, key, None)
                     )
-                elif partial:
-                    remaining = variant_remaining_bytes_from_state(model.repo_id, key, None)
+                    if remaining is None:
+                        remaining = _audio_cpp_remaining_bytes(
+                            model.repo_id, key, missing_files, missing_companion_bytes
+                        )
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,

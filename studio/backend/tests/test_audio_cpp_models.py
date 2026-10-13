@@ -1110,6 +1110,8 @@ def test_miotts_rows_are_partial_only_for_the_variant_whose_codec_is_missing(hub
     rows = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF")
     assert rows["Q8_0"].partial and not rows["Q8_0"].downloaded
     assert not rows["BF16"].partial
+    # No download state: priced from the missing codec, not the whole checkpoint.
+    assert rows["Q8_0"].download_remaining_bytes == 7
     _put(snap, MIOCODEC_Q8, b"x" * 7)
     rows = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF")
     assert rows["Q8_0"].downloaded and not rows["Q8_0"].partial
@@ -1137,17 +1139,28 @@ def test_a_package_mix_with_some_of_its_files_lists_as_partial(hub, monkeypatch)
 
 
 def test_a_partial_package_mix_prices_every_missing_component(hub, monkeypatch):
+    import hashlib
+
+    from utils import hf_cache_settings
+
     monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    paths = hf_cache_settings.HuggingFaceCachePaths(hub.parent, hub, hub.parent / "xet", "studio")
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
     repo = "audio-cpp/MiniMax-Music3-GGUF"
     bf16 = ("language_model_bf16.gguf", "rvq_depth_decoder_bf16.gguf", "transformer_bf16.gguf")
     _online(monkeypatch, *bf16)
     snap = _minimax(hub)
     _cancelled(hub, repo, "BF16", list(bf16))
+    # The language model finished; the other two components hold 3-byte resumable partials.
+    blobs = hub / ("models--" + repo.replace("/", "--")) / "blobs"
+    sha = hashlib.sha256(bf16[0].encode()).hexdigest()
+    (blobs / f"{sha}.incomplete").unlink()
+    (blobs / sha).write_bytes(b"x" * 7)
     _put(snap, bf16[0], b"x" * 7)
     row = _rows(repo)["BF16"]
     assert row.partial and not row.downloaded
-    # The other two BF16 components are still missing, not just one GGUF of the quant.
-    assert row.download_remaining_bytes == 14
+    # Every component counts, and bytes a resume reuses are credited: 21 - 7 - 3 - 3.
+    assert row.download_remaining_bytes == 8
 
 
 def test_download_target_maps_a_folder_row_onto_the_planner_key(hub):

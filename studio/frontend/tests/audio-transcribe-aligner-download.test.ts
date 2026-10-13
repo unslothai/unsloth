@@ -94,7 +94,12 @@ test("only a timestamped Transcribe waits for the aligner download", () => {
   );
   assert.match(
     page,
-    /alignerDownload\.runWithAligner\(transcribeOptions\.request\.timestamps, \(\) => \{[\s\S]*?!activeRef\.current \|\|\s*modeRef\.current !== "transcribe" \|\|\s*useAudioTranscribeStore\.getState\(\)\.source\?\.id !== source\.id\s*\)\s*return;\s*startTranscriptionRef\.current\(source\);/,
+    /alignerDownload\.runWithAligner\(transcribeOptions\.request\.timestamps, \(\) => \{[\s\S]*?!activeRef\.current \|\|\s*modeRef\.current !== "transcribe" \|\|\s*useAudioTranscribeStore\.getState\(\)\.source\?\.id !== source\.id\s*\)\s*return;[\s\S]*?startTranscriptionRef\.current\(source\);/,
+  );
+  // A download ending while a model loads cannot start the run; the user is told, not left waiting.
+  assert.match(
+    page,
+    /if \(busyRef\.current !== null\) \{\s*toast\.info\("The timing aligner is ready"[\s\S]*?return;\s*\}\s*startTranscriptionRef\.current\(source\);/,
   );
 });
 

@@ -1379,6 +1379,13 @@ export function AudioPage({
         useAudioTranscribeStore.getState().source?.id !== source.id
       )
         return;
+      // A run would be refused while a model loads or another task runs: say so instead of dropping it.
+      if (busyRef.current !== null) {
+        toast.info("The timing aligner is ready", {
+          description: "Press Transcribe again once the current task finishes.",
+        });
+        return;
+      }
       startTranscriptionRef.current(source);
     });
   };
