@@ -13607,10 +13607,12 @@ def set_mcp_listing_context_tokens(
     thread_id = None,
     messages = None,
     tool_choice = None,
+    mcp_image = None,
 ) -> None:
     """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
     ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
-    ``tool_choice`` forcing a tool keeps that one listed."""
+    ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
+    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
     from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
 
     valid = isinstance(context_tokens, int) and context_tokens > 0
@@ -13622,7 +13624,9 @@ def set_mcp_listing_context_tokens(
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
-    _MCP_LISTING_IMAGE.set(bool(last_user) and _content_has_image(last_user.get("content")))
+    _MCP_LISTING_IMAGE.set(
+        bool(mcp_image) or (bool(last_user) and _content_has_image(last_user.get("content")))
+    )
 
 
 def _content_has_image(content) -> bool:
@@ -13859,7 +13863,15 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
                 for spec, raw in zip(server_specs, names)
                 if image_mapping(server, tools.get(raw))
             ]
-    listing = [_mcp_tool_search_spec(catalog, int(budget * 4))]
+    # Halved until the finished declaration fits the share, since summaries can run a token a character.
+    max_chars = int(budget * 4)
+    search = _mcp_tool_search_spec(catalog, max_chars)
+    while (
+        max_chars > 0 and _text_token_cost(json.dumps(search, separators = (",", ":")), ctx) > budget
+    ):
+        max_chars //= 2
+        search = _mcp_tool_search_spec(catalog, max_chars)
+    listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx

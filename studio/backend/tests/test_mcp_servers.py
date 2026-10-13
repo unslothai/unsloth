@@ -2284,9 +2284,8 @@ def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, l
     listing_window(1_000)
     specs = tools_mod.cached_mcp_tools()[0]
     assert _names(specs) == ["mcp_tool_search"]
-    assert _search_spec(specs)["function"]["description"].endswith(
-        "Tools:\nA:\n- ping: Ping.\n- query: Query rows."
-    )
+    # Too small to name them within its share, so it only counts them.
+    assert _search_spec(specs)["function"]["description"].endswith("Tools:\nA:\n- and 2 more")
 
 
 def test_mcp_listing_defers_every_tool_past_its_share(tmp_path, monkeypatch, listing_window):
@@ -2575,6 +2574,34 @@ def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, search
     assert listing_for(asked) == ["mcp_tool_search", "mcp__srv1__ping"]
     # Without an attachment the mapped tool is deferred like any other.
     assert listing_for([{"role": "user", "content": "hi"}]) == ["mcp_tool_search"]
+    # A tool-only image is sent as mcp_image, never in the messages.
+    ctx = contextvars.copy_context()
+    hi = [{"role": "user", "content": "hi"}]
+    ctx.run(
+        tools_mod.set_mcp_listing_context_tokens,
+        searching,
+        None,
+        hi,
+        None,
+        "data:image/png;base64,AA==",
+    )
+    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
+        "mcp_tool_search",
+        "mcp__srv1__ping",
+    ]
+
+
+def test_the_search_declaration_fits_its_share_of_the_window(tmp_path, monkeypatch, listing_window):
+    from core.inference import tools as tools_mod
+
+    # One token a character, as CJK summaries cost.
+    wide = [{"name": f"t{i}", "description": "\u8868" * 200 + "\u3002"} for i in range(40)]
+    _cache_server_tools(tmp_path, monkeypatch, wide)
+    ctx = listing_window(20_000)
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert _names(specs) == ["mcp_tool_search"]
+    cost = tools_mod._text_token_cost(json.dumps(specs, separators = (",", ":")), ctx)
+    assert cost <= ctx * tools_mod._MCP_TOOL_SEARCH_SHARE
 
 
 def test_malformed_schemas_and_limits_do_not_break_the_search(tmp_path, monkeypatch):

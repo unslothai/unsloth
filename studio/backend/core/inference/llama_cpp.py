@@ -38164,7 +38164,9 @@ class LlamaCppBackend:
         from core.inference.tools import mcp_loadable_specs
 
         # Plus the MCP tools a search can load mid-turn (#10997).
-        _detect_tools = list(tools or []) + mcp_loadable_specs(tools)
+        _loadable_mcp = mcp_loadable_specs(tools)
+        _loadable_mcp_names = set(_gguf_active_tool_names(_loadable_mcp))
+        _detect_tools = list(tools or []) + _loadable_mcp
         _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
         # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
         # one-shot), else its repeat is stripped but never drained and the turn ends blank.
@@ -38599,7 +38601,7 @@ class LlamaCppBackend:
                 (tool.get("function") or {}).get("name")
                 for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
-            }
+            } | (set() if forced_name else _loadable_mcp_names)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
