@@ -1,0 +1,228 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+
+import pytest
+
+from core.inference.engine_adapters import (
+    ADAPTERS,
+    launch_arguments,
+    reasoning_parser_for_template,
+)
+from core.inference.managed_engine import ManagedEngine, validate_model
+
+_QWEN3 = (
+    "{%- for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>{%- endfor %}"
+    "{%- if add_generation_prompt %}<|im_start|>assistant\n"
+    "{%- if enable_thinking is defined and enable_thinking is false %}<think>\n\n</think>\n\n"
+    "{%- endif %}{%- endif %}"
+)
+
+
+@pytest.mark.parametrize(
+    "template,engine,parser",
+    [
+        (_QWEN3, "vllm", "qwen3"),
+        (_QWEN3, "sglang", None),
+        ("<|channel|>analysis<|message|>", "vllm", "openai_gptoss"),
+        ("<｜Assistant｜><think></think>", "vllm", "deepseek_r1"),
+        ("<|im_start|>assistant", "vllm", None),
+        (None, "vllm", None),
+    ],
+)
+def test_reasoning_parser_follows_the_template(template, engine, parser):
+    assert reasoning_parser_for_template(template, engine) == parser
+
+
+def test_reasoning_parser_reaches_only_the_vllm_argv():
+    vllm, sglang = ADAPTERS["vllm"], ADAPTERS["sglang"]
+    argv = vllm.command("/py", "org/m", 1, "k", 4096, 0.8, options = {"reasoning_parser": "qwen3"})
+    assert argv[argv.index("--reasoning-parser") + 1] == "qwen3"
+    assert "--reasoning-parser" not in launch_arguments("vllm", "/py", "org/m", 1, "k", 4096)
+    assert "--reasoning-parser" not in sglang.command(
+        "/py", "org/m", 1, "k", 4096, 0.8, options = {"reasoning_parser": "qwen3"}
+    )
+
+
+def _model_dir(tmp_path, template):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    if template is not None:
+        (tmp_path / "chat_template.jinja").write_text(template)
+    return SimpleNamespace(is_local = True, path = str(tmp_path), identifier = str(tmp_path))
+
+
+def test_validate_records_the_parser_and_template_flags(tmp_path):
+    options = validate_model(_model_dir(tmp_path, _QWEN3), engine = "vllm")
+    assert options["reasoning_parser"] == "qwen3"
+    assert options["reasoning_flags"]["supports_reasoning"] is True
+    assert options["reasoning_flags"]["reasoning_style"] == "enable_thinking"
+
+
+def test_a_template_without_thinking_launches_as_before(tmp_path):
+    options = validate_model(_model_dir(tmp_path, "<|im_start|>{{ m }}"), engine = "vllm")
+    assert "reasoning_parser" not in options and "reasoning_flags" not in options
+
+
+def test_reasoning_fields():
+    engine = ManagedEngine("vllm")
+    assert engine.reasoning_fields(True, "high", True) == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    engine.reasoning_parser = "qwen3"
+    assert engine.reasoning_fields() == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert engine.reasoning_fields(True) == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert engine.reasoning_fields(None, "xhigh", False) == {
+        "chat_template_kwargs": {"preserve_thinking": False},
+        "reasoning_effort": "xhigh",
+    }
+
+
+def test_preserved_thinking_is_replayed_as_vllm_reads_it():
+    engine = ManagedEngine("vllm")
+    history = [{"role": "assistant", "content": "4", "reasoning_content": "2+2"}]
+    assert engine.replay_reasoning(history, True) == history
+    engine.reasoning_parser = "qwen3"
+    assert engine.replay_reasoning(history, False) == history
+    assert engine.replay_reasoning(history, True)[0]["reasoning"] == "2+2"
+
+
+@pytest.fixture
+def thinking_peer():
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for delta in ({"reasoning": "two"}, {"reasoning": " plus two"}, {"content": "\n\n4"}):
+                self.wfile.write(
+                    f"data: {json.dumps({'choices': [{'delta': delta}]})}\n\n".encode()
+                )
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    engine = ManagedEngine("vllm")
+    engine.base_url = f"http://127.0.0.1:{server.server_port}"
+    engine.model = "org/model"
+    engine.reasoning_parser = "qwen3"
+    yield engine, requests
+    server.shutdown()
+    server.server_close()
+    thread.join(2)
+
+
+def test_streamed_reasoning_becomes_think_markup(thinking_peer):
+    engine, requests = thinking_peer
+    out = "".join(
+        engine.generate(
+            messages = [{"role": "user", "content": "2+2?"}],
+            enable_thinking = True,
+            reasoning_effort = "low",
+        )
+    )
+    assert out == "<think>two plus two</think>4"
+    assert requests[0]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert requests[0]["reasoning_effort"] == "low"
+
+
+def test_reasoning_controls_are_refused_only_without_a_parser():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _managed_engine_unsupported_controls
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        enable_thinking = True,
+        reasoning_effort = "high",
+    )
+    assert _managed_engine_unsupported_controls(payload, {"engine": "vllm"})
+    assert not _managed_engine_unsupported_controls(
+        payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
+    )
+    payload = payload.model_copy(update = {"continue_final_message": True})
+    assert _managed_engine_unsupported_controls(
+        payload, {"engine": "vllm", "reasoning_flags": {"supports_reasoning": True}}
+    )
+
+
+def test_load_flags_come_from_the_engine_template():
+    from routes.inference import _detect_safetensors_features
+
+    flags = {
+        "supports_reasoning": True,
+        "reasoning_style": "enable_thinking_effort",
+        "reasoning_always_on": False,
+        "reasoning_effort_levels": ["low", "medium", "xhigh"],
+        "supports_preserve_thinking": True,
+        "preserve_thinking_default": False,
+        "supports_tools": True,
+    }
+    backend = SimpleNamespace(
+        active_model_name = "m",
+        models = {"m": {"engine": "vllm", "supports_tools": False, "reasoning_flags": flags}},
+    )
+    assert _detect_safetensors_features(backend, None) == {**flags, "supports_tools": False}
+    backend.models["m"].pop("reasoning_flags")
+    assert _detect_safetensors_features(backend, None)["supports_reasoning"] is False
+
+
+def test_managed_engine_chat_is_fitted_to_the_engine_window():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"engine": "vllm", "context_length": 2048}}
+    calls = []
+
+    def count(
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        calls.append(kwargs)
+        return sum(len(str(m.get("content", ""))) // 4 for m in messages), "m"
+
+    orchestrator.count_chat_tokens = count
+    turn = "word " * 400
+    messages = []
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    messages.append({"role": "user", "content": "latest"})
+    fitted = orchestrator.compact_chat_context(
+        messages,
+        system_prompt = "Be brief.",
+        context_overflow = "truncate_oldest",
+        max_tokens = 256,
+        enable_thinking = True,
+    )
+    assert fitted["messages"][-1]["content"] == "latest"
+    assert len(fitted["messages"]) < len(messages)
+    assert any(event.get("type") == "context_truncated" for event in fitted["events"])
+    assert calls[0]["enable_thinking"] is True
+    unchanged = orchestrator.compact_chat_context(messages, context_overflow = None, max_tokens = 256)
+    assert unchanged["messages"] == messages
+
+
+def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
+    from routes.managed_engine_chat import _with_reasoning_content
+
+    line = 'data: {"choices":[{"delta":{"reasoning":"hmm"}}]}'
+    assert json.loads(_with_reasoning_content(line)[5:])["choices"][0]["delta"] == {
+        "reasoning_content": "hmm"
+    }
+    plain = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
+    assert _with_reasoning_content(plain) == plain

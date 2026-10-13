@@ -34,6 +34,27 @@ def tool_parser_for_template(template, engine):
     return None
 
 
+def reasoning_parser_for_template(template, engine):
+    """vLLM reasoning parser for the model's own thinking markup; None leaves the launch unchanged."""
+    if engine != "vllm" or not isinstance(template, str):
+        return None
+    if "<|channel|>" in template and "<|message|>" in template:
+        return "openai_gptoss"
+    if "<think>" not in template or "</think>" not in template:
+        return None
+    formats = (
+        (("<arg_key>",), "glm45"),
+        (("<minimax:tool_call>",), "minimax_m2"),
+        (("<|tool_calls_section_begin|>",), "kimi_k2"),
+        (("<｜Assistant｜>",), "deepseek_r1"),
+        (("<|im_start|>",), "qwen3"),
+    )
+    for markers, parser in formats:
+        if all(marker in template for marker in markers):
+            return parser
+    return None
+
+
 def _release_at_least(version: str | None, floor: str) -> bool:
     from packaging.version import InvalidVersion, Version
     try:
@@ -92,6 +113,8 @@ class EngineAdapter:
             tool_args = ["--tool-call-parser", options["tool_parser"]]
             if self.name == "vllm":
                 tool_args.append("--enable-auto-tool-choice")
+        if self.name == "vllm" and options.get("reasoning_parser"):
+            tool_args += ["--reasoning-parser", options["reasoning_parser"]]
         mode = options.get("parallelism", "tensor")
         parallel_args = ["--tensor-parallel-size", str(gpu_count if mode == "tensor" else 1)]
         if mode != "tensor":

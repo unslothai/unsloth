@@ -4548,8 +4548,11 @@ def _detect_safetensors_features(
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
     if (getattr(backend, "models", {}).get(model_id) or {}).get("engine") in ("vllm", "sglang"):
+        info = backend.models[model_id]
+        if info.get("reasoning_flags"):
+            return {**info["reasoning_flags"], "supports_tools": bool(info.get("supports_tools"))}
         return {
-            "supports_tools": bool(backend.models[model_id].get("supports_tools")),
+            "supports_tools": bool(info.get("supports_tools")),
             "supports_reasoning": False,
             "reasoning_style": "enable_thinking",
             "reasoning_always_on": False,
@@ -18186,15 +18189,21 @@ async def _managed_engine_request(request):
     return request.model_copy(update = {"gpu_ids": gpu_ids})
 
 
-def _managed_engine_unsupported_controls(payload) -> bool:
+def _managed_engine_unsupported_controls(payload, model_info = None) -> bool:
     """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
+    reasoning = (model_info or {}).get("reasoning_flags") is not None
     return bool(
         payload.use_adapter is not None
         or _response_format_constrains_decoding(payload)
         or payload.continue_final_message
-        or payload.enable_thinking
-        or payload.preserve_thinking
-        or payload.reasoning_effort not in (None, "none")
+        or (
+            not reasoning
+            and (
+                payload.enable_thinking
+                or payload.preserve_thinking
+                or payload.reasoning_effort not in (None, "none")
+            )
+        )
     )
 
 
@@ -33442,10 +33451,14 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX can count its own prompt, so only MLX is fitted before it generates.
-    _sf_fit_overflow = _rolling_context_policy(payload) if _sf_model_info.get("is_mlx") else None
+    # Only MLX and the managed engines can count their own prompt, so only they are fitted first.
+    _sf_fit_overflow = (
+        _rolling_context_policy(payload)
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
+        else None
+    )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
-        if _managed_engine_unsupported_controls(payload):
+        if _managed_engine_unsupported_controls(payload, _sf_model_info):
             raise _reject(
                 400,
                 "This engine integration does not support adapters, structured output, continuation or reasoning controls.",

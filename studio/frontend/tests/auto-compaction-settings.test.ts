@@ -33,6 +33,28 @@ test("external models never opt into GGUF compaction", () => {
   );
 });
 
+test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: true,
+    }),
+    { context_overflow: "truncate_oldest" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: false,
+    }),
+    { context_overflow: "error" },
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
+  assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
+});
+
 test("nothing still offers the removed compaction style", () => {
   // The row is gone, so its state, its request fields and its strings should be too: a leftover
   // setter or key is a setting the user cannot reach but the code still carries.

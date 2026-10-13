@@ -44,6 +44,7 @@ from .engine_adapters import (
     memory_reserve_mib,
     RESERVE_SHARE,
     launch_arguments,
+    reasoning_parser_for_template,
     tool_parser_for_template,
 )
 
@@ -221,8 +222,10 @@ def validate_model(
             "SGLang cannot load prequantized BitsAndBytes checkpoints across pipeline stages. "
             "Select one GPU, use Replicas, or load an unquantized checkpoint with 4-bit precision."
         )
+    template = _model_chat_template(config, hf_token)
+    reasoning_parser = reasoning_parser_for_template(template, engine)
     options = {
-        "tool_parser": tool_parser_for_template(_model_chat_template(config, hf_token), engine),
+        "tool_parser": tool_parser_for_template(template, engine),
         "precision": precision,
         "parallelism": parallelism,
         "is_vision": bool(metadata.get("vision_config") or getattr(config, "is_vision", False)),
@@ -236,6 +239,12 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
+    if reasoning_parser:
+        from .llama_cpp import detect_reasoning_flags
+        options["reasoning_parser"] = reasoning_parser
+        options["reasoning_flags"] = detect_reasoning_flags(
+            template, config.identifier, log_source = "managed engine"
+        )
     if precision == "fp8" and profile(engine)["platform"] == "cuda":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
         from utils.hardware.nvidia import _nvidia_smi_executable
@@ -485,6 +494,7 @@ class ManagedEngine:
         self._mamba_blocks = None
         self._last_output = time.monotonic()
         self.base_url = ""
+        self.reasoning_parser = None
         self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
@@ -565,6 +575,7 @@ class ManagedEngine:
                 port = _free_port(_PORT_LIMIT if self.engine == "sglang" else None)
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
+                self.reasoning_parser = (options or {}).get("reasoning_parser")
                 stdin = None
                 if info.get("host") == "wsl":
                     command, child_env = self._wsl_command(
@@ -876,6 +887,46 @@ class ManagedEngine:
                 self._lease = None
         return True
 
+    def reasoning_fields(
+        self,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ) -> dict:
+        """Request fields for the template's thinking controls; without a parser thinking stays off."""
+        if not self.reasoning_parser:
+            return {"chat_template_kwargs": {"enable_thinking": False}}
+        kwargs = {}
+        if enable_thinking is not None:
+            kwargs["enable_thinking"] = bool(enable_thinking)
+        elif reasoning_effort is None:
+            kwargs["enable_thinking"] = False
+        if preserve_thinking is not None:
+            kwargs["preserve_thinking"] = bool(preserve_thinking)
+        fields = {"chat_template_kwargs": kwargs}
+        if reasoning_effort is not None:
+            # vLLM hands it to the template, which owns the accepted levels.
+            fields["reasoning_effort"] = reasoning_effort
+        return fields
+
+    def replay_reasoning(
+        self,
+        messages,
+        preserve_thinking = None,
+    ):
+        """vLLM reads a past turn's thinking from ``reasoning``, Studio keeps it as ``reasoning_content``."""
+        if not (self.reasoning_parser and preserve_thinking):
+            return messages
+        return [
+            {**message, "reasoning": message["reasoning_content"]}
+            if isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and isinstance(message.get("reasoning_content"), str)
+            and "reasoning" not in message
+            else message
+            for message in messages
+        ]
+
     def count_tokens(
         self,
         messages,
@@ -894,9 +945,13 @@ class ManagedEngine:
                 headers = self.headers,
                 json = {
                     "model": self.model,
-                    "messages": messages,
+                    "messages": self.replay_reasoning(messages, kwargs.get("preserve_thinking")),
                     "add_generation_prompt": True,
-                    "chat_template_kwargs": {"enable_thinking": False},
+                    **self.reasoning_fields(
+                        kwargs.get("enable_thinking"),
+                        kwargs.get("reasoning_effort"),
+                        kwargs.get("preserve_thinking"),
+                    ),
                 },
             )
             response.raise_for_status()
@@ -965,17 +1020,16 @@ class ManagedEngine:
                         )
                         message["content"] = parts
                         break
-        if (
-            params.get("continue_final_message")
-            or params.get("enable_thinking")
-            or params.get("preserve_thinking")
+        if params.get("continue_final_message") or (
+            not self.reasoning_parser
+            and (params.get("enable_thinking") or params.get("preserve_thinking"))
         ):
             raise ValueError(
                 "Continuation and reasoning controls are unavailable for this engine profile."
             )
         from .engine_transport import engine_messages
 
-        messages = engine_messages(messages)
+        messages = self.replay_reasoning(engine_messages(messages), params.get("preserve_thinking"))
         payload = {
             "model": self.model,
             "messages": messages,
@@ -1002,12 +1056,19 @@ class ManagedEngine:
         limit = params.get("max_new_tokens") or 0
         if limit > 0 and (not self.context or limit < self.context):
             payload["max_tokens"] = limit
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload.update(
+            self.reasoning_fields(
+                params.get("enable_thinking"),
+                params.get("reasoning_effort"),
+                params.get("preserve_thinking"),
+            )
+        )
         from .engine_transport import stream_chat_events
 
         def cancelled():
             return self._cancel.is_set() or (cancel_event is not None and cancel_event.is_set())
 
+        thinking = False
         for event in stream_chat_events(self.base_url, self.headers, payload, cancelled):
             if event.get("usage") and stats_holder is not None:
                 stats_holder.setdefault("stats", {})["usage"] = event["usage"]
@@ -1016,6 +1077,13 @@ class ManagedEngine:
             for choice in event.get("choices", []):
                 if choice.get("finish_reason") and stats_holder is not None:
                     stats_holder.setdefault("stats", {})["finish_reason"] = choice["finish_reason"]
-                content = choice.get("delta", {}).get("content")
+                delta = choice.get("delta", {})
+                # The parser splits thinking out; <think> markup is what the route's extractor reads.
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    yield reasoning if thinking else "<think>" + reasoning
+                    thinking = True
+                content = delta.get("content")
                 if content:
-                    yield content
+                    yield "</think>" + content.lstrip("\n") if thinking else content
+                    thinking = False

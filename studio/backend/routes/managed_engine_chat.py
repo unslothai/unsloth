@@ -57,9 +57,28 @@ class ManagedToolTransport:
                     if cancel_event.is_set():
                         return
                     if line.startswith("data:"):
-                        yield line
+                        yield _with_reasoning_content(line)
             finally:
                 await lines.aclose()
+
+
+def _with_reasoning_content(line: str) -> str:
+    """vLLM 0.11+ streams thinking as ``reasoning``; Studio's readers take ``reasoning_content``."""
+    if '"reasoning"' not in line:
+        return line
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    changed = False
+    for choice in event.get("choices") or () if isinstance(event, dict) else ():
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if isinstance(delta, dict) and "reasoning" in delta:
+            reasoning = delta.pop("reasoning")
+            if reasoning and not delta.get("reasoning_content"):
+                delta["reasoning_content"] = reasoning
+            changed = True
+    return "data: " + json.dumps(event) if changed else line
 
 
 def _with_model(line: str, public: str) -> str:
@@ -158,10 +177,13 @@ async def managed_tool_chat(
     # The engine serves config.identifier (a local path for directory loads); clients get the
     # same public id as every other chat path.
     public = api._orchestrator_public_model_id(backend) or engine.model
+    messages = engine.replay_reasoning(messages, payload.preserve_thinking)
     body = {
         "model": engine.model,
         "messages": messages,
-        "chat_template_kwargs": {"enable_thinking": False},
+        **engine.reasoning_fields(
+            payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+        ),
     }
     for key in (
         "temperature",
@@ -252,6 +274,12 @@ async def managed_tool_chat(
                 data = response.json()
                 if isinstance(data, dict) and "model" in data:
                     data["model"] = public
+                for choice in data.get("choices") or () if isinstance(data, dict) else ():
+                    message = choice.get("message") if isinstance(choice, dict) else None
+                    if isinstance(message, dict) and "reasoning" in message:
+                        reasoning = message.pop("reasoning")
+                        if reasoning and not message.get("reasoning_content"):
+                            message["reasoning_content"] = reasoning
                 api._monitor_openai_chunk(monitor_id, data, streaming = False)
                 yield data
                 return

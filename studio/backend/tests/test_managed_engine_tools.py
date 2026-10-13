@@ -63,11 +63,16 @@ def native(monkeypatch):
     httpx = managed_engine_chat.httpx
     backend = route_test._ScriptedBackend(route_test._fixed("plain"))
     backend.models["sf-model"].update(engine = "vllm", supports_tools = True)
+    from core.inference.managed_engine import ManagedEngine
+
+    real = ManagedEngine("vllm")
     backend._managed_engine = SimpleNamespace(
         model = "sf-model",
         context = 4096,
         base_url = "http://native.test",
         headers = {"Authorization": "Bearer private"},
+        reasoning_fields = real.reasoning_fields,
+        replay_reasoning = real.replay_reasoning,
     )
     route_test._install(monkeypatch, backend)
     requests = []
