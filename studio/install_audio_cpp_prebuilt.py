@@ -15,17 +15,25 @@ The bundle is extracted into a staging directory beside the managed tree, starte
 with ``--help`` so a bundle this host cannot load is refused, and swapped in only then,
 so an interrupted or unusable install never replaces a working tree.
 
-Every bundle and CUDA runtime archive must match a sha256 pinned in
-``audio_cpp_prebuilt_pins.json`` unless the user picked the release
-(``UNSLOTH_AUDIO_CPP_REPO`` / ``UNSLOTH_AUDIO_CPP_TAG``). A re-run whose install record
-already names the pinned release makes no network call, and a lookup that cannot answer
+The newest unslothai/audio.cpp release is installed unless ``UNSLOTH_AUDIO_CPP_TAG`` (or
+``--published-release-tag``) names one. The release is resolved like whisper.cpp's, through
+prebuilt_core: the download host first, then the GitHub API. Every bundle and CUDA runtime
+archive must match the sha256 in the release's own ``audio-cpp-prebuilt-sha256.json``, which
+is bound to the release tag; an archive the index does not cover is refused. That checksum
+comes from the same release as the archive, so it proves integrity (a corrupt or swapped
+download), not authenticity. A user-picked repo or tag whose release publishes no index
+falls back to GitHub's asset digest.
+
+A re-run whose install record already names the newest release (one HEAD to github.com,
+no API call) or the pinned one (no network call) downloads nothing, an intact install newer
+than the release a lookup names is never replaced by it, and a lookup that cannot answer
 keeps a complete install.
 
 Usage:
     python studio/install_audio_cpp_prebuilt.py                 # auto-detect host
     python studio/install_audio_cpp_prebuilt.py --accelerator cpu
     python studio/install_audio_cpp_prebuilt.py --print-asset   # resolve only
-    python studio/install_audio_cpp_prebuilt.py --write-pins    # regenerate the digest pins
+    python studio/install_audio_cpp_prebuilt.py --published-release-tag v0.9.1-unsloth.1
 """
 
 from __future__ import annotations
@@ -69,23 +77,19 @@ else:
         _safe_extractall,
     )
 
-# The Unsloth fork publishes the bundles Studio pins (CI: .github/workflows/unsloth-prebuilt.yml there,
-# like unslothai/whisper.cpp); UNSLOTH_AUDIO_CPP_REPO overrides it.
+# The Unsloth fork publishes the bundles Studio installs (CI: .github/workflows/unsloth-prebuilt.yml
+# there, like unslothai/whisper.cpp); UNSLOTH_AUDIO_CPP_REPO overrides it. Its tags carry the Unsloth
+# packaging (static eSpeak-ng, lean multi-arch Linux CUDA) and a manifest + sha256 index per release.
 DEFAULT_REPO = "unslothai/audio.cpp"
-UPSTREAM_FALLBACK_REPO = "0xShug0/audio.cpp"
-# Pinned for reproducibility; UNSLOTH_AUDIO_CPP_TAG overrides ('' tracks latest). The fork's tags carry
-# the Unsloth packaging (static eSpeak-ng, lean multi-arch Linux CUDA); upstream never publishes them.
-DEFAULT_TAG = "v0.9.0-unsloth.1"
-# The upstream release the fork tag is built from, tried when the fork cannot serve this host.
-UPSTREAM_FALLBACK_TAG = "v0.9.0"
+
+# What prebuilt_core's release lookup and index parsers read through _OPS.
+COMPONENT = "audio.cpp"
+MANIFEST_ASSET_NAME = "audio-cpp-prebuilt-manifest.json"
+SHA256_ASSET_NAME = "audio-cpp-prebuilt-sha256.json"
 
 INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 OWNERSHIP_MARKER = ".unsloth-studio-owned"
 SERVER_NAME = "audiocpp_server.exe" if sys.platform == "win32" else "audiocpp_server"
-# {repo: {tag: {asset: sha256}}} for the default fork tag and its upstream fallback. Regenerate with
-# `python studio/install_audio_cpp_prebuilt.py --write-pins` after bumping either tag; it reads the same
-# digests `gh release view <tag> -R <repo> --json assets` shows.
-PINS_PATH = Path(__file__).resolve().with_name("audio_cpp_prebuilt_pins.json")
 
 ACCELERATORS = ("auto", "cpu", "cuda", "vulkan", "metal")
 # The staged server's --help must exit 0 within this long before it replaces the live tree.
@@ -108,7 +112,8 @@ def log(message: str) -> None:
     print(f"audio.cpp: {message}", file = sys.stderr, flush = True)
 
 
-# Late-binding seam for prebuilt_core: its downloader reads USER_AGENT and log from here.
+# Late-binding seam for prebuilt_core: its downloader and release lookup read USER_AGENT, log and the
+# asset names above from here, and see a test's monkeypatch of any core name set on this module.
 _OPS = core.ModuleOps(globals())
 
 _OS_TOKENS = {
@@ -132,47 +137,75 @@ def _repo() -> str:
 
 
 def _pinned_tag() -> Optional[str]:
-    val = os.environ.get("UNSLOTH_AUDIO_CPP_TAG", DEFAULT_TAG).strip()
-    return val or None
+    """``UNSLOTH_AUDIO_CPP_TAG``, the exact release to install; ``None`` (track the newest) when it
+    is unset, empty or ``latest``."""
+    val = (os.environ.get("UNSLOTH_AUDIO_CPP_TAG") or "").strip()
+    return None if not val or val.lower() == "latest" else val
 
 
 def _user_picked_release() -> bool:
-    """The user chose the repo or tag, so a digest this repo never pinned is theirs to trust."""
+    """The user chose the repo or tag, so a release without a sha256 index is theirs to trust
+    on GitHub's digest."""
     return (
-        bool((os.environ.get("UNSLOTH_AUDIO_CPP_REPO") or "").strip())
-        or "UNSLOTH_AUDIO_CPP_TAG" in os.environ
+        bool((os.environ.get("UNSLOTH_AUDIO_CPP_REPO") or "").strip()) or _pinned_tag() is not None
     )
 
 
-# Every pinned Linux bundle (CPU and CUDA) is built on Ubuntu 22.04.
-_PINNED_LINUX_GLIBC_FLOOR = (2, 35)
+# "v0.9.1-unsloth.1", "v0.9.0", "v0.8.2-audio8-perf-hotfix-unsloth.1": a leading version, any label.
+_RELEASE_VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-\S*)?")
+_UNSLOTH_SERIAL = re.compile(r"-unsloth\.(\d+)$")
 
 
-def _glibc_below_pinned_floor() -> Optional[str]:
-    """The host glibc when it is older than the pinned Linux bundles need, else ``None``. Without
-    this the start check fails after a full download (~1 GB for CUDA) on every setup run."""
-    if not sys.platform.startswith("linux") or _user_picked_release():
+def release_version_key(tag: Optional[str]) -> Optional[tuple[int, int, int, int]]:
+    """``(major, minor, patch, unsloth_serial)`` of a release tag, or ``None``. A label between the
+    version and ``-unsloth.N`` is ignored, so a hotfix of an older line still sorts below a newer
+    release. Kept in step with ``audio_cpp_freshness.parse_release_version`` (a test compares them)."""
+    if not isinstance(tag, str):
+        return None
+    tag = tag.strip()
+    match = _RELEASE_VERSION.fullmatch(tag)
+    if not match:
+        return None
+    serial = _UNSLOTH_SERIAL.search(tag)
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3) or 0),
+        int(serial.group(1)) if serial else 0,
+    )
+
+
+def _record_is_current(record_tag: Optional[str], latest_tag: Optional[str]) -> bool:
+    """Whether an installed tag needs nothing from ``latest_tag``: the same release, or one that
+    parses strictly newer (``/releases/latest`` and the API's newest can name an older release)."""
+    if not record_tag or not latest_tag:
+        return False
+    if record_tag == latest_tag:
+        return True
+    installed, latest = release_version_key(record_tag), release_version_key(latest_tag)
+    return installed is not None and latest is not None and installed > latest
+
+
+_GLIBC_MIN_OS = re.compile(r"glibc-(\d+)\.(\d+)")
+
+
+def _glibc_below(min_os: Optional[str]) -> Optional[str]:
+    """The host glibc when it is older than a Linux bundle's manifest ``min_os`` (``glibc-2.35``),
+    else ``None``. Checked before the download: without it the start check fails after a full
+    download (~1 GB for CUDA) on every setup run. No manifest (a user-picked release) skips it."""
+    if not sys.platform.startswith("linux") or not isinstance(min_os, str):
+        return None
+    floor = _GLIBC_MIN_OS.fullmatch(min_os.strip())
+    if not floor:
         return None
     name, version = platform.libc_ver()
     try:
         parsed = tuple(int(x) for x in version.split(".")[:2])
     except ValueError:
         return None
-    if name != "glibc" or len(parsed) != 2 or parsed >= _PINNED_LINUX_GLIBC_FLOOR:
+    if name != "glibc" or len(parsed) != 2 or parsed >= (int(floor.group(1)), int(floor.group(2))):
         return None
     return version
-
-
-def _release_ladder() -> list[tuple[str, Optional[str]]]:
-    """``(repo, tag)`` lookups in order: the pinned tag on the primary repo, then, when the user
-    pinned neither repo nor tag, the upstream release the fork tag was cut from. ``None`` (latest)
-    only when the user set ``UNSLOTH_AUDIO_CPP_TAG=''``; a pinned install never drifts to an
-    untested latest. A user-chosen tag never reaches a repo the user did not choose."""
-    primary = _repo()
-    ladder = [(primary, _pinned_tag())]
-    if not _user_picked_release() and primary != UPSTREAM_FALLBACK_REPO:
-        ladder.append((UPSTREAM_FALLBACK_REPO, UPSTREAM_FALLBACK_TAG))
-    return ladder
 
 
 def _accelerator_from_env() -> str:
@@ -191,41 +224,16 @@ def _accelerator_from_env() -> str:
     return raw
 
 
-def load_pins(path: Optional[Path] = None) -> dict:
-    try:
-        with open(path or PINS_PATH, "r", encoding = "utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    releases = data.get("releases") if isinstance(data, dict) else None
-    return releases if isinstance(releases, dict) else {}
-
-
-def pinned_sha256(repo: str, tag: Optional[str], asset: str) -> Optional[str]:
-    if not tag:
-        return None
-    digest = ((load_pins().get(repo) or {}).get(tag) or {}).get(asset)
-    return core.normalize_sha256_digest(digest)
-
-
-def _expected_sha256(repo: str, tag: Optional[str], asset: dict) -> Optional[str]:
-    """The sha256 an asset must hash to: the in-repo pin, which GitHub's own digest must agree with.
-    Unpinned assets are refused unless the user picked the release, where GitHub's digest (if any)
-    is the best available."""
-    name = asset["name"]
-    published = core.normalize_sha256_digest(asset.get("digest"))
-    pinned = pinned_sha256(repo, tag, name)
-    if pinned:
-        if published and published != pinned:
-            raise RuntimeError(
-                f"{name}: GitHub reports sha256 {published} but {PINS_PATH.name} pins {pinned}; refusing it"
-            )
-        return pinned
-    if _user_picked_release():
-        return published
-    raise RuntimeError(
-        f"{name} from {repo} {tag or 'latest'} has no sha256 pinned in {PINS_PATH.name}; refusing an unpinned "
-        "download (set UNSLOTH_AUDIO_CPP_REPO or UNSLOTH_AUDIO_CPP_TAG to install a release you chose)"
+def _expected_sha256(release: dict, asset: dict) -> Optional[str]:
+    """The sha256 an asset must hash to: its entry in the release's sha256 index, which any digest
+    the manifest embeds must agree with. An asset the index does not cover raises
+    ``ReleaseIntegrityError``. Only a user-picked release without an index (``checksums`` None)
+    falls back to GitHub's digest, if it reports one."""
+    checksums = release.get("checksums")
+    if checksums is None:
+        return core.normalize_sha256_digest(asset.get("digest"))
+    return core.expected_sha256_for(
+        _OPS, checksums, asset["name"], manifest_sha256 = asset.get("manifest_sha256")
     )
 
 
@@ -448,54 +456,161 @@ def _fetch_release(
     return None  # pragma: no cover - the loop returns or raises
 
 
-def resolve(accelerator: str, token: Optional[str]) -> tuple[str, Optional[dict], Optional[str]]:
-    """``(repo, release, asset)`` for this host along ``_release_ladder()``. Raises
-    ``ReleaseLookupUnavailable`` when no lookup answered, so a caller can keep what is installed."""
-    primary = _repo()
+# Per process, so the CPU-fallback re-resolve and a full install after the re-run check ask once.
+_LATEST_TAG_MEMO: dict[str, Optional[str]] = {}
+_RELEASE_INDEX_MEMO: dict[tuple[str, Optional[str]], Optional[dict]] = {}
+
+
+def _latest_tag_via_download_host(repo: str) -> Optional[str]:
+    """The tag ``github.com/<repo>/releases/latest`` redirects to: one HEAD, no api.github.com call.
+    ``None`` on any failure, so the caller asks the full lookup instead."""
+    if repo not in _LATEST_TAG_MEMO:
+        try:
+            _LATEST_TAG_MEMO[repo] = _OPS._download_host_latest_release_tag(repo)
+        except Exception as exc:  # noqa: BLE001 - offline, DNS, 5xx: no shortcut
+            print(
+                f"audio.cpp: {repo} latest release lookup failed ({exc})",
+                file = sys.stderr,
+                flush = True,
+            )
+            _LATEST_TAG_MEMO[repo] = None
+    return _LATEST_TAG_MEMO[repo]
+
+
+def _release_index(
+    repo: str,
+    tag: Optional[str],
+    *,
+    token: Optional[str] = None,
+    allow_unindexed: bool = False,
+) -> Optional[dict]:
+    """``{"tag_name", "assets", "checksums"}`` for ``repo`` at ``tag`` (newest when ``None``), through
+    prebuilt_core's release lookup: the manifest's assets with their tag-pinned download URLs, and the
+    release's sha256 index. A lookup that cannot answer raises (``PrebuiltFallback``, ``URLError``,
+    ``OSError``, ``RuntimeError``).
+
+    ``allow_unindexed`` (a user-picked repo or tag) lets a release that publishes no sha256 index
+    through on one GitHub API fetch, with ``checksums`` None so GitHub's digest is the expected sha256.
+    ``None`` when that release does not exist."""
+    key = (repo, tag)
+    if key in _RELEASE_INDEX_MEMO:
+        return _RELEASE_INDEX_MEMO[key]
+    try:
+        bundle, checksums = _OPS.fetch_release_for_install(repo, published_release_tag = tag)
+    except core.ReleaseIntegrityError:
+        raise
+    except core.PrebuiltFallback:
+        if not allow_unindexed:
+            raise
+        release = _fetch_release(repo, tag, token)
+        if release is not None:
+            names = {a.get("name") for a in release.get("assets") or [] if isinstance(a, dict)}
+            if SHA256_ASSET_NAME in names:
+                # An index exists, so the lookup failed for another reason: never skip the index.
+                raise
+            print(
+                f"audio.cpp: {repo} {release.get('tag_name')} publishes no {SHA256_ASSET_NAME}; "
+                "using GitHub's asset digests",
+                file = sys.stderr,
+                flush = True,
+            )
+            release = {
+                "tag_name": release.get("tag_name"),
+                "assets": [
+                    {
+                        "name": a["name"],
+                        "browser_download_url": a.get("browser_download_url"),
+                        "digest": a.get("digest"),
+                        "manifest_sha256": None,
+                        "min_os": None,
+                    }
+                    for a in release.get("assets") or []
+                    if isinstance(a, dict) and isinstance(a.get("name"), str)
+                ],
+                "checksums": None,
+            }
+    else:
+        release = {
+            "tag_name": bundle.release_tag,
+            "assets": [
+                {
+                    "name": a["asset"],
+                    "browser_download_url": _OPS.asset_download_url(bundle, a["asset"]),
+                    "manifest_sha256": a.get("sha256"),
+                    "min_os": a.get("min_os"),
+                }
+                for a in bundle.manifest.get("artifacts") or []
+            ],
+            "checksums": checksums,
+        }
+    _RELEASE_INDEX_MEMO[key] = release
+    return release
+
+
+def _rate_limit_text(exc: BaseException) -> bool:
+    # prebuilt_core.fetch_json turns an API 403 / 429 into a RuntimeError with this text.
+    return bool(re.search(r"GitHub API returned (403|429)\b", str(exc)))
+
+
+def resolve(
+    accelerator: str,
+    token: Optional[str],
+    tag: Optional[str] = None,
+) -> tuple[str, Optional[dict], Optional[str]]:
+    """``(repo, release, asset)`` for this host from ``_repo()``: ``tag`` (``--published-release-tag``),
+    else ``UNSLOTH_AUDIO_CPP_TAG``, else the newest release. Raises ``ReleaseLookupUnavailable`` (or
+    ``GitHubRateLimited``) when the lookup could not answer, so a caller can keep what is installed;
+    ``ReleaseIntegrityError`` (the release answered and cannot be trusted) is never one of those."""
+    repo = _repo()
+    explicit = (tag or "").strip() or None
+    pin = explicit or _pinned_tag()
+    want = pin or _latest_tag_via_download_host(repo)
     driver = nvidia_driver_cuda_version() if accelerator == "cuda" else None
     prefer = torch_cuda_major()
-    answered = False
-    failures = []
-    for repo, want in _release_ladder():
-        try:
-            release = _fetch_release(repo, want, token)
-        except GitHubRateLimited:
-            raise
-        except Exception as exc:  # noqa: BLE001 - network: try the next rung
-            print(f"audio.cpp: {repo} release lookup failed ({exc})", file = sys.stderr, flush = True)
-            failures.append(f"{repo}: {exc}")
-            continue
-        answered = True
-        if not release:
-            continue
-        names = [a["name"] for a in release.get("assets") or []]
-        chosen = resolve_release_asset(
-            names,
-            system = platform.system(),
-            machine = platform.machine(),
-            accelerator = accelerator,
-            driver_cuda = driver,
-            prefer_cuda_major = prefer,
+    try:
+        release = _release_index(
+            repo,
+            want,
+            token = token,
+            # The in-app update pins the tag it offered; only the user's own pick skips the index.
+            allow_unindexed = explicit is None and _user_picked_release(),
         )
-        if chosen:
-            if repo != primary:
-                print(f"audio.cpp: falling back to {repo}", file = sys.stderr, flush = True)
-            return repo, release, chosen
-    if not answered:
+    except core.ReleaseIntegrityError:
+        raise
+    except GitHubRateLimited:
+        raise
+    except (core.PrebuiltFallback, urllib.error.URLError, OSError, RuntimeError) as exc:
+        if _is_rate_limited(exc) or _rate_limit_text(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
+        print(f"audio.cpp: {repo} release lookup failed ({exc})", file = sys.stderr, flush = True)
         raise ReleaseLookupUnavailable(
-            "no audio.cpp release lookup answered (" + "; ".join(failures) + ")"
-        )
-    return primary, None, None
+            f"no audio.cpp release lookup answered ({repo} {want or 'latest'}: {exc})"
+        ) from exc
+    if not release:
+        return repo, None, None
+    names = [a["name"] for a in release.get("assets") or []]
+    chosen = resolve_release_asset(
+        names,
+        system = platform.system(),
+        machine = platform.machine(),
+        accelerator = accelerator,
+        driver_cuda = driver,
+        prefer_cuda_major = prefer,
+    )
+    return repo, release, chosen
 
 
 def resolve_for_request(
-    requested: str, detected: Optional[str], token: Optional[str]
+    requested: str,
+    detected: Optional[str],
+    token: Optional[str],
+    tag: Optional[str] = None,
 ) -> tuple[str, str, Optional[dict], Optional[str]]:
     """``(accelerator, repo, release, asset)``. An auto-detected GPU the published bundles do not
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
     an explicit request is never downgraded."""
     accel = detected if requested == "auto" and detected else requested
-    repo, release, chosen = resolve(accel, token)
+    repo, release, chosen = resolve(accel, token, tag)
     if requested == "auto" and accel == "cuda" and chosen:
         major = _cuda_major(chosen)
         if not _linux_cuda_runtime_available(major):
@@ -506,47 +621,12 @@ def resolve_for_request(
                 flush = True,
             )
             accel = "cpu"
-            repo, release, chosen = resolve(accel, token)
+            repo, release, chosen = resolve(accel, token, tag)
     if (release is None or not chosen) and requested == "auto" and accel != "cpu":
         print(f"audio.cpp: no {accel} bundle for this host; installing the CPU build", flush = True)
         accel = "cpu"
-        repo, release, chosen = resolve(accel, token)
+        repo, release, chosen = resolve(accel, token, tag)
     return accel, repo, release, chosen
-
-
-def write_pins(path: Optional[Path] = None, token: Optional[str] = None) -> Path:
-    """Regenerate the digest pins from GitHub for the default fork tag and its upstream fallback.
-    Only runtime archives are pinned: host bundles (``-bin-``) and Windows CUDA runtimes (``-cudart-``)."""
-    releases: dict = {}
-    for repo, tag in ((DEFAULT_REPO, DEFAULT_TAG), (UPSTREAM_FALLBACK_REPO, UPSTREAM_FALLBACK_TAG)):
-        release = _fetch_release(repo, tag, token)
-        if not release:
-            raise RuntimeError(f"{repo} has no release {tag}")
-        digests = {}
-        for asset in release.get("assets") or []:
-            name = asset.get("name") or ""
-            if "-bin-" not in name and "-cudart-" not in name:
-                continue
-            digest = core.normalize_sha256_digest(asset.get("digest"))
-            if not digest:
-                raise RuntimeError(f"{repo} {tag} publishes no sha256 digest for {name}")
-            digests[name] = digest
-        if not digests:
-            raise RuntimeError(f"{repo} {tag} has no audio.cpp runtime assets")
-        releases.setdefault(repo, {})[tag] = dict(sorted(digests.items()))
-    payload = {
-        "schema_version": 1,
-        "comment": (
-            "Trust anchor for install_audio_cpp_prebuilt.py: sha256 of each audio.cpp runtime archive, "
-            "copied from the GitHub release asset digests. Generated; do not edit by hand. To bump: change "
-            "DEFAULT_TAG / UPSTREAM_FALLBACK_TAG, then run `python studio/install_audio_cpp_prebuilt.py "
-            "--write-pins` (the same digests `gh release view <tag> -R <repo> --json assets` lists)."
-        ),
-        "releases": releases,
-    }
-    target = path or PINS_PATH
-    target.write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8", newline = "\n")
-    return target
 
 
 def _download(url: str, dest: Path) -> None:
@@ -690,28 +770,13 @@ def _intact_install(target: Path, record: dict) -> Optional[Path]:
     return server if _cuda_runtime_satisfied(record) else None
 
 
-def _pinned_install_matches(
-    target: Path, record: dict, requested: str, detected: Optional[str]
-) -> Optional[Path]:
-    """Answer "already matches" with no network call: the record names a (repo, tag) this run would
-    look up, its archive digest is the pinned one, it was installed for the same accelerator request
-    (and, for auto, the same detected host), and the server on disk is the one it installed."""
-    ladder = _release_ladder()
-    if not record or any(tag is None for _, tag in ladder):
-        return None
-    repo, tag = record.get("published_repo"), record.get("release_tag")
-    # Only the first rung: a fallback install (the fork lookup failed that run) must ask again.
-    if (repo, tag) != ladder[0]:
-        return None
-    pin = pinned_sha256(repo, tag, str(record.get("asset") or ""))
-    if pin is None and not _user_picked_release():
-        return None
-    if pin is not None and pin != record.get("asset_sha256"):
-        return None
+def _record_fits_request(record: dict, requested: str, detected: Optional[str]) -> bool:
+    """The record was installed for the same accelerator request (and, for auto, the same detected
+    host), and is not a CPU fallback that torch's CUDA runtime, here now, would replace."""
     if record.get("accelerator_request") != requested:
-        return None
+        return False
     if requested == "auto" and record.get("detected_accelerator") != detected:
-        return None
+        return False
     if (
         requested == "auto"
         and detected == "cuda"
@@ -719,6 +784,29 @@ def _pinned_install_matches(
         and _linux_cuda_runtime_available(torch_cuda_major())
     ):
         # Installed as the CPU fallback; torch's CUDA runtime is here now, so look up the GPU build.
+        return False
+    return True
+
+
+def _current_install_matches(
+    target: Path,
+    record: dict,
+    requested: str,
+    detected: Optional[str],
+    latest_tag: Optional[str],
+    *,
+    pinned: bool = False,
+) -> Optional[Path]:
+    """Answer "already matches" before any release lookup: the record names this repo and
+    ``latest_tag`` (the pin, or the newest release ``/releases/latest`` names), or, unpinned, a
+    release newer than it; it fits this accelerator request; and the server on disk is the one it
+    installed. ``latest_tag`` None (that HEAD failed) never matches."""
+    if not record or not latest_tag or record.get("published_repo") != _repo():
+        return None
+    tag = record.get("release_tag")
+    if not (tag == latest_tag if pinned else _record_is_current(tag, latest_tag)):
+        return None
+    if not _record_fits_request(record, requested, detected):
         return None
     return _intact_install(target, record)
 
@@ -897,9 +985,11 @@ def install(
     accelerator: str = "auto",
     token: Optional[str] = None,
     force: bool = False,
+    release_tag: Optional[str] = None,
 ) -> Path:
     """Install (or keep) the bundle for ``accelerator``; ``"auto"`` detects the host here, so the
-    CPU fallback for an uncovered GPU applies. Serialised on prebuilt_core's install lock."""
+    CPU fallback for an uncovered GPU applies. ``release_tag`` installs exactly that release (the
+    in-app update passes the one it offered). Serialised on prebuilt_core's install lock."""
     if accelerator not in ACCELERATORS:
         raise RuntimeError(
             f"unknown accelerator {accelerator!r}; expected one of {', '.join(ACCELERATORS)}"
@@ -916,11 +1006,13 @@ def install(
             )
     with core.install_lock(core.install_lock_path(target)):
         try:
-            return _install_locked(target, accelerator, token, force)
+            return _install_locked(target, accelerator, token, force, release_tag = release_tag)
         except NoVulkanDevice as exc:
             # Forced so the record keeps detected "vulkan": later runs keep this CPU build without a lookup.
             print(f"audio.cpp: {exc}; installing the CPU build", flush = True)
-            return _install_locked(target, accelerator, token, True, vulkan_unusable = True)
+            return _install_locked(
+                target, accelerator, token, True, vulkan_unusable = True, release_tag = release_tag
+            )
 
 
 def _install_locked(
@@ -929,25 +1021,26 @@ def _install_locked(
     token: Optional[str],
     force: bool,
     vulkan_unusable: bool = False,
+    release_tag: Optional[str] = None,
 ) -> Path:
     _sweep_retired_trees(target)
     detected = detect_accelerator() if requested == "auto" else None
     existing = read_install_record(target)
+    release_tag = (release_tag or "").strip() or None
+    pin = release_tag or _pinned_tag()
     if not force:
-        server = _pinned_install_matches(target, existing, requested, detected)
+        # Pinned: no network. Newest: one HEAD, reused as the tag a full install then looks up.
+        latest = pin or _latest_tag_via_download_host(_repo())
+        server = _current_install_matches(
+            target, existing, requested, detected, latest, pinned = pin is not None
+        )
         if server is not None:
             print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
             return server
-    old_glibc = _glibc_below_pinned_floor()
-    if old_glibc:
-        raise RuntimeError(
-            f"audio.cpp prebuilt bundles need glibc {'.'.join(map(str, _PINNED_LINUX_GLIBC_FLOOR))}+; "
-            f"this host has {old_glibc}. Set UNSLOTH_AUDIO_CPP_PATH to a local build instead."
-        )
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         accel, repo, release, chosen = resolve_for_request(
-            requested, "cpu" if vulkan_unusable else detected, token
+            requested, "cpu" if vulkan_unusable else detected, token, release_tag
         )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
@@ -971,7 +1064,7 @@ def _install_locked(
     assets = {a["name"]: a for a in release.get("assets") or []}
     asset = assets[chosen]
     tag = release.get("tag_name")
-    expected = _expected_sha256(repo, tag, asset)
+    expected = _expected_sha256(release, asset)
     if (
         not force
         and expected
@@ -981,14 +1074,32 @@ def _install_locked(
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
         return _intact_install(target, existing)
+    if (
+        not force
+        and pin is None
+        and existing.get("published_repo") == repo
+        and existing.get("release_tag") != tag
+        and _record_is_current(existing.get("release_tag"), tag)
+        and _record_fits_request(existing, requested, detected)
+        and _intact_install(target, existing) is not None
+    ):
+        # The lookup named an older release than the one installed: never downgrade to it.
+        print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
+        return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
     cuda_match = _CUDA_LINE.search(chosen)
     cuda_major = int(cuda_match.group(1)) if cuda_match else None
     torch_runtime = bool(cudart and cuda_major and torch_provides_cuda_runtime(cuda_major))
     cudart_expected = (
-        _expected_sha256(repo, tag, assets[cudart]) if cudart and not torch_runtime else None
+        _expected_sha256(release, assets[cudart]) if cudart and not torch_runtime else None
     )
+    old_glibc = _glibc_below(asset.get("min_os"))
+    if old_glibc:
+        raise RuntimeError(
+            f"audio.cpp prebuilt bundles need {asset['min_os'].strip().replace('-', ' ', 1)}+; "
+            f"this host has {old_glibc}. Set UNSLOTH_AUDIO_CPP_PATH to a local build instead."
+        )
 
     if target.exists() and _server_in_use(_locate_server(target)):
         # Checked again before the swap; here it saves the download.
@@ -1088,25 +1199,26 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--force", action = "store_true", help = "reinstall even when the bundle matches")
     p.add_argument("--print-asset", action = "store_true", help = "resolve and print the asset only")
     p.add_argument(
-        "--write-pins",
-        action = "store_true",
-        help = f"regenerate {PINS_PATH.name} from the pinned GitHub releases",
+        "--published-release-tag",
+        default = None,
+        help = "install exactly this release of the repo (default: UNSLOTH_AUDIO_CPP_TAG, else the newest)",
     )
     args = p.parse_args(argv)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    release_tag = (args.published_release_tag or "").strip() or None
     try:
-        if args.write_pins:
-            print(f"audio.cpp: wrote {write_pins(token = token)}")
-            return EXIT_OK
         if args.print_asset:
             detected = detect_accelerator() if args.accelerator == "auto" else None
-            _, repo, release, chosen = resolve_for_request(args.accelerator, detected, token)
+            _, repo, release, chosen = resolve_for_request(
+                args.accelerator, detected, token, release_tag
+            )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED
         install(
             install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
             accelerator = args.accelerator,
             force = args.force,
+            release_tag = release_tag,
         )
     except GitHubRateLimited as exc:
         print(f"error: {exc}", file = sys.stderr)

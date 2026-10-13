@@ -5,12 +5,14 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 
 from core.inference import audio_cpp_server
 from routes import inference
-from utils import audio_cpp_update
+from utils import audio_cpp_freshness, audio_cpp_update
+from utils.prebuilt import freshness_flow
 
 
 def _patch(
@@ -86,7 +88,8 @@ def test_malformed_record_fields_are_dropped(monkeypatch):
     assert status["backend"] is None and status["release_tag"] is None
 
 
-_LADDER = [("unslothai/audio.cpp", "v0.9.0-unsloth.1"), ("0xShug0/audio.cpp", "v0.9.0")]
+_REPO = "unslothai/audio.cpp"
+_LATEST = "v0.9.1-unsloth.1"
 # setup.sh / setup.ps1 leave the managed tree alone when any of these is set.
 _SETUP_SKIPS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH", "UNSLOTH_SKIP_AUDIO_CPP_INSTALL")
 
@@ -95,67 +98,147 @@ def _managed(
     monkeypatch,
     tmp_path,
     record,
-    ladder = _LADDER,
+    *,
+    pin = None,
+    cached = _LATEST,
 ):
-    """a Studio-managed install of ``record`` and the releases setup would install."""
-    for name in _SETUP_SKIPS:
+    """an Unsloth Studio-managed install of ``record``, the configured target, and the newest release already cached."""
+    for name in (*_SETUP_SKIPS, "UNSLOTH_DISABLE_UPDATE_CHECK"):
         monkeypatch.delenv(name, raising = False)
     tmp_path.mkdir(parents = True, exist_ok = True)
     (tmp_path / ".unsloth-studio-owned").touch()
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tmp_path)
-    monkeypatch.setattr(audio_cpp_update, "_release_ladder", lambda: ladder)
+    monkeypatch.setattr(audio_cpp_update, "_target", lambda: (_REPO, pin))
+    monkeypatch.setattr(audio_cpp_freshness, "_cache_dir", lambda: tmp_path / ".freshness")
+    audio_cpp_freshness.reset_caches()
+    if cached is not None:
+        audio_cpp_freshness._release_memo[_REPO] = (time.time(), cached)
 
 
-def test_managed_install_of_the_pinned_release_is_current(monkeypatch, tmp_path):
-    _managed(
-        monkeypatch,
-        tmp_path,
-        {"published_repo": "unslothai/audio.cpp", "release_tag": "v0.9.0-unsloth.1"},
-    )
+@pytest.fixture(autouse = True)
+def _forget_the_release_cache():
+    yield
+    audio_cpp_freshness.reset_caches()
+
+
+def test_managed_install_of_the_newest_release_is_current(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path, {"published_repo": _REPO, "release_tag": _LATEST})
     status = inference._audio_cpp_runtime_status()
-    assert status["expected_tag"] == "v0.9.0-unsloth.1"
+    assert status["expected_tag"] == _LATEST
     assert status["outdated"] is False
 
 
-def test_managed_fallback_install_is_current(monkeypatch, tmp_path):
-    # setup falls back to the upstream release when the fork cannot serve the host.
+def test_managed_install_newer_than_the_cached_latest_is_current(monkeypatch, tmp_path):
+    # A stale cache can only under-report: the older "latest" is never offered as a downgrade.
     _managed(
-        monkeypatch, tmp_path, {"published_repo": "0xShug0/audio.cpp", "release_tag": "v0.9.0"}
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": _LATEST},
+        cached = "v0.9.0-unsloth.1",
     )
     assert inference._audio_cpp_runtime_status()["outdated"] is False
 
 
-def test_managed_install_of_an_old_release_is_outdated(monkeypatch, tmp_path):
-    # setup keeps the old tree when the release lookup fails after a pin bump.
+def test_managed_upstream_install_is_outdated(monkeypatch, tmp_path):
+    # The removed 0xShug0 fallback rung could leave such a record; an update installs the fork's newest.
     _managed(
-        monkeypatch,
-        tmp_path,
-        {"published_repo": "unslothai/audio.cpp", "release_tag": "v0.8.0-unsloth.1"},
+        monkeypatch, tmp_path, {"published_repo": "0xShug0/audio.cpp", "release_tag": "v0.9.0"}
     )
     status = inference._audio_cpp_runtime_status()
-    assert status["release_tag"] == "v0.8.0-unsloth.1"
-    assert status["expected_tag"] == "v0.9.0-unsloth.1"
+    assert status["expected_tag"] == _LATEST
     assert status["outdated"] is True
 
 
-def test_same_tag_from_another_repo_is_outdated(monkeypatch, tmp_path):
-    _managed(
-        monkeypatch, tmp_path, {"published_repo": "someone/audio.cpp", "release_tag": "v0.9.0"}
-    )
-    assert inference._audio_cpp_runtime_status()["outdated"] is True
-
-
-def test_latest_tracking_ladder_cannot_tell(monkeypatch, tmp_path):
-    # UNSLOTH_AUDIO_CPP_TAG='' tracks the latest release, which no record can be checked against.
+def test_managed_install_of_an_old_release_is_outdated(monkeypatch, tmp_path):
     _managed(
         monkeypatch,
         tmp_path,
-        {"published_repo": "unslothai/audio.cpp", "release_tag": "v0.8.0"},
-        ladder = [("unslothai/audio.cpp", None)],
+        {"published_repo": _REPO, "release_tag": "v0.9.0-unsloth.1"},
+    )
+    status = inference._audio_cpp_runtime_status()
+    assert status["release_tag"] == "v0.9.0-unsloth.1"
+    assert status["expected_tag"] == _LATEST
+    assert status["outdated"] is True
+
+
+def test_nothing_cached_cannot_tell(monkeypatch, tmp_path):
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": "v0.8.0-unsloth.1"},
+        cached = None,
     )
     status = inference._audio_cpp_runtime_status()
     assert status["expected_tag"] is None and status["outdated"] is False
+
+
+def test_the_disk_cache_answers_whatever_its_age(monkeypatch, tmp_path):
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": "v0.9.0-unsloth.1"},
+        cached = None,
+    )
+    cache = freshness_flow.cache_path_for(_REPO, tmp_path / ".freshness")
+    cache.parent.mkdir(parents = True)
+    cache.write_text(json.dumps({"fetched_at": 1.0, "latest_tag": _LATEST}))
+    status = inference._audio_cpp_runtime_status()
+    assert status["expected_tag"] == _LATEST and status["outdated"] is True
+
+
+@pytest.mark.parametrize("cached", [_LATEST, None])
+def test_the_runtime_status_never_touches_the_network(monkeypatch, tmp_path, cached):
+    # /audio/stt/status calls this inside an async handler.
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": "v0.9.0-unsloth.1"},
+        cached = cached,
+    )
+    calls: list = []
+
+    def fetch(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("network fetch")
+
+    monkeypatch.setattr(freshness_flow, "_fetch_newest_published_release", fetch)
+    status = inference._audio_cpp_runtime_status()
+    assert status["outdated"] is (cached is not None)
+    assert calls == []
+
+
+def test_disabled_update_checks_are_not_outdated(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path, {"published_repo": _REPO, "release_tag": "v0.9.0-unsloth.1"})
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    status = inference._audio_cpp_runtime_status()
+    assert status["expected_tag"] is None and status["outdated"] is False
+
+
+def test_a_pinned_release_is_expected_without_a_lookup(monkeypatch, tmp_path):
+    # UNSLOTH_AUDIO_CPP_TAG names the release setup installs, newer or older.
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": _LATEST},
+        pin = "v0.9.0-unsloth.1",
+        cached = None,
+    )
+    status = inference._audio_cpp_runtime_status()
+    assert status["expected_tag"] == "v0.9.0-unsloth.1" and status["outdated"] is True
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": _REPO, "release_tag": "v0.9.0-unsloth.1"},
+        pin = "v0.9.0-unsloth.1",
+        cached = None,
+    )
+    assert inference._audio_cpp_runtime_status()["outdated"] is False
+
+
+def test_same_tag_from_another_repo_is_outdated(monkeypatch, tmp_path):
+    _managed(monkeypatch, tmp_path, {"published_repo": "someone/audio.cpp", "release_tag": _LATEST})
+    assert inference._audio_cpp_runtime_status()["outdated"] is True
 
 
 def test_managed_install_without_a_tag_is_not_flagged(monkeypatch, tmp_path):
@@ -222,19 +305,9 @@ def test_release_lookup_error_is_not_outdated(monkeypatch, tmp_path):
     def boom():
         raise ImportError("installer missing")
 
-    monkeypatch.setattr(audio_cpp_update, "_release_ladder", boom)
+    monkeypatch.setattr(audio_cpp_update, "_target", boom)
     status = inference._audio_cpp_runtime_status()
     assert status["available"] is True and status["outdated"] is False
-
-
-def test_release_ladder_comes_from_the_installer(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_REPO", raising = False)
-    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_TAG", raising = False)
-    import install_audio_cpp_prebuilt as installer
-
-    ladder = audio_cpp_update._release_ladder()
-    assert ladder[0] == (installer.DEFAULT_REPO, installer.DEFAULT_TAG)
-    assert (installer.UPSTREAM_FALLBACK_REPO, installer.UPSTREAM_FALLBACK_TAG) in ladder
 
 
 def test_stt_status_payload_includes_runtime_block(monkeypatch):

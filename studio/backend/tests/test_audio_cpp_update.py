@@ -14,11 +14,19 @@ import pytest
 
 from core.inference import audio_cpp_server, model_slots
 from core.inference.audio_cpp_models import AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_TTS_AUDIO_TYPE
+from utils import audio_cpp_freshness
 from utils import audio_cpp_update as aupd
 from utils.prebuilt import update_flow
 
-# A Studio pinned one release past the installed one, so the tests do not depend on the real pin.
-_LADDER = [("unslothai/audio.cpp", "v0.9.1-unsloth.1"), ("0xShug0/audio.cpp", "v0.9.1")]
+_REPO = "unslothai/audio.cpp"
+_LATEST = "v0.9.1-unsloth.1"
+# The newest release's assets: the bundle the recorded one renames to, another host's, and a Windows CUDA pair.
+_ASSETS = {
+    f"audio-{_LATEST}-bin-ubuntu-x64-cpu-portable.tar.gz": 56_000_000,
+    f"audio-{_LATEST}-bin-ubuntu-x64-vulkan.tar.gz": 70_000_000,
+    f"audio-{_LATEST}-bin-windows-x64-cuda12.8.zip": 400_000_000,
+    f"audio-{_LATEST}-cudart-windows-x64-cuda12.8.zip": 300_000_000,
+}
 _real_unload = aupd._unload_audio_cpp_models
 _SETUP_SKIPS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH", "UNSLOTH_SKIP_AUDIO_CPP_INSTALL")
 
@@ -27,6 +35,7 @@ def _write_record(tree, **fields):
     record = {
         "published_repo": "unslothai/audio.cpp",
         "release_tag": "v0.9.0-unsloth.1",
+        "asset": "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-cpu-portable.tar.gz",
         "accelerator": "cpu",
         "accelerator_request": "cpu",
         **fields,
@@ -36,7 +45,7 @@ def _write_record(tree, **fields):
 
 @pytest.fixture
 def managed(monkeypatch, tmp_path):
-    """A Studio-managed install of v0.9.0-unsloth.1 under a Studio that pins v0.9.1-unsloth.1."""
+    """An Unsloth Studio-managed install of v0.9.0-unsloth.1 whose repo's newest release is v0.9.1-unsloth.1."""
     for name in (*_SETUP_SKIPS, "UNSLOTH_DISABLE_UPDATE_CHECK"):
         monkeypatch.delenv(name, raising = False)
     tree = tmp_path / "audio.cpp"
@@ -47,31 +56,80 @@ def managed(monkeypatch, tmp_path):
     _write_record(tree)
     script = tmp_path / "install_audio_cpp_prebuilt.py"
     script.write_text("stub")
+    lookups: list = []
+    state = SimpleNamespace(latest = _LATEST, assets = dict(_ASSETS))
+
+    def latest(repo, *, force_refresh = False):
+        lookups.append(("latest", repo, force_refresh))
+        return state.latest
+
+    def assets(repo, *, force_refresh = False):
+        lookups.append(("assets", repo, force_refresh))
+        return state.assets
+
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tree)
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: str(binary))
-    monkeypatch.setattr(aupd, "_release_ladder", lambda: list(_LADDER))
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, None))
     monkeypatch.setattr(aupd, "_installer_script", lambda: script)
-    return SimpleNamespace(tree = tree, binary = binary, script = script)
+    monkeypatch.setattr(audio_cpp_freshness, "latest_published_release", latest)
+    monkeypatch.setattr(audio_cpp_freshness, "latest_release_assets", assets)
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "x86_64")
+    return SimpleNamespace(tree = tree, binary = binary, script = script, lookups = lookups, state = state)
 
 
 # --- plan ---
 
 
-def test_an_old_managed_runtime_is_offered_the_pinned_release(managed):
+def test_an_old_managed_runtime_is_offered_the_newest_release(managed):
     plan = aupd.chained_phase_plan()
     assert plan["update_available"] is True and plan["skip_reason"] is None
     assert plan["status"] == {
         "installed_tag": "v0.9.0-unsloth.1",
-        "latest_tag": "v0.9.1-unsloth.1",
-        "update_size_bytes": None,
+        "latest_tag": _LATEST,
+        "update_size_bytes": 56_000_000,
     }
     assert plan["phase"] == {
         "install_dir": managed.tree,
         "script": managed.script,
         "accelerator": "cpu",
         "from_tag": "v0.9.0-unsloth.1",
-        "to_tag": "v0.9.1-unsloth.1",
+        "to_tag": _LATEST,
+        "pin_release_tag": _LATEST,
+        "repo": _REPO,
     }
+    assert ("latest", _REPO, False) in managed.lookups
+
+
+def test_the_size_falls_back_to_the_installers_pick(managed):
+    # An asset name that does not carry the installed tag still sizes the host's bundle.
+    _write_record(
+        managed.tree, asset = "renamed.tar.gz", accelerator = "vulkan", accelerator_request = "auto"
+    )
+    assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 70_000_000
+
+
+def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")
+    _write_record(
+        managed.tree,
+        asset = "audio-v0.9.0-unsloth.1-bin-windows-x64-cuda12.8.zip",
+        cudart_asset = "audio-v0.9.0-unsloth.1-cudart-windows-x64-cuda12.8.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 700_000_000
+    del managed.state.assets[f"audio-{_LATEST}-cudart-windows-x64-cuda12.8.zip"]
+    plan = aupd.chained_phase_plan()
+    assert plan["status"]["update_size_bytes"] is None and plan["update_available"] is True
+
+
+def test_unknown_assets_size_nothing_but_still_offer(managed):
+    managed.state.assets = None
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is True
+    assert plan["status"]["update_size_bytes"] is None
 
 
 def test_an_automatic_install_keeps_detecting_the_host(managed):
@@ -84,6 +142,7 @@ def test_a_runtime_setup_skips_is_unmanaged(managed, monkeypatch, name):
     monkeypatch.setenv(name, "1" if name == "UNSLOTH_SKIP_AUDIO_CPP_INSTALL" else "/elsewhere")
     plan = aupd.chained_phase_plan()
     assert plan["update_available"] is False and plan["skip_reason"] == "unmanaged"
+    assert managed.lookups == []
 
 
 def test_a_tree_without_the_ownership_marker_is_unmanaged(managed):
@@ -105,34 +164,87 @@ def test_no_runtime_is_not_installed(managed, monkeypatch):
     assert plan["skip_reason"] == "not_installed" and plan["status"] is None
 
 
-@pytest.mark.parametrize("repo, tag", _LADDER)
-def test_either_rung_is_up_to_date(managed, repo, tag):
-    _write_record(managed.tree, published_repo = repo, release_tag = tag)
+@pytest.mark.parametrize("tag", [_LATEST, "v0.9.2-unsloth.1", "v1.0.0"])
+def test_the_newest_or_a_newer_release_is_up_to_date(managed, tag):
+    _write_record(managed.tree, release_tag = tag)
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is False and plan["skip_reason"] == "up_to_date"
+    assert plan["status"]["latest_tag"] == _LATEST
+
+
+def test_a_hotfix_published_last_is_not_offered_as_a_downgrade(managed):
+    _write_record(managed.tree, release_tag = _LATEST)
+    managed.state.latest = "v0.8.2-audio8-perf-hotfix-unsloth.1"
     plan = aupd.chained_phase_plan()
     assert plan["update_available"] is False and plan["skip_reason"] == "up_to_date"
 
 
-def test_a_latest_tracking_ladder_cannot_compare(managed, monkeypatch):
-    monkeypatch.setattr(aupd, "_release_ladder", lambda: [("unslothai/audio.cpp", None)])
-    assert aupd.chained_phase_plan()["skip_reason"] == "tracks_latest"
+def test_an_unknown_latest_offers_nothing(managed):
+    managed.state.latest = None
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is False and plan["skip_reason"] == "up_to_date"
+    assert plan["phase"] is None
 
 
-def test_disabled_update_checks_skip_the_offer(managed, monkeypatch):
+def test_a_record_without_a_tag_is_up_to_date(managed):
+    _write_record(managed.tree, release_tag = None)
+    assert aupd.chained_phase_plan()["skip_reason"] == "up_to_date"
+
+
+def test_an_upstream_install_is_offered_the_forks_newest(managed):
+    # The removed 0xShug0 fallback rung could leave such a record; the configured repo replaces it.
+    _write_record(
+        managed.tree,
+        published_repo = "0xShug0/audio.cpp",
+        release_tag = "v0.9.1",
+        asset = "audio-v0.9.1-bin-ubuntu-x64-cpu-portable.tar.gz",
+    )
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is True
+    assert plan["phase"]["pin_release_tag"] == _LATEST
+    assert plan["phase"]["repo"] == _REPO
+    assert plan["status"]["update_size_bytes"] == 56_000_000
+
+
+def test_an_upstream_install_is_left_alone_while_latest_is_unknown(managed):
+    _write_record(managed.tree, published_repo = "0xShug0/audio.cpp", release_tag = "v0.9.0")
+    managed.state.latest = None
+    assert aupd.chained_phase_plan()["skip_reason"] == "up_to_date"
+
+
+def test_force_refresh_reaches_the_release_lookup(managed):
+    aupd.chained_phase_plan(force_refresh = True)
+    assert ("latest", _REPO, True) in managed.lookups
+    assert ("assets", _REPO, True) in managed.lookups
+
+
+def test_a_pinned_tag_is_compared_with_no_lookup(managed, monkeypatch):
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, "v0.9.0-unsloth.1"))
+    plan = aupd.chained_phase_plan()
+    assert plan["skip_reason"] == "up_to_date"
+    assert plan["status"]["latest_tag"] == "v0.9.0-unsloth.1"
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, "v0.8.0-unsloth.1"))
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is True
+    assert plan["phase"]["pin_release_tag"] == "v0.8.0-unsloth.1"
+    assert plan["status"]["update_size_bytes"] is None
+    assert managed.lookups == []
+
+
+def test_disabled_update_checks_skip_the_offer_without_a_lookup(managed, monkeypatch):
     # Without this skip the union would show a card that start_update refuses.
     monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
     assert aupd.chained_phase_plan()["skip_reason"] == "update_checks_disabled"
+    assert managed.lookups == []
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, "v0.8.0-unsloth.1"))
+    assert aupd.chained_phase_plan()["skip_reason"] == "update_checks_disabled"
+    assert managed.lookups == []
 
 
-def test_a_host_no_pinned_bundle_covers_has_no_prebuilt(managed, monkeypatch):
-    installer = aupd._installer()
-    pins = {
-        repo: {tag: {f"audio-{tag}-bin-windows-x64-cpu.zip": "0" * 64}} for repo, tag in _LADDER
-    }
-    monkeypatch.setattr(installer, "load_pins", lambda path = None: pins)
-    monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(aupd.platform, "machine", lambda: "x86_64")
+def test_a_host_the_newest_release_does_not_cover_has_no_prebuilt(managed, monkeypatch):
+    managed.state.assets = {f"audio-{_LATEST}-bin-windows-x64-cpu.zip": 1}
     assert aupd.chained_phase_plan()["skip_reason"] == "no_prebuilt"
-    # The same pins cover a Windows host.
+    # The same release covers a Windows host.
     monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
     assert aupd.chained_phase_plan()["update_available"] is True
 
@@ -142,12 +254,7 @@ def test_an_explicit_accelerator_is_not_offered_the_cpu_bundle(
     managed, monkeypatch, request_, offered
 ):
     # The installer never downgrades an explicit request, so a CPU-only release cannot satisfy it.
-    installer = aupd._installer()
-    pins = {
-        repo: {tag: {f"audio-{tag}-bin-ubuntu-arm64-cpu.tar.gz": "0" * 64}} for repo, tag in _LADDER
-    }
-    monkeypatch.setattr(installer, "load_pins", lambda path = None: pins)
-    monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
+    managed.state.assets = {f"audio-{_LATEST}-bin-ubuntu-arm64-cpu.tar.gz": 1}
     monkeypatch.setattr(aupd.platform, "machine", lambda: "aarch64")
     _write_record(managed.tree, accelerator = "vulkan", accelerator_request = request_)
     plan = aupd.chained_phase_plan()
@@ -164,16 +271,27 @@ def test_a_probe_that_raises_is_a_skip(managed, monkeypatch):
     def boom():
         raise OSError("unreadable")
 
-    monkeypatch.setattr(aupd, "_release_ladder", boom)
-    plan = aupd.chained_phase_plan()
+    monkeypatch.setattr(aupd, "_target", boom)
+    plan = aupd.chained_phase_plan(force_refresh = True)
     assert plan["update_available"] is False and plan["skip_reason"] == "unavailable"
 
 
-def test_the_pinned_ladder_comes_from_the_installer(monkeypatch):
+@pytest.mark.parametrize(
+    "env, target",
+    [
+        ({}, (_REPO, None)),
+        ({"UNSLOTH_AUDIO_CPP_TAG": ""}, (_REPO, None)),
+        ({"UNSLOTH_AUDIO_CPP_TAG": "Latest"}, (_REPO, None)),
+        ({"UNSLOTH_AUDIO_CPP_TAG": "v0.9.0-unsloth.1"}, (_REPO, "v0.9.0-unsloth.1")),
+        ({"UNSLOTH_AUDIO_CPP_REPO": "someone/audio.cpp"}, ("someone/audio.cpp", None)),
+    ],
+)
+def test_the_target_comes_from_the_installer_env(monkeypatch, env, target):
     monkeypatch.delenv("UNSLOTH_AUDIO_CPP_REPO", raising = False)
     monkeypatch.delenv("UNSLOTH_AUDIO_CPP_TAG", raising = False)
-    installer = aupd._installer()
-    assert aupd._release_ladder()[0] == (installer.DEFAULT_REPO, installer.DEFAULT_TAG)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert aupd._target() == target
 
 
 # --- run ---
@@ -239,8 +357,47 @@ def test_the_installer_gets_the_managed_dir_and_recorded_accelerator(run_env, ma
         str(managed.tree),
         "--accelerator",
         "cpu",
+        "--published-release-tag",
+        _LATEST,
     ]
     assert run_env.calls["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
+
+
+@pytest.mark.parametrize("kept", [False, True])
+def test_the_release_cache_is_refreshed_after_the_install(run_env, managed, monkeypatch, kept):
+    events = run_env.events
+    monkeypatch.setattr(
+        audio_cpp_freshness,
+        "reset_caches",
+        lambda *, drop_disk = False: events.append(("reset", drop_disk)),
+    )
+    if kept:
+        run_env.installer(new_tag = "v0.9.0-unsloth.1")
+    managed.lookups.clear()
+    aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert events[events.index("install") + 1] == ("reset", True)
+    assert managed.lookups == [("latest", _REPO, True)]
+
+
+def test_a_failed_release_refresh_does_not_fail_the_install(run_env, monkeypatch):
+    def offline(repo, *, force_refresh = False):
+        raise OSError("offline")
+
+    monkeypatch.setattr(audio_cpp_freshness, "latest_published_release", offline)
+    result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert result["to_tag"] == _LATEST
+
+
+def test_the_install_drops_the_on_disk_release_cache(run_env, managed, monkeypatch, tmp_path):
+    cache = tmp_path / "audio_cpp_freshness"
+    monkeypatch.setattr(audio_cpp_freshness, "_cache_dir", lambda: cache)
+    cache.mkdir()
+    (cache / "unslothai__audio.cpp.json").write_text(
+        json.dumps({"fetched_at": 1.0, "latest_tag": "v0.9.0-unsloth.1"})
+    )
+    aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert not cache.exists()
+    assert audio_cpp_freshness.cached_latest_release(_REPO) is None
 
 
 def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):

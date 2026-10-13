@@ -57,7 +57,7 @@ export interface LlamaUpdateStatus {
   // and the card lists every one the notification settings allow.
   llama: ComponentOffer;
   whisper: ComponentOffer | null;
-  // The release this Studio pins, when the managed audio.cpp runtime is another one.
+  // The newest audio.cpp release, when the managed runtime is behind it.
   audio: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;

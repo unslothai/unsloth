@@ -10,7 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { audioRuntimeNoticeMode } from "../audio-page-policy";
 
-/** The managed audio runtime is not the release this Studio pins. The owner updates it in place
+/** The managed audio runtime is behind the newest audio.cpp release. The owner updates it in place
  *  through the shared update job, which also installs any pending llama.cpp or whisper.cpp update;
  *  the app-wide update card follows that job and resyncs the loaded model. */
 export function AudioRuntimeUpdateNotice({
@@ -75,8 +75,9 @@ export function AudioRuntimeUpdateNotice({
       <div className="grid justify-items-start gap-1.5">
         <span>
           Your audio runtime is{" "}
-          <span className="whitespace-nowrap">{update.installed}</span>; Unsloth
-          expects <span className="whitespace-nowrap">{update.expected}</span>.{" "}
+          <span className="whitespace-nowrap">{update.installed}</span>;{" "}
+          <span className="whitespace-nowrap">{update.expected}</span> is
+          available.{" "}
           {mode === "ask_owner" ? (
             <>
               Some models may not work until it is updated. Ask the Unsloth
