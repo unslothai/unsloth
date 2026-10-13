@@ -57,7 +57,9 @@ _RUNNER = textwrap.dedent(
         for p in params:
             p.grad = torch.randn(p.shape, device = "cuda", generator = g)
         before = syncs[0]
-        with torch.cuda.stream(stream):
+        # Step 0 allocates optimizer state; stock bnb orders that against its kernels by stream, not sync, so
+        # creating it on a side stream races in stock too. Later steps are the ones under test.
+        with torch.cuda.stream(stream if i else torch.cuda.default_stream()):
             stream.wait_stream(torch.cuda.default_stream())
             opt.step()
         torch.cuda.default_stream().wait_stream(stream)
@@ -119,7 +121,8 @@ def test_step_on_a_side_stream_keeps_every_sync():
     patched = _run("patched", "AdamW8bit", "stream")
     if not patched["wrapped"]:
         pytest.skip("this bitsandbytes inlines torch.cuda.synchronize; the patch leaves it alone")
-    assert patched["syncs"] == stock["syncs"] and min(stock["syncs"]) >= 4
+    # Step 0 runs on the default stream (see the runner), so only the side-stream steps must keep every sync.
+    assert patched["syncs"][1:] == stock["syncs"][1:] and min(stock["syncs"][1:]) >= 4
     assert patched["params"] == stock["params"]
 
 
