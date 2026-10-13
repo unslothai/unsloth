@@ -9875,17 +9875,6 @@ class VideoBackend:
                         offload_policy = state.offload_policy,
                         device = state.device,
                     )
-                    if residency_fit:
-                        # Resident groups are allocated, so the reserved term below still counts them as available.
-                        video_stream_residency.fit_for_request(
-                            state.pipe,
-                            device = device_obj,
-                            floor_mib = state.vram_floor_mib,
-                            width = width,
-                            height = height,
-                            frames = frames,
-                            logger = logger,
-                        )
                     # Runtime calibration for every family: this request's peak is recorded after export and sizes
                     # the next request of its size (the refusal below, and the Wan residency fit).
                     calibration = video_stream_residency.calibration_key(
@@ -9907,7 +9896,17 @@ class VideoBackend:
                         memory_mode = getattr(state, "memory_mode", None),
                         transformer_quant = getattr(state, "transformer_quant", None),
                         text_encoder_quant = getattr(state, "text_encoder_quant", None),
+                        # and the request mode: the audio length follows the frame rate, a keyframe / reference request
+                        # encodes and conditions on extra latents, and CFG doubles the denoiser batch
+                        fps = out_fps if getattr(fam, "has_audio", False) else None,
+                        conditioning = conditioning,
+                        first_frame = first_pil is not None,
+                        last_frame = last_pil is not None,
+                        references = len(references or ()),
+                        cfg = bool(getattr(fam, "supports_cfg", True)) and float(guidance) > 1.0,
                     )
+                    # Tag the denoiser BEFORE the residency fit: on the first request after a reload the fit reads the
+                    # process-wide peaks through this key.
                     video_stream_residency.arm_request(
                         state.pipe,
                         key = calibration,
@@ -9915,8 +9914,29 @@ class VideoBackend:
                         height = height,
                         frames = frames,
                         device = device_obj,
-                        rearm = not residency_fit,
+                        rearm = False,
                     )
+                    if residency_fit:
+                        # Resident groups are allocated, so the reserved term below still counts them as available.
+                        video_stream_residency.fit_for_request(
+                            state.pipe,
+                            device = device_obj,
+                            floor_mib = state.vram_floor_mib,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            logger = logger,
+                        )
+                    else:
+                        # the fit arms its own measurement; every other family is armed here
+                        video_stream_residency.arm_request(
+                            state.pipe,
+                            key = calibration,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            device = device_obj,
+                        )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
                         torch.cuda.memory_reserved(device_obj)

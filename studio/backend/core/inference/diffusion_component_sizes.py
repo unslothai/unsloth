@@ -67,7 +67,7 @@ def read_safetensors_header(path: Any, *, max_bytes: int = MAX_HEADER_BYTES) -> 
     """``parse_safetensors_header`` of a local file, or None when unreadable. Never raises."""
     try:
         with open(path, "rb") as fh:
-            return parse_safetensors_header(fh.read, max_bytes = max_bytes)
+            return parse_safetensors_header(fh.read, max_bytes=max_bytes)
     except Exception:  # noqa: BLE001 - unreadable / crafted header: no claim about this file
         return None
 
@@ -91,7 +91,7 @@ def entry_nbytes(meta: dict) -> int:
     return int(end) - int(begin)
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ComponentSize:
     """One pipeline component: stored bytes, and the parameter split the cast arithmetic needs."""
 
@@ -100,8 +100,8 @@ class ComponentSize:
     float_params: int
     nonfloat_bytes: int
     # stored bytes per float dtype ("BF16", "F32", ...)
-    bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory = tuple)
-    files: tuple[str, ...] = field(default_factory = tuple)
+    bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory=tuple)
+    files: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def params(self) -> int:
@@ -115,7 +115,7 @@ class ComponentSize:
         return self.resident_bytes(itemsize) / _GB
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ComponentSizes:
     """Per-component sizes of one checkpoint (``source`` = "local" or "hub", ``revision`` when known)."""
 
@@ -129,11 +129,7 @@ class ComponentSizes:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.components))
 
-    def resident_gb(
-        self,
-        names: Iterable[str],
-        itemsize: int = 2,
-    ) -> float:
+    def resident_gb(self, names: Iterable[str], itemsize: int = 2) -> float:
         return (
             sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components)
             / _GB
@@ -170,12 +166,12 @@ def _accumulate(
     if not files or stored <= 0:
         return None
     return ComponentSize(
-        name = name,
-        stored_bytes = stored,
-        float_params = float_params,
-        nonfloat_bytes = nonfloat,
-        bytes_by_dtype = tuple(sorted(by_dtype.items())),
-        files = tuple(files),
+        name=name,
+        stored_bytes=stored,
+        float_params=float_params,
+        nonfloat_bytes=nonfloat,
+        bytes_by_dtype=tuple(sorted(by_dtype.items())),
+        files=tuple(files),
     )
 
 
@@ -198,9 +194,7 @@ def _stem_order(folder: str) -> tuple[str, str]:
 
 
 def select_weight_files(
-    names: Iterable[str],
-    index_files: Optional[Iterable[str]] = None,
-    folder: str = "",
+    names: Iterable[str], index_files: Optional[Iterable[str]] = None, folder: str = ""
 ) -> list[str]:
     """The safetensors files ``from_pretrained`` reads in one component folder (default variant). ``index_files``
     are the shard names an index lists; when given they win (a stray shard of an older layout is not counted)."""
@@ -231,28 +225,31 @@ def _index_shards(text: str) -> Optional[list[str]]:
 
 
 def _pick_files(
-    names: Iterable[str],
-    read_text: Callable[[str], str],
-    folder: str = "",
+    names: Iterable[str], read_text: Callable[[str], str], folder: str = ""
 ) -> list[str]:
-    """Weight files of one folder. An index wins when every shard it lists is present (a folder can carry two
-    indexes, e.g. a transformers ``model`` one and a stale diffusers one: the complete one is what loads)."""
+    """Weight files of one folder. Only the loader's PREFERRED index counts (``model`` first for a transformers
+    folder, ``diffusion_pytorch_model`` first for a diffusers one): a folder can carry a stale second index, and the
+    loader never falls back to it. That index unreadable, or naming a shard that is not here (a partial download),
+    makes the component unknown, never the smaller present subset nor a complete lower-priority index."""
     names = list(names)
-    indexed = False
-    order = _stem_order(folder)
-    indexes = sorted(
-        (n for n in names if _INDEX_RE.match(n)), key = lambda n: order.index(n.split(".", 1)[0])
-    )
-    for idx in indexes:
-        try:
-            shards = _index_shards(read_text(idx))
-        except Exception:  # noqa: BLE001
-            shards = None
-        if shards and all(s in names for s in shards):
-            return select_weight_files(names, shards, folder)
-        indexed = True
-    # an index whose shards are not all here is a partial download: unknown, never the smaller present subset
-    return [] if indexed else select_weight_files(names, folder = folder)
+    for stem in _stem_order(folder):
+        index = f"{stem}.safetensors.index.json"
+        if index in names:
+            try:
+                shards = _index_shards(read_text(index))
+            except Exception:  # noqa: BLE001
+                shards = None
+            if shards and all(s in names for s in shards):
+                return select_weight_files(names, shards, folder)
+            return []
+        if any(
+            _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-")) for n in names
+        ):
+            # this stem's weights without an index: the loader stops here too
+            return select_weight_files(
+                [n for n in names if n.startswith((stem + ".", stem + "-"))], folder=folder
+            )
+    return select_weight_files(names, folder=folder)
 
 
 def local_component_sizes(
@@ -271,14 +268,14 @@ def local_component_sizes(
                 continue
             names = [p.name for p in sub.iterdir() if p.is_file()]
             files = _pick_files(
-                names, lambda n, sub = sub: (sub / n).read_text(encoding = "utf-8"), sub.name
+                names, lambda n, sub=sub: (sub / n).read_text(encoding="utf-8"), sub.name
             )
             if not files:
                 continue
             size = _accumulate(sub.name, ((f, read_safetensors_header(sub / f)) for f in files))
             if size is not None:
                 out[sub.name] = size
-        return ComponentSizes(out, source = "local") if out else None
+        return ComponentSizes(out, source="local") if out else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -287,6 +284,7 @@ def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
     """The newest cached snapshot of ``repo_id`` (None when not cached); no network."""
     try:
         from .diffusion_small_host import resolve_snapshot_dir
+
         return resolve_snapshot_dir(repo_id, cache_dir)
     except Exception:  # noqa: BLE001
         return None
@@ -344,8 +342,8 @@ def _hub_header(
         )
 
         reader = _hub_range_reader(
-            hf_hub_url(repo_id, filename, revision = revision),
-            dict(build_hf_headers(token = token)),
+            hf_hub_url(repo_id, filename, revision=revision),
+            dict(build_hf_headers(token=token)),
             deadline,
         )
         (length,) = struct.unpack("<Q", reader(0, 7))
@@ -358,6 +356,44 @@ def _hub_header(
         return header if isinstance(header, dict) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+MAX_INDEX_BYTES = 64 * 1024 * 1024
+
+
+def _fetch_capped_text(
+    session: Any,
+    url: str,
+    headers: dict,
+    timeout: float,
+    deadline: float,
+    cap: int = MAX_INDEX_BYTES,
+) -> str:
+    """GET ``url`` as text, streamed: refused on a declared Content-Length over ``cap`` and stopped as soon as the
+    body passes it, so an oversized (or lying) index is never buffered whole."""
+    import time
+
+    response = session.get(url, headers=headers, timeout=timeout, stream=True)
+    try:
+        response.raise_for_status()
+        declared = (
+            response.headers.get("Content-Length") if getattr(response, "headers", None) else None
+        )
+        if declared is not None and int(declared) > cap:
+            raise ValueError("index too large")
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=65536):
+            body.extend(chunk)
+            if len(body) > cap:
+                raise ValueError("index too large")
+            if time.monotonic() > deadline:
+                raise TimeoutError("index read deadline")
+        return body.decode("utf-8")
+    finally:
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def hub_component_sizes(
@@ -406,8 +442,9 @@ def _hub_component_sizes(
     deadline = time.monotonic() + timeout_seconds
     try:
         from huggingface_hub import HfApi
-        info = HfApi(token = token).model_info(
-            repo_id, revision = revision, files_metadata = True, timeout = timeout_seconds
+
+        info = HfApi(token=token).model_info(
+            repo_id, revision=revision, files_metadata=True, timeout=timeout_seconds
         )
     except Exception:  # noqa: BLE001 - offline, gated, missing: the table answers
         return None
@@ -456,20 +493,20 @@ def _read_hub_sizes(
 
             def _read_index(n: str, folder: str = folder) -> str:
                 # fetched, never cached: a stray index in the HF cache would read as a started download
-                response = get_session().get(
-                    hf_hub_url(repo_id, f"{folder}/{n}", revision = commit),
-                    headers = dict(build_hf_headers(token = token)),
-                    timeout = max(1.0, deadline - time.monotonic()),
+                return _fetch_capped_text(
+                    get_session(),
+                    hf_hub_url(repo_id, f"{folder}/{n}", revision=commit),
+                    dict(build_hf_headers(token=token)),
+                    max(1.0, deadline - time.monotonic()),
+                    deadline,
                 )
-                response.raise_for_status()
-                if len(response.content) > 64 * 1024 * 1024:
-                    raise ValueError("index too large")
-                return response.content.decode("utf-8")
 
             if time.monotonic() > deadline:
                 return None
             picked = _pick_files(list(files), _read_index, folder)
             if not picked:
+                if any(n.endswith(".safetensors") or _INDEX_RE.match(n) for n in files):
+                    return None  # safetensors weights this read cannot select (index unreadable / incomplete)
                 continue
             size = _accumulate(
                 folder,
@@ -483,11 +520,14 @@ def _read_hub_sizes(
                     for f in picked
                 ),
             )
-            if size is not None:
-                out[folder] = size
+            if size is None:
+                # A header that did not read makes the whole answer unknown, optional folders included: a partial
+                # result would be cached as a smaller total.
+                return None
+            out[folder] = size
     except Exception:  # noqa: BLE001
         return None
-    return ComponentSizes(out, source = "hub", revision = commit) if out else None
+    return ComponentSizes(out, source="hub", revision=commit) if out else None
 
 
 def component_sizes(
@@ -518,7 +558,7 @@ def component_sizes(
     if local is not None and all(c in local.components for c in need):
         return local
     if allow_hub:
-        hub = hub_component_sizes(str(repo_or_dir), components = components, token = token)
+        hub = hub_component_sizes(str(repo_or_dir), components=components, token=token)
         if hub is not None:
             return hub
     return local
@@ -639,15 +679,11 @@ def reconcile_with_table(
 
 
 def reconcile_scalar(
-    header: Optional[float],
-    table: float,
-    *,
-    is_base: bool,
-    key: Any = None,
+    header: Optional[float], table: float, *, is_base: bool, key: Any = None
 ) -> float:
     """``reconcile_with_table`` for one term (a per-component constant such as LTX-2.5's latent upsampler)."""
     out = reconcile_with_table(
-        None if header is None else (float(header),), (float(table),), is_base = is_base, key = key
+        None if header is None else (float(header),), (float(table),), is_base=is_base, key=key
     )
     return float(out[0]) if out else float(table)
 
@@ -678,29 +714,25 @@ def video_components_gb(
         )
         sizes = component_sizes(
             target,
-            components = wanted,
-            required = video_required_roles(fam),
-            allow_hub = allow_hub and (table is None or not is_base),
-            token = token,
+            components=wanted,
+            required=video_required_roles(fam),
+            allow_hub=allow_hub and (table is None or not is_base),
+            token=token,
         )
         header = video_header_components_gb(fam, sizes)
         return reconcile_with_table(
-            header, table, is_base = is_base, key = (getattr(fam, "name", None), str(target))
+            header, table, is_base=is_base, key=(getattr(fam, "name", None), str(target))
         )
     except Exception:  # noqa: BLE001 - sizing aid: the table stands
         return table
 
 
 def component_gb(
-    repo: Any,
-    component: str,
-    *,
-    itemsize: int = 2,
-    default: Optional[float] = None,
+    repo: Any, component: str, *, itemsize: int = 2, default: Optional[float] = None
 ) -> Optional[float]:
     """One component's resident GB from local headers (no network), else ``default``."""
     try:
-        sizes = component_sizes(repo, components = (component,))
+        sizes = component_sizes(repo, components=(component,))
         size = sizes.get(component) if sizes is not None else None
         return size.resident_gb(itemsize) if size is not None else default
     except Exception:  # noqa: BLE001

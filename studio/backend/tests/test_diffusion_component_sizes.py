@@ -652,3 +652,155 @@ def test_generate_keys_calibration_on_the_load_configuration():
         "variant_id",
     ):
         assert f'"{field}"' in call, field
+
+
+# ---- review round 2 ----
+
+
+def _index(path: Path, shards: list) -> None:
+    path.write_text(json.dumps({"weight_map": {f"t{i}": s for i, s in enumerate(shards)}}))
+
+
+def test_incomplete_preferred_index_is_unknown_even_beside_a_complete_one(tmp_path):
+    # diffusers folder: the preferred diffusion_pytorch_model index is incomplete, a stale model index is complete
+    t = tmp_path / "transformer"
+    _write_header(t / "model-00001-of-00001.safetensors", {"a": ("BF16", 10)})
+    _index(t / "model.safetensors.index.json", ["model-00001-of-00001.safetensors"])
+    _write_header(t / "diffusion_pytorch_model-00001-of-00002.safetensors", {"b": ("BF16", 10)})
+    _index(
+        t / "diffusion_pytorch_model.safetensors.index.json",
+        ["diffusion_pytorch_model-00001-of-00002.safetensors", "diffusion_pytorch_model-00002-of-00002.safetensors"],
+    )
+    # transformers folder: the preferred model index is incomplete, a diffusers index beside it is complete
+    e = tmp_path / "text_encoder"
+    _write_header(e / "diffusion_pytorch_model-00001-of-00001.safetensors", {"c": ("BF16", 10)})
+    _index(e / "diffusion_pytorch_model.safetensors.index.json", ["diffusion_pytorch_model-00001-of-00001.safetensors"])
+    _write_header(e / "model-00001-of-00002.safetensors", {"d": ("BF16", 10)})
+    _index(e / "model.safetensors.index.json", ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"])
+    assert dcs.local_component_sizes(tmp_path) is None
+    # the preferred stem's unindexed file wins over a lower-priority index
+    v = tmp_path / "vae"
+    _write_header(v / "diffusion_pytorch_model.safetensors", {"v": ("BF16", 7)})
+    _write_header(v / "model-00001-of-00001.safetensors", {"w": ("BF16", 999)})
+    _index(v / "model.safetensors.index.json", ["model-00001-of-00001.safetensors"])
+    assert dcs.local_component_sizes(tmp_path).get("vae").files == ("diffusion_pytorch_model.safetensors",)
+
+
+class _Sib:
+    def __init__(self, name, size = 100):
+        self.rfilename, self.size = name, size
+
+
+def _hub_with(monkeypatch, siblings, header_for):
+    import huggingface_hub
+
+    class _Api:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(self, repo_id, revision = None, files_metadata = False, timeout = None):
+            info = _Info("d" * 40)
+            info.siblings = [_Sib(n) for n in siblings]
+            return info
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(dcs, "_hub_header", lambda repo, filename, *a, **k: header_for(filename))
+    monkeypatch.setattr(dcs, "_HUB_CACHE", {})
+    monkeypatch.setattr(dcs, "_HUB_SHA_CACHE", {})
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
+
+
+def test_hub_result_with_a_failed_header_is_rejected(monkeypatch):
+    files = [
+        "transformer/diffusion_pytorch_model.safetensors",
+        "text_encoder/model.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+        "connectors/diffusion_pytorch_model.safetensors",
+    ]
+    ok = {"__metadata__": {}, "w": {"dtype": "BF16", "shape": [10], "data_offsets": [0, 20]}}
+    _hub_with(monkeypatch, files, lambda f: ok)
+    assert dcs.hub_component_sizes("o/r").names() == ("connectors", "text_encoder", "transformer", "vae")
+    # an optional-but-loaded folder whose header does not read invalidates the whole answer (and is not cached)
+    _hub_with(monkeypatch, files, lambda f: None if f.startswith("connectors/") else ok)
+    assert dcs.hub_component_sizes("o/r") is None
+    assert not dcs._HUB_SHA_CACHE
+    # an index that cannot be read is unknown too, not a skipped folder
+    _hub_with(monkeypatch, files[:3] + ["vocoder/diffusion_pytorch_model.safetensors.index.json"], lambda f: ok)
+    monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    assert dcs.hub_component_sizes("o/r") is None
+
+
+class _Resp:
+    def __init__(self, chunks, length = None):
+        self.chunks, self.headers, self.pulled, self.closed = chunks, {}, 0, False
+        if length is not None:
+            self.headers["Content-Length"] = str(length)
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, chunk_size = 1):
+        for c in self.chunks:
+            self.pulled += 1
+            yield c
+
+    def close(self):
+        self.closed = True
+
+
+class _Session:
+    def __init__(self, resp):
+        self.resp, self.kwargs = resp, None
+
+    def get(self, url, **kwargs):
+        self.kwargs = kwargs
+        return self.resp
+
+
+def test_index_fetch_is_streamed_under_the_cap():
+    good = _Session(_Resp([b'{"weight_map"', b": {}}"]))
+    assert dcs._fetch_capped_text(good, "u", {}, 1.0, float("inf")) == '{"weight_map": {}}'
+    assert good.kwargs["stream"] is True and good.resp.closed
+    declared = _Session(_Resp([b"x"], length = 100))
+    with pytest.raises(ValueError):
+        dcs._fetch_capped_text(declared, "u", {}, 1.0, float("inf"), cap = 10)
+    assert declared.resp.pulled == 0  # refused on Content-Length, nothing read
+    lying = _Session(_Resp([b"x" * 6] * 1000))
+    with pytest.raises(ValueError):
+        dcs._fetch_capped_text(lying, "u", {}, 1.0, float("inf"), cap = 10)
+    assert lying.resp.pulled == 2 and lying.resp.closed  # stopped as soon as the body passed the cap
+
+
+def test_tagged_module_reads_only_its_own_mode(monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    t2v = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 24, conditioning = "t2v", cfg = True)
+    i2v = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 24, conditioning = "i2v", cfg = True)
+    fps50 = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 50, conditioning = "t2v", cfg = True)
+    assert len({t2v, i2v, fps50}) == 3
+    vsr._PEAKS[t2v] = {1000: 3000}
+    module = _Module()
+    module._unsloth_video_peaks = {1000: 9999}  # mode-blind own table: ignored once tagged
+    module._unsloth_video_calibration_key = i2v
+    assert vsr._measured_extra_mib(module, 1000) is None
+    module._unsloth_video_calibration_key = t2v
+    assert vsr._measured_extra_mib(module, 1000) == 3000
+    # a fresh module after a reload, tagged before the fit, finds the process-wide peak
+    reloaded = _Pipe()
+    assert vsr.arm_request(reloaded, key = t2v, width = 1, height = 1, frames = 1, device = "cuda:0", rearm = False)
+    assert vsr._measured_extra_mib(reloaded.transformer, 1000) == 3000
+
+
+def test_generate_tags_before_the_fit_and_keys_the_request_mode():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video)
+    key_at = src.index("video_stream_residency.calibration_key(")
+    tag_at = src.index("rearm = False", key_at)
+    fit_at = src.index("video_stream_residency.fit_for_request(", key_at)
+    assert key_at < tag_at < fit_at
+    call = src[key_at : src.index("\n                    )", key_at)]
+    for field in ("fps", "conditioning", "first_frame", "last_frame", "references", "cfg"):
+        assert f"{field} = " in call, field

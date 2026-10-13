@@ -173,13 +173,13 @@ def measured_extra_mib(key: Any, work: int) -> Optional[int]:
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
-    """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it."""
-    own = _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
-    if own is not None:
-        return own
-    return _covering(
-        _PEAKS.get(getattr(module, "_unsloth_video_calibration_key", None)) or {}, work
-    )
+    """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it.
+    A tagged module reads only the peaks of its calibration key (same load AND request mode), which also carries the
+    peaks it recorded itself; the module's own mode-blind table is the fallback for an untagged one."""
+    key = getattr(module, "_unsloth_video_calibration_key", None)
+    if key is not None:
+        return _covering(_PEAKS.get(key) or {}, work)
+    return _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
 
 
 def arm_request(
