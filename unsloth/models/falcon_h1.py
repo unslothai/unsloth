@@ -26,6 +26,8 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _gqa_decode_scores,
+    _gqa_decode_values,
     _LlamaModel_fast_forward_inference,
     original_apply_qkv,
     original_apply_o,
@@ -247,7 +249,9 @@ def FalconH1Attention_fast_forward_inference(
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -315,8 +319,9 @@ def FalconH1Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -324,10 +329,11 @@ def FalconH1Attention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K overflows less than (Q @ K) * scalar.
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
+        # (comment 2153349963).
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(

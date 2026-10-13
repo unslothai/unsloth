@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -78,6 +79,96 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     except Exception:  # noqa: BLE001 -- an undetectable host keeps the historical default
         return optimizer
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
+
+
+def _launch_rank() -> Optional[int]:
+    # A size alone is not a launch: a stale PMI_SIZE or WORLD_SIZE in a shell would pin every run to one folder.
+    rank = os.environ.get("RANK")
+    size = os.environ.get("WORLD_SIZE")
+    if rank is not None and size is not None:
+        try:
+            rank, size = int(rank), int(size)
+        except ValueError:
+            return None
+        return rank if 0 <= rank < size and size > 1 else None
+    is_launch, rank, _size = mlx_distributed_info()
+    return rank if is_launch and (_size or 0) > 1 else None
+
+
+_RUN_DIR_STORE = None
+
+
+def _torch_launch_store(rank: int):
+    # torchrun's agent hosts a store at MASTER_ADDR:MASTER_PORT; a plain env:// launch has rank 0 host it, and
+    # multi_tenant lets init_process_group reuse this same server instead of failing to bind the port.
+    global _RUN_DIR_STORE
+    if (
+        "RANK" not in os.environ
+        or "MASTER_ADDR" not in os.environ
+        or "MASTER_PORT" not in os.environ
+    ):
+        return None
+    try:
+        from datetime import timedelta
+
+        from torch.distributed import TCPStore
+
+        host = rank == 0 and os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True"
+        store = TCPStore(
+            os.environ["MASTER_ADDR"],
+            int(os.environ["MASTER_PORT"]),
+            is_master = host,
+            timeout = timedelta(minutes = 30),
+            multi_tenant = True,
+        )
+    except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
+        return None
+    if host:
+        # Keep the server alive for the other ranks until init_process_group takes it over.
+        _RUN_DIR_STORE = store
+    return store
+
+
+def _launcher_start_time() -> int:
+    # Ranks reach this seconds apart after their own model load; their shared launcher started once.
+    try:
+        import psutil
+        return int(psutil.Process(os.getppid()).create_time())
+    except Exception:  # noqa: BLE001 -- no launcher to ask: fall back to this rank's clock
+        return int(time.time())
+
+
+def _reserve_run_dir(name: str) -> str:
+    from utils.paths import ensure_dir, resolve_output_dir
+    stamp = int(time.time())
+    while True:
+        path = resolve_output_dir(f"{name}_{stamp}")
+        ensure_dir(path.parent)
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            stamp += 1
+
+
+def _default_output_dir(model_name: str) -> str:
+    ensure_studio_backend_path()
+    from utils.paths import default_run_dir_name, resolve_output_dir
+
+    name = default_run_dir_name(model_name)
+    rank = _launch_rank()
+    if rank is None:
+        return _reserve_run_dir(name)
+    store = _torch_launch_store(rank)
+    if store is None:
+        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one alone.
+        if rank == 0 and "RANK" not in os.environ:
+            return _reserve_run_dir(name)
+        return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
+    key = "unsloth_cli/output_dir"
+    if rank == 0 and not store.check([key]):
+        store.set(key, _reserve_run_dir(name))
+    return store.get(key).decode()
 
 
 @add_options_from_config(Config)
@@ -186,6 +277,8 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
+    if "output_dir" not in cfg.training.model_fields_set:
+        training_kwargs["output_dir"] = _default_output_dir(cfg.model)
     training_kwargs["wandb_token"] = wandb_token
     training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)

@@ -13,6 +13,9 @@ from .llama import *
 from .llama import (
     original_apply_qkv,
     original_apply_o,
+    _gqa_decode_scores,
+    _gqa_decode_values,
+    _LazyDeviceScratch,
 )
 from ._utils import __version__
 from ._utils import move_to_device, per_layer_device, DEVICE_TYPE
@@ -388,7 +391,9 @@ def Gemma2Attention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
 
         # Gemma 9b uses query_pre_attn_scalar 256, not hidden_size // heads (224).
@@ -468,16 +473,12 @@ def Gemma2Attention_fast_forward_inference(
         Knn, Vnn = Kn, Vn
 
     _, _, cached_len, _ = Knn.shape
-    if n_groups != 1:
-        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
     # Manual matmul: SDPA has no softcapping.
     Qn *= self.scalar
-    # (Q * scalar) @ K overflows less than (Q @ K) * scalar.
-    A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+    # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805 (comment 2153349963).
+    # Grouped query attention: the KV heads are read in place, not repeated per query head.
+    A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
 
     # Softcapping must happen BEFORE the mask is applied.
     A *= self.reciprocal_t
@@ -490,7 +491,7 @@ def Gemma2Attention_fast_forward_inference(
         A += attention_mask
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-    A = torch_matmul(A, Vnn, out = Qn)
+    A = _gqa_decode_values(A, Vnn, Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
@@ -505,13 +506,10 @@ def Gemma2Model_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    out_weights = tuple(
-        torch.empty_like(
-            self.model.layers[0].input_layernorm.weight,
-            dtype = torch.float32,
-            device = torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
+    norm_weight = self.model.layers[0].input_layernorm.weight
+    out_weights = _LazyDeviceScratch(
+        DEVICE_COUNT,
+        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

@@ -439,6 +439,10 @@ def fast_cross_entropy_loss(
         n_items = torch.count_nonzero(labels != -100)
     if torch.is_tensor(n_items):
         n_items = n_items.to(device)
+        # No labelled tokens (all -100): loss 0 and zero grads, not 0 / 0 = NaN.
+        n_items = torch.where(n_items == 0, torch.ones_like(n_items), n_items)
+    elif n_items == 0:
+        n_items = 1
     return loss.sum() / n_items
 
 

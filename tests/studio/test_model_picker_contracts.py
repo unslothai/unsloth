@@ -447,10 +447,9 @@ def test_active_model_config_round_trips_gpu_fields():
         assert field in src, field
     flat = " ".join(src.split())
     assert "if (!isGguf) {" in flat and ": base; }" in flat
-    assert (
-        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
-        in flat
-    )
+    managed = flat.split('engine === "vllm" || engine === "sglang" ? { ...base,', 1)
+    assert len(managed) == 2
+    assert "selectedGpuIds, selectedGpuIndexKind" in managed[1].split("}", 1)[0]
     assert "loadedLlamaExtraArgs != null" in src
     assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")

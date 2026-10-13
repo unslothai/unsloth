@@ -470,6 +470,23 @@ def _anchor_and_count(where):
     return ast.literal_eval(node.args[1]), count
 
 
+def _num_proc_replacement():
+    return ast.literal_eval(_anchor_calls(NUM_PROC_WHERE)[0].args[2])
+
+
+def _zoo_adopted_the_num_proc_edit(source):
+    return _num_proc_replacement() in source
+
+
+def _zoo_source_as_anchored():
+    """Installed Zoo source with an adopted num_proc block reverted to the anchor, so drift tests still bite on a newer Zoo."""
+    source = _zoo_dataset_utils_source()
+    if _zoo_adopted_the_num_proc_edit(source):
+        anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
+        source = source.replace(_num_proc_replacement(), anchor, 1)
+    return source
+
+
 def _keyword(where, name):
     node = _anchor_calls(where)[0]
     value = next(k.value for k in node.keywords if k.arg == name)
@@ -513,6 +530,9 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
         "sft_prepare_dataset tokenizing map() calls",
     ):
         anchor, count = _anchor_and_count(where)
+        if where == NUM_PROC_WHERE and _zoo_adopted_the_num_proc_edit(source):
+            # The Zoo ships the replacement itself; test_a_zoo_that_adopted_the_num_proc_edit_is_left_alone covers it.
+            continue
         assert source.count(anchor) == count, (
             f"unsloth_zoo.dataset_utils has {source.count(anchor)} occurrences of "
             f"the {where!r} anchor, expected {count}; update rl_replacements.py"
@@ -520,8 +540,14 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
 
 
 def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
-    """Pins the narrow num_proc anchor: if it also drifts, nothing rewrites the worker count."""
-    source = _zoo_dataset_utils_source()
+    """The num_proc site has a second, narrower anchor; it needs its own canary.
+
+    The block anchor drifting is survivable precisely because this regex catches
+    the assignment the block ends on. If the Zoo ever renames or restructures
+    that line too, both anchors are gone and nothing rewrites the worker count --
+    so pin it here, in CI, rather than discovering it from a user's Pool(1).
+    """
+    source = _zoo_source_as_anchored()
     pattern = _narrow_num_proc_pattern()
 
     matches = pattern.findall(source)
@@ -584,8 +610,22 @@ def _apply_num_proc_edit(source):
     return result, warnings
 
 
-def test_the_block_anchor_is_used_when_the_zoo_has_not_moved():
+def test_a_zoo_that_adopted_the_num_proc_edit_is_left_alone():
+    """No rewrite and no warning; a narrow-anchor rewrite of its first line would leave continuation lines dangling."""
     source = _zoo_dataset_utils_source()
+    adopted = source
+    if not _zoo_adopted_the_num_proc_edit(adopted):
+        anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
+        adopted = source.replace(anchor, _num_proc_replacement(), 1)
+        assert adopted != source
+    result, warnings = _apply_num_proc_edit(adopted)
+    assert result == adopted
+    assert warnings == [], f"an adopted block must not warn: {warnings}"
+    ast.parse(result)
+
+
+def test_the_block_anchor_is_used_when_the_zoo_has_not_moved():
+    source = _zoo_source_as_anchored()
     result, warnings = _apply_num_proc_edit(source)
     assert "_unsloth_get_dataset_num_proc" in result
     assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
@@ -596,8 +636,14 @@ def test_the_block_anchor_is_used_when_the_zoo_has_not_moved():
 
 
 def test_the_narrow_anchor_takes_over_when_the_block_drifts():
-    """Block drift with the assignment intact must still be fixed; required = False used to swallow it."""
-    source = _zoo_dataset_utils_source()
+    """A Zoo that rewrites the block but keeps the assignment must still be fixed.
+
+    This is the case `required = False` used to swallow: the edit no-ops, the Zoo
+    reads the config `1` the config layer writes for "serial", and datasets >= 4.1
+    turns that into a Pool(1) on the host that asked for no workers.
+    """
+    source = _zoo_source_as_anchored()
+    # Drift the block without touching the line the fallback keys on.
     drifted = source.replace(
         "            import multiprocessing as _mp\n",
         "            import multiprocessing as _mp  # zoo refactor\n",
@@ -617,7 +663,7 @@ def test_the_narrow_anchor_takes_over_when_the_block_drifts():
 def test_neither_anchor_matching_only_warns():
     """Neither anchor matching only warns: a hard failure would break every SFT run whose Zoo text moved."""
     source = (
-        _zoo_dataset_utils_source()
+        _zoo_source_as_anchored()
         .replace(
             '            map_kwargs["num_proc"] = dataset_num_proc\n',
             '            map_kwargs.update({"num_proc": dataset_num_proc})\n',

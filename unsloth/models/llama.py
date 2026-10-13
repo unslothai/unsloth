@@ -516,6 +516,57 @@ def fix_prepare_inputs_for_generation(module):
 torch_matmul = torch.matmul
 
 
+def _gqa_decode_scores(Qn, Kn, out):
+    """Q @ K^T for one decode token without repeating K per query head. Q (bsz, n_heads, 1, hd)
+    is viewed as (bsz, n_kv_heads, n_groups, hd) so each KV head is read in place; the scores
+    land in out's (bsz, n_heads, 1, cached_len) layout."""
+    bsz, n_heads, _, head_dim = Qn.shape
+    _, n_kv_heads, cached_len, _ = Kn.shape
+    n_groups = n_heads // n_kv_heads
+    torch_matmul(
+        Qn.view(bsz, n_kv_heads, n_groups, head_dim),
+        Kn.transpose(2, 3),
+        out = out.view(bsz, n_kv_heads, n_groups, cached_len),
+    )
+    return out
+
+
+def _gqa_decode_values(A, Vn, out):
+    """softmax(QK^T) @ V for one decode token, grouped like _gqa_decode_scores; writes out.
+    cuBLAS drops to a slow kernel when the reduction over the cache is not a multiple of 8, so
+    the aligned prefix is one bmm and the last few positions are accumulated on top."""
+    bsz, n_heads, _, cached_len = A.shape
+    _, n_kv_heads, _, head_dim = Vn.shape
+    n_groups = n_heads // n_kv_heads
+    A = A.view(bsz * n_kv_heads, n_groups, cached_len)
+    V = Vn.reshape(bsz * n_kv_heads, cached_len, head_dim)
+    O = out.view(bsz * n_kv_heads, n_groups, head_dim)
+    aligned = cached_len - cached_len % 8
+    if aligned == 0 or aligned == cached_len:
+        torch.bmm(A, V, out = O)
+    else:
+        torch.bmm(A[:, :, :aligned], V[:, :aligned], out = O)
+        O.baddbmm_(A[:, :, aligned:], V[:, aligned:])
+    return out
+
+
+class _LazyDeviceScratch(list):
+    """Per-device decode scratch, made on first use, so only devices holding layers get one."""
+
+    __slots__ = ("_make",)
+
+    def __init__(self, device_count, make):
+        super().__init__((None,) * device_count)
+        self._make = make
+
+    def __getitem__(self, index):
+        buffer = list.__getitem__(self, index)
+        if buffer is None:
+            buffer = self._make(torch.device(DEVICE_TYPE_TORCH, index))
+            list.__setitem__(self, index, buffer)
+        return buffer
+
+
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states: torch.Tensor,
@@ -588,8 +639,11 @@ def LlamaAttention_fast_forward_inference(
         else:
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
+        # Row stride kept a multiple of 8 so the grouped decode bmm stays on the fast cuBLAS path.
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -670,9 +724,9 @@ def LlamaAttention_fast_forward_inference(
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -686,12 +740,12 @@ def LlamaAttention_fast_forward_inference(
         is_causal = False
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K overflows less than (Q @ K) * scalar; see ggerganov/llama.cpp#7805.
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         if attention_mask is not None:
             A.masked_fill_(~attention_mask, float("-inf"))
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
@@ -1393,10 +1447,8 @@ def _LlamaModel_fast_forward_inference(
         temp_mlp = torch.empty(
             (2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0"
         )
-        temp_gates, temp_ups = (
-            tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)),
-            tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT)),
-        )
+        temp_gates = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[0].to)
+        temp_ups = _LazyDeviceScratch(DEVICE_COUNT, temp_mlp[1].to)
 
         seq_len = past_key_values[0][0].shape[-2]
         kv_seq_len = seq_len + 1

@@ -135,7 +135,7 @@ def test_training_forwards_observer_through_each_loader_and_retry():
             "self.load_model",
         )
     ]
-    assert len(calls) == 9
+    assert len(calls) == 10
     for call in calls:
         assert any(
             k.arg == "on_model_resolved" and ast.unparse(k.value) == "on_model_resolved"

@@ -597,6 +597,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if "model" in locals() and hasattr(model, "for_training"):
             _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
             model.for_training(use_gradient_checkpointing=_use_gc)
+        if "model" in locals():
+            try:
+                from unsloth.models._ddp_defaults import unsloth_default_ddp_find_unused_parameters
+                unsloth_default_ddp_find_unused_parameters(args, model)
+            except Exception:
+                pass
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -2010,10 +2016,28 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             flat = torch.cat([g.reshape(-1) for g in chunk])
             dist.all_reduce(flat, group = group)
             flat.div_(world_size)
-            offset = 0
-            for g in chunk:
-                g.copy_(flat[offset : offset + g.numel()].view_as(g))
-                offset += g.numel()
+            # One fused copy back: a per-tensor copy_ loop costs a launch per LoRA tensor (500+ for an 8B model).
+            pieces = [
+                x.view_as(g) for x, g in zip(torch.split(flat, [g.numel() for g in chunk]), chunk)
+            ]
+            # The fused route needs matching strides (one mismatch slows the whole list), so mismatched grads go alone.
+            dst, src = [], []
+            for g, x in zip(chunk, pieces):
+                if g.stride() == x.stride():
+                    dst.append(g)
+                    src.append(x)
+                else:
+                    g.copy_(x)
+            foreach_copy = getattr(torch, "_foreach_copy_", None)
+            try:
+                if foreach_copy is None:
+                    raise NotImplementedError
+                if dst:
+                    foreach_copy(dst, src)
+            except (RuntimeError, NotImplementedError, TypeError):
+                # Private op: fall back to the per-tensor copy if a torch build lacks or rejects it (idempotent).
+                for g, x in zip(dst, src):
+                    g.copy_(x)
             start = stop
 
 
