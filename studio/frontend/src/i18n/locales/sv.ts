@@ -2157,6 +2157,8 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
+        chartToggle: "Diagram",
+        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",

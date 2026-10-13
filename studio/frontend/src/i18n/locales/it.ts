@@ -1938,6 +1938,8 @@ export const it = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Settimana del {date} · {tokens}",
+        chartToggle: "Grafico",
+        chartToggleHint: "Mostra Settimanale e Cumulativa come grafico con assi etichettati",
         less: "Meno",
         more: "Più",
         insightsTitle: "Analisi dell'attività",

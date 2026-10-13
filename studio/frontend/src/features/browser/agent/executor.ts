@@ -53,6 +53,8 @@ const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
 const SETTLE_MAX_MS = 3_000;
 const FILL_QUIET_MAX_MS = 1_000;
+// A loaded page that opened no request has drawn what it will; content still on its way arrives by a request.
+const FILL_IDLE_QUIET_MS = 120;
 const PAGE_READY_MS = 4_000;
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
@@ -358,9 +360,16 @@ async function pageCall(tab: BrowserTab, command: Record<string, unknown>): Prom
 }
 
 /** Requests started since `since` and a quiet DOM; `left` says the tab is on another page. */
-function waitOnPage(tabId: string, left: (tab: BrowserTab) => boolean, since: number, changingMaxMs: number, signal?: AbortSignal) {
+function waitOnPage(
+  tabId: string,
+  left: (tab: BrowserTab) => boolean,
+  since: number,
+  changingMaxMs: number,
+  signal?: AbortSignal,
+  idleQuietMs?: number,
+) {
   return waitForPage({
-    maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, now: Date.now, sleep,
+    maxMs: SETTLE_MAX_MS, changingMaxMs, quietMs: SETTLE_QUIET_MS, idleQuietMs, now: Date.now, sleep,
     status: () => {
       const tab = findTab(tabId);
       return tab ? pageCall(tab, { op: "status", since }).catch(() => null) : Promise.resolve(null);
@@ -385,7 +394,7 @@ async function settle(tabId: string, urlBefore: string, since: number, signal?: 
  *  A DOM that never rests gets only FILL_QUIET_MAX_MS. A router rewriting the address is still this page. */
 async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal): Promise<boolean> {
   const entry = currentEntry(tab);
-  return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal)) === "loading";
+  return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
 async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
@@ -786,6 +795,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   const hits: string[] = [];
   const sigs: string[] = [];
   const infos: string[] = [];
+  const docs: string[] = [];
   let asked = false;
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
@@ -800,16 +810,16 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     hits.push(described.hit ?? "");
     sigs.push(described.sig ?? "");
     infos.push(JSON.stringify(described.info));
+    docs.push(described.doc ?? "");
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
   // A handler can navigate mid-drag: the rest must not act on a page nobody gated.
-  const doc = (await pageCall(tab, { op: "status" })).doc;
+  const doc = docs[0];
   const sameTab = () => {
     const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
     return Boolean(now && !now.loading && tabUrl(now) === before);
   };
-  const samePage = async () => sameTab() && (await pageCall(tab, { op: "status" }).catch(() => null))?.doc === doc;
   const since = Date.now();
   const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] });
   if (!down.ok) return { ok: false, error: down.error };
@@ -832,16 +842,18 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     return { ok: false, error };
   };
   // A new document gets nothing; the same one (a hash or pushState move) has its drag cancelled.
-  const left = async (): Promise<Result> => {
+  const left = async (current?: string): Promise<Result> => {
     const error = "the page changed during the drag, so it was not finished; take a snapshot.";
-    const status = await pageCall(tab, { op: "status" }).catch(() => null);
-    return doc && status?.doc === doc ? cancel(error) : { ok: false, error };
+    const now = current ?? (await pageCall(tab, { op: "status" }).catch(() => null))?.doc;
+    return doc && now === doc ? cancel(error) : { ok: false, error };
   };
   if (signal?.aborted) return cancel(STOPPED);
-  if (!doc || !(await samePage())) return left();
-  if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
-  // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged.
+  if (!doc || !sameTab()) return left();
+  // Drop zones can appear or relabel once a drag starts: re-ask unless the end is unchanged. Its doc
+  // says whether this is still the document the drag began on.
   const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
+  if (target?.doc !== doc) return left(target?.doc);
+  if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
     for (const gate of [gateElement("click", target.info, before, action.policy, permissions()), opaqueGate(target.info, before)]) {
@@ -850,8 +862,9 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
       if (refused) return cancel(refused);
       if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
     }
-    if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
-    if (!(await samePage())) return left();
+    const again = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
+    if (!sameTab() || again?.doc !== doc) return left(again?.doc);
+    if (!again?.ok || again.hit !== target.hit || JSON.stringify(again.info) !== JSON.stringify(target.info)) return cancel(CHANGED_UNDER_POINT);
   }
   if (signal?.aborted) return cancel(STOPPED);
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });

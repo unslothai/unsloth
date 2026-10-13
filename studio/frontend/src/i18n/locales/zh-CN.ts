@@ -1981,6 +1981,8 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
+        chartToggle: "图表",
+        chartToggleHint: "以带坐标轴标签的图表显示按周和累计",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",

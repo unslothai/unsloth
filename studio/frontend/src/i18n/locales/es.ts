@@ -2026,6 +2026,8 @@ export const es = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana del {date} · {tokens}",
+        chartToggle: "Gráfico",
+        chartToggleHint: "Mostrar Semanal y Acumulada como gráfico con ejes etiquetados",
         less: "Menos",
         more: "Más",
         insightsTitle: "Análisis de actividad",

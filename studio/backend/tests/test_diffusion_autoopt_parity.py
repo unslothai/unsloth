@@ -15,7 +15,6 @@ Regenerate (only when a registry change is intended): run ``snapshot(legacy_entr
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
@@ -24,11 +23,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
-
-# The fixture records real diffusers classes (repeated blocks, attention patches); without diffusers every case
-# differs. The Studio VAE seam guard job installs the pinned diffusers and runs this file.
-if importlib.util.find_spec("diffusers") is None:
-    pytest.skip("needs diffusers (run by the Studio VAE seam guard job)", allow_module_level = True)
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -524,6 +518,9 @@ def test_fixture_covers_every_registered_family(captured):
 
 
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
+    # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
+    # self-disable, so every case differs. Backend CI has no diffusers.
+    pytest.importorskip("diffusers")
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
@@ -533,6 +530,7 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
 
 def test_legacy_sequence_still_matches_fixture(captured):
     """The fixture is not stale: the old sequence over today's primitives still produces it."""
+    pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
     diffs = [case for case in want if got.get(case) != want[case]]

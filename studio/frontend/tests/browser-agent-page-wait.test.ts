@@ -86,3 +86,27 @@ test("a DOM quiet while a request was open is not read as settled the moment it 
   assert.equal(await waitForPage(p.wait(0, 3000, 1000)), "settled");
   assert.ok(p.now() >= 1000 + QUIET, `read at ${p.now()}, before the list was drawn`);
 });
+
+test("a loaded page that opened no request is read after the short idle quiet", async () => {
+  const p = page([], [0]);
+  assert.equal(await waitForPage({ ...p.wait(0, 3000, 1000), idleQuietMs: 120 }), "settled");
+  assert.ok(p.now() >= 120 && p.now() < QUIET, `read at ${p.now()}`);
+});
+
+test("a page whose requests nothing counts (a native view) still gets the full quiet", async () => {
+  const p = page([], [0]);
+  const wait = p.wait(0, 3000, 1000);
+  const counted = wait.status;
+  wait.status = async () => {
+    const status = await counted();
+    return status && { quietMs: status.quietMs };
+  };
+  assert.equal(await waitForPage({ ...wait, idleQuietMs: 120 }), "settled");
+  assert.ok(p.now() >= QUIET, `read at ${p.now()}`);
+});
+
+test("a page that had a request open gets the full quiet after it closes, short idle or not", async () => {
+  const p = page([{ start: 0, end: 300 }], [0, 300]);
+  assert.equal(await waitForPage({ ...p.wait(0, 3000, 1000), idleQuietMs: 120 }), "settled");
+  assert.ok(p.now() >= 300 + QUIET, `read at ${p.now()}`);
+});
