@@ -2043,6 +2043,7 @@ class AudioCppModel:
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
+    from_hub: bool = field(default = False, hash = False, compare = False)
 
     @property
     def is_package(self) -> bool:
@@ -2350,6 +2351,7 @@ def _resolve_uncached(
             default_variant = variant.key,
             unsupported = reason,
             local_path = ref.local_path,
+            from_hub = from_hub,
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None
@@ -2431,6 +2433,7 @@ def _resolve_uncached(
         separation = policy.separation,
         music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
         request_keys = _request_keys(spec, embedded),
+        from_hub = from_hub,
     )
     return model.with_variant(chosen)
 
@@ -2529,6 +2532,7 @@ def download_target(
     identifier: Optional[str],
     variant: Optional[str],
     hf_token: Optional[str] = None,
+    persist: bool = True,
 ) -> Optional[tuple[str, str]]:
     """``(repo, variant key)`` the Hub GGUF downloader fetches for an umbrella folder row, else None.
 
@@ -2543,15 +2547,102 @@ def download_target(
         return None
     from hub.utils.gguf import gguf_variant_key
 
-    return model.repo_id, gguf_variant_key(model.variant.primary)
+    key = gguf_variant_key(model.variant.primary)
+    # A cache-only listing can name a crowded folder's file by its bare quant: record Hub listings only.
+    if model.from_hub:
+        row = (model.id, model.variant.key)
+        with _job_rows_lock:
+            _job_rows[(model.repo_id.lower(), key.lower())] = row
+        # Saved only at a job's start: a status poll after completion would recreate the dropped file.
+        if persist and _saved_job_row(key) != row:
+            _save_job_row(key, row)
+    return model.repo_id, key
+
+
+# (umbrella repo, planner key) -> (row id, quant) at job start: a file in flight has no cache entry yet.
+_job_rows: dict[tuple[str, str], tuple[str, str]] = {}
+_job_rows_lock = threading.Lock()
+# Persisted for restarted / sibling backends; one file per key so concurrent writers never merge a map.
+_JOB_ROWS_DIR = "audio_cpp_job_rows"
+
+
+def _job_row_path(key: str, create: bool = False) -> Optional[Path]:
+    from hub.utils.state_dir import state_root
+
+    root = state_root(create = create)
+    if root is None:
+        return None
+    folder = root / _JOB_ROWS_DIR
+    if create:
+        try:
+            folder.mkdir(exist_ok = True)
+        except OSError:
+            return None
+    return folder / f"{hashlib.sha256(key.lower().encode()).hexdigest()[:32]}.json"
+
+
+def _saved_job_row(key: str) -> Optional[tuple[str, str]]:
+    """The persisted row of ``key``; anything unreadable or malformed reads as absent."""
+    try:
+        path = _job_row_path(key)
+        data = json.loads(path.read_text(encoding = "utf-8")) if path is not None else None
+    except Exception:  # noqa: BLE001 - unreadable, malformed or absurdly nested: no saved row
+        return None
+    if not (isinstance(data, list) and len(data) == 3 and all(isinstance(v, str) for v in data)):
+        return None
+    saved_key, row_id, quant = data
+    # A damaged file must not rename another model.
+    folder = key.split("/", 1)[0]
+    if saved_key.lower() != key.lower() or not quant:
+        return None
+    if row_id.lower() != f"{AUDIO_CPP_REPO}/{folder}".lower():
+        return None
+    return row_id, quant
+
+
+def _save_job_row(key: str, row: Optional[tuple[str, str]]) -> None:
+    """Record (or with None drop) ``key``'s row on disk. Best effort: a failed write keeps the old file."""
+    path = _job_row_path(key, create = row is not None)
+    if path is None:
+        return
+    if row is None:
+        try:
+            path.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.debug("audio.cpp: could not drop the row of %s: %s", key, exc)
+        return
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps([key, *row]), encoding = "utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.debug("audio.cpp: could not save the row of %s: %s", key, exc)
+        try:
+            tmp.unlink(missing_ok = True)
+        except OSError:
+            pass
+
+
+def forget_job_row(repo_id: Optional[str], variant: Optional[str]) -> None:
+    """Drop an umbrella job's saved row once the job has ended; this process keeps its own copy."""
+    if str(repo_id or "").lower() != AUDIO_CPP_REPO.lower() or not variant:
+        return
+    _save_job_row(variant.replace("\\", "/"), None)
 
 
 def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tuple[str, str]]:
     """``(folder row id, variant key)`` for an umbrella download job, the inverse of
-    ``download_target``: jobs run on the umbrella repo, but Studio names them by row. None for
-    any other job. Answered from the cache, falling back to reading the planner key's path."""
+    ``download_target``: jobs run on the umbrella repo, but Unsloth Studio names them by row. None
+    for any other job. Answered from what ``download_target`` recorded when the job started, then
+    from the cache, falling back to reading the planner key's path."""
     if str(repo_id or "").lower() != AUDIO_CPP_REPO.lower() or not variant or "/" not in variant:
         return None
+    with _job_rows_lock:
+        started = _job_rows.get((repo_id.lower(), variant.replace("\\", "/").lower()))
+    if started is None:
+        started = _saved_job_row(variant.replace("\\", "/"))
+    if started is not None:
+        return started
     parts = variant.replace("\\", "/").split("/")
     row_id = f"{AUDIO_CPP_REPO}/{parts[0]}"
     try:

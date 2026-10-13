@@ -25164,10 +25164,16 @@ def _audio_cpp_runtime_status() -> dict:
         record = audio_cpp_server.read_install_record(binary)
         backend = record.get("backend")
         release_tag = record.get("release_tag")
+        try:
+            launch_backend = audio_cpp_server.select_backend(binary, False)
+        except Exception as exc:  # noqa: BLE001 - the build is there even if its launch cannot be told
+            logger.debug("audio.cpp backend selection failed: %s", exc)
+            launch_backend = None
         status = {
             "available": True,
             "espeak": audio_cpp_server.binary_has_espeak(binary),
             "backend": backend if isinstance(backend, str) else None,
+            "launch_backend": launch_backend,
             "release_tag": release_tag if isinstance(release_tag, str) else None,
             "expected_tag": None,
             "outdated": False,
@@ -25219,6 +25225,8 @@ async def stt_status(
     mtmd = stt_mtmd_sidecar.get_mtmd_stt_sidecar()
     audiocpp = stt_audiocpp_sidecar.get_audio_cpp_stt_sidecar()
     audiocpp_downloaded = await asyncio.to_thread(stt_audiocpp_sidecar.downloaded_model_ids)
+    # Choosing the launch backend can run the binary's --version.
+    audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
@@ -25297,7 +25305,7 @@ async def stt_status(
                 "download": stt_audiocpp_sidecar.download_status(),
             },
             # The audio.cpp runtime itself, for the Audio page's TTS and music rows.
-            "audio_cpp_runtime": _audio_cpp_runtime_status(),
+            "audio_cpp_runtime": audio_cpp_runtime,
         }
     )
     if account_access.managed_account():
