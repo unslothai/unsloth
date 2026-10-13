@@ -597,12 +597,30 @@ test("the full-list fallback finds a compare row through one of its pane threads
   assert.deepEqual(found.map((row) => row.id), ["pair"]);
 });
 
-test("the open and running chats load their rows, so row lookups never miss them", () => {
+test("the last 20 opened chats and every running one load their rows, so row lookups never miss them", () => {
   const src = readSrc("components/app-sidebar.tsx");
-  assert.match(src, /active: lookupIds\.length \? \{ query: sidebarRowQuery\(\{ includeIds: lookupIds \}\) \} : null,/);
-  assert.match(src, /\[slotActiveId, \.\.\.runningThreadKey\.split\("\\n"\)\]\.filter\(/);
+  assert.match(
+    src,
+    /\[slotActiveId, \.\.\.openedChatIds, \.\.\.runningThreadKey\.split\("\\n"\)\]\.filter\(/,
+  );
+  // sorted, so reopening a chat already in the set changes no query
+  assert.match(src, /isAssistantLocalThreadId\(id\),\n\s*\),\n\s*\),\n\s*\]\.sort\(\);/);
+  assert.match(
+    src,
+    /keepOpenedChats\(touchOpenedChat\(opened, slotActiveId\), running\)/,
+  );
+  // looked up, never drawn: an opened chat past a list's loaded pages stays out of that list
+  assert.match(src, /includeIds: lookupIds \}\),\n\s*initialLimit: Number\.MAX_SAFE_INTEGER,\n\s*lookupOnly: true,/);
   // an unsaved draft has no row to look up
   assert.match(src, /Boolean\(id\) && !isAssistantLocalThreadId\(id\)/);
+  // every drawn list reads the listed rows; lookups read every loaded row
+  for (const list of ["recentChatItems", "pinnedChatItems"]) {
+    const body = src.slice(src.indexOf(`const ${list} = useMemo(`), src.indexOf(`const ${list} = useMemo(`) + 400);
+    assert.match(body, /listedChatItems/, list);
+    assert.doesNotMatch(body, /allChatItems/, list);
+  }
+  assert.match(src, /for \(const \[projectId, items\] of listedChatsByProjectId\)/);
+  assert.match(src, /for \(const item of listedChatItems\) \{\n\s*const sectionId = sectionByChatId\[item\.id\];/);
 });
 
 test("follow-ups that main got from the full list still happen with paged lists", () => {

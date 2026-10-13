@@ -184,6 +184,8 @@ function unregisterPager(pager: SidebarPager) {
 export interface SidebarRowSlot {
   query: SidebarRowQuery;
   initialLimit?: number;
+  /** loaded for row lookups only: its rows are in `items` but never in `listedItems` */
+  lookupOnly?: boolean;
 }
 
 export interface SidebarRowPages {
@@ -211,13 +213,37 @@ const IDLE_LIST: SidebarRowPages = {
   retry: () => Promise.resolve(),
 };
 
-/** `items` is every loaded row once, in slot order: what the sidebar derives its lists from. */
+type RowUnion = { parts: SidebarItem[][]; items: SidebarItem[] };
+
+/** Every row of `parts` once, in order; the previous array while no part changed. */
+function unionRows(previous: RowUnion, parts: SidebarItem[][]): RowUnion {
+  if (
+    previous.parts.length === parts.length &&
+    previous.parts.every((part, index) => part === parts[index])
+  ) {
+    return previous;
+  }
+  const seen = new Set<string>();
+  const items: SidebarItem[] = [];
+  for (const part of parts) {
+    for (const item of part) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      items.push(item);
+    }
+  }
+  return { parts, items: items.length ? items : EMPTY_ROWS };
+}
+
+/** `items` is every loaded row once, in slot order, for lookups; `listedItems` leaves out
+ *  lookup-only slots, so a list never draws a row its own pages have not reached. */
 export function useSidebarRowPages(
   slots: Record<string, SidebarRowSlot | null>,
   enabled: boolean,
 ): {
   lists: Record<string, SidebarRowPages>;
   items: SidebarItem[];
+  listedItems: SidebarItem[];
 } {
   const pagersRef = useRef(new Map<string, SidebarPager>());
   const [version, bump] = useReducer((n: number) => n + 1, 0);
@@ -294,16 +320,15 @@ export function useSidebarRowPages(
     };
   }, []);
 
-  const unionRef = useRef<{ parts: SidebarItem[][]; items: SidebarItem[] }>({
-    parts: [],
-    items: EMPTY_ROWS,
-  });
+  const unionRef = useRef<RowUnion>({ parts: [], items: EMPTY_ROWS });
+  const listedRef = useRef<RowUnion>({ parts: [], items: EMPTY_ROWS });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `version` moves on every pager change
   return useMemo(() => {
     const lists: Record<string, SidebarRowPages> = {};
     const parts: SidebarItem[][] = [];
-    for (const [name] of slotsRef.current) {
+    const listedParts: SidebarItem[][] = [];
+    for (const [name, slot] of slotsRef.current) {
       const pager = pagersRef.current.get(name);
       if (!pager) {
         lists[name] = IDLE_LIST;
@@ -311,6 +336,7 @@ export function useSidebarRowPages(
       }
       const state = pager.getState();
       parts.push(state.rows);
+      if (!slot.lookupOnly) listedParts.push(state.rows);
       lists[name] = {
         ...state,
         // nothing renders `error`, so the next scroll is the retry
@@ -326,23 +352,9 @@ export function useSidebarRowPages(
         retry: () => pager.retry(),
       };
     }
-    // keep identity: every sidebar memo depends on this array
-    const previous = unionRef.current;
-    if (
-      previous.parts.length !== parts.length ||
-      previous.parts.some((part, index) => part !== parts[index])
-    ) {
-      const seen = new Set<string>();
-      const items: SidebarItem[] = [];
-      for (const part of parts) {
-        for (const item of part) {
-          if (seen.has(item.id)) continue;
-          seen.add(item.id);
-          items.push(item);
-        }
-      }
-      unionRef.current = { parts, items: items.length ? items : EMPTY_ROWS };
-    }
-    return { lists, items: unionRef.current.items };
+    // keep identity: every sidebar memo depends on these arrays
+    unionRef.current = unionRows(unionRef.current, parts);
+    listedRef.current = unionRows(listedRef.current, listedParts);
+    return { lists, items: unionRef.current.items, listedItems: listedRef.current.items };
   }, [version, slotKey]);
 }

@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
   HELP_GROUPS,
@@ -416,6 +417,19 @@ const MOVE_TO_LIST =
 const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+/** Chats per project, newest first. */
+function groupChatsByProject(items: readonly SidebarItem[]): Map<string, SidebarItem[]> {
+  const map = new Map<string, SidebarItem[]>();
+  for (const item of items) {
+    if (!item.projectId) continue;
+    const list = map.get(item.projectId);
+    if (list) list.push(item);
+    else map.set(item.projectId, [item]);
+  }
+  for (const list of map.values()) list.sort((a, b) => b.updatedAt - a.updatedAt);
+  return map;
+}
+
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
 // instead, which answers with its last slot, so each row's box reaches over the gap below it.
 const DROP_ROW_HIT = "pb-px -mb-px";
@@ -1475,7 +1489,7 @@ export function AppSidebar() {
   // `allChatItems` is only what the paged lists have loaded, not the whole history.
   const sectionFiledChatIds = useMemo(() => Object.keys(sectionByChatId), [sectionByChatId]);
   const [openFolderIds, setOpenFolderIds] = useState<readonly string[]>([]);
-  // the open and running chats load their rows, so row lookups never miss them
+  // the last 20 opened chats and every running one load their rows, so row lookups never miss them
   const slotStoreThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const runningThreadKey = useChatRuntimeStore((s) =>
     Object.keys(s.runningByThreadId)
@@ -1489,15 +1503,22 @@ export function AppSidebar() {
       slotStoreThreadId ??
       undefined)
     : undefined;
+  const [openedChatIds, setOpenedChatIds] = useState<readonly string[]>([]);
+  useEffect(() => {
+    if (!slotActiveId || isAssistantLocalThreadId(slotActiveId)) return;
+    const running = new Set(runningThreadKey.split("\n"));
+    setOpenedChatIds((opened) => keepOpenedChats(touchOpenedChat(opened, slotActiveId), running));
+  }, [slotActiveId, runningThreadKey]);
   const chatRowSlots = useMemo(() => {
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
+    // sorted, so reopening a chat already in the set asks the server nothing
     const lookupIds = [
       ...new Set(
-        [slotActiveId, ...runningThreadKey.split("\n")].filter(
+        [slotActiveId, ...openedChatIds, ...runningThreadKey.split("\n")].filter(
           (id): id is string => Boolean(id) && !isAssistantLocalThreadId(id),
         ),
       ),
-    ];
+    ].sort();
     const slots: Record<string, SidebarRowSlot | null> = {
       recents: {
         query: sidebarRowQuery({
@@ -1520,7 +1541,13 @@ export function AppSidebar() {
             }),
           }
         : null,
-      active: lookupIds.length ? { query: sidebarRowQuery({ includeIds: lookupIds }) } : null,
+      active: lookupIds.length
+        ? {
+            query: sidebarRowQuery({ includeIds: lookupIds }),
+            initialLimit: Number.MAX_SAFE_INTEGER,
+            lookupOnly: true,
+          }
+        : null,
     };
     for (const section of customSections) {
       const ids = sectionFiledChatIds.filter(
@@ -1532,6 +1559,7 @@ export function AppSidebar() {
         slots[`latest:${section.id}`] = {
           initialLimit: 1,
           query: sidebarRowQuery({ includeIds: ids }),
+          lookupOnly: true,
         };
       }
       if (hiddenSectionSet.has(section.id)) continue;
@@ -1569,9 +1597,14 @@ export function AppSidebar() {
     hiddenSectionSet,
     openFolderIds,
     slotActiveId,
+    openedChatIds,
     runningThreadKey,
   ]);
-  const { lists: chatRowLists, items: allChatItems } = useSidebarRowPages(
+  const {
+    lists: chatRowLists,
+    items: allChatItems,
+    listedItems: listedChatItems,
+  } = useSidebarRowPages(
     chatRowSlots,
     !isStudioRoute,
   );
@@ -1619,13 +1652,13 @@ export function AppSidebar() {
   // held back either way: the Pinned section renders those, as a custom section does its own.
   const recentChatItems = useMemo(
     () =>
-      allChatItems.filter(
+      listedChatItems.filter(
         (item) =>
           !pinnedIdSet.has(item.id) &&
           !sectionByChatId[item.id] &&
           showsInRecents(item.projectId, organizeBy),
       ),
-    [allChatItems, pinnedIdSet, sectionByChatId, organizeBy],
+    [listedChatItems, pinnedIdSet, sectionByChatId, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const pinnedPages = usePinnedPages();
@@ -1640,24 +1673,17 @@ export function AppSidebar() {
   );
   // Pinned chats, in pin order. A pinned project chat shows here only.
   const pinnedChatItems = useMemo(() => {
-    const byId = new Map(allChatItems.map((item) => [item.id, item]));
+    const byId = new Map(listedChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
       .filter((item): item is SidebarItem => Boolean(item));
-  }, [allChatItems, pinnedIds]);
+  }, [listedChatItems, pinnedIds]);
   // Chats per project, newest first. Pinned ones included, as they still count as activity.
-  const chatsByProjectId = useMemo(() => {
-    const map = new Map<string, SidebarItem[]>();
-    for (const item of allChatItems) {
-      if (!item.projectId) continue;
-      const list = map.get(item.projectId);
-      if (list) list.push(item);
-      else map.set(item.projectId, [item]);
-    }
-    for (const list of map.values())
-      list.sort((a, b) => b.updatedAt - a.updatedAt);
-    return map;
-  }, [allChatItems]);
+  const chatsByProjectId = useMemo(() => groupChatsByProject(allChatItems), [allChatItems]);
+  const listedChatsByProjectId = useMemo(
+    () => groupChatsByProject(listedChatItems),
+    [listedChatItems],
+  );
   // A project's last activity: its own edits or its newest chat. Its updatedAt only moves when it
   // is edited.
   const projectActivityAt = useMemo(() => {
@@ -1952,7 +1978,7 @@ export function AppSidebar() {
 
   const sortedChatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
-    for (const [projectId, items] of chatsByProjectId) {
+    for (const [projectId, items] of listedChatsByProjectId) {
       map.set(
         projectId,
         sortChatItems(
@@ -1966,7 +1992,7 @@ export function AppSidebar() {
       );
     }
     return map;
-  }, [chatsByProjectId, sortChatItems, chatSort, pinnedIdSet, sectionByChatId]);
+  }, [listedChatsByProjectId, sortChatItems, chatSort, pinnedIdSet, sectionByChatId]);
   // One id array per list, shared by every row in it. Built per row, these
   // would be N arrays of length N on each render.
   const recentRowIds = useMemo(
@@ -2015,7 +2041,7 @@ export function AppSidebar() {
       if (!sectionId || pinnedProjectIdSet.has(project.id)) continue;
       folders.get(sectionId)?.push({ kind: "project", id: project.id, project });
     }
-    for (const item of allChatItems) {
+    for (const item of listedChatItems) {
       const sectionId = sectionByChatId[item.id];
       if (!sectionId || pinnedIdSet.has(item.id)) continue;
       chats.get(sectionId)?.push(item);
@@ -2045,7 +2071,7 @@ export function AppSidebar() {
   }, [
     customSections,
     projects,
-    allChatItems,
+    listedChatItems,
     sectionByProjectId,
     sectionByChatId,
     pinnedPages,
