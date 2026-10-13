@@ -1711,14 +1711,22 @@ pub async fn browser_view_agent<R: Runtime>(
 const EVAL_SCRIPT: &str = r#"(() => {
   const agent = window[Symbol.for("unsloth.agent")];
   if (!agent || typeof agent.evaluate !== "function") return JSON.stringify({ installed: false, result: null });
-  return JSON.stringify({ installed: true, result: agent.evaluate(__ID__, async () => {
+  return JSON.stringify({ installed: true, result: agent.evaluate(__ID__, __DOC__, async () => {
 __CODE__
 }) });
 })()"#;
-// browser_agent.py allows 20 000 characters, of up to 4 bytes each.
-const MAX_EVAL_CODE: usize = 80_000;
+// browser_agent.py allows 8000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 32_000;
 
-fn eval_script(id: &str, code: &str) -> Result<String, String> {
+fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
+    // The agent's ref for the approved document, as `r` and digits.
+    if doc.len() < 2
+        || doc.len() > 16
+        || !doc.starts_with('r')
+        || !doc[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err("bad document ref".into());
+    }
     if id.is_empty()
         || id.len() > 64
         || !id
@@ -1731,8 +1739,11 @@ fn eval_script(id: &str, code: &str) -> Result<String, String> {
         return Err("script too large".into());
     }
     let (head, rest) = EVAL_SCRIPT.split_once("__ID__").ok_or("bad eval script")?;
+    let (between, rest) = rest.split_once("__DOC__").ok_or("bad eval script")?;
     let (middle, tail) = rest.split_once("__CODE__").ok_or("bad eval script")?;
-    Ok(format!("{head}\"{id}\"{middle}{code}{tail}"))
+    Ok(format!(
+        "{head}\"{id}\"{between}\"{doc}\"{middle}{code}{tail}"
+    ))
 }
 
 /// Starts a browser_evaluate script in a tab's page; the agent's `evaluated` command reads how it ended.
@@ -1741,11 +1752,12 @@ pub async fn browser_view_eval<R: Runtime>(
     webview: Webview<R>,
     tab_id: String,
     id: String,
+    doc: String,
     code: String,
 ) -> Result<serde_json::Value, String> {
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
-    let script = eval_script(&id, &code)?;
+    let script = eval_script(&id, &doc, &code)?;
     eval_json(&page, script).await
 }
 
@@ -2384,12 +2396,14 @@ mod tests {
 
     #[test]
     fn eval_code_is_spliced_once_and_ids_are_plain() {
-        let script = eval_script("s1-a_B", "return '__ID__';").unwrap();
-        assert!(script.contains(r#"agent.evaluate("s1-a_B", async () => {"#));
-        assert!(script.contains("return '__ID__';"));
-        assert!(eval_script("a\"); evil(\"", "").is_err());
-        assert!(eval_script("", "").is_err());
-        assert!(eval_script("s1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
+        let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
+        assert!(script.contains(r#"agent.evaluate("s1-a_B", "r100001", async () => {"#));
+        assert!(script.contains("return '__ID__' + '__DOC__';"));
+        assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
+        assert!(eval_script("", "r1", "").is_err());
+        assert!(eval_script("s1", "r1\"", "").is_err());
+        assert!(eval_script("s1", "", "").is_err());
+        assert!(eval_script("s1", "r1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

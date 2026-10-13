@@ -10,14 +10,14 @@ export type AgentCommand =
   | { op: "snapshot"; fullPage?: boolean; ref?: string }
   | { op: "find"; query: string }
   | { op: "describe"; ref: string; x?: number; y?: number }
-  | { op: "click"; ref: string; directLinks: boolean; x?: number; y?: number }
+  | { op: "click"; ref: string; directLinks: boolean; x?: number; y?: number; expect?: string }
   | { op: "locate"; ref: string; scroll: boolean }
-  | { op: "pointer"; phase: "down" | "move" | "up"; x: number; y: number }
+  | { op: "pointer"; phase: "down" | "move" | "up"; x: number; y: number; expect?: string }
   | { op: "type"; ref: string; text: string; submit: boolean }
   | { op: "select"; ref: string; value: string }
   | { op: "scroll"; direction: "up" | "down"; ref?: string }
   | { op: "press"; key: string }
-  | { op: "evaluate"; id: string; script: string }
+  | { op: "evaluate"; id: string; doc: string; script: string }
   | { op: "evaluated"; id: string }
   | { op: "status" };
 
@@ -52,18 +52,22 @@ export type AgentAnswer = {
   /** `locate`: the ref's centre, absent when it is off screen. */
   x?: number;
   y?: number;
-  /** `status`: the visible page's size in CSS pixels. */
+  /** `status`, `mask`: the visible page's size in CSS pixels. */
   width?: number;
   height?: number;
   /** `evaluate`, `evaluated`: the script hasn't finished yet. */
   pending?: boolean;
+  /** `describe` at a point: the element there, for a click or drag's `expect`. */
+  hit?: string;
+  /** `status`: this document, for `evaluate` to refuse any other. */
+  doc?: string;
 };
 
 /** `evaluate`: the desktop app's native views splice the model's script into source, past the
  *  page's CSP, and hand it here as `run`; the proxied frame compiles it (`evaluate` op). */
 export type PageAgent = {
   run: (command: Record<string, unknown>) => Record<string, unknown>;
-  evaluate: (id: string, run: () => unknown) => Record<string, unknown>;
+  evaluate: (id: string, doc: unknown, run: () => unknown) => Record<string, unknown>;
 };
 
 /** Returns the agent it built, so the proxied frame keeps its own reference rather than trusting
@@ -295,7 +299,8 @@ export function installPageAgent(): PageAgent {
       el.style.setProperty("-webkit-text-fill-color", "transparent", "important");
       el.style.setProperty("text-shadow", "none", "important");
     }
-    return { ok: true };
+    // The page's size, so the panel can scale the screenshot to it.
+    return { ok: true, width: window.innerWidth, height: window.innerHeight };
   };
 
   const stateOf = (el: Element, role: string): string[] => {
@@ -578,7 +583,17 @@ export function installPageAgent(): PageAgent {
         : {}),
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
-    return { ok: true, info };
+    // A point's element, so the action after the panel's question hits what was asked about.
+    return point ? { ok: true, info, hit: refOf(found) } : { ok: true, info };
+  };
+
+  /** The element at the point, if it is still the one `expect` (a describe's `hit`) named. */
+  const stillAt = (at: Point, expect: unknown): Element => {
+    const el = elementAt(at);
+    if (typeof expect === "string" && expect && refOf(el) !== expect) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    return el;
   };
 
   const covering = (el: Element): Element | null => {
@@ -671,8 +686,8 @@ export function installPageAgent(): PageAgent {
   };
 
   /** No overlay check: a point gets whatever is drawn on top there, as a real click would. */
-  const clickAt = (at: Point, directLinks: boolean): Record<string, unknown> => {
-    const el = elementAt(at);
+  const clickAt = (at: Point, directLinks: boolean, expect: unknown): Record<string, unknown> => {
+    const el = stillAt(at, expect);
     const navigate = linkOut(el, directLinks);
     if (navigate) return { ok: true, navigate };
     pressAt(el, at);
@@ -703,8 +718,8 @@ export function installPageAgent(): PageAgent {
       new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: at.x, clientY: at.y, dataTransfer: data, view: window }),
     );
 
-  const pointer = (phase: unknown, at: Point): Record<string, unknown> => {
-    const el = elementAt(at);
+  const pointer = (phase: unknown, at: Point, expect: unknown): Record<string, unknown> => {
+    const el = phase === "down" ? stillAt(at, expect) : elementAt(at);
     if (phase === "down") {
       pressAt(el, at);
       drag = { html: null };
@@ -770,7 +785,11 @@ export function installPageAgent(): PageAgent {
       return "a value that can't be shown";
     }
   };
-  const evaluate = (id: string, start: () => unknown): Record<string, unknown> => {
+  /** `doc`: the document the user approved the script on (`status` gives it); any other refuses. */
+  const evaluate = (id: string, doc: unknown, start: () => unknown): Record<string, unknown> => {
+    if (typeof doc !== "string" || refOf(document.documentElement) !== doc) {
+      return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
+    }
     const oldest = scripts.keys().next().value;
     if (scripts.size >= 20 && oldest !== undefined) scripts.delete(oldest);
     const entry = { done: false, text: "" };
@@ -789,7 +808,7 @@ export function installPageAgent(): PageAgent {
     }
     return { ok: true, pending: true };
   };
-  const compileAndEvaluate = (id: string, script: string): Record<string, unknown> => {
+  const compileAndEvaluate = (id: string, doc: unknown, script: string): Record<string, unknown> => {
     let start: () => unknown;
     try {
       const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (body: string) => () => unknown;
@@ -798,7 +817,7 @@ export function installPageAgent(): PageAgent {
       // A syntax error, or a page policy that forbids compiling scripts.
       start = () => Promise.reject(error);
     }
-    return evaluate(id, start);
+    return evaluate(id, doc, start);
   };
   const evaluated = (id: string): Record<string, unknown> => {
     const entry = scripts.get(id);
@@ -1064,6 +1083,7 @@ export function installPageAgent(): PageAgent {
             title: document.title,
             width: window.innerWidth,
             height: window.innerHeight,
+            doc: refOf(document.documentElement),
           };
         case "snapshot":
           return snapshot(command.fullPage === true, ref || undefined);
@@ -1073,16 +1093,18 @@ export function installPageAgent(): PageAgent {
           return describe(ref, command.value, pointIn(command));
         case "click": {
           const at = pointIn(command);
-          return inOwnTab(() => (at ? clickAt(at, command.directLinks === true) : click(ref, command.directLinks === true)));
+          return inOwnTab(() =>
+            at ? clickAt(at, command.directLinks === true, command.expect) : click(ref, command.directLinks === true),
+          );
         }
         case "locate":
           return locate(ref, command.scroll === true);
         case "pointer": {
           const at = pointIn(command);
-          return at ? inOwnTab(() => pointer(command.phase, at)) : { ok: false, error: "unknown command" };
+          return at ? inOwnTab(() => pointer(command.phase, at, command.expect)) : { ok: false, error: "unknown command" };
         }
         case "evaluate":
-          return compileAndEvaluate(String(command.id ?? ""), String(command.script ?? ""));
+          return compileAndEvaluate(String(command.id ?? ""), command.doc, String(command.script ?? ""));
         case "evaluated":
           return evaluated(String(command.id ?? ""));
         case "type":

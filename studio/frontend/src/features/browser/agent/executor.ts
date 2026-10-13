@@ -86,7 +86,7 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     toRef: str(raw.to_ref, 16),
     toX: num(raw.to_x),
     toY: num(raw.to_y),
-    script: str(raw.script, 20_000),
+    script: str(raw.script, 8000),
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
     limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
@@ -250,6 +250,8 @@ const AGENT_ERRORS = [
   /^that point is outside the visible page; take a screenshot to see what is there\.$/,
   /^that point is inside an embedded frame, which the browser tools can't reach\.$/,
   /^the script's page went away before it finished; take a snapshot\.$/,
+  /^the page changed under that point; take a screenshot to see it again\.$/,
+  /^the page changed while the user was asked, so the script did not run; take a snapshot\.$/,
   /^unknown command$/,
 ];
 
@@ -279,6 +281,8 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     width: num(raw.width),
     height: num(raw.height),
     pending: raw.pending === true,
+    hit: str(raw.hit, 16),
+    doc: str(raw.doc, 16),
     title: typeof raw.title === "string" ? raw.title.slice(0, 300) : undefined,
     info: info
       ? {
@@ -606,7 +610,12 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   let note: string | undefined;
   if (action.op === "click") {
-    const clicked = await pageCall(ready, { op: "click", ref, ...point, directLinks: !useNativeBrowser.getState().enabled });
+    const clicked = await pageCall(ready, {
+      op: "click",
+      ref,
+      ...(point ? { ...point, expect: described.hit ?? "" } : {}),
+      directLinks: !useNativeBrowser.getState().enabled,
+    });
     if (!clicked.ok) return { ok: false, error: clicked.error };
     if (clicked.navigate) {
       // A link: opened in this tab, under the same rules as any other address. Its href is read
@@ -696,25 +705,31 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   if (typeof start === "string") return { ok: false, error: start };
   const end = await onScreen(tab, action.toRef, action.toX, action.toY);
   if (typeof end === "string") return { ok: false, error: end };
-  // Bringing the end into view can scroll the start away.
-  const from = action.ref ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
+  // Bringing the end ref into view can scroll the start away.
+  const from = action.ref && action.toRef ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
   if (typeof from === "string") {
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
+  let expect = "";
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
     const refused = await pass(gateElement("click", described.info, before, action.policy, permissions()), signal);
     if (refused) return { ok: false, error: refused };
+    expect ||= described.hit ?? "";
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from });
+  // The end isn't held to its element: a drag moves things under the pointer, and the drop is no click.
+  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect });
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
   const steps = Math.min(25, Math.max(5, Math.round(Math.hypot(end.x - from.x, end.y - from.y) / DRAG_STEP_PX)));
   let at = from;
+  let sent = performance.now();
   for (let step = 1; step <= steps && !signal?.aborted; step++) {
-    await sleep(DRAG_FRAME_MS);
+    // A frame per move, the round trip counting toward it.
+    await sleep(Math.max(0, DRAG_FRAME_MS - (performance.now() - sent)));
+    sent = performance.now();
     const next = { x: from.x + ((end.x - from.x) * step) / steps, y: from.y + ((end.y - from.y) * step) / steps };
     const moved = await pageCall(tab, { op: "pointer", phase: "move", ...next }).catch(() => null);
     if (!moved?.ok) break;
@@ -737,22 +752,32 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
   const { signal } = context;
   const script = action.script ?? "";
   if (!script.trim()) return { ok: false, error: "the script is empty." };
+  // The document the user sees as they approve: a reload or a page at the same address is another one.
+  const doc = (await pageCall(tab, { op: "status" })).doc;
+  if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
   const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
+  // The user approved it for the page they saw, which may have moved on while they read it.
+  const current = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
+  if (!current || current.loading || tabUrl(current) !== before) {
+    return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
+  }
   const id = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
   let started: AgentAnswer | null = null;
   if (useNativeBrowser.getState().enabled) {
-    // Installs the agent the script hands its outcome to.
-    await pageCall(tab, { op: "status" });
     const reply = hasNativeView(tab.id)
-      ? await callNative<{ installed: boolean; result: unknown }>("browser_view_eval", { tabId: tab.id, id, code: script }).catch(
+      ? await callNative<{ installed: boolean; result: unknown }>("browser_view_eval", { tabId: tab.id, id, doc, code: script }).catch(
           () => null,
         )
       : null;
-    started = reply?.installed ? checkedAnswer(reply.result) : null;
+    // No agent: a new document since the user was asked.
+    if (reply && !reply.installed) {
+      return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
+    }
+    started = reply ? checkedAnswer(reply.result) : null;
   } else {
-    started = await pageCall(tab, { op: "evaluate", id, script });
+    started = await pageCall(tab, { op: "evaluate", id, doc, script });
   }
   if (!started) return { ok: false, error: "the script did not start; check it for a syntax error." };
   if (!started.ok) return { ok: false, error: started.error };
@@ -856,7 +881,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
   if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
   }
-  blob = await toPointScale(tab, blob);
+  blob = await toPointScale(tab, blob, masked);
   const image = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
@@ -868,8 +893,7 @@ async function screenshot(tab: BrowserTab): Promise<Result> {
 
 /** The picture at the page's own CSS size (device pixels otherwise), within the server's
  *  1024px edge (mcp_images.MAX_IMAGE_EDGE), so x and y read off it map back exactly. */
-async function toPointScale(tab: BrowserTab, blob: Blob): Promise<Blob> {
-  const status = await pageCall(tab, { op: "status" }).catch(() => null);
+async function toPointScale(tab: BrowserTab, blob: Blob, size: AgentAnswer): Promise<Blob> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(blob);
@@ -877,8 +901,8 @@ async function toPointScale(tab: BrowserTab, blob: Blob): Promise<Blob> {
     return blob;
   }
   try {
-    const cssWidth = status?.width || bitmap.width;
-    const cssHeight = status?.height || bitmap.height;
+    const cssWidth = size.width || bitmap.width;
+    const cssHeight = size.height || bitmap.height;
     const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(cssWidth, cssHeight));
     const width = Math.max(1, Math.round(cssWidth * fit));
     const height = Math.max(1, Math.round(cssHeight * fit));

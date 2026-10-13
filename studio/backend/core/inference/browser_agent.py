@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import unicodedata
 from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
@@ -141,8 +142,7 @@ BROWSER_DRAG_TOOL = {
         "name": "browser_drag",
         "description": (
             "Press the mouse on an element or point, move it to another, and release: to drag an "
-            "item or a map. Start at ref or x and y, end at to_ref or to_x and to_y. "
-            + _POINT_NOTE
+            "item or a map. Start at ref or x and y, end at to_ref or to_x and to_y. " + _POINT_NOTE
         ),
         "parameters": {
             "type": "object",
@@ -320,7 +320,9 @@ _ACTION_TIMEOUT_S = 600.0
 _MIN_ACTION_TIMEOUT_S = 30.0
 _MAX_URL_CHARS = 4096
 _MAX_TEXT_CHARS = 8000
-_MAX_SCRIPT_CHARS = 20000
+# Short enough to read before approving it.
+_MAX_SCRIPT_CHARS = 8000
+_HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 # Past any real screen: a point there is a mistake, not a far corner.
 _MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
@@ -447,6 +449,14 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             raise ValueError("script must be the JavaScript to run.")
         if len(script) > _MAX_SCRIPT_CHARS:
             raise ValueError(f"script is longer than {_MAX_SCRIPT_CHARS} characters.")
+        # The user approves the script as the panel shows it: no characters that draw differently
+        # from how they run (bidi overrides, invisible marks), and no blank run hiding a tail.
+        if any(unicodedata.category(char) == "Cf" for char in script):
+            raise ValueError(
+                "script has invisible or direction-changing characters; write them as \\u escapes."
+            )
+        if _HIDDEN_TAIL_RE.search(script):
+            raise ValueError("script has a long run of blank space; remove it.")
         return {"op": op, "script": script}
     if name in ("browser_type", "browser_select"):
         ref = _ref(arguments)
