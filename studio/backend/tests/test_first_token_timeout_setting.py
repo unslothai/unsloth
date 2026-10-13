@@ -145,17 +145,6 @@ def test_windows_bounds_the_header_wait_while_unlimited_body_reads_stay_unbounde
     from contextlib import contextmanager
 
     limit.set_minutes(0)
-    seen = {}
-
-    @contextmanager
-    def stream(*_args, timeout, **_kwargs):
-        seen["read"] = timeout.read
-        yield SimpleNamespace()
-
-    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "win32")
-    with LlamaCppBackend._stream_with_retry(SimpleNamespace(stream = stream), "url", {}):
-        pass
-    assert seen["read"] == 1200.0
     attempts = iter([httpcore.ReadTimeout("slice"), httpcore.ReadTimeout("slice"), b"x"])
 
     def read(_max_bytes, timeout = None):
@@ -169,10 +158,20 @@ def test_windows_bounds_the_header_wait_while_unlimited_body_reads_stay_unbounde
         _connections = [SimpleNamespace(_connection = SimpleNamespace(_network_stream = network))]
     )
     response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {"read": None}}))
-    LlamaCppBackend._install_cancel_aware_read(
-        SimpleNamespace(_transport = SimpleNamespace(_pool = pool)), threading.Event(), response
-    )
-    assert network.read(1, timeout = 0.001) == b"x"
+    seen = {}
+
+    @contextmanager
+    def stream(*_args, timeout, **_kwargs):
+        seen["read"] = timeout.read
+        yield response
+
+    client = SimpleNamespace(stream = stream, _transport = SimpleNamespace(_pool = pool))
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "win32")
+    with LlamaCppBackend._stream_with_retry(
+        client, "url", {}
+    ):  # No cancel event, as the CLI calls it.
+        assert seen["read"] == 1200.0
+        assert network.read(1, timeout = 0.001) == b"x"
 
 
 @pytest.mark.asyncio

@@ -37204,11 +37204,13 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
-                if cancel_event is not None:
-                    # Portable mid-stream cancel: the reader polls cancel itself, so
-                    # Stop interrupts a stalled read where the watcher's Windows socket
-                    # shutdown does not. Pass response to honor the live stall timeout.
-                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
+                # Portable mid-stream cancel: the reader polls cancel itself, so Stop
+                # interrupts a stalled read where the watcher's Windows socket shutdown
+                # does not. Installed without a cancel event too: only this wrapper
+                # honors the live stall timeout over the one latched for the header wait.
+                LlamaCppBackend._install_cancel_aware_read(
+                    client, cancel_event or threading.Event(), response
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
