@@ -2043,6 +2043,8 @@ class AudioCppModel:
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
+    # Whether the file listing came from the Hub rather than the HF cache.
+    from_hub: bool = field(default = False, hash = False, compare = False)
 
     @property
     def is_package(self) -> bool:
@@ -2431,6 +2433,7 @@ def _resolve_uncached(
         separation = policy.separation,
         music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
         request_keys = _request_keys(spec, embedded),
+        from_hub = from_hub,
     )
     return model.with_variant(chosen)
 
@@ -2538,15 +2541,15 @@ def download_target(
     """
     if not is_umbrella_id(identifier):
         return None
-    network = not hub_offline()
-    model = resolve(identifier, variant, hf_token, network = network)
+    model = resolve(identifier, variant, hf_token, network = not hub_offline())
     if model is None or not model.repo_id or not model.variant.primary:
         return None
     from hub.utils.gguf import gguf_variant_key
 
     key = gguf_variant_key(model.variant.primary)
-    # A cache-only listing can name a crowded folder's file by its bare quant; only the Hub's is kept.
-    if network:
+    # A cache-only listing (offline, or a failed Hub call) can name a crowded folder's file by its
+    # bare quant; only the Hub's is kept.
+    if model.from_hub:
         with _job_rows_lock:
             _job_rows[(model.repo_id.lower(), key.lower())] = (model.id, model.variant.key)
     return model.repo_id, key
