@@ -26,11 +26,13 @@ def test_nemotron_h_fast_inference_falls_back(capfd):
         load_in_4bit = False,
         fast_inference = True,
         gpu_memory_utilization = 0.1,
+        # vLLM engine knobs reach transformers' from_pretrained unless the fallback drops them.
+        enforce_eager = True,
+        max_num_seqs = 8,
     )
-    assert (
-        "does not support nemotron_h yet - will switch to Unsloth inference"
-        in capfd.readouterr().out
-    )
+    out = capfd.readouterr().out
+    assert "does not support nemotron_h yet - will switch to Unsloth inference" in out
+    assert "Ignoring vLLM-only arguments ['enforce_eager', 'max_num_seqs']" in out
     assert getattr(model, "vllm_engine", None) is None
 
     inputs = tokenizer(["Hello"], return_tensors = "pt").to(model.device)
