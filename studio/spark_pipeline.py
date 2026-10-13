@@ -561,6 +561,13 @@ def _materialise(model, model_name, cfg, device, dtype, log):
         if alias not in loaded and src in loaded and _has_parameter(model, alias):
             loaded[alias] = loaded[src]
     model.load_state_dict(loaded, strict = False, assign = True)
+    # assign=True installs a separate Parameter per name even for one tensor, so the optimizer would
+    # step a tied weight twice: put the source's Parameter object back under the alias.
+    for alias, src in aliases.items():
+        if alias in loaded and _has_parameter(model, alias) and _has_parameter(model, src):
+            owner_name, _, leaf = alias.rpartition(".")
+            source = model.get_parameter(src)
+            setattr(model.get_submodule(owner_name) if owner_name else model, leaf, source)
 
     # Buffers were computed on the CPU by _parameters_on_meta; move them beside the weights.
     for mod in model.modules():
