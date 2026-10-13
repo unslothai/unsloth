@@ -60,10 +60,10 @@ export const BUDGET = {
   // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
   // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
   // so main's margin stays where it was.
-  // Sidebar server paging adds 16.3 KB raw / 5.5 KB transfer to the first screen (6,534.6 -> 6,550.9
-  // KB raw, 1,963.9 -> 1,969.4 KB transfer against 428ac9842, one machine and build), raised by that.
-  transferBytes: 2_018_700,
-  rawBytes: 6_719_700,
+  // Sidebar server paging adds 17.5 KB raw / 6.0 KB transfer to the first screen (6,534.6 -> 6,552.1
+  // KB raw, 1,963.9 -> 1,969.9 KB transfer against 428ac9842, one machine and build), raised by that.
+  transferBytes: 2_019_200,
+  rawBytes: 6_721_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
