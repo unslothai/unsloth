@@ -7218,16 +7218,18 @@ _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
 # routed expert bytes on the GPU. Measured, decode / prompt t/s vs the split:
 #   L4, gemma-4-26B-A4B UD-Q4_K_XL (r at micro-batch 512 / 2048): r 0.23 / 0.20 cache
 #   23.5 / 384 vs split 24.5 / 448 (loses both), r 0.53 / 0.49 44.9 / 556 vs 31.2 / 593
-#   (+44% decode), r 0.82 / 0.79 48.5 / 592 vs 42.0 / 897 (prompt -34%, -50% with a busy
+#   (+44% decode), r 0.82 / 0.79 48.5 / 592 vs 42.0 / 897 (prompt -34%, 0.20x with a busy
 #   PCIe link). On a 2.9 GiB/s host link the cache kept 0.60x decode at r 0.23 and gained
 #   1.54x at r 0.53.
 #   RTX PRO 6000, Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
 # Bounds sit between the losing and winning points; an unknown share keeps the split.
 _MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
 _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
-# Whether a launch with a drafter (MTP head, separate drafter) may get the cache. With
-# ngram drafting the cache still won decode by 19% at r 0.49 and lost only at r 0.79,
-# which the band already excludes; set False to keep drafted launches on the split.
+# Whether a launch with a drafter (MTP head, separate drafter) may get the cache. Its
+# verify batches (n_max + 1 tokens) stay on the small-batch cache path. L4 gemma-4,
+# cache vs split decode: MTP drafter 1.76x at r 0.53, 1.25x at r 0.82, 0.96x at r 0.23;
+# ngram-mod 1.19x / 0.87x / 1.11x. The band covers the losses; False keeps drafted
+# launches on the split.
 _MOE_CACHE_WITH_DRAFTER = True
 # The expert-spill micro-batch raise is skipped when its larger compute buffer would push
 # more than this fraction of the resident expert bytes off the GPU. L4 gemma-4: at r 0.23

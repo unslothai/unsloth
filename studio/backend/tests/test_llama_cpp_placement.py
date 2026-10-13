@@ -4806,6 +4806,22 @@ def test_the_raise_is_dropped_when_it_would_leave_the_cache_under_half(
     assert _has_moe_cache(cmd) is cached, cmd
 
 
+@pytest.mark.parametrize(
+    "free_mib, ubatch",
+    [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
+    ids = ["tight_split", "tight_cache", "roomy"],
+)
+def test_a_skipped_raise_keeps_the_projector_micro_batch(
+    tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
+):
+    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back."""
+    monkeypatch.setattr(llama_cpp_module, "_launch_required_ubatch", lambda *a, **k: 1120)
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+
+    assert _ubatch_values(cmd) == ubatch, cmd
+
+
 def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
     """``--moe-cache-mib 0 -ub 512``, the workaround users ran on v0.1.906."""
     backend, cmd = _cache_launch(tmp_path, extra_args = ["--moe-cache-mib", "0", "-ub", "512"])
