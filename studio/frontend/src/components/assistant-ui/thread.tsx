@@ -77,6 +77,7 @@ import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-g
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
+import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -117,6 +118,7 @@ import {
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
+  ChatComposerFocusableContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
@@ -401,6 +403,7 @@ import {
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
 } from "@hugeicons/core-free-icons";
@@ -433,7 +436,9 @@ import {
   type ReactNode,
   type RefObject,
   Fragment,
+  Suspense,
   createContext,
+  lazy,
   memo,
   useCallback,
   useContext,
@@ -2401,6 +2406,7 @@ export const Thread: FC<{
       </ThreadPrimitive.Root>
       {/* Document preview, opened by citation badges. */}
       <DocumentPreviewMount />
+      <RewindDialogMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -2868,7 +2874,7 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
   // always show; Images, RAG, MCP and Deep Research are conditional.
   // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
@@ -3788,6 +3794,18 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  const composerFocusable = useContext(ChatComposerFocusableContext);
+  // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
+  // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
+  // a press and read as Chat being covered.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (composerFocusable || !input) return;
+    input.focus = () => {};
+    return () => {
+      Reflect.deleteProperty(input, "focus");
+    };
+  }, [composerFocusable, isDictating]);
   const readAudioUploadDraft = useCallback(
     () => aui.composer().getState().text,
     [aui],
@@ -5354,6 +5372,20 @@ const Composer: FC<{
         event.preventDefault();
         return;
       }
+      // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
+      if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
+        event.preventDefault();
+        if (threadIsRunning || aui.thread().getState().isRunning) {
+          toast.error(translate("rewind.waitForResponse"));
+          return;
+        }
+        aui.composer().setText("");
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId: null,
+        });
+        return;
+      }
       if (
         !overlay &&
         !hasAttachments &&
@@ -6535,10 +6567,10 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
-      data-pill-label="Code"
+      data-pill-label="Tools"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+        codeToolsEnabled ? "Disable tools" : "Enable tools"
       }
     >
       <PillGlyph>
@@ -6548,7 +6580,7 @@ const CodeToolsToggle: FC = () => {
           strokeWidth={2}
         />
       </PillGlyph>
-      <span>Code</span>
+      <span>Tools</span>
     </button>
   );
 };
@@ -7185,7 +7217,7 @@ const ComposerToolsMenu: FC<{
             strokeWidth={2}
             className="scale-[1.12]"
           />
-          Code
+          Tools
           {codeToolsEnabled && !codeDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
@@ -8620,7 +8652,50 @@ const ForkMessageMenuItem: FC = () => {
   );
 };
 
-// A prompt's More menu: Fork, then Delete.
+// Loaded on first use: the dialog is not part of the first screen.
+const LazyRewindDialog = lazy(() =>
+  import("@/components/assistant-ui/rewind-dialog").then((module) => ({
+    default: module.RewindDialog,
+  })),
+);
+
+const RewindDialogMount: FC = () => {
+  const requested = useRewindDialogStore((s) => s.request !== null);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (requested) setLoaded(true);
+  }, [requested]);
+  // Stays mounted once loaded so closing keeps its animation.
+  return requested || loaded ? (
+    <Suspense fallback={null}>
+      <LazyRewindDialog />
+    </Suspense>
+  ) : null;
+};
+
+const RewindMessageMenuItem: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
+      {t("rewind.menuItem")}
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// A prompt's More menu: Fork, Rewind, then Delete.
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
@@ -8641,6 +8716,7 @@ const UserMoreMenu: FC = () => {
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <MenuDismissGuard triggerRef={triggerRef} />
           <ForkMessageMenuItem />
+          <RewindMessageMenuItem />
           <DeleteMessageMenuItem />
         </div>
       </ActionBarMorePrimitive.Content>

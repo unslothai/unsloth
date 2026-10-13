@@ -5611,6 +5611,25 @@ def _extra_args_requests_dspark(
     return "draft-dspark" in _accumulated_spec_types(extra_args, env)
 
 
+def _dflash_drafter_breaks_on_images(
+    model_path: Optional[str], dflash_path: Optional[str], projector: Optional[str]
+) -> bool:
+    """#13511: llama.cpp skips an M-RoPE image in the DFlash drafter (its rows share one
+    position) and a NeoX drafter then rejects the jump, so the first image sent after any
+    text fails the slot. Unreadable headers fail open."""
+    if not (model_path and dflash_path and projector):
+        return False
+    try:
+        from utils.models.gguf_metadata import gguf_has_mrope_sections, mmproj_accepts_image
+        return bool(
+            mmproj_accepts_image(projector)
+            and gguf_has_mrope_sections(model_path) is True
+            and gguf_has_mrope_sections(dflash_path) is False
+        )
+    except Exception:
+        return False
+
+
 def _extra_args_requests_dflash(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -25206,6 +25225,17 @@ class LlamaCppBackend:
                         return False
                 return False
 
+            def _dflash_breaks_on_images() -> bool:
+                if not dflash_draft_path or disable_vision or extra_args_disable_mmproj(extra_args):
+                    return False
+                try:
+                    projector = self._resolve_launch_mmproj_path(
+                        model_path = model_path, mmproj_path = mmproj_path, extra_args = extra_args
+                    )
+                except Exception:
+                    return False
+                return _dflash_drafter_breaks_on_images(model_path, dflash_draft_path, projector)
+
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
@@ -25377,11 +25407,30 @@ class LlamaCppBackend:
                             "keeping tensor split with the MTP drafter "
                             "(llama.cpp cannot run DFlash2 with --split-mode tensor yet)."
                         )
+                    elif _dflash_breaks_on_images():
+                        logger.info(
+                            "Auto: DFlash sidecar %s has no M-RoPE sections, so llama.cpp "
+                            "cannot carry it past an image on this vision model; keeping "
+                            "vision and skipping DFlash. Choose DFlash in the Speculative "
+                            "Decoding dropdown to force it, or turn Vision off.",
+                            dflash_draft_path,
+                        )
                     else:
                         _spec_canon = "dflash"
                         logger.info("Auto: DFlash sidecar available, using draft-dflash.")
                 except Exception as exc:
                     logger.debug("DFlash capability probe failed during Auto: %s", exc)
+            elif (
+                _spec_canon == "dflash"
+                and not _extra_args_set_spec_type(extra_args)
+                and _dflash_breaks_on_images()
+            ):
+                logger.warning(
+                    "DFlash forced with sidecar %s, which has no M-RoPE sections: llama.cpp "
+                    "will fail the first image sent after text in a chat. Use Auto or turn "
+                    "Vision off to keep images working.",
+                    dflash_draft_path,
+                )
 
             # MTP and DSpark are mutually exclusive, and the drafter sizing and
             # lifecycle path below is architecture agnostic, so it carries the
