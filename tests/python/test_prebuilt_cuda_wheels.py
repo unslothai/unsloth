@@ -120,6 +120,41 @@ class TestWorkflowAndResolverAgree:
         for package, spec in prebuilt_wheels.SPECS.items():
             assert wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"], package
 
+    def test_every_extra_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
+        """win_amd64 torch 2.11: outside TORCH_VERSIONS, so the class above does not see it."""
+        checked = 0
+        for (platform, torch_mm), pythons in wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.items():
+            built_torches = prebuilt_wheels._platform(platform, "torches") or ()
+            torch_version = next(v for v in built_torches if v.startswith(f"{torch_mm}."))
+            assert torch_version not in prebuilt_wheels.TORCH_VERSIONS
+            for python_version in prebuilt_wheels.PYTHON_VERSIONS:
+                tag = prebuilt_wheels.python_tag(python_version)
+                for package, spec in prebuilt_wheels.SPECS.items():
+                    url = wheel_utils.unsloth_prebuilt_wheel_url(
+                        filename_prefix = spec["dist"],
+                        env = env(
+                            torch_mm = torch_mm,
+                            python_tag = tag,
+                            platform_tag = platform,
+                        ),
+                    )
+                    if tag not in pythons:
+                        assert url is None
+                        continue
+                    built = prebuilt_wheels.wheel_name(
+                        package, torch_version, python_version, platform
+                    )
+                    assert url == f"{OUR_BASE}{built}"
+                    checked += 1
+        assert checked == 9
+        extra = {
+            (platform, prebuilt_wheels.torch_minor(v))
+            for platform in prebuilt_wheels.PLATFORMS
+            for v in prebuilt_wheels._platform(platform, "torches") or ()
+            if v not in prebuilt_wheels.TORCH_VERSIONS
+        }
+        assert extra == set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS)
+
     def test_the_two_torch_tables_are_the_same_set(self):
         built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
         assert built == set(wheel_utils._UNSLOTH_PREBUILT_TORCH_MM)
